@@ -1,0 +1,25 @@
+apiVersion: v2
+name: h2ai-control-plane
+description: >
+  Distributed multi-agent orchestration runtime governed by the Universal
+  Scalability Law. Mathematically bounds coordination overhead, enforces the
+  Multiplication Condition, and presents a CRDT Merge Authority to the human.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/h2ai/control-plane
+sources:
+  - https://github.com/h2ai/control-plane
+maintainers:
+  - name: Yuriy Polyulya
+keywords:
+  - ai
+  - agents
+  - orchestration
+  - usl
+  - crdt
+dependencies:
+  - name: nats
+    version: "1.x.x"
+    repository: https://nats-io.github.io/k8s/helm/charts/
+    condition: nats.enabled

@@ -1,0 +1,29 @@
+{
+  "name": "H2AI Control Plane",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+
+  "remoteEnv": {
+    "H2AI_NATS_URL": "nats://nats:4222",
+    "H2AI_PROFILE": "a",
+    "RUST_LOG": "h2ai=debug,info",
+    "RUST_BACKTRACE": "1"
+  },
+
+  "forwardPorts": [
+    8080,
+    9090,
+    4222,
+    8222
+  ],
+  "portsAttributes": {
+    "8080": { "label": "H2AI API + Merge Authority UI" },
+    "9090": { "label": "Prometheus metrics" },
+    "4222": { "label": "NATS client" },
+    "8222": { "label": "NATS monitoring" }
+  },
+
+  "postCreateCommand": "cargo fetch 2>/dev/null || true",
+  "postStartCommand": "cargo check 2>/dev/null || true"
+}

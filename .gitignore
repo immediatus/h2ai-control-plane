@@ -1,0 +1,39 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# NATS JetStream data
+/nats/data/
+/var/lib/nats/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# llama.cpp model weights (large binary files)
+*.gguf
+*.ggml
+*.bin
+*.safetensors
+models/
+weights/
+
+# Other
+.claude/
+docs/.plans/

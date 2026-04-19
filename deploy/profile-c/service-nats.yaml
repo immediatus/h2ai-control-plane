@@ -1,0 +1,18 @@
+# Headless service — gives each pod a stable DNS name for cluster routing
+# nats-0.nats.h2ai.svc.cluster.local, nats-1.nats.h2ai.svc.cluster.local, etc.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: h2ai
+spec:
+  clusterIP: None
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+    - name: cluster
+      port: 6222
+    - name: monitor
+      port: 8222

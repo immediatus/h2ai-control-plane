@@ -1,0 +1,96 @@
+# H2AI Control Plane — Helm values
+# Override any value with: helm install h2ai h2ai/h2ai-control-plane -f my-values.yaml
+
+# ── Control plane ─────────────────────────────────────────────────────────────
+replicaCount: 2
+
+image:
+  repository: ghcr.io/h2ai/control-plane
+  pullPolicy: IfNotPresent
+  tag: ""  # defaults to Chart.appVersion
+
+imagePullSecrets: []
+
+# ── H2AI runtime config ───────────────────────────────────────────────────────
+config:
+  maxBlockingThreads: 8
+  maxRetries: 3
+  calibrationTasks: 3
+  jEffThreshold: "0.4"
+  profile: c
+  logLevel: "h2ai=info"
+
+# ADR corpus — mount a ConfigMap containing your team's ADR files
+# kubectl create configmap adr-corpus --from-file=./adr/ -n h2ai
+adrCorpus:
+  configMapName: adr-corpus
+  mountPath: /adr
+
+# ── Observability ─────────────────────────────────────────────────────────────
+tracing:
+  enabled: true
+  otlpEndpoint: ""  # e.g. http://jaeger-collector:4317
+
+serviceMonitor:
+  # Requires Prometheus Operator (kube-prometheus-stack)
+  enabled: false
+  labels:
+    release: prometheus
+  interval: 15s
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+  metricsPort: 9090
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: h2ai.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# ── Autoscaling ───────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ── NATS (via nats/nats Helm dependency) ─────────────────────────────────────
+nats:
+  enabled: true   # set false to bring your own NATS cluster
+  natsUrl: ""     # required if nats.enabled=false: nats://your-nats:4222
+  config:
+    cluster:
+      enabled: true
+      replicas: 3
+    jetstream:
+      enabled: true
+      fileStore:
+        enabled: true
+        pvc:
+          size: 100Gi
+
+# ── Pod config ────────────────────────────────────────────────────────────────
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

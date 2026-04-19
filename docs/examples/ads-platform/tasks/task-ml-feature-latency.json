@@ -1,0 +1,45 @@
+{
+  "description": "The ML Inference Service P99 latency has risen from 38ms to 67ms over the past two weeks as the user base grew from 300M to 400M DAU. Root cause analysis points to L2 Redis cache miss rate increasing from 8% to 22% — the feature store is being hit more frequently for user profiles that are less frequently requested (long tail of less-active users). Design a solution that brings P99 back to under 45ms without compromising the consistency model for budget data or violating GC constraints on the JVM heap.",
+  "pareto_weights": {
+    "diversity": 0.5,
+    "containment": 0.3,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.3,
+    "tau_max": 0.9
+  },
+  "constraints": [
+    "ADR-001",
+    "ADR-006",
+    "ADR-007"
+  ],
+  "context": "Current state: L1 TTL=60s, L2 Redis TTL=5min, L2 hit rate dropped from 92% to 78%, feature store P99 latency is 180ms. JVM heap is 32GB (per ADR-006). The long-tail user problem: 30% of DAU accounts for 2% of requests — their features fall out of cache between requests. Budget enforcement cache is separate Redis cluster and must not be touched.",
+
+  "_expected": {
+    "j_eff_min": 0.60,
+    "valid_proposals_min": 1,
+    "should_prune": [
+      {
+        "description": "Proposal that increases JVM heap from 32GB to 64GB for larger L1 cache",
+        "violates": "ADR-006 — heap must be 32GB; larger heaps increase ZGC evacuation pause duration and risk violating P99 tail latency constraint"
+      },
+      {
+        "description": "Proposal that reads advertiser budget balances from L1 or L2 cache to reduce Redis load",
+        "violates": "ADR-007 — budget checks must read from Redis atomic counters directly, never from cache"
+      },
+      {
+        "description": "Proposal that stores user ML features in a separate stateful in-process store that persists across requests",
+        "violates": "ADR-001 — request-handling services must not hold per-user state beyond a single request lifetime"
+      },
+      {
+        "description": "Proposal that uses platform threads instead of virtual threads for additional concurrency",
+        "violates": "ADR-006 — request handling must use Java 21 virtual threads, not platform threads"
+      }
+    ],
+    "should_pass": [
+      "Proposal that increases L2 Redis TTL for ML features from 5min to 15min (within the ≤5min constraint window means this needs re-examination — valid proposals stay within the 5min max per ADR-007), or pre-warms cache for long-tail users via a background job that runs during off-peak hours, using the 16-thread background pool per ADR-006"
+    ]
+  }
+}

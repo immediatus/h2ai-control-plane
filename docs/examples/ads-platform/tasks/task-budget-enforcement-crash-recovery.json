@@ -1,0 +1,44 @@
+{
+  "description": "We have observed double-billing events in production. Post-incident analysis shows the pattern: Ad Server processes a request, the Redis budget deduction succeeds, the Ad Server pod is OOM-killed before returning a response, the client retries, and the retry debits the budget a second time. This is happening at a rate of approximately 200 double-debits per hour during peak traffic. Design the fix that eliminates double-billing by construction without adding more than 1ms to the critical path budget check.",
+  "pareto_weights": {
+    "diversity": 0.4,
+    "containment": 0.5,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 4,
+    "tau_min": 0.1,
+    "tau_max": 0.8
+  },
+  "constraints": [
+    "ADR-004",
+    "ADR-005"
+  ],
+  "context": "Incident rate: ~200 double-debits/hour at peak (1M QPS, 0.1% retry rate). Each double-debit charges the advertiser twice for one impression. Current Redis Lua script performs DECRBY without idempotency check. CockroachDB billing ledger is updated asynchronously after the Redis deduction. The fix must be atomic — split check-then-act is not acceptable. Maximum added latency: 1ms.",
+
+  "_expected": {
+    "j_eff_min": 0.65,
+    "valid_proposals_min": 2,
+    "should_prune": [
+      {
+        "description": "Proposal that adds a CockroachDB read on every request to check if the request_id was already processed",
+        "violates": "ADR-004 — budget checks must use Redis atomic counters, not CockroachDB reads on the critical path"
+      },
+      {
+        "description": "Proposal that implements check-then-set as two separate Redis commands (GET key, then DECRBY)",
+        "violates": "ADR-004 — atomic check-and-set must be in a single Lua transaction; two commands create a race condition"
+      },
+      {
+        "description": "Proposal that sets idempotency key TTL to 0 (no expiry) to guarantee deduplication",
+        "violates": "ADR-004 — keys without TTL will exhaust Redis memory"
+      },
+      {
+        "description": "Proposal that logs the debit to an application log file for manual reconciliation",
+        "violates": "ADR-005 — every billing event must be published to Kafka financial-events topic, not logged to files"
+      }
+    ],
+    "should_pass": [
+      "Proposal implementing Redis Lua atomic check-and-set: check idem:campaign_{id}:{request_id} key existence, if exists return cached result without debit, if not exists perform DECRBY and SETEX in same Lua transaction with 30s TTL; key naming includes campaign_id prefix for Redis cluster sharding"
+    ]
+  }
+}

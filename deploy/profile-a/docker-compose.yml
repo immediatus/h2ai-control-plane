@@ -1,0 +1,52 @@
+# Profile A — Single workstation
+# Static binary + single NATS node. No observability stack.
+# Usage: docker compose up -d
+
+version: '3.8'
+
+services:
+  h2ai:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: h2ai-control-plane:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      H2AI_NATS_URL: nats://nats:4222
+      H2AI_ADR_CORPUS_PATH: /adr
+      H2AI_LISTEN_ADDR: 0.0.0.0:8080
+      H2AI_METRICS_ADDR: 0.0.0.0:9090
+      H2AI_MAX_BLOCKING_THREADS: "4"
+      H2AI_MAX_RETRIES: "3"
+      H2AI_CALIBRATION_TASKS: "3"
+      H2AI_J_EFF_THRESHOLD: "0.4"
+      H2AI_PROFILE: a
+      RUST_LOG: h2ai=debug,info
+      RUST_BACKTRACE: "1"
+    volumes:
+      - ../../adr:/adr:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - ../../nats/dev.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data/jetstream
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  nats-data:

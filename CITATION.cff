@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use this software or the underlying framework, please cite it as below."
+authors:
+- family-names: "Polyulya"
+  given-names: "Yuriy"
+title: "H2AI Control Plane: Autonomic Orchestrator for Multi-Agent Systems"
+url: "https://github.com/immediatus/h2ai-control-plane"
+preferred-citation:
+  type: article
+  authors:
+  - family-names: "Polyulya"
+    given-names: "Yuriy"
+  title: "One Equation Governs CPU Caches, Human Teams, and AI Agent Systems"
+  url: "https://e-mindset.space/blog/coordination-constant-usl-human-ai-teams/"
+  year: 2026

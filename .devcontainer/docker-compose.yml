@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ../:/workspace:cached
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/workspace/target
+    command: sleep infinity
+    environment:
+      H2AI_NATS_URL: nats://nats:4222
+      H2AI_LISTEN_ADDR: 0.0.0.0:8080
+      H2AI_METRICS_ADDR: 0.0.0.0:9090
+      H2AI_PROFILE: a
+      RUST_LOG: h2ai=debug,info
+      RUST_BACKTRACE: "1"
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  nats:
+    image: nats:2-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ../nats/dev.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data/jetstream
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  cargo-cache:
+  target-cache:
+  nats-data:

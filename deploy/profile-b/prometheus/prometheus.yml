@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: h2ai
+    static_configs:
+      - targets:
+          - h2ai-0:9090
+          - h2ai-1:9090
+    metrics_path: /metrics
+
+  - job_name: nats
+    static_configs:
+      - targets:
+          - nats-0:8222
+          - nats-1:8222
+          - nats-2:8222
+    metrics_path: /metrics

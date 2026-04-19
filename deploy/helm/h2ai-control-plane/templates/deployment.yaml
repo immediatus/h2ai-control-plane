@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "h2ai.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "h2ai.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "h2ai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "h2ai.selectorLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: h2ai-control-plane
+          image: {{ include "h2ai.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: H2AI_NATS_URL
+              value: {{ include "h2ai.natsUrl" . | quote }}
+            - name: H2AI_ADR_CORPUS_PATH
+              value: {{ .Values.adrCorpus.mountPath | quote }}
+            - name: H2AI_LISTEN_ADDR
+              value: "0.0.0.0:8080"
+            - name: H2AI_METRICS_ADDR
+              value: "0.0.0.0:9090"
+            - name: H2AI_MAX_BLOCKING_THREADS
+              value: {{ .Values.config.maxBlockingThreads | quote }}
+            - name: H2AI_MAX_RETRIES
+              value: {{ .Values.config.maxRetries | quote }}
+            - name: H2AI_CALIBRATION_TASKS
+              value: {{ .Values.config.calibrationTasks | quote }}
+            - name: H2AI_J_EFF_THRESHOLD
+              value: {{ .Values.config.jEffThreshold | quote }}
+            - name: H2AI_PROFILE
+              value: {{ .Values.config.profile | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.config.logLevel | quote }}
+            {{- if and .Values.tracing.enabled .Values.tracing.otlpEndpoint }}
+            - name: H2AI_OTEL_ENDPOINT
+              value: {{ .Values.tracing.otlpEndpoint | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: adr-corpus
+              mountPath: {{ .Values.adrCorpus.mountPath }}
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: adr-corpus
+          configMap:
+            name: {{ .Values.adrCorpus.configMapName }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

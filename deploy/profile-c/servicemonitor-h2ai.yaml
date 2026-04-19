@@ -1,0 +1,16 @@
+# Requires Prometheus Operator (kube-prometheus-stack)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: h2ai-control-plane
+  namespace: h2ai
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: h2ai-control-plane
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

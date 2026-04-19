@@ -1,0 +1,39 @@
+{
+  "description": "Design the DSP onboarding flow for a new bidding partner (BidStream Inc.) that has highly variable response latency — P50 is 45ms but P99 is 320ms. We need to integrate them into the RTB auction without degrading the 150ms P95 SLO for ad requests that include their bids. The integration must not require changes to the global RTB timeout. BidStream's engineering team reports they are working on latency improvements but cannot commit to a timeline.",
+  "pareto_weights": {
+    "diversity": 0.5,
+    "containment": 0.4,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 4,
+    "tau_min": 0.2,
+    "tau_max": 0.85
+  },
+  "constraints": [
+    "ADR-003"
+  ],
+  "context": "BidStream P50=45ms, P99=320ms. Global RTB timeout is 100ms and cannot change. The adaptive per-DSP timeout mechanism (HdrHistogram-based) is already implemented. BidStream will initially have zero samples in the histogram — cold start handling applies. Revenue impact of missing BidStream bids must be tracked.",
+
+  "_expected": {
+    "j_eff_min": 0.55,
+    "valid_proposals_min": 2,
+    "should_prune": [
+      {
+        "description": "Proposal that raises the global RTB timeout to 350ms to accommodate BidStream P99",
+        "violates": "ADR-003 — T_global is 100ms and per-DSP timeouts must not exceed T_global"
+      },
+      {
+        "description": "Proposal that sets BidStream timeout based on fewer than 100 samples",
+        "violates": "ADR-003 — adaptive timeout must not activate until 100 samples collected"
+      },
+      {
+        "description": "Proposal that stores DSP latency histograms in Redis for cross-instance sharing",
+        "violates": "ADR-003 — histogram data must be in-process per-instance, not external store"
+      }
+    ],
+    "should_pass": [
+      "Proposal that starts BidStream at T_global=100ms, builds histogram over first 100 responses, activates adaptive timeout after cold start, and instruments timeout_revenue_loss metric for BidStream specifically"
+    ]
+  }
+}
