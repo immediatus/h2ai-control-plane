@@ -9,12 +9,16 @@ services:
       dockerfile: Dockerfile
       args:
         USERNAME: ${USER}
+        USER_UID: ${UID:-1000}
+        USER_GID: ${GID:-1000}
     volumes:
-      - ../:/workspace:cached
+      - ../:/${WORKSPACES_PATH}:z
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/workspace/target
       - ${HOME}/.claude:/home/${USER}/.claude:z
       - ${HOME}/.claude.json:/home/${USER}/.claude.json:z
+      - ${HOME}/.local/bin/claude:/home/${USER}/.local/bin/claude:z
+      - ${HOME}/.local/bin/claude:/usr/local/bin/claude:z
     command: sleep infinity
     environment:
       HOME: /home/${USER}

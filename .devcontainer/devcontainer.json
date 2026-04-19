@@ -2,13 +2,12 @@
   "name": "H2AI Control Plane",
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
-  "workspaceFolder": "/workspace",
-
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "remoteUser": "${localEnv:USER}",
   "updateRemoteUserUID": true,
-
   "containerEnv": {
-    "TZ": "America/Los_Angeles"
+    "TZ": "America/Los_Angeles",
+    "TERM": "xterm-256color"
   },
 
   "remoteEnv": {
