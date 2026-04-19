@@ -1,6 +1,6 @@
 # H2AI Control Plane
 
-[![CI](https://github.com/h2ai/control-plane/actions/workflows/ci.yml/badge.svg)](https://github.com/h2ai/control-plane/actions/workflows/ci.yml)
+[![CI](https://github.com/immediatus/h2ai-control-plane/actions/workflows/ci.yml/badge.svg)](https://github.com/immediatus/h2ai-control-plane/actions/workflows/ci.yml)
 [![Theoretical Foundation](https://img.shields.io/badge/Framework-The_Coordination_Constant-blue)](https://e-mindset.space/blog/coordination-constant-usl-human-ai-teams/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-orange)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
@@ -251,7 +251,7 @@ The system is **C-first**: the distributed cluster is the architectural foundati
 
 The **Dark Knowledge Compiler** reads your team's Architecture Decision Records and uses them as hard Auditor constraints. Every `## Constraints` bullet in an ADR becomes a condition the Auditor enforces — proposals that violate ADR constraints are tombstoned before they reach the human.
 
-`docs/examples/ads-platform/` is a complete reference corpus derived from the blog series **"Architecting Real-Time Ads Platform"**:
+`docs/examples/ads-platform/` is a complete reference corpus derived from the blog series **[Architecting Real-Time Ads Platform](https://e-mindset.space/series/architecting-ads-platforms/)**:
 
 | ADR | Decision |
 |---|---|
