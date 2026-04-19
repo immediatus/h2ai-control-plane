@@ -27,7 +27,11 @@ impl ParetoWeights {
         if (sum - 1.0).abs() > 1e-6 {
             return Err(ConfigError::InvalidWeightSum(sum));
         }
-        Ok(Self { throughput, containment, diversity })
+        Ok(Self {
+            throughput,
+            containment,
+            diversity,
+        })
     }
 }
 
@@ -37,7 +41,11 @@ pub enum AgentRole {
     Executor,
     Evaluator,
     Synthesizer,
-    Custom { name: String, tau: f64, role_error_cost: f64 },
+    Custom {
+        name: String,
+        tau: f64,
+        role_error_cost: f64,
+    },
 }
 
 impl AgentRole {
@@ -57,7 +65,9 @@ impl AgentRole {
             Self::Executor => 0.5,
             Self::Evaluator => 0.9,
             Self::Synthesizer => 0.1,
-            Self::Custom { role_error_cost, .. } => *role_error_cost,
+            Self::Custom {
+                role_error_cost, ..
+            } => *role_error_cost,
         }
     }
 }

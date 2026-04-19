@@ -1,16 +1,18 @@
 use chrono::Utc;
-use h2ai_types::config::{
-    AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, TopologyKind,
-};
+use h2ai_types::config::{AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, TopologyKind};
 use h2ai_types::events::*;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::physics::{
-    CoherencyCoefficients, CoordinationThreshold, MergeStrategy, RoleErrorCost,
-    MultiplicationConditionFailure,
+    CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
+    RoleErrorCost,
 };
 
-fn task_id() -> TaskId { TaskId::new() }
-fn explorer_id() -> ExplorerId { ExplorerId::new() }
+fn task_id() -> TaskId {
+    TaskId::new()
+}
+fn explorer_id() -> ExplorerId {
+    ExplorerId::new()
+}
 fn cloud_adapter() -> AdapterKind {
     AdapterKind::CloudGeneric {
         endpoint: "https://api.example.com".into(),
@@ -55,16 +57,31 @@ fn task_bootstrapped_event_includes_j_eff() {
 fn topology_provisioned_event_includes_physics_fields() {
     let cc = calibration();
     let theta = CoordinationThreshold::from_calibration(&cc);
-    let role_costs = vec![RoleErrorCost::new(0.3).unwrap(), RoleErrorCost::new(0.7).unwrap()];
+    let role_costs = vec![
+        RoleErrorCost::new(0.3).unwrap(),
+        RoleErrorCost::new(0.7).unwrap(),
+    ];
     let merge_strategy = MergeStrategy::from_role_costs(&role_costs);
     let e = TopologyProvisionedEvent {
         task_id: task_id(),
         topology_kind: TopologyKind::Ensemble,
         explorer_configs: vec![
-            ExplorerConfig { explorer_id: explorer_id(), tau: 0.2, adapter: cloud_adapter(), role: None },
-            ExplorerConfig { explorer_id: explorer_id(), tau: 0.9, adapter: cloud_adapter(), role: None },
+            ExplorerConfig {
+                explorer_id: explorer_id(),
+                tau: 0.2,
+                adapter: cloud_adapter(),
+                role: None,
+            },
+            ExplorerConfig {
+                explorer_id: explorer_id(),
+                tau: 0.9,
+                adapter: cloud_adapter(),
+                role: None,
+            },
         ],
-        auditor_config: AuditorConfig { adapter: cloud_adapter() },
+        auditor_config: AuditorConfig {
+            adapter: cloud_adapter(),
+        },
         n_max: 4.2,
         interface_n_max: None,
         kappa_eff: 0.03,
@@ -154,7 +171,7 @@ fn task_failed_event_may_include_multiplication_failure() {
             MultiplicationConditionFailure::InsufficientCompetence {
                 actual: 0.42,
                 required: 0.5,
-            }
+            },
         ),
         timestamp: Utc::now(),
     };
@@ -178,62 +195,98 @@ fn h2ai_event_enum_wraps_all_17_events() {
             timestamp: Utc::now(),
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
-            task_id: task_id(), system_context: "ctx".into(),
+            task_id: task_id(),
+            system_context: "ctx".into(),
             pareto_weights: ParetoWeights::new(0.5, 0.3, 0.2).unwrap(),
-            j_eff: 0.65, timestamp: Utc::now(),
+            j_eff: 0.65,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::TopologyProvisioned(TopologyProvisionedEvent {
-            task_id: task_id(), topology_kind: TopologyKind::Ensemble,
-            explorer_configs: vec![], auditor_config: AuditorConfig { adapter: cloud_adapter() },
-            n_max: 3.0, interface_n_max: None, kappa_eff: 0.05,
+            task_id: task_id(),
+            topology_kind: TopologyKind::Ensemble,
+            explorer_configs: vec![],
+            auditor_config: AuditorConfig {
+                adapter: cloud_adapter(),
+            },
+            n_max: 3.0,
+            interface_n_max: None,
+            kappa_eff: 0.05,
             role_error_costs: vec![RoleErrorCost::new(0.5).unwrap()],
             merge_strategy: merge.clone(),
             coordination_threshold: theta.clone(),
             review_gates: vec![],
-            retry_count: 0, timestamp: Utc::now(),
+            retry_count: 0,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::MultiplicationConditionFailed(MultiplicationConditionFailedEvent {
             task_id: task_id(),
-            failure: MultiplicationConditionFailure::InsufficientCompetence { actual: 0.4, required: 0.5 },
-            retry_count: 0, timestamp: Utc::now(),
+            failure: MultiplicationConditionFailure::InsufficientCompetence {
+                actual: 0.4,
+                required: 0.5,
+            },
+            retry_count: 0,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::Proposal(ProposalEvent {
-            task_id: task_id(), explorer_id: explorer_id(), tau: 0.5,
-            raw_output: "out".into(), token_cost: 10, adapter_kind: cloud_adapter(),
+            task_id: task_id(),
+            explorer_id: explorer_id(),
+            tau: 0.5,
+            raw_output: "out".into(),
+            token_cost: 10,
+            adapter_kind: cloud_adapter(),
             timestamp: Utc::now(),
         }),
         H2AIEvent::ProposalFailed(ProposalFailedEvent {
-            task_id: task_id(), explorer_id: explorer_id(),
-            reason: ProposalFailureReason::Timeout, timestamp: Utc::now(),
+            task_id: task_id(),
+            explorer_id: explorer_id(),
+            reason: ProposalFailureReason::Timeout,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::GenerationPhaseCompleted(GenerationPhaseCompletedEvent {
-            task_id: task_id(), total_explorers: 2, successful: 1, failed: 1, timestamp: Utc::now(),
+            task_id: task_id(),
+            total_explorers: 2,
+            successful: 1,
+            failed: 1,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::ReviewGateTriggered(ReviewGateTriggeredEvent {
-            task_id: task_id(), gate_id: "g1".into(),
-            blocked_explorer_id: explorer_id(), reviewer_explorer_id: explorer_id(),
+            task_id: task_id(),
+            gate_id: "g1".into(),
+            blocked_explorer_id: explorer_id(),
+            reviewer_explorer_id: explorer_id(),
             timestamp: Utc::now(),
         }),
         H2AIEvent::ReviewGateBlocked(ReviewGateBlockedEvent {
-            task_id: task_id(), gate_id: "g1".into(),
-            blocked_explorer_id: explorer_id(), reviewer_explorer_id: explorer_id(),
-            rejection_reason: "ADR-007 violation".into(), timestamp: Utc::now(),
+            task_id: task_id(),
+            gate_id: "g1".into(),
+            blocked_explorer_id: explorer_id(),
+            reviewer_explorer_id: explorer_id(),
+            rejection_reason: "ADR-007 violation".into(),
+            timestamp: Utc::now(),
         }),
         H2AIEvent::Validation(ValidationEvent {
-            task_id: task_id(), explorer_id: explorer_id(), timestamp: Utc::now(),
+            task_id: task_id(),
+            explorer_id: explorer_id(),
+            timestamp: Utc::now(),
         }),
         H2AIEvent::BranchPruned(BranchPrunedEvent {
-            task_id: task_id(), explorer_id: explorer_id(),
+            task_id: task_id(),
+            explorer_id: explorer_id(),
             reason: "ADR-004".into(),
             constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
             timestamp: Utc::now(),
         }),
         H2AIEvent::ZeroSurvival(ZeroSurvivalEvent {
-            task_id: task_id(), retry_count: 0, timestamp: Utc::now(),
+            task_id: task_id(),
+            retry_count: 0,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::InterfaceSaturationWarning(InterfaceSaturationWarningEvent {
-            task_id: task_id(), active_subtasks: 4, interface_n_max: 5.0,
-            saturation_ratio: 0.8, timestamp: Utc::now(),
+            task_id: task_id(),
+            active_subtasks: 4,
+            interface_n_max: 5.0,
+            saturation_ratio: 0.8,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::ConsensusRequired(ConsensusRequiredEvent {
             task_id: task_id(),
@@ -241,15 +294,24 @@ fn h2ai_event_enum_wraps_all_17_events() {
             timestamp: Utc::now(),
         }),
         H2AIEvent::SemilatticeCompiled(SemilatticeCompiledEvent {
-            task_id: task_id(), valid_proposals: vec![], pruned_proposals: vec![],
-            merge_strategy: merge, timestamp: Utc::now(),
+            task_id: task_id(),
+            valid_proposals: vec![],
+            pruned_proposals: vec![],
+            merge_strategy: merge,
+            timestamp: Utc::now(),
         }),
         H2AIEvent::MergeResolved(MergeResolvedEvent {
-            task_id: task_id(), resolved_output: "final".into(), timestamp: Utc::now(),
+            task_id: task_id(),
+            resolved_output: "final".into(),
+            timestamp: Utc::now(),
         }),
         H2AIEvent::TaskFailed(TaskFailedEvent {
-            task_id: task_id(), pruned_events: vec![], topologies_tried: vec![],
-            tau_values_tried: vec![], multiplication_condition_failure: None, timestamp: Utc::now(),
+            task_id: task_id(),
+            pruned_events: vec![],
+            topologies_tried: vec![],
+            tau_values_tried: vec![],
+            multiplication_condition_failure: None,
+            timestamp: Utc::now(),
         }),
     ];
     assert_eq!(events.len(), 17);

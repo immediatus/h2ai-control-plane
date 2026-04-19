@@ -28,7 +28,11 @@ impl CoherencyCoefficients {
         if cg_samples.is_empty() {
             return Err(PhysicsError::EmptyCgSamples);
         }
-        Ok(Self { alpha, kappa_base, cg_samples })
+        Ok(Self {
+            alpha,
+            kappa_base,
+            cg_samples,
+        })
     }
 
     pub fn kappa_eff(&self) -> f64 {
@@ -46,7 +50,11 @@ impl CoherencyCoefficients {
 
     pub fn cg_std_dev(&self) -> f64 {
         let mean = self.cg_mean();
-        let variance = self.cg_samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+        let variance = self
+            .cg_samples
+            .iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
             / self.cg_samples.len() as f64;
         variance.sqrt()
     }
@@ -92,7 +100,10 @@ pub enum MergeStrategy {
 
 impl MergeStrategy {
     pub fn from_role_costs(costs: &[RoleErrorCost]) -> Self {
-        let max_ci = costs.iter().map(|c| c.value()).fold(f64::NEG_INFINITY, f64::max);
+        let max_ci = costs
+            .iter()
+            .map(|c| c.value())
+            .fold(f64::NEG_INFINITY, f64::max);
         if max_ci > BFT_THRESHOLD {
             MergeStrategy::BftConsensus
         } else {

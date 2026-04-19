@@ -1,6 +1,6 @@
 use h2ai_types::physics::{
-    CoherencyCoefficients, CoordinationThreshold, JeffectiveGap,
-    MergeStrategy, MultiplicationCondition, MultiplicationConditionFailure, RoleErrorCost,
+    CoherencyCoefficients, CoordinationThreshold, JeffectiveGap, MergeStrategy,
+    MultiplicationCondition, MultiplicationConditionFailure, RoleErrorCost,
 };
 
 #[test]
@@ -112,7 +112,10 @@ fn merge_strategy_is_crdt_when_max_ci_at_or_below_threshold() {
         RoleErrorCost::new(0.3).unwrap(),
         RoleErrorCost::new(0.85).unwrap(),
     ];
-    assert_eq!(MergeStrategy::from_role_costs(&costs), MergeStrategy::CrdtSemilattice);
+    assert_eq!(
+        MergeStrategy::from_role_costs(&costs),
+        MergeStrategy::CrdtSemilattice
+    );
 }
 
 #[test]
@@ -121,7 +124,10 @@ fn merge_strategy_is_bft_when_max_ci_above_threshold() {
         RoleErrorCost::new(0.3).unwrap(),
         RoleErrorCost::new(0.91).unwrap(),
     ];
-    assert_eq!(MergeStrategy::from_role_costs(&costs), MergeStrategy::BftConsensus);
+    assert_eq!(
+        MergeStrategy::from_role_costs(&costs),
+        MergeStrategy::BftConsensus
+    );
 }
 
 #[test]
@@ -167,17 +173,26 @@ fn multiplication_condition_passes_when_all_hold() {
 #[test]
 fn multiplication_condition_fails_on_low_competence() {
     let result = MultiplicationCondition::evaluate(0.4, 0.85, 0.65, 0.3);
-    assert!(matches!(result, Err(MultiplicationConditionFailure::InsufficientCompetence { .. })));
+    assert!(matches!(
+        result,
+        Err(MultiplicationConditionFailure::InsufficientCompetence { .. })
+    ));
 }
 
 #[test]
 fn multiplication_condition_fails_on_high_correlation() {
     let result = MultiplicationCondition::evaluate(0.7, 0.95, 0.65, 0.3);
-    assert!(matches!(result, Err(MultiplicationConditionFailure::InsufficientDecorrelation { .. })));
+    assert!(matches!(
+        result,
+        Err(MultiplicationConditionFailure::InsufficientDecorrelation { .. })
+    ));
 }
 
 #[test]
 fn multiplication_condition_fails_when_cg_below_theta() {
     let result = MultiplicationCondition::evaluate(0.7, 0.85, 0.2, 0.3);
-    assert!(matches!(result, Err(MultiplicationConditionFailure::CommonGroundBelowFloor { .. })));
+    assert!(matches!(
+        result,
+        Err(MultiplicationConditionFailure::CommonGroundBelowFloor { .. })
+    ));
 }

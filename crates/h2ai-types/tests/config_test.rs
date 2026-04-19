@@ -1,6 +1,6 @@
 use h2ai_types::config::{
-    AdapterKind, AgentRole, AuditorConfig, ExplorerConfig,
-    ParetoWeights, ReviewGate, RoleSpec, TopologyKind,
+    AdapterKind, AgentRole, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, RoleSpec,
+    TopologyKind,
 };
 use std::path::PathBuf;
 
@@ -40,7 +40,9 @@ fn topology_kind_ensemble_serde_round_trip() {
 
 #[test]
 fn topology_kind_hierarchical_tree_serde_round_trip() {
-    let t = TopologyKind::HierarchicalTree { branching_factor: Some(3) };
+    let t = TopologyKind::HierarchicalTree {
+        branching_factor: Some(3),
+    };
     let json = serde_json::to_string(&t).unwrap();
     let back: TopologyKind = serde_json::from_str(&json).unwrap();
     assert_eq!(t, back);
@@ -61,14 +63,22 @@ fn agent_role_default_tau_and_ci() {
     assert_eq!(AgentRole::Evaluator.default_tau(), 0.10);
     assert_eq!(AgentRole::Synthesizer.default_tau(), 0.80);
     assert_eq!(AgentRole::Evaluator.default_role_error_cost(), 0.9);
-    let custom = AgentRole::Custom { name: "QA".into(), tau: 0.3, role_error_cost: 0.6 };
+    let custom = AgentRole::Custom {
+        name: "QA".into(),
+        tau: 0.3,
+        role_error_cost: 0.6,
+    };
     assert_eq!(custom.default_tau(), 0.3);
     assert_eq!(custom.default_role_error_cost(), 0.6);
 }
 
 #[test]
 fn agent_role_serde_round_trip() {
-    let role = AgentRole::Custom { name: "QA".into(), tau: 0.3, role_error_cost: 0.6 };
+    let role = AgentRole::Custom {
+        name: "QA".into(),
+        tau: 0.3,
+        role_error_cost: 0.6,
+    };
     let json = serde_json::to_string(&role).unwrap();
     let back: AgentRole = serde_json::from_str(&json).unwrap();
     assert_eq!(role, back);
@@ -90,7 +100,10 @@ fn role_spec_serde_round_trip() {
 
 #[test]
 fn review_gate_serde_round_trip() {
-    let gate = ReviewGate { reviewer: "eval".into(), blocks: "impl_1".into() };
+    let gate = ReviewGate {
+        reviewer: "eval".into(),
+        blocks: "impl_1".into(),
+    };
     let json = serde_json::to_string(&gate).unwrap();
     let back: ReviewGate = serde_json::from_str(&json).unwrap();
     assert_eq!(gate.reviewer, back.reviewer);

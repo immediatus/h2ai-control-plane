@@ -1,8 +1,10 @@
-use crate::config::{AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, TopologyKind};
+use crate::config::{
+    AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, TopologyKind,
+};
 use crate::identity::{ExplorerId, TaskId};
 use crate::physics::{
-    CoherencyCoefficients, CoordinationThreshold, MergeStrategy,
-    MultiplicationConditionFailure, RoleErrorCost,
+    CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
+    RoleErrorCost,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
