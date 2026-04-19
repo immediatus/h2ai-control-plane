@@ -234,17 +234,17 @@ This is not necessarily the most senior engineer. It is the engineer who spans t
 
 ### Intra-Swarm Role Specialisation
 
-Not all agents in the swarm should be interchangeable. Different roles warrant different τ calibrations and different error cost weights:
+Not all agents in the swarm should be interchangeable. H2AI uses abstract topological roles (`AgentRole`) — the *domain* the role applies to is encoded in `system_context`, not in the role enum. Different roles warrant different τ calibrations and different error cost weights:
 
-| Role | τ | c_i | Function | Edge constraint |
-|------|---|-----|----------|-----------------|
-| Swarm coordinator | 0.05 | — | Routes sub-tasks, summarises for liaison | Low τ: must be deterministic and auditable |
-| Coder agent | 0.4 | Medium | Implements primary artifacts | Gated by security agent before output reaches liaison |
-| Security/audit agent | 0.1 | **High** | Constraint checking, OWASP review | **Review gate**: blocks output if constraint violated |
-| Test agent | 0.0 | Low | Generates tests | τ = 0 for error decorrelation from coder agent |
-| Synthesis/docs agent | 0.8 | Low | Summaries, documentation | High τ: diversity has value, errors easily corrected |
+| AgentRole | τ default | c_i default | Function | Edge constraint |
+|-----------|-----------|-------------|----------|-----------------|
+| `Coordinator` | 0.05 | 0.1 | Routes sub-tasks to other Explorers, summarises for liaison | Low τ: must be deterministic and auditable |
+| `Executor` | 0.40 | 0.5 | Produces primary output artifacts | Subject to review gates declared in `review_gates[]` |
+| `Evaluator` | 0.10 | 0.9 | Constraint and quality checking | **Review gate**: blocks Executor output if check fails; high c_i triggers BFT merge path |
+| `Synthesizer` | 0.80 | 0.1 | Combines, summarises, or documents other outputs | High τ: diversity has value; errors easily corrected |
+| `Custom` | (required) | (required) | Any domain-specific role not covered above | τ and c_i must be explicitly supplied |
 
-The role differentiation is not bureaucracy — it is temperature-calibrated error containment. The security agent at `c_i = high` with a review gate converts a Byzantine fault (hallucinated compliance) from a propagation-factor-of-N event to a propagation-factor-of-1 event.
+The role differentiation is not bureaucracy — it is temperature-calibrated error containment. An `Evaluator` at `c_i = 0.9` with a review gate converts a Byzantine fault from a propagation-factor-of-N event to a propagation-factor-of-1 event. The `Coordinator` at τ ≈ 0 decouples deterministic routing from the higher-τ exploration of `Executor` nodes.
 
 ### The Three N_max Ceilings
 
@@ -305,19 +305,24 @@ Diagnose low `J_eff` by examining the `missing_coverage` field in the `ContextUn
 | Mathematical concept | H2AI implementation |
 |---------------------|---------------------|
 | Calibrate α, κ_base, CG_mean | `POST /calibrate` → `CalibrationCompletedEvent` |
-| J_eff gate (Def 10) | Dark Knowledge Compiler runs on `TaskSubmittedEvent` |
-| N_max ceiling (Prop 1) | Explorer spawn rejection in orchestrator |
-| Multiplication condition (Prop 3) | Checked before first `ExplorerSpawnedEvent` |
-| θ_coord threshold (Prop 2) | Stored in system state after calibration; enforced at topology construction |
-| CRDT merge (Prop 4, 5) | `MergeStrategy::CrdtSemilattice` in merge authority |
-| BFT merge (Prop 5 safety constraint) | `MergeStrategy::BftConsensus` when `max(c_i) > 0.85` |
-| Auditor constraint checking (Def 10) | `BranchPrunedEvent` with ADR citation |
-| MAPE-K retry on zero survival | `ZeroSurvivalEvent` → `TopologyRetryEvent` → re-provision Explorers |
+| J_eff gate (Def 10) | Dark Knowledge Compiler in `crates/context`; `ContextUnderflowError` if below 0.4 |
+| N_max ceiling (Prop 1) | Explorer count capped at N_max during `TopologyProvisionedEvent` |
+| Multiplication condition (Prop 3) | Phase 2.5 hard gate; `MultiplicationConditionFailedEvent` names which condition failed |
+| θ_coord threshold (Prop 2) | Stored in calibration cache; enforced at topology construction |
+| CRDT merge (Prop 4, 5) | `MergeStrategy::CrdtSemilattice` in `crates/state` |
+| BFT merge (Prop 5 safety constraint) | `MergeStrategy::BftConsensus` when `max(c_i) > 0.85`; `ConsensusRequiredEvent` signals this path |
+| Auditor constraint checking (Def 10) | `BranchPrunedEvent` with ADR citation, emitted by Auditor adapter |
+| MAPE-K retry on zero survival | `ZeroSurvivalEvent` → `crates/autonomic` adjusts {N, τ} → new `TopologyProvisionedEvent` |
+| Topology selection (three frontiers) | Phase 2: roles[] → TeamSwarmHybrid; explicit kind field; auto from ParetoWeights + N vs N_max |
+| Abstract AgentRole enum | `h2ai-types::AgentRole` — Coordinator / Executor / Evaluator / Synthesizer / Custom |
+| Review gate (intra-swarm Evaluator gate) | Phase 3b: `ReviewGateTriggeredEvent` → Evaluator runs → approve or `ReviewGateBlockedEvent` |
+| N_max^interface (Team-Swarm binding ceiling) | `crates/autonomic` computes from CG(liaison, Coordinator); `InterfaceSaturationWarningEvent` + `h2ai_interface_n_max` metric |
 
 ### Task Manifest Parameters
 
-The task manifest directly controls the three-axis Pareto position:
+The task manifest directly controls the three-axis Pareto position.
 
+**Ensemble + CRDT (default):**
 ```json
 {
   "description": "...",
@@ -326,35 +331,67 @@ The task manifest directly controls the three-axis Pareto position:
     "containment": 0.3,   // weight on E axis
     "throughput": 0.2     // weight on T axis
   },
+  "topology": {
+    "kind": "ensemble"    // explicit; or "auto" (default), "hierarchical_tree"
+  },
   "explorers": {
-    "count": 3,           // N — must be ≤ N_max
+    "count": 3,           // N — system caps at N_max if exceeded
     "tau_min": 0.1,       // lower bound on agent temperature
     "tau_max": 0.8        // upper bound — enforces τ diversity (Prop 3 condition 2)
   },
-  "constraints": [
-    "ADR-001",            // which ADRs the Auditor loads
-    "ADR-004"
-  ],
+  "constraints": ["ADR-001", "ADR-004"],
   "context": "..."        // explicit dark knowledge (raises J_eff)
 }
 ```
 
-The `tau_min` / `tau_max` spread enforces Proposition 3's decorrelation condition: agents at τ = 0.1 and τ = 0.8 have substantially different sampling distributions and will hallucinate differently, so their errors are uncorrelated.
+**Team-Swarm Hybrid (role-typed):**
+```json
+{
+  "description": "...",
+  "pareto_weights": {
+    "diversity": 0.3,
+    "containment": 0.4,
+    "throughput": 0.3
+  },
+  "explorers": {
+    "count": 4,
+    "roles": [
+      {"agent_id": "coord",     "role": "Coordinator"},
+      {"agent_id": "worker_1",  "role": "Executor"},
+      {"agent_id": "worker_2",  "role": "Executor"},
+      {"agent_id": "checker",   "role": "Evaluator"}
+    ],
+    "review_gates": [
+      {"reviewer": "checker", "blocks": "worker_1"},
+      {"reviewer": "checker", "blocks": "worker_2"}
+    ]
+  },
+  "constraints": ["ADR-001", "ADR-007"],
+  "context": "..."
+}
+```
 
-### Event Stream for a Successful Task
+When `roles[]` is non-empty: topology is forced to `TeamSwarmHybrid`; `tau_min`/`tau_max` are ignored — each role's τ comes from the `AgentRole` canonical defaults (overridable per entry). The `review_gates[]` array declares which `Evaluator` Explorer must approve each `Executor` Explorer's output before it reaches the ADR Auditor.
+
+The `tau_min` / `tau_max` spread (Ensemble mode) enforces Proposition 3's decorrelation condition: agents at τ = 0.1 and τ = 0.8 have substantially different sampling distributions and will hallucinate differently, so their errors are uncorrelated.
+
+### Event Stream for a Successful Task (Ensemble + CRDT)
 
 ```
-TaskSubmittedEvent      → J_eff computed: 0.71 (above 0.40 threshold)
-ExplorerSpawnedEvent    → τ = 0.15, role = conservative
-ExplorerSpawnedEvent    → τ = 0.50, role = balanced
-ExplorerSpawnedEvent    → τ = 0.80, role = explorative
-ProposalGeneratedEvent  → branch_id = "b1" (conservative)
-ProposalGeneratedEvent  → branch_id = "b2" (balanced)
-ProposalGeneratedEvent  → branch_id = "b3" (explorative)
-BranchPrunedEvent       → branch_id = "b3", violates = "ADR-004 — budget from cache"
-MergeCompletedEvent     → strategy = CrdtSemilattice, surviving = ["b1", "b2"]
-SemilatticeCompiledEvent → merged proposal available at /tasks/{id}/result
-TaskCompletedEvent
+CalibrationCompletedEvent      → α=0.12, κ_eff=0.019, N_max=6.3
+TaskBootstrappedEvent          → J_eff=0.71 (above 0.40 threshold), system_context compiled
+TopologyProvisionedEvent       → topology_kind=Ensemble, N=3, merge_strategy=CrdtSemilattice
+  (Phase 2.5: Multiplication Condition gate passes — no MultiplicationConditionFailedEvent)
+ProposalEvent                  → explorer_id=exp_A, τ=0.15
+ProposalEvent                  → explorer_id=exp_B, τ=0.50
+ProposalEvent                  → explorer_id=exp_C, τ=0.80
+GenerationPhaseCompletedEvent  → proposals_received=3, proposals_failed=0
+  (Auditor validates each ProposalEvent as it arrives)
+ValidationEvent                → explorer_id=exp_A
+ValidationEvent                → explorer_id=exp_B
+BranchPrunedEvent              → explorer_id=exp_C, violates=ADR-004 "budget from cache"
+SemilatticeCompiledEvent       → merge_strategy=CrdtSemilattice, valid=2, pruned=1
+MergeResolvedEvent             → resolution=select, selected=["exp_A","exp_B"]
 ```
 
 ---
@@ -370,15 +407,15 @@ A team of three engineers — a principal, a backend lead, and a security engine
 - **Q2:** Cryptographic primitive selection, token storage approach → Diversity = High
 - **Q3:** Five specialized agents → N = 5 ≤ N_max = 6 → Ensemble viable within the swarm
 
-**Swarm configuration:**
+**Swarm configuration** (domain context encoded in `system_context`; `AgentRole` is abstract):
 
-| Agent role | τ | c_i | Function | Edge constraint |
-|------------|---|-----|----------|-----------------|
-| Swarm coordinator | 0.05 | — | Routes sub-tasks to leaf agents, summarises for liaison | Must be deterministic and auditable |
-| Coder agent | 0.4 | Medium | Implements auth logic, token handling, refresh flow | Gated by security agent |
-| Security agent | 0.1 | High | OWASP check, cryptographic primitive review | **Review gate**: blocks coder output if OWASP violation found |
-| Test agent | 0.0 | Low | Generates unit and integration tests | τ = 0 for error decorrelation from coder agent |
-| Docs agent | 0.8 | Low | API documentation, inline comments | High τ: diversity has value, errors easily corrected |
+| agent_id | AgentRole | τ | c_i | Function | Edge constraint |
+|----------|-----------|---|-----|----------|-----------------|
+| `coord` | `Coordinator` | 0.05 | 0.1 | Routes sub-tasks to leaf agents, summarises for liaison | Must be deterministic and auditable |
+| `impl` | `Executor` | 0.4 | 0.5 | Implements auth logic, token handling, refresh flow | Gated by `evaluator` review gate |
+| `evaluator` | `Evaluator` | 0.1 | 0.9 | OWASP check, cryptographic primitive review | **Review gate**: `{"reviewer":"evaluator","blocks":"impl"}` |
+| `tester` | `Executor` (Custom τ=0.0) | 0.0 | 0.2 | Generates unit and integration tests | τ = 0 for error decorrelation from `impl` |
+| `docs` | `Synthesizer` | 0.8 | 0.1 | API documentation, inline comments | High τ: diversity has value, errors easily corrected |
 
 **Verifying the three N_max ceilings:**
 - Human team: 3 engineers, N_max^human ≈ 10 ✓
@@ -393,7 +430,7 @@ A team of three engineers — a principal, a backend lead, and a security engine
 
 **Outcome of role positioning (vs. "engineer with a chat window"):**
 
-The security agent's review gate converts a Byzantine fault (hallucinated OWASP compliance) from propagation-factor-of-4 to propagation-factor-of-1 — quarantined before it reaches the liaison. The test agent's τ = 0 and different sampling distribution produces error decorrelation — it catches cases the coder agent missed. The principal sees merged, pre-reviewed output, preserving human bandwidth for decisions that require consequence-awareness.
+The `Evaluator` review gate converts a Byzantine fault (hallucinated OWASP compliance) from propagation-factor-of-4 to propagation-factor-of-1 — quarantined before it reaches the ADR Auditor. The tester's τ = 0 and different sampling distribution produces error decorrelation — it catches cases the `impl` Executor missed. The principal sees merged, pre-reviewed output, preserving human bandwidth for decisions that require consequence-awareness.
 
 None of these effects require more agents. They require **positioned** agents.
 

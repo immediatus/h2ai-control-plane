@@ -1,0 +1,18 @@
+[package]
+name        = "h2ai-types"
+description = "Pure types boundary for the H2AI Control Plane — zero external I/O deps"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+serde       = { workspace = true }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+serde_json  = { workspace = true }
+tokio       = { workspace = true }

@@ -5,9 +5,42 @@ Validates every definition and proposition numerically using only the standard
 library. No external dependencies. Exit code 0 = all checks pass. Designed to
 run in CI without a full Rust build.
 
-Usage:
-    python scripts/validate_math.py
-    python scripts/validate_math.py --verbose
+WHEN TO RUN
+-----------
+Run this script any time you change a formula, constant, or threshold in
+docs/architecture/05-math-apparatus.md. A failing check is the signal that the
+doc and the implementation have diverged.
+
+    python scripts/validate_math.py            # normal output (PASS/FAIL per check)
+    python scripts/validate_math.py --verbose  # include detail lines on passing checks too
+
+Exit code 0 = all checks pass. Non-zero = at least one failure (printed at end).
+
+CROSS-REFERENCE MAP  (doc section → functions/constants in this file)
+----------------------------------------------------------------------
+§ Definition 1  (α)           — parameter in usl_throughput(); values in CALIBRATION_TABLE
+§ Definition 2  (USL formula) — usl_throughput(), usl_throughput_extended()
+§ Definition 3  (CG)          — jaccard(), tau_alignment(), common_ground()
+§ Definition 4  (κ_eff)       — CALIBRATION_TABLE κ_eff column checks
+§ Definition 5  (Extended USL)— usl_throughput_extended(); algebraic equivalence in calibration
+§ Definition 6  (Edge Count)  — edge_count_flat(), edge_count_tree()
+§ Definition 7  (RW Graph)    — c_i parameter in byzantine_loss(), merge_strategy()
+§ Definition 8  (Byz. Loss)   — byzantine_loss()
+§ Definition 9  (Pareto axes) — entropy() implements H(τ) (D axis)
+§ Definition 10 (J_eff)       — j_eff(), jaccard(); J_EFF_GATE = 0.4
+§ Proposition 1 (N_max)       — analytical_n_max(), numerical_n_max(), retrograde checks
+§ Proposition 2 (Conway)      — coordination_threshold()
+§ Proposition 3 (Condorcet)   — majority_vote_accuracy(), correlated_ensemble_accuracy()
+§ Proposition 4 (Entropy)     — entropy()
+§ Proposition 5 (Safety)      — edge_count_flat/tree(), merge_strategy(); BFT_THRESHOLD = 0.85
+§ §3 Calibration table        — CALIBRATION_TABLE (must match doc table exactly)
+§ §4 Safety constraints       — J_EFF_GATE = 0.4, BFT_THRESHOLD = 0.85
+
+CONSTANTS THAT MUST STAY IN SYNC WITH THE DOC
+----------------------------------------------
+    J_EFF_GATE    = 0.4   → docs/architecture/05-math-apparatus.md §4 (J_eff gate row)
+    BFT_THRESHOLD = 0.85  → docs/architecture/05-math-apparatus.md §Proposition 5 safety constraint
+    CALIBRATION_TABLE     → §3 Calibration and §Proposition 1 calibrated ceilings table
 """
 
 import math
@@ -61,6 +94,7 @@ def usl_throughput_extended(N: float, alpha: float, kappa_base: float, cg_mean: 
     return usl_throughput(N, alpha, kappa_eff)
 
 
+# § Definition 2 — docs/architecture/05-math-apparatus.md
 section("Definition 2 — USL Throughput Formula")
 
 # Single agent baseline: X(1) must equal 1 for all α, κ
@@ -82,6 +116,7 @@ check(
 # Definition 4 — Effective Coherency
 # ---------------------------------------------------------------------------
 
+# § Definition 4 — docs/architecture/05-math-apparatus.md
 section("Definition 4 — Effective Coherency  κ_eff = κ_base / CG_mean")
 
 CALIBRATION_TABLE = [
@@ -112,6 +147,7 @@ check(
 # Proposition 1 — Scalability Ceiling  N_max = sqrt((1-α) / κ_eff)
 # ---------------------------------------------------------------------------
 
+# § Proposition 1 — docs/architecture/05-math-apparatus.md
 section("Proposition 1 — Scalability Ceiling")
 
 
@@ -173,6 +209,7 @@ for layer, alpha, kappa_base, cg_mean, kappa_eff, n_max_exp in CALIBRATION_TABLE
 # Definition 3 — Common Ground
 # ---------------------------------------------------------------------------
 
+# § Definition 3 — docs/architecture/05-math-apparatus.md
 section("Definition 3 — Common Ground  CG(i,j) = J(K_i, K_j) × alignment(τ_i, τ_j)")
 
 
@@ -238,6 +275,7 @@ check(
 # Definition 10 — Dark Knowledge Gap (J_eff)
 # ---------------------------------------------------------------------------
 
+# § Definition 10 — docs/architecture/05-math-apparatus.md  |  J_EFF_GATE must equal §4 table
 section("Definition 10 — Dark Knowledge Gap  J_eff = J(K_prompt, K_task_required)")
 
 J_EFF_GATE = 0.4
@@ -287,6 +325,7 @@ check(
 # Definition 8 — Byzantine Expected Loss
 # ---------------------------------------------------------------------------
 
+# § Definition 8 — docs/architecture/05-math-apparatus.md
 section("Definition 8 — Byzantine Expected Loss  L_i = c_i × P(hallucination) × propagation")
 
 
@@ -330,6 +369,7 @@ check(
 # Proposition 2 — Epistemic Conway Constraint
 # ---------------------------------------------------------------------------
 
+# § Proposition 2 — docs/architecture/05-math-apparatus.md
 section("Proposition 2 — Epistemic Conway Constraint")
 
 
@@ -369,6 +409,7 @@ check(
 # Proposition 3 — Multiplication Condition
 # ---------------------------------------------------------------------------
 
+# § Proposition 3 — docs/architecture/05-math-apparatus.md
 section("Proposition 3 — Multiplication Condition (Generalised Condorcet)")
 
 
@@ -438,6 +479,7 @@ check(
 # Proposition 4 — Merge Semantics and Epistemic Entropy
 # ---------------------------------------------------------------------------
 
+# § Proposition 4 — docs/architecture/05-math-apparatus.md
 section("Proposition 4 — Merge Semantics and Epistemic Entropy")
 
 
@@ -480,6 +522,7 @@ check(
 # Proposition 5 — CRDT-Merge Hierarchy Dominance
 # ---------------------------------------------------------------------------
 
+# § Proposition 5 — docs/architecture/05-math-apparatus.md  |  BFT_THRESHOLD must equal §Prop 5
 section("Proposition 5 — CRDT-Merge Hierarchy Dominance + Safety Constraint")
 
 
@@ -540,6 +583,8 @@ check(
 # Calibration table — full cross-check
 # ---------------------------------------------------------------------------
 
+# § §3 Calibration + §Proposition 1 — docs/architecture/05-math-apparatus.md
+# CALIBRATION_TABLE values must exactly match both tables in the doc
 section("Calibration Reference Table — Full Cross-Check")
 
 for layer, alpha, kappa_base, cg_mean, kappa_eff_exp, n_max_exp in CALIBRATION_TABLE:

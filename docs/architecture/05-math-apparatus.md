@@ -8,12 +8,36 @@ The theory is an extension of Gunther's Universal Scalability Law (USL) to syste
 
 Every definition and proposition in this document has a corresponding numerical check or simulation. **If you change a formula, constant, or threshold here, you must update both scripts and re-run them before merging.**
 
-| Script | Purpose | Run |
-|--------|---------|-----|
-| [`scripts/validate_math.py`](../../scripts/validate_math.py) | Asserts every definition and proposition numerically; stdlib only; CI-runnable | `python scripts/validate_math.py` |
-| [`scripts/simulate_usl.py`](../../scripts/simulate_usl.py) | Plots USL curves, CG_mean sensitivity, Pareto matrix, J_eff gate; requires numpy + matplotlib | `python scripts/simulate_usl.py` |
+```bash
+# Run from the repo root (devcontainer has all deps pre-installed)
 
-> **Sync rule:** The calibration constants (`α`, `κ_base`, `CG_mean`, `N_max`) in `CALIBRATION_TABLE` (validate) and `LAYERS` (simulate) must exactly match §3 of this document. The J_eff gate value (`J_EFF_GATE = 0.4`) must match §4. The BFT threshold (`BFT_THRESHOLD = 0.85`) must match Proposition 5.
+# 1. Validate — asserts every formula, constant, and threshold numerically.
+#    Stdlib only. Run this after any change to this document.
+python scripts/validate_math.py
+
+# Add --verbose to print detail lines on passing checks as well as failures
+python scripts/validate_math.py --verbose
+
+# 2. Simulate — produces four PNG plots in scripts/output/.
+#    Use this to visually verify a constant change or explore parameter sensitivity.
+#    Requires numpy + matplotlib (pre-installed in devcontainer).
+python scripts/simulate_usl.py
+
+# Open plots interactively instead of saving files
+python scripts/simulate_usl.py --show
+```
+
+**Why two separate scripts:**
+
+- `validate_math.py` is the **correctness gate** — pure assertions, no dependencies, CI-runnable. Every formula in this document is tested. A failing check means doc and code have diverged; the failure message names the exact check.
+- `simulate_usl.py` is the **exploration tool** — it renders the shape of the equations so you can see the effect of changing a constant (e.g. raising `CG_mean` from 0.4 to 0.6 shifts the AI-layer N_max from 6 to ~9, visible in Plot 2). Use it when calibrating the system for a new hardware or model profile.
+
+| Script | No-dep | CI-safe | Plots | When to use |
+|--------|--------|---------|-------|-------------|
+| `validate_math.py` | yes | yes | no | After every doc/formula change |
+| `simulate_usl.py` | no (numpy, matplotlib) | no | yes | Exploration, sensitivity analysis, presentations |
+
+> **Sync rule:** The calibration constants (`α`, `κ_base`, `CG_mean`, `N_max`) in `CALIBRATION_TABLE` (validate) and `LAYERS` (simulate) must exactly match §3 of this document. The J_eff gate value (`J_EFF_GATE = 0.4`) must match §4. The BFT threshold (`BFT_THRESHOLD = 0.85`) must match Proposition 5. Each script's docstring lists every constant that requires syncing.
 
 ---
 
@@ -392,7 +416,7 @@ The following constraints are enforced by the orchestrator before any topology i
 
 ## 5. Event Vocabulary
 
-Every runtime state transition emits an immutable event to NATS JetStream. The 14-event vocabulary is the operational realisation of the mathematical model:
+Every runtime state transition emits an immutable event to NATS JetStream. The 17-event vocabulary is the operational realisation of the mathematical model:
 
 | Event | Mathematical meaning |
 |-------|---------------------|

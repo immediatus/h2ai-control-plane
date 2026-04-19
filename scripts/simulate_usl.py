@@ -1,16 +1,41 @@
 """
 USL simulation and visualisation — docs/architecture/05-math-apparatus.md
 
-Produces four plots:
-  1. USL throughput curves for all three calibrated layers (hardware / human / AI)
-  2. Effect of CG_mean on N_max for the AI-agent layer
-  3. Topology Pareto matrix heatmap (7 topologies × 3 axes)
-  4. Dark Knowledge Gap: J_eff vs task acceptance rate
+Produces four plots saved to scripts/output/ (or shown interactively with --show):
+  1. 01_usl_three_layers.png  — USL throughput curves for all three calibrated layers
+  2. 02_cg_mean_effect.png    — Effect of CG_mean on N_max; how ADR corpus quality shifts the ceiling
+  3. 03_pareto_matrix.png     — Topology Pareto matrix heatmap (7 topologies × 3 axes)
+  4. 04_dark_knowledge_gap.png— J_eff distribution and task acceptance rate vs ADR corpus size
 
-Requires: numpy, matplotlib
-Usage:
-    python scripts/simulate_usl.py              # saves PNG files to scripts/output/
-    python scripts/simulate_usl.py --show       # opens interactive window instead
+WHEN TO RUN
+-----------
+Run when exploring theory or verifying a parameter change visually. The validator
+(validate_math.py) gives a binary pass/fail; this script shows the shape of the
+equations — useful when changing calibration constants or topology scores.
+
+    python scripts/simulate_usl.py              # saves PNGs to scripts/output/
+    python scripts/simulate_usl.py --show       # opens interactive matplotlib window
+
+Requires: numpy, matplotlib  (pre-installed in devcontainer via pip)
+
+CROSS-REFERENCE MAP  (doc section → constants/functions/plots in this file)
+----------------------------------------------------------------------------
+§ Definition 2  (USL formula) — usl()                        → Plots 1, 2
+§ Definition 3  (CG)          — kappa_eff() uses CG_mean     → Plot 2
+§ Definition 4  (κ_eff)       — kappa_eff(kappa_base, cg)    → Plots 1, 2
+§ Definition 5  (Extended USL)— usl() + kappa_eff() compose  → Plot 2 right panel
+§ Definition 9  (Pareto axes) — TOPOLOGIES (T, E, D tuples)  → Plot 3
+§ Definition 10 (J_eff gate)  — J_EFF_GATE = 0.4            → Plot 4
+§ Proposition 1 (N_max)       — n_max()                      → Plots 1, 2
+§ Proposition 5 (frontier)    — TOPOLOGIES frontier flags    → Plot 3
+§ §3 Calibration table        — LAYERS (must match doc table)→ Plots 1, 2
+
+CONSTANTS THAT MUST STAY IN SYNC WITH THE DOC
+----------------------------------------------
+    J_EFF_GATE = 0.4   → docs/architecture/05-math-apparatus.md §4 (J_eff gate row)
+    LAYERS             → §3 Calibration and §Proposition 1 calibrated ceilings table
+                         (must also match CALIBRATION_TABLE in validate_math.py)
+    TOPOLOGIES         → docs/guides/theory-to-implementation.md Pareto Summary table
 """
 
 import math
@@ -68,6 +93,8 @@ LAYERS = [
     ("AI agents  (α=0.15, κ_eff=0.025,  N_max≈6)",    0.15, 0.01,   0.4, "#dc2626"),
 ]
 
+# § Definition 2, Definition 5, Proposition 1, §3 Calibration
+# Visually confirms: X(1)=1, peaks at N_max, retrograde past peak, three-layer gap
 print("\nPlot 1 — USL throughput curves")
 fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -109,6 +136,8 @@ save_or_show(fig, "01_usl_three_layers.png")
 # Plot 2 — Effect of CG_mean on N_max (AI-agent layer)
 # ---------------------------------------------------------------------------
 
+# § Definition 3, Definition 4, Proposition 1
+# Visually confirms: higher CG_mean → lower κ_eff → higher N_max (better ADR corpus = more agents)
 print("Plot 2 — CG_mean vs N_max for AI-agent layer")
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -164,6 +193,8 @@ save_or_show(fig, "02_cg_mean_effect.png")
 # Plot 3 — Topology Pareto matrix heatmap
 # ---------------------------------------------------------------------------
 
+# § Definition 9 (Pareto axes), Proposition 5 (frontier claim)
+# TOPOLOGIES scores must match docs/guides/theory-to-implementation.md Pareto Summary table
 print("Plot 3 — Topology Pareto matrix heatmap")
 
 TOPOLOGIES = [
@@ -229,6 +260,8 @@ save_or_show(fig, "03_pareto_matrix.png")
 # Plot 4 — Dark Knowledge Gap: J_eff vs acceptance
 # ---------------------------------------------------------------------------
 
+# § Definition 10 (J_eff gate = 0.4)
+# J_EFF_GATE must match docs/architecture/05-math-apparatus.md §4 and validate_math.py
 print("Plot 4 — Dark Knowledge Gap and J_eff gate")
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))

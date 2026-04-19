@@ -4,6 +4,13 @@
   "service": "app",
   "workspaceFolder": "/workspace",
 
+  "remoteUser": "${localEnv:USER}",
+  "updateRemoteUserUID": true,
+
+  "containerEnv": {
+    "TZ": "America/Los_Angeles"
+  },
+
   "remoteEnv": {
     "H2AI_NATS_URL": "nats://nats:4222",
     "H2AI_PROFILE": "a",
@@ -17,6 +24,7 @@
     4222,
     8222
   ],
+
   "portsAttributes": {
     "8080": { "label": "H2AI API + Merge Authority UI" },
     "9090": { "label": "Prometheus metrics" },
@@ -25,5 +33,11 @@
   },
 
   "postCreateCommand": "cargo fetch 2>/dev/null || true",
-  "postStartCommand": "cargo check 2>/dev/null || true"
+  
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true
+    }
+  }
 }

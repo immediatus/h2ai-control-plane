@@ -26,10 +26,16 @@ Submit a task manifest. Returns immediately with a `task_id`. All further progre
     "containment": 0.3,
     "throughput": 0.2
   },
+  "topology": {
+    "kind": "auto",
+    "branching_factor": null
+  },
   "explorers": {
     "count": 4,
     "tau_min": 0.2,
-    "tau_max": 0.9
+    "tau_max": 0.9,
+    "roles": [],
+    "review_gates": []
   },
   "constraints": [
     "ADR-001",
@@ -44,15 +50,75 @@ Submit a task manifest. Returns immediately with a `task_id`. All further progre
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `description` | string | yes | Task description. Fed into the Dark Knowledge Compiler to measure `J_eff`. |
-| `pareto_weights.diversity` | float | yes | Weight for epistemic diversity (`W_H`). Higher → prefers Flat Mesh with high τ spread. |
+| `pareto_weights.diversity` | float | yes | Weight for epistemic diversity (`W_H`). Higher → prefers Ensemble with high τ spread. |
 | `pareto_weights.containment` | float | yes | Weight for safety containment (`W_E`). Higher → prefers Hierarchical Tree with Coordinator. |
 | `pareto_weights.throughput` | float | yes | Weight for raw throughput (`W_X`). Influences Explorer count selection. |
 | `pareto_weights.*` | — | — | Must sum to 1.0. Returns 400 if violated. |
+| `topology.kind` | enum | no | `"auto"` (default), `"ensemble"`, `"hierarchical_tree"`. When `explorers.roles[]` is non-empty the system always uses `TeamSwarmHybrid` regardless of this field. |
+| `topology.branching_factor` | int | no | Override branching factor for `hierarchical_tree`. Default: `floor(N_max^flat)`. Ignored for other topology kinds. |
 | `explorers.count` | int | yes | Requested Explorer count. System will reduce if above `N_max`. |
-| `explorers.tau_min` | float | no | Minimum temperature. Default: 0.2. |
-| `explorers.tau_max` | float | no | Maximum temperature. Default: 0.9. |
+| `explorers.tau_min` | float | no | Minimum temperature. Default: 0.2. Ignored when `roles[]` is non-empty. |
+| `explorers.tau_max` | float | no | Maximum temperature. Default: 0.9. Ignored when `roles[]` is non-empty. |
+| `explorers.roles[]` | RoleSpec[] | no | Role-typed Explorer specs. When provided, triggers Team-Swarm Hybrid topology and overrides `tau_min`/`tau_max`. Each entry has `agent_id`, `role` (see AgentRole), and optional `tau` and `role_error_cost` overrides. |
+| `explorers.review_gates[]` | ReviewGate[] | no | Dependency edges between Explorers. Each entry has `reviewer` (agent_id of the Evaluator-role Explorer) and `blocks` (agent_id of the Explorer whose output must be approved). Only valid with Team-Swarm Hybrid (i.e., when `roles[]` is non-empty). |
 | `constraints` | string[] | no | ADR identifiers to explicitly include. The compiler always includes the full corpus; this field pins specific ADRs regardless of `J_eff`. |
 | `context` | string | no | Additional explicit context not captured in ADRs. Raises `J_eff`. |
+
+**AgentRole values:**
+
+| Role | τ default | c_i default | Description |
+|---|---|---|---|
+| `"Coordinator"` | 0.05 | 0.1 | Low-entropy router; assigns sub-tasks to other Explorers. Internal node in Team-Swarm Hybrid. |
+| `"Executor"` | 0.40 | 0.5 | Primary output producer. Subject to review gates when configured. |
+| `"Evaluator"` | 0.10 | 0.9 | Review gate; evaluates and approves/blocks Executor output before it reaches the ADR Auditor. |
+| `"Synthesizer"` | 0.80 | 0.1 | Combines or summarises other outputs. High τ, low c_i. |
+| `"Custom"` | (required) | (required) | Arbitrary domain role. Must supply `tau` and `role_error_cost` explicitly. |
+
+**Example manifests:**
+
+*Ensemble + CRDT (default / explicit):*
+```json
+{
+  "description": "Propose a token rotation strategy for the auth service",
+  "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+  "topology": {"kind": "ensemble"},
+  "explorers": {"count": 4, "tau_min": 0.2, "tau_max": 0.9},
+  "constraints": ["ADR-001"]
+}
+```
+
+*Hierarchical Tree (explicit, large swarm):*
+```json
+{
+  "description": "Design the full data migration plan",
+  "pareto_weights": {"diversity": 0.2, "containment": 0.6, "throughput": 0.2},
+  "topology": {"kind": "hierarchical_tree", "branching_factor": 3},
+  "explorers": {"count": 9, "tau_min": 0.1, "tau_max": 0.8},
+  "constraints": ["ADR-005", "ADR-011"]
+}
+```
+
+*Team-Swarm Hybrid (role-typed with review gate):*
+```json
+{
+  "description": "Implement the payment webhook handler",
+  "pareto_weights": {"diversity": 0.3, "containment": 0.4, "throughput": 0.3},
+  "explorers": {
+    "count": 4,
+    "roles": [
+      {"agent_id": "coord",  "role": "Coordinator"},
+      {"agent_id": "impl_1", "role": "Executor"},
+      {"agent_id": "impl_2", "role": "Executor"},
+      {"agent_id": "review", "role": "Evaluator"}
+    ],
+    "review_gates": [
+      {"reviewer": "review", "blocks": "impl_1"},
+      {"reviewer": "review", "blocks": "impl_2"}
+    ]
+  },
+  "constraints": ["ADR-003", "ADR-007"]
+}
+```
 
 **Responses:**
 
@@ -64,10 +130,13 @@ Submit a task manifest. Returns immediately with a `task_id`. All further progre
   "status": "accepted",
   "events_url": "/tasks/task_01HXYZ.../events",
   "j_eff": 0.67,
-  "topology": "FlatMesh",
-  "n_max": 6.3
+  "topology_kind": "Ensemble",
+  "n_max": 6.3,
+  "interface_n_max": null
 }
 ```
+
+`topology_kind` values: `"Ensemble"`, `"HierarchicalTree"`, `"TeamSwarmHybrid"`. `interface_n_max` is non-null only for `TeamSwarmHybrid` — it is the binding ceiling for concurrent sub-tasks between the human liaison and the Coordinator.
 
 `400 Bad Request` — `J_eff` below threshold. The human must add more explicit context.
 
@@ -107,7 +176,7 @@ Submit a task manifest. Returns immediately with a `task_id`. All further progre
 
 ### GET /tasks/{task_id}/events
 
-Server-Sent Events stream. Tails the NATS JetStream subject `h2ai.tasks.{task_id}` in real time. The client receives all 14 event types as they occur.
+Server-Sent Events stream. Tails the NATS JetStream subject `h2ai.tasks.{task_id}` in real time. The client receives all 17 event types as they occur.
 
 **Headers:**
 
@@ -137,7 +206,7 @@ data: {"event_type": "...", "payload": {...}}
 
 ```
 
-See [Event Vocabulary](#event-vocabulary) below for all 14 event schemas.
+See [Event Vocabulary](#event-vocabulary) below for all 17 event schemas.
 
 ---
 
@@ -283,7 +352,7 @@ Prometheus metrics endpoint. See [Configuration Reference — Metrics](configura
 
 ## Event Vocabulary
 
-All 14 events published to `h2ai.tasks.{task_id}`. Internally-tagged JSON: `"event_type"` + `"payload"`.
+All 17 events published to `h2ai.tasks.{task_id}`. Internally-tagged JSON: `"event_type"` + `"payload"`.
 
 ---
 
@@ -346,28 +415,33 @@ Published by `crates/autonomic` at Phase 2 completion. Re-published on every MAP
   "event_type": "TopologyProvisioned",
   "payload": {
     "task_id": "task_01HYYZ...",
-    "topology": "FlatMesh",
+    "topology_kind": "Ensemble",
     "n": 4,
     "n_max": 6.3,
+    "interface_n_max": null,
     "kappa_eff": 0.019,
     "theta_coord": 0.28,
     "merge_strategy": "CrdtSemilattice",
     "retry_number": 0,
     "explorers": [
-      {"explorer_id": "exp_A", "tau": 0.3, "adapter_kind": "Local",  "role_error_cost": 0.1},
-      {"explorer_id": "exp_B", "tau": 0.5, "adapter_kind": "Cloud",  "role_error_cost": 0.1},
-      {"explorer_id": "exp_C", "tau": 0.7, "adapter_kind": "Cloud",  "role_error_cost": 0.1},
-      {"explorer_id": "exp_D", "tau": 0.9, "adapter_kind": "Local",  "role_error_cost": 0.1}
+      {"explorer_id": "exp_A", "tau": 0.3, "adapter_kind": "Local",  "role": null,          "role_error_cost": 0.1},
+      {"explorer_id": "exp_B", "tau": 0.5, "adapter_kind": "Cloud",  "role": null,          "role_error_cost": 0.1},
+      {"explorer_id": "exp_C", "tau": 0.7, "adapter_kind": "Cloud",  "role": null,          "role_error_cost": 0.1},
+      {"explorer_id": "exp_D", "tau": 0.9, "adapter_kind": "Local",  "role": null,          "role_error_cost": 0.1}
     ],
+    "review_gates": [],
     "auditor": {
       "explorer_id": "auditor_0",
       "tau": 0.0,
       "adapter_kind": "Cloud",
+      "role": "Evaluator",
       "role_error_cost": 0.9
     }
   }
 }
 ```
+
+`topology_kind` values: `"Ensemble"`, `"HierarchicalTree"`, `"TeamSwarmHybrid"`. The `role` field in each explorer entry is `null` for `Ensemble` and `HierarchicalTree`; populated for `TeamSwarmHybrid`. `interface_n_max` is non-null only for `TeamSwarmHybrid`.
 
 ---
 
@@ -586,7 +660,7 @@ Published by `crates/orchestrator` when MAPE-K retries are exhausted. Closes the
     "failure_reason": "MaxRetriesExhausted",
     "retries_attempted": 3,
     "branch_pruned_events": [...],
-    "topologies_tried": ["FlatMesh", "FlatMesh", "HierarchicalTree"],
+    "topologies_tried": ["Ensemble", "Ensemble", "HierarchicalTree"],
     "tau_ranges_tried": [[0.3,0.8],[0.1,0.95],[0.1,0.95]],
     "multiplication_condition_failure": {
       "failed_condition": "BaselineCompetence",
@@ -599,6 +673,70 @@ Published by `crates/orchestrator` when MAPE-K retries are exhausted. Closes the
 ```
 
 `failure_reason` values: `MaxRetriesExhausted`, `MultiplicationConditionUnresolvable`, `CalibrationExpired`.
+
+---
+
+### ReviewGateTriggeredEvent
+
+Published by `crates/orchestrator` at Phase 3b when an Executor's proposal enters review gate evaluation. Only emitted for `TeamSwarmHybrid` topology.
+
+```json
+{
+  "event_type": "ReviewGateTriggered",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "gate_id": "gate_review_impl_1",
+    "blocked_explorer_id": "impl_1",
+    "reviewer_explorer_id": "review",
+    "proposal_ref": "exp_impl_1_proposal_01",
+    "triggered_at": "2026-04-19T14:23:12Z"
+  }
+}
+```
+
+---
+
+### ReviewGateBlockedEvent
+
+Published by `crates/orchestrator` at Phase 3b when an Evaluator rejects an Executor's proposal. The proposal is tombstoned at the gate level and never reaches the ADR Auditor.
+
+```json
+{
+  "event_type": "ReviewGateBlocked",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "gate_id": "gate_review_impl_1",
+    "blocked_explorer_id": "impl_1",
+    "reviewer_explorer_id": "review",
+    "rejection_reason": "Proposal uses synchronous HTTP calls inside async handler — violates ADR-007 non-blocking I/O requirement",
+    "blocked_at": "2026-04-19T14:23:15Z"
+  }
+}
+```
+
+The `rejection_reason` is the Evaluator's natural language explanation. The blocked branch appears in the Merge Authority Tombstone panel attributed to `"ReviewGate"` rather than an ADR identifier.
+
+---
+
+### InterfaceSaturationWarningEvent
+
+Published by `crates/autonomic` when the number of concurrent active sub-tasks approaches `N_max^interface`. Only emitted for `TeamSwarmHybrid` topology. A warning — not a gate. The operator can use this to pace incoming work or scale the liaison team.
+
+```json
+{
+  "event_type": "InterfaceSaturationWarning",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "active_subtasks": 4,
+    "interface_n_max": 5,
+    "saturation_ratio": 0.8,
+    "warning_threshold": 0.75,
+    "emitted_at": "2026-04-19T14:23:20Z"
+  }
+}
+```
+
+`saturation_ratio = active_subtasks / interface_n_max`. The warning fires when this ratio exceeds 0.75 (configurable). The `h2ai_interface_n_max` Prometheus gauge tracks this continuously.
 
 ---
 

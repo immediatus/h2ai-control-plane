@@ -59,7 +59,7 @@ jetstream {
 **What does not change:**
 - The event model — NATS JetStream subjects are identical
 - The CRDT state — semilattice joins work the same way across replicas
-- The 14-event vocabulary — no new events, no schema changes
+- The 17-event vocabulary — no schema changes across profiles
 - The dependency rules — state is the only NATS-touching crate
 
 **Orchestrator replicas:** Multiple `h2ai-control-plane` instances share state through NATS JetStream. Each instance consumes from the same subject namespace. CRDT semantics mean concurrent appends from different instances produce the correct merged state on replay — no locks, no leader election for the generation phase.

@@ -55,12 +55,15 @@ api
 - `JeffectiveGap` — J_eff measurement with is_below_threshold()
 - `MultiplicationCondition` — evaluate() returning which of 3 conditions failed
 - `ParetoWeights` — diversity / containment / throughput weights (sum = 1.0)
-- `TopologyKind` — FlatMesh / HierarchicalTree
+- `AgentRole` — Coordinator / Executor / Evaluator / Synthesizer / Custom{name, tau, role_error_cost}; abstract topological roles, not domain-specific
+- `TopologyKind` — Ensemble / HierarchicalTree{branching_factor} / TeamSwarmHybrid
+- `RoleSpec` — {agent_id, role: AgentRole, tau: Option<f64>, role_error_cost: Option<f64>}; per-Explorer role assignment in the task manifest
+- `ReviewGate` — {reviewer: String, blocks: String}; Evaluator-to-Executor dependency edge declared in the manifest
 - `AdapterKind` — Local / Cloud
 - `ExplorerConfig`, `AuditorConfig` — τ values, role assignments
 - `IComputeAdapter` — the async trait all compute backends implement
 - `ComputeRequest`, `ComputeResponse`, `AdapterError`
-- All 14 event structs + `H2AIEvent` enum (internally tagged JSON)
+- All 17 event structs + `H2AIEvent` enum (internally tagged JSON)
 
 **Why this boundary exists:** If `adapters` imported `state` to access event types, it would pull in the `async-nats` client as a transitive dependency. This means every compute adapter — including the llama.cpp FFI wrapper — would compile against the NATS client. The binary grows; the dependency graph becomes a web; local-only profile A must ship networking code it cannot use. `h2ai-types` breaks this: event types live in a crate with no I/O deps, so `adapters` can import events without importing NATS.
 
@@ -76,6 +79,7 @@ api
 - Emits `ProposalFailedEvent` on crash, OOM, or timeout
 - Emits `GenerationPhaseCompletedEvent` when JoinSet is fully drained
 - Verifies Multiplication Condition (Phase 2.5) before spawning any Explorer
+- Executes review gate evaluation (Phase 3b) for `TeamSwarmHybrid`: routes Executor proposals to the designated Evaluator Explorer before forwarding to the ADR Auditor; emits `ReviewGateTriggeredEvent` and `ReviewGateBlockedEvent`
 
 **Imports:** `h2ai-types`, `state` (to publish events), `adapters` (to call IComputeAdapter), `context` (to read compiled system_context), `autonomic` (MAPE-K feedback).
 
@@ -87,7 +91,7 @@ api
 
 **Key behaviors:**
 - Runs calibration tasks against the adapter pool; stores CoherencyCoefficients in NATS KV
-- Computes topology (FlatMesh vs HierarchicalTree) from ParetoWeights and calibration data
+- Selects topology from manifest and calibration data: `TeamSwarmHybrid` if `roles[]` provided; explicit `ensemble`/`hierarchical_tree` if set; otherwise auto-selects from ParetoWeights and N vs N_max
 - Assigns τ values across Explorers (spread to enforce error decorrelation)
 - Assigns RoleErrorCost per node; computes MergeStrategy from max(c_i)
 - Publishes TopologyProvisionedEvent
@@ -158,7 +162,7 @@ api
 **Key behaviors:**
 - `POST /tasks` → validates manifest via `context`, publishes TaskBootstrappedEvent via `state`, returns 202 + task_id
 - `POST /calibrate` → triggers calibration harness via `autonomic`, returns 202
-- `GET /tasks/{task_id}/events` → tails NATS JetStream subject, streams all 14 event types as SSE or WebSocket
+- `GET /tasks/{task_id}/events` → tails NATS JetStream subject, streams all 17 event types as SSE or WebSocket
 - Merge Authority UI → renders valid proposals, tombstone panel, autonomic shift timeline, physics panel
 - `GET /metrics` → Prometheus endpoint: κ_eff, α, N_max, θ_coord, J_eff, VRAM, c_i per role
 

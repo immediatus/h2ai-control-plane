@@ -2,15 +2,23 @@ version: '3.8'
 
 services:
   app:
+    userns_mode: keep-id
+    user: "${USER}"
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        USERNAME: ${USER}
     volumes:
       - ../:/workspace:cached
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/workspace/target
+      - ${HOME}/.claude:/home/${USER}/.claude:z
+      - ${HOME}/.claude.json:/home/${USER}/.claude.json:z
     command: sleep infinity
     environment:
+      HOME: /home/${USER}
+      USER: ${USER}
       H2AI_NATS_URL: nats://nats:4222
       H2AI_LISTEN_ADDR: 0.0.0.0:8080
       H2AI_METRICS_ADDR: 0.0.0.0:9090
@@ -25,8 +33,8 @@ services:
     image: nats:2-alpine
     command: ["-c", "/etc/nats/nats.conf"]
     volumes:
-      - ../nats/dev.conf:/etc/nats/nats.conf:ro
-      - nats-data:/data/jetstream
+      - ../nats/dev.conf:/etc/nats/nats.conf:ro,Z
+      - nats-data:/data/jetstream      
     ports:
       - "4222:4222"   # client
       - "8222:8222"   # monitoring

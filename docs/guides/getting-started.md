@@ -156,7 +156,7 @@ curl -sN http://localhost:8080/tasks/task_01HYYZ.../events
 You will see events arrive in real time:
 
 ```
-data: {"event_type":"TopologyProvisioned","payload":{"topology":"FlatMesh","n":3,"tau_values":[0.3,0.55,0.8],"merge_strategy":"CrdtSemilattice"}}
+data: {"event_type":"TopologyProvisioned","payload":{"topology_kind":"Ensemble","n":3,"tau_values":[0.3,0.55,0.8],"merge_strategy":"CrdtSemilattice"}}
 
 data: {"event_type":"Proposal","payload":{"explorer_id":"exp_A","tau":0.3,"token_cost":847,...}}
 

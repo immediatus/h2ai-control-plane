@@ -2,11 +2,11 @@
 
 The H2AI Control Plane runtime is a deterministic state machine. Every state transition is an immutable event appended to a NATS JetStream log. There are no side-channel state mutations — if it happened, it is in the log.
 
-This document describes the six runtime phases, the 14-event vocabulary, and the structural guarantees the system enforces.
+This document describes the seven runtime phases, the 17-event vocabulary, and the structural guarantees the system enforces.
 
 ---
 
-## The 14-Event Vocabulary
+## The 17-Event Vocabulary
 
 All events are published to NATS subject `h2ai.tasks.{task_id}`. All are immutable, serialized with `serde` using internally-tagged JSON (`"event_type": "..."` + `"payload": {...}`).
 
@@ -19,13 +19,16 @@ All events are published to NATS subject `h2ai.tasks.{task_id}`. All are immutab
 | 5 | `ProposalEvent` | adapters (via orchestrator) | 3 |
 | 6 | `ProposalFailedEvent` | orchestrator | 3 |
 | 7 | `GenerationPhaseCompletedEvent` | orchestrator | 3 |
-| 8 | `ValidationEvent` | adapters (Auditor) | 4 |
-| 9 | `BranchPrunedEvent` | adapters (Auditor) | 4 |
-| 10 | `ZeroSurvivalEvent` | orchestrator | 4 |
-| 11 | `ConsensusRequiredEvent` | state | 5 |
-| 12 | `SemilatticeCompiledEvent` | state | 5 |
-| 13 | `MergeResolvedEvent` | api | 5 |
-| 14 | `TaskFailedEvent` | orchestrator | any |
+| 8 | `ReviewGateTriggeredEvent` | orchestrator | 3b |
+| 9 | `ReviewGateBlockedEvent` | orchestrator | 3b |
+| 10 | `ValidationEvent` | adapters (Auditor) | 4 |
+| 11 | `BranchPrunedEvent` | adapters (Auditor) | 4 |
+| 12 | `ZeroSurvivalEvent` | orchestrator | 4 |
+| 13 | `InterfaceSaturationWarningEvent` | autonomic | 2/3 |
+| 14 | `ConsensusRequiredEvent` | state | 5 |
+| 15 | `SemilatticeCompiledEvent` | state | 5 |
+| 16 | `MergeResolvedEvent` | api | 5 |
+| 17 | `TaskFailedEvent` | orchestrator | any |
 
 ---
 
@@ -79,14 +82,25 @@ From these, it computes:
 
 **What happens:**
 1. Reads `CoherencyCoefficients` from calibration cache.
-2. Reads `ParetoWeights` from the bootstrap event.
+2. Reads `ParetoWeights` and `topology` field from the bootstrap event.
 3. Computes `κ_eff`, `N_max`, selects topology:
-   - **Flat Mesh** — if `N_requested ≤ N_max` AND diversity weight `W_H` is dominant. All Explorers connect through NATS; no Coordinator. Suitable for small, diverse swarms.
-   - **Hierarchical Tree** — if `N_requested > N_max` OR containment weight `W_E` is dominant. One Swarm Coordinator + k sub-groups. Branching factor `k_opt = floor(N_max^flat)`. Coordination edges reduced from `O(N²)` to `O(N)`.
-4. Assigns τ values per Explorer (spread across [τ_min, τ_max] to guarantee error decorrelation for Multiplication Condition 2).
+
+| Condition | Selected topology | Pareto profile |
+|---|---|---|
+| Manifest provides `explorers.roles[]` | **Team-Swarm Hybrid** | T=84%, E=91%, D=95% |
+| Manifest sets `topology.kind: "hierarchical_tree"` | **Hierarchical Tree** | T=96%, E=96%, D=60% |
+| Manifest sets `topology.kind: "ensemble"` | **Ensemble + CRDT** | T=84%, E=84%, D=90% |
+| Auto: `N_requested ≤ N_max` AND `W_H` dominant | **Ensemble + CRDT** | T=84%, E=84%, D=90% |
+| Auto: `N_requested > N_max` OR `W_E` dominant | **Hierarchical Tree** | T=96%, E=96%, D=60% |
+
+   - **Ensemble + CRDT** (formerly "Flat Mesh") — all Explorers connect through NATS; no Coordinator. Suitable for small, diverse swarms.
+   - **Hierarchical Tree** — one Coordinator + k sub-groups. Branching factor `k_opt = floor(N_max^flat)`. Coordination edges reduced from `O(N²)` to `O(N)`.
+   - **Team-Swarm Hybrid** — role-differentiated Explorers (Coordinator, Executor, Evaluator, Synthesizer, Custom) with review gates between specified pairs. A Coordinator (τ≈0.05) routes sub-tasks; Evaluators form review gates that block Executor output before it reaches the ADR Auditor. The binding ceiling is `N_max^interface = sqrt((1−α_liaison)·CG(H_liaison, Coordinator)/κ_base)`, typically 3–5 concurrent sub-tasks. An `InterfaceSaturationWarningEvent` is emitted when active sub-tasks approach this ceiling.
+
+4. Assigns τ values per Explorer: from role canonical defaults when `explorers.roles[]` is provided; otherwise spread across [τ_min, τ_max] to guarantee error decorrelation for Multiplication Condition 2.
 5. Assigns `RoleErrorCost` (c_i) per node role.
 6. Computes `MergeStrategy` from `max(c_i)`.
-7. Publishes `TopologyProvisionedEvent`.
+7. Publishes `TopologyProvisionedEvent` carrying `topology_kind`, resolved `RoleSpec[]`, and `ReviewGate[]`.
 
 **Re-entry:** The autonomic loop re-enters Phase 2 after `ZeroSurvivalEvent` (adjusting {N, τ}) or `MultiplicationConditionFailedEvent` (adjusting parameters based on which condition failed). Bounded by `max_retries`.
 
@@ -136,6 +150,25 @@ Pairwise agreement rate `ρ < 0.9` across all Explorer pairs on the calibration 
 
 ---
 
+## Phase 3b — Review Gate Evaluation (Team-Swarm Hybrid only)
+
+**Trigger:** `ProposalEvent` from an Executor-role Explorer, when `ReviewGate[]` declares that Executor's output requires Evaluator approval. Only active when topology is `TeamSwarmHybrid`.
+
+**Publisher:** `crates/orchestrator`
+
+**What happens:**
+1. Orchestrator detects a `ProposalEvent` whose `explorer_id` matches the `blocks` side of a `ReviewGate`.
+2. Publishes `ReviewGateTriggeredEvent` with `{gate_id, blocked_explorer_id, reviewer_explorer_id, proposal_ref}`.
+3. The Evaluator-role Explorer (τ≈0.1, c_i≈0.9) runs its evaluation. It receives only the blocked proposal and `system_context` — it does not see other proposals.
+4. **Evaluator approves** → proposal is forwarded to the ADR Auditor gate (Phase 4) unchanged.
+5. **Evaluator rejects** → `ReviewGateBlockedEvent` published with `{gate_id, blocked_explorer_id, reviewer_explorer_id, rejection_reason}`. The proposal is tombstoned at the review gate level — it never reaches the ADR Auditor. The rejection is visible in the Merge Authority UI under the Tombstone panel, attributed to the gate rather than an ADR violation.
+
+**Critical invariant:** The ADR Auditor (Phase 4) only sees proposals that have passed all applicable review gates. Review gates are pre-Auditor; they do not replace the Auditor.
+
+**Re-entry:** If all Executor proposals are blocked by review gates and no proposals reach the Auditor, the count of gate-approved survivors after `GenerationPhaseCompletedEvent` is zero → `ZeroSurvivalEvent` → autonomic retry (Phase 4→2). The retry diagnostics distinguish gate blocks from ADR violations.
+
+---
+
 ## Phase 4 — Auditor Gate
 
 **Trigger:** `TopologyProvisionedEvent` (Auditor spins up immediately, does not wait for Phase 3).
@@ -145,7 +178,7 @@ Pairwise agreement rate `ρ < 0.9` across all Explorer pairs on the calibration 
 **What happens:**
 The Auditor is a **reactive stream processor**, not a batch processor. It subscribes to `h2ai.tasks.{task_id}` as soon as the topology is provisioned and validates proposals as they arrive:
 
-1. For each `ProposalEvent`: validates against compiled `system_context`. Checks that outputs do not hallucinate APIs, violate ADR constraints, or contradict explicit architectural decisions.
+1. For each `ProposalEvent` that has passed all review gates (or for non-TeamSwarmHybrid topologies, all `ProposalEvent`s): validates against compiled `system_context`. Checks that outputs do not hallucinate APIs, violate ADR constraints, or contradict explicit architectural decisions.
 2. **Pass** → `ValidationEvent` published.
 3. **Fail** → `BranchPrunedEvent` published with reason and `constraint_error_cost` (c_i of the violated constraint). Branch is tombstoned in the log — permanently preserved for the Merge Authority UI but excluded from the merge.
 4. Reads `GenerationPhaseCompletedEvent` → knows the stream is closed → counts valid survivors.
@@ -216,12 +249,15 @@ Bounded by `max_retries` (configurable, default: 3). If retries exhausted → `T
 | Zero-survival is not terminal | MAPE-K retry loop with parameter adjustment; `TaskFailedEvent` only after `max_retries` |
 | Multiplication Condition enforced | Phase 2.5 hard gate before Phase 3; compiler-exhaustive `H2AIEvent` enum |
 | Merge strategy matches error stakes | `MergeStrategy` computed from `max(c_i)` at provisioning time |
+| Review gate always has a terminal state | Evaluator either approves (proposal forwarded) or blocks (`ReviewGateBlockedEvent`); no hanging evaluation |
+| ADR Auditor only sees gate-approved proposals | TeamSwarmHybrid: Auditor subscribes only after review gate decisions are recorded; no double-validation |
+| Topology selection is computable from manifest | Deterministic three-way rule in Phase 2; no topology ambiguity; operator can always predict which path |
 | Full provenance preserved | Every state transition is an immutable log event; crash recovery = replay from offset 0 |
 
 ---
 
 ## SSE Event Stream
 
-The API exposes `GET /tasks/{task_id}/events` as a Server-Sent Events or WebSocket stream that tails the NATS subject in real-time. The client receives all 14 event types as they occur. The stream closes on `MergeResolvedEvent` (success) or `TaskFailedEvent` (failure with full diagnostic).
+The API exposes `GET /tasks/{task_id}/events` as a Server-Sent Events or WebSocket stream that tails the NATS subject in real-time. The client receives all 17 event types as they occur. The stream closes on `MergeResolvedEvent` (success) or `TaskFailedEvent` (failure with full diagnostic).
 
 This means the human liaison sees the swarm working in real-time: topology being provisioned, proposals arriving, the Auditor validating or pruning, the MAPE-K loop adjusting — all before the final merge is presented.
