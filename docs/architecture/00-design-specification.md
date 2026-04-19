@@ -97,7 +97,7 @@ api → orchestrator → autonomic, state, context, adapters
 
 Beyond the 14-event vocabulary (see Section 2), `h2ai-types` defines these load-bearing types:
 
-**`CoherencyCoefficients`** — Measured calibration data. Contains `alpha` (serial contention), `kappa_base` (baseline pairwise coherency cost), and `cg_samples: Vec<f64>` (measured Common Ground values across Explorer pairs). Produced by the calibration harness before the first provisioning of any live task. Reference values for AI agents: α ≈ 0.10–0.15, κ_base ≈ 0.015–0.025, N_max ≈ 4–7.
+**`CoherencyCoefficients`** — Measured calibration data. Contains `alpha` (serial contention), `kappa_base` (baseline pairwise coherency cost), and `cg_samples: Vec<f64>` (measured Common Ground values across Explorer pairs). Produced by the calibration harness before the first provisioning of any live task. Reference values for AI agents: α ≈ 0.10–0.15, κ_base ≈ 0.01, N_max ≈ 6–7.
 
 **`RoleErrorCost`** — Per-role Byzantine error weight `c_i ∈ [0, 1]`. `c_i = 0` means the role's errors are costless (early Explorer drafts). `c_i = 1` means the role's errors propagate at full damage (Auditor falsely passing a hallucination to the human). Used by `autonomic` to adjust topology and by `state` to select merge strategy.
 
@@ -153,8 +153,8 @@ Before any live task, `autonomic` runs the calibration harness: a small set of r
 
 Reference coefficients (AI agent baseline, used as defaults before first calibration):
 - α ≈ 0.10–0.15 (serial fraction from shared context window updates)
-- κ_base ≈ 0.015–0.025 (pairwise token-level coherency cost)
-- N_max ≈ 4–7 agents (typical AI swarm ceiling)
+- κ_base ≈ 0.01 (pairwise token-level coherency cost)
+- N_max ≈ 6–7 agents (typical AI swarm ceiling)
 
 **Phase 1 — Bootstrap**  
 Human POSTs manifest to `api`. `context` compiles ADRs, computes `J_eff = J(K_prompt, K_task_required)`. If `J_eff` below threshold → synchronous `ContextUnderflowError`, nothing written to NATS. If passed → `TaskBootstrappedEvent` published with locked `system_context`, Pareto weights, and `J_eff` value.

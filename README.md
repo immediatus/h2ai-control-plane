@@ -143,14 +143,14 @@ X(N) = N / (1 + α(N−1) + κ_eff·N(N−1))
 N_max = sqrt((1 − α) / κ_eff)
 ```
 
-| System | α | κ_base | N_max |
+| System | α | κ_eff | N_max |
 |---|---|---|---|
 | CPU cache coherency | 0.02 | 0.0003 | ~57 |
 | Human engineering team | 0.10 | 0.0083 | ~10 |
-| AI agents (same model) | 0.15 | 0.025 | ~4–5 |
-| AI agents (diverse backends) | 0.12 | 0.018 | ~6–7 |
+| AI agents (same model) | 0.15 | 0.025 | ~6 |
+| AI agents (diverse backends) | 0.12 | 0.018 | ~7 |
 
-Reference values for AI agents: **α ≈ 0.10–0.15, κ_base ≈ 0.015–0.025, N_max ≈ 4–7**.
+Reference values for AI agents: **α ≈ 0.10–0.15, κ_base ≈ 0.01, κ_eff ≈ 0.018–0.025, N_max ≈ 6–7**.
 
 ---
 

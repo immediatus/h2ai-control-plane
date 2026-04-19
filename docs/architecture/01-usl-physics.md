@@ -40,7 +40,7 @@ The system lives in the third regime risk zone whenever `N` approaches `N_max`. 
 
 **Measured by:** Calibration harness measures pairwise CG values across Explorer pairs on representative tasks. `κ_base` is the baseline before Common Ground adjustment.
 
-**Default reference for AI agents:** **κ_base ≈ 0.015–0.025**.
+**Default reference for AI agents:** **κ_base ≈ 0.01**.
 
 **Why the event-sourced design zeroes α during generation:** Explorers append `ProposalEvent` and terminate. They do not read each other's output. `κ` during Phase 3 is structurally zero — the architecture enforces it.
 
@@ -88,12 +88,12 @@ N_max = sqrt((1 − α) / κ_eff)
 
 **Reference values:**
 
-| System | α | κ_base | N_max |
+| System | α | κ_eff | N_max |
 |---|---|---|---|
 | CPU cache coherency | 0.02 | 0.0003 | ~57 |
 | Human engineering team | 0.10 | 0.0083 | ~10 |
-| AI agents (same model) | 0.15 | 0.025 | ~4–5 |
-| AI agents (diverse backends) | 0.12 | 0.018 | ~6–7 |
+| AI agents (same model) | 0.15 | 0.025 | ~6 |
+| AI agents (diverse backends) | 0.12 | 0.018 | ~7 |
 
 **Implementation:** `CoherencyCoefficients::n_max()`. Exposed as `h2ai_n_max` Prometheus gauge. If `N_requested > N_max`, the topology router automatically selects a Hierarchical Tree and reduces the effective N per sub-group.
 
