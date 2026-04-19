@@ -88,12 +88,11 @@ N_max = sqrt((1 − α) / κ_eff)
 
 **Reference values:**
 
-| System | α | κ_eff | N_max |
-|---|---|---|---|
-| CPU cache coherency | 0.02 | 0.0003 | ~57 |
-| Human engineering team | 0.10 | 0.0083 | ~10 |
-| AI agents (same model) | 0.15 | 0.025 | ~6 |
-| AI agents (diverse backends) | 0.12 | 0.018 | ~7 |
+| Layer | α | κ_base | CG_mean | κ_eff | N_max |
+|---|---|---|---|---|---|
+| Hardware | 0.02 | 0.0003 | 1.0 | 0.0003 | ~57 |
+| Human teams | 0.10 | 0.005 | 0.6 | 0.0083 | ~10 |
+| AI agents | 0.15 | 0.01 | 0.4 | 0.025 | ~6 |
 
 **Implementation:** `CoherencyCoefficients::n_max()`. Exposed as `h2ai_n_max` Prometheus gauge. If `N_requested > N_max`, the topology router automatically selects a Hierarchical Tree and reduces the effective N per sub-group.
 
