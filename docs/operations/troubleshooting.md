@@ -173,7 +173,7 @@ docker compose exec nats cat /etc/nats/nats.conf
 docker compose exec nats ls -la /data/jetstream
 ```
 
-### NATS cluster not forming (Profile B)
+### NATS cluster not forming (Server Plan)
 
 Each NATS node must be able to reach the others on port 6222. In docker compose, container names are resolvable as hostnames within the network.
 

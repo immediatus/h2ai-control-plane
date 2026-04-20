@@ -1,0 +1,22 @@
+[package]
+name        = "h2ai-provisioner"
+description = "Agent infrastructure abstraction for the H2AI Control Plane"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[features]
+kubernetes = ["kube", "k8s-openapi"]
+
+[dependencies]
+h2ai-types  = { path = "../h2ai-types" }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+serde_json  = { workspace = true }
+kube        = { version = "0.97", features = ["runtime", "derive"], optional = true }
+k8s-openapi = { version = "0.23", features = ["v1_30"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

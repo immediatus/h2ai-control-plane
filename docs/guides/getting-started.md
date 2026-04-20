@@ -6,7 +6,7 @@ This guide walks through running H2AI Control Plane for the first time: from zer
 
 ## Prerequisites
 
-| Requirement | Profile A | Profile B | Profile C |
+| Requirement | Local Plan | Server Plan | Cloud Plan |
 |---|---|---|---|
 | Docker + Compose | required | required | — |
 | Kubernetes 1.28+ | — | — | required |
@@ -17,7 +17,7 @@ The Auditor is always routed to a cloud reasoning model. You need at minimum one
 
 ---
 
-## Profile A — Local Dev (fastest path)
+## Local Plan — Local Dev (fastest path)
 
 ### 1. Clone and configure
 
@@ -43,7 +43,7 @@ LOCAL_MODEL_PATH=/models/llama-3-8b-instruct.Q4_K_M.gguf
 ### 2. Start the stack
 
 ```bash
-cd deploy/profile-a
+cd deploy/local
 docker compose up -d
 ```
 
@@ -185,24 +185,24 @@ Select, synthesize, or reject proposals. Click **Resolve**. The task closes with
 
 ---
 
-## Profile B — Team Node
+## Server Plan — Team Node
 
 ```bash
-cd deploy/profile-b
+cd deploy/server
 docker compose up -d
 ```
 
 The Merge Authority UI is available at `http://<server-ip>`. Multiple team members can submit manifests concurrently. All task state is replicated across the 3-node NATS cluster — any node failure is tolerated without data loss.
 
-See [Deployment — Profile B](../architecture/04-deployment.md) for team ADR corpus setup.
+See [Deployment — Server Plan](../architecture/deployment.md) for team ADR corpus setup.
 
 ---
 
-## Profile C — Kubernetes
+## Cloud Plan — Kubernetes
 
 ```bash
 # Create namespace
-kubectl apply -f deploy/profile-c/namespace.yaml
+kubectl apply -f deploy/cloud/namespace.yaml
 
 # Upload your ADR corpus
 kubectl create configmap adr-corpus --from-file=./adr/ -n h2ai

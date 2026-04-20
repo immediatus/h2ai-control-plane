@@ -1,6 +1,6 @@
 # Configuration Reference
 
-H2AI Control Plane is configured entirely via environment variables. All variables have safe defaults for Profile A. Profile B/C deployments should review every section.
+H2AI Control Plane is configured entirely via environment variables. All variables have safe defaults for Local Plan. Server/Cloud Plan deployments should review every section.
 
 ---
 
@@ -8,7 +8,7 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 
 | Variable | Default | Description |
 |---|---|---|
-| `H2AI_PROFILE` | `a` | Deployment profile hint (`a`, `b`, `c`). Affects default log verbosity and startup checks. |
+| `H2AI_PLAN` | `local` | Deployment plan hint (`local`, `server`, `cloud`). Affects default log verbosity and startup checks. |
 | `H2AI_LISTEN_ADDR` | `0.0.0.0:8080` | HTTP bind address for the axum API gateway and Merge Authority UI. |
 | `H2AI_METRICS_ADDR` | `0.0.0.0:9090` | Prometheus `/metrics` bind address. Set to empty string to disable. |
 
@@ -21,7 +21,7 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 | `H2AI_NATS_URL` | `nats://localhost:4222` | NATS server URL. For clusters, comma-separate multiple URLs: `nats://n1:4222,nats://n2:4222,nats://n3:4222`. The client round-robins and reconnects automatically. |
 | `H2AI_NATS_STREAM_NAME` | `H2AI_TASKS` | JetStream stream name for task events. |
 | `H2AI_NATS_KV_BUCKET` | `H2AI_CALIBRATION` | KV bucket name for calibration cache. |
-| `H2AI_NATS_STREAM_REPLICAS` | `1` | Stream replication factor. Set to `3` for Profile B/C clusters. |
+| `H2AI_NATS_STREAM_REPLICAS` | `1` | Stream replication factor. Set to `3` for Server/Cloud Plan clusters. |
 | `H2AI_NATS_MAX_FILE_STORE` | `100GB` | Maximum JetStream file store size. |
 
 ---
@@ -35,6 +35,33 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 | `H2AI_EXPLORER_TIMEOUT_SECS` | `120` | Wall time limit per Explorer call. Exceeded → `ProposalFailedEvent` with `failure_reason: Timeout`. |
 | `H2AI_J_EFF_THRESHOLD` | `0.4` | Minimum Jaccard overlap for task acceptance. Below this → `ContextUnderflowError`. Lower values accept underspecified tasks; higher values enforce richer context. |
 | `H2AI_BFT_THRESHOLD` | `0.85` | `max(c_i)` above which `MergeStrategy` switches from `CrdtSemilattice` to `BftConsensus`. |
+
+---
+
+## Physics Config File (`H2AIConfig`)
+
+Runtime physics parameters may also be loaded from a JSON file via `H2AIConfig::load_from_file`. All fields are optional in the file — missing fields fall back to the defaults shown below.
+
+| Field | Default | Description |
+|---|---|---|
+| `j_eff_gate` | `0.4` | Context sufficiency gate. Identical to `H2AI_J_EFF_THRESHOLD`. |
+| `bft_threshold` | `0.85` | BFT merge strategy switch point. |
+| `coordination_threshold_max` | `0.3` | Cap on computed θ_coord. |
+| `min_baseline_competence` | `0.5` | Minimum c_i floor for Multiplication Condition. |
+| `max_error_correlation` | `0.9` | Maximum error correlation for Multiplication Condition. |
+| `tau_coordinator` | `0.05` | Default τ for Coordinator role. |
+| `tau_executor` | `0.40` | Default τ for Executor role. |
+| `tau_evaluator` | `0.10` | Default τ for Evaluator role. |
+| `tau_synthesizer` | `0.80` | Default τ for Synthesizer role. |
+| `cost_coordinator` | `0.1` | Default role error cost c_i for Coordinator. |
+| `cost_executor` | `0.5` | Default role error cost c_i for Executor. |
+| `cost_evaluator` | `0.9` | Default role error cost c_i for Evaluator. |
+| `cost_synthesizer` | `0.1` | Default role error cost c_i for Synthesizer. |
+| `max_context_tokens` | `null` | Token budget for context compaction. `null` = no limit. |
+| `explorer_max_tokens` | `1024` | Token budget per Explorer generation call. |
+| `calibration_max_tokens` | `256` | Token budget per calibration probe call. |
+| `optimizer_threshold_step` | `0.1` | How much `SelfOptimizer` lowers `verify_threshold` per MAPE-K step. |
+| `optimizer_threshold_floor` | `0.3` | Minimum `verify_threshold` the `SelfOptimizer` will suggest. |
 
 ---
 
@@ -102,7 +129,7 @@ api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o"
 role_error_cost = 0.9   # Auditor: near-catastrophic false positive cost
-# tau is always 0.0 for the Auditor — set automatically, not configurable
+# tau for the Auditor is set via AuditorConfig.tau (default 0.1)
 ```
 
 **`role_error_cost` guidance:**

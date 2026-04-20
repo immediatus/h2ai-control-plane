@@ -1,6 +1,6 @@
 # API Reference
 
-All HTTP endpoints are served by the `crates/api` axum gateway. The base URL is `http://<host>:8080` by default.
+All HTTP endpoints are served by the `crates/h2ai-api` axum gateway. The base URL is `http://<host>:8080` by default.
 
 ---
 
@@ -358,7 +358,7 @@ All 17 events published to `h2ai.tasks.{task_id}`. Internally-tagged JSON: `"eve
 
 ### CalibrationCompletedEvent
 
-Published by `crates/autonomic` at Phase 0 completion. Cached in NATS KV.
+Published by `crates/h2ai-autonomic` at Phase 0 completion. Cached in NATS KV.
 
 ```json
 {
@@ -383,7 +383,7 @@ Published by `crates/autonomic` at Phase 0 completion. Cached in NATS KV.
 
 ### TaskBootstrappedEvent
 
-Published by `crates/context` + `crates/api` at Phase 1 completion.
+Published by `crates/h2ai-context` + `crates/h2ai-api` at Phase 1 completion.
 
 ```json
 {
@@ -408,7 +408,7 @@ Published by `crates/context` + `crates/api` at Phase 1 completion.
 
 ### TopologyProvisionedEvent
 
-Published by `crates/autonomic` at Phase 2 completion. Re-published on every MAPE-K retry.
+Published by `crates/h2ai-autonomic` at Phase 2 completion. Re-published on every MAPE-K retry.
 
 ```json
 {
@@ -447,7 +447,7 @@ Published by `crates/autonomic` at Phase 2 completion. Re-published on every MAP
 
 ### MultiplicationConditionFailedEvent
 
-Published by `crates/orchestrator` at Phase 2.5 when any of the 3 Proposition 3 conditions fails.
+Published by `crates/h2ai-orchestrator` at Phase 2.5 when any of the 3 Proposition 3 conditions fails.
 
 ```json
 {
@@ -469,7 +469,7 @@ Published by `crates/orchestrator` at Phase 2.5 when any of the 3 Proposition 3 
 
 ### ProposalEvent
 
-Published by `crates/adapters` (via orchestrator) when an Explorer completes.
+Published by `crates/h2ai-adapters` (via orchestrator) when an Explorer completes.
 
 ```json
 {
@@ -491,7 +491,7 @@ Published by `crates/adapters` (via orchestrator) when an Explorer completes.
 
 ### ProposalFailedEvent
 
-Published by `crates/orchestrator` when an Explorer crashes, runs out of memory, or times out.
+Published by `crates/h2ai-orchestrator` when an Explorer crashes, runs out of memory, or times out.
 
 ```json
 {
@@ -513,7 +513,7 @@ Published by `crates/orchestrator` when an Explorer crashes, runs out of memory,
 
 ### GenerationPhaseCompletedEvent
 
-Published by `crates/orchestrator` after the JoinSet is fully drained. Signals the Auditor that the stream is closed.
+Published by `crates/h2ai-orchestrator` after the JoinSet is fully drained. Signals the Auditor that the stream is closed.
 
 ```json
 {
@@ -531,7 +531,7 @@ Published by `crates/orchestrator` after the JoinSet is fully drained. Signals t
 
 ### ValidationEvent
 
-Published by `crates/adapters` (Auditor) when a proposal passes.
+Published by `crates/h2ai-adapters` (Auditor) when a proposal passes.
 
 ```json
 {
@@ -548,7 +548,7 @@ Published by `crates/adapters` (Auditor) when a proposal passes.
 
 ### BranchPrunedEvent
 
-Published by `crates/adapters` (Auditor) when a proposal fails validation. The branch is tombstoned — permanently preserved but excluded from merge.
+Published by `crates/h2ai-adapters` (Auditor) when a proposal fails validation. The branch is tombstoned — permanently preserved but excluded from merge.
 
 ```json
 {
@@ -569,7 +569,7 @@ Published by `crates/adapters` (Auditor) when a proposal fails validation. The b
 
 ### ZeroSurvivalEvent
 
-Published by `crates/orchestrator` when all proposals are pruned. Triggers the MAPE-K retry loop.
+Published by `crates/h2ai-orchestrator` when all proposals are pruned. Triggers the MAPE-K retry loop.
 
 ```json
 {
@@ -591,7 +591,7 @@ Published by `crates/orchestrator` when all proposals are pruned. Triggers the M
 
 ### ConsensusRequiredEvent
 
-Published by `crates/state` when `max(c_i) > 0.85` and BFT consensus is required before merge.
+Published by `crates/h2ai-state` when `max(c_i) > 0.85` and BFT consensus is required before merge.
 
 ```json
 {
@@ -609,7 +609,7 @@ Published by `crates/state` when `max(c_i) > 0.85` and BFT consensus is required
 
 ### SemilatticeCompiledEvent
 
-Published by `crates/state` when the CRDT semilattice join (or BFT consensus) is complete and the task is ready for human resolution.
+Published by `crates/h2ai-state` when the CRDT semilattice join (or BFT consensus) is complete and the task is ready for human resolution.
 
 ```json
 {
@@ -629,7 +629,7 @@ Published by `crates/state` when the CRDT semilattice join (or BFT consensus) is
 
 ### MergeResolvedEvent
 
-Published by `crates/api` when the human completes the Merge Authority resolution. Closes the task and the SSE stream.
+Published by `crates/h2ai-api` when the human completes the Merge Authority resolution. Closes the task and the SSE stream.
 
 ```json
 {
@@ -650,7 +650,7 @@ Published by `crates/api` when the human completes the Merge Authority resolutio
 
 ### TaskFailedEvent
 
-Published by `crates/orchestrator` when MAPE-K retries are exhausted. Closes the task and the SSE stream. Contains full diagnostic payload.
+Published by `crates/h2ai-orchestrator` when MAPE-K retries are exhausted. Closes the task and the SSE stream. Contains full diagnostic payload.
 
 ```json
 {
@@ -678,7 +678,7 @@ Published by `crates/orchestrator` when MAPE-K retries are exhausted. Closes the
 
 ### ReviewGateTriggeredEvent
 
-Published by `crates/orchestrator` at Phase 3b when an Executor's proposal enters review gate evaluation. Only emitted for `TeamSwarmHybrid` topology.
+Published by `crates/h2ai-orchestrator` at Phase 3b when an Executor's proposal enters review gate evaluation. Only emitted for `TeamSwarmHybrid` topology.
 
 ```json
 {
@@ -698,7 +698,7 @@ Published by `crates/orchestrator` at Phase 3b when an Executor's proposal enter
 
 ### ReviewGateBlockedEvent
 
-Published by `crates/orchestrator` at Phase 3b when an Evaluator rejects an Executor's proposal. The proposal is tombstoned at the gate level and never reaches the ADR Auditor.
+Published by `crates/h2ai-orchestrator` at Phase 3b when an Evaluator rejects an Executor's proposal. The proposal is tombstoned at the gate level and never reaches the ADR Auditor.
 
 ```json
 {
@@ -720,7 +720,7 @@ The `rejection_reason` is the Evaluator's natural language explanation. The bloc
 
 ### InterfaceSaturationWarningEvent
 
-Published by `crates/autonomic` when the number of concurrent active sub-tasks approaches `N_max^interface`. Only emitted for `TeamSwarmHybrid` topology. A warning — not a gate. The operator can use this to pace incoming work or scale the liaison team.
+Published by `crates/h2ai-autonomic` when the number of concurrent active sub-tasks approaches `N_max^interface`. Only emitted for `TeamSwarmHybrid` topology. A warning — not a gate. The operator can use this to pace incoming work or scale the liaison team.
 
 ```json
 {

@@ -17,7 +17,7 @@ config:
   maxRetries: 3
   calibrationTasks: 3
   jEffThreshold: "0.4"
-  profile: c
+  plan: cloud
   logLevel: "h2ai=info"
 
 # ADR corpus — mount a ConfigMap containing your team's ADR files

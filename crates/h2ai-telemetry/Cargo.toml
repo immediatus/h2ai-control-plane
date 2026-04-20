@@ -1,0 +1,21 @@
+[package]
+name        = "h2ai-telemetry"
+description = "Audit and telemetry abstraction for the H2AI Control Plane"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types  = { path = "../h2ai-types" }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+serde_json  = { workspace = true }
+async-nats  = { workspace = true }
+tracing     = { workspace = true }
+regex       = "1"
+
+[dev-dependencies]
+tokio       = { workspace = true }
+chrono      = { workspace = true }

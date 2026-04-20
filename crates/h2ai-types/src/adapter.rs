@@ -1,4 +1,5 @@
 use crate::config::AdapterKind;
+use crate::physics::TauValue;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -7,7 +8,7 @@ use thiserror::Error;
 pub struct ComputeRequest {
     pub system_context: String,
     pub task: String,
-    pub tau: f64,
+    pub tau: TauValue,
     pub max_tokens: u64,
 }
 

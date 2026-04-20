@@ -9,8 +9,27 @@ pub enum PhysicsError {
     InvalidErrorCost(f64),
     #[error("J_eff must be in [0, 1], got {0}")]
     InvalidJeff(f64),
+    #[error("tau must be in (0, 1], got {0}")]
+    InvalidTau(f64),
     #[error("cg_samples must not be empty")]
     EmptyCgSamples,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TauValue(f64);
+
+impl TauValue {
+    pub fn new(v: f64) -> Result<Self, PhysicsError> {
+        if v > 0.0 && v <= 1.0 {
+            Ok(Self(v))
+        } else {
+            Err(PhysicsError::InvalidTau(v))
+        }
+    }
+
+    pub fn value(&self) -> f64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,9 +83,9 @@ impl CoherencyCoefficients {
 pub struct CoordinationThreshold(f64);
 
 impl CoordinationThreshold {
-    pub fn from_calibration(cc: &CoherencyCoefficients) -> Self {
+    pub fn from_calibration(cc: &CoherencyCoefficients, max: f64) -> Self {
         let spread = cc.cg_mean() - cc.cg_std_dev();
-        Self(spread.clamp(0.0, 0.3_f64))
+        Self(spread.clamp(0.0, max))
     }
 
     pub fn value(&self) -> f64 {
@@ -90,8 +109,6 @@ impl RoleErrorCost {
     }
 }
 
-const BFT_THRESHOLD: f64 = 0.85;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeStrategy {
     CrdtSemilattice,
@@ -99,12 +116,12 @@ pub enum MergeStrategy {
 }
 
 impl MergeStrategy {
-    pub fn from_role_costs(costs: &[RoleErrorCost]) -> Self {
+    pub fn from_role_costs(costs: &[RoleErrorCost], bft_threshold: f64) -> Self {
         let max_ci = costs
             .iter()
             .map(|c| c.value())
             .fold(f64::NEG_INFINITY, f64::max);
-        if max_ci > BFT_THRESHOLD {
+        if max_ci > bft_threshold {
             MergeStrategy::BftConsensus
         } else {
             MergeStrategy::CrdtSemilattice
@@ -150,17 +167,19 @@ impl MultiplicationCondition {
         error_correlation: f64,
         cg_mean: f64,
         theta_coord: f64,
+        min_competence: f64,
+        max_correlation: f64,
     ) -> Result<(), MultiplicationConditionFailure> {
-        if baseline_competence <= 0.5 {
+        if baseline_competence <= min_competence {
             return Err(MultiplicationConditionFailure::InsufficientCompetence {
                 actual: baseline_competence,
-                required: 0.5,
+                required: min_competence,
             });
         }
-        if error_correlation >= 0.9 {
+        if error_correlation >= max_correlation {
             return Err(MultiplicationConditionFailure::InsufficientDecorrelation {
                 actual: error_correlation,
-                threshold: 0.9,
+                threshold: max_correlation,
             });
         }
         if cg_mean < theta_coord {

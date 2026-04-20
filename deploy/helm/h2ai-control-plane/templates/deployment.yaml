@@ -62,8 +62,8 @@ spec:
               value: {{ .Values.config.calibrationTasks | quote }}
             - name: H2AI_J_EFF_THRESHOLD
               value: {{ .Values.config.jEffThreshold | quote }}
-            - name: H2AI_PROFILE
-              value: {{ .Values.config.profile | quote }}
+            - name: H2AI_PLAN
+              value: {{ .Values.config.plan | quote }}
             - name: RUST_LOG
               value: {{ .Values.config.logLevel | quote }}
             {{- if and .Values.tracing.enabled .Values.tracing.otlpEndpoint }}

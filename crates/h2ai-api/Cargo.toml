@@ -1,0 +1,46 @@
+[package]
+name        = "h2ai-control-plane"
+description = "H2AI Control Plane — axum HTTP gateway"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[[bin]]
+name = "h2ai-control-plane"
+path = "src/main.rs"
+
+[lib]
+name = "h2ai_api"
+path = "src/lib.rs"
+
+[dependencies]
+h2ai-types        = { path = "../h2ai-types" }
+h2ai-state        = { path = "../h2ai-state" }
+h2ai-autonomic    = { path = "../h2ai-autonomic" }
+h2ai-context      = { path = "../h2ai-context" }
+h2ai-adapters     = { path = "../h2ai-adapters" }
+h2ai-config       = { path = "../h2ai-config" }
+h2ai-orchestrator = { path = "../h2ai-orchestrator" }
+axum              = { workspace = true }
+tokio             = { workspace = true }
+tokio-stream      = { workspace = true }
+tower             = { workspace = true }
+tower-http        = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+tracing           = { workspace = true }
+async-nats        = { workspace = true }
+metrics           = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+thiserror         = { workspace = true }
+chrono            = { workspace = true }
+futures           = { workspace = true }
+dashmap           = { workspace = true }
+uuid              = { workspace = true }
+async-stream      = { workspace = true }
+
+[dev-dependencies]
+axum   = { workspace = true, features = ["macros"] }
+tokio  = { workspace = true }
+tower  = { workspace = true, features = ["util"] }

@@ -61,7 +61,7 @@ Derived from the blog series *"Architecting Real-Time Ads Platform"* by Yuriy Po
 
 ```bash
 # Start the stack
-cd deploy/profile-a && docker compose up -d
+cd deploy/local && docker compose up -d
 
 # Load the ADR corpus
 export ADR_PATH=docs/examples/ads-platform/adr

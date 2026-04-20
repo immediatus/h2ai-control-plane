@@ -4,7 +4,7 @@ use h2ai_types::events::*;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::physics::{
     CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
-    RoleErrorCost,
+    RoleErrorCost, TauValue,
 };
 
 fn task_id() -> TaskId {
@@ -26,7 +26,7 @@ fn calibration() -> CoherencyCoefficients {
 #[test]
 fn calibration_completed_event_serde_round_trip() {
     let cc = calibration();
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let e = CalibrationCompletedEvent {
         calibration_id: task_id(),
         coefficients: cc,
@@ -56,31 +56,32 @@ fn task_bootstrapped_event_includes_j_eff() {
 #[test]
 fn topology_provisioned_event_includes_physics_fields() {
     let cc = calibration();
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let role_costs = vec![
         RoleErrorCost::new(0.3).unwrap(),
         RoleErrorCost::new(0.7).unwrap(),
     ];
-    let merge_strategy = MergeStrategy::from_role_costs(&role_costs);
+    let merge_strategy = MergeStrategy::from_role_costs(&role_costs, 0.85);
     let e = TopologyProvisionedEvent {
         task_id: task_id(),
         topology_kind: TopologyKind::Ensemble,
         explorer_configs: vec![
             ExplorerConfig {
                 explorer_id: explorer_id(),
-                tau: 0.2,
+                tau: TauValue::new(0.2).unwrap(),
                 adapter: cloud_adapter(),
                 role: None,
             },
             ExplorerConfig {
                 explorer_id: explorer_id(),
-                tau: 0.9,
+                tau: TauValue::new(0.9).unwrap(),
                 adapter: cloud_adapter(),
                 role: None,
             },
         ],
         auditor_config: AuditorConfig {
             adapter: cloud_adapter(),
+            ..Default::default()
         },
         n_max: 4.2,
         interface_n_max: None,
@@ -183,9 +184,9 @@ fn task_failed_event_may_include_multiplication_failure() {
 #[test]
 fn h2ai_event_enum_wraps_all_17_events() {
     let cc = calibration();
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let role_costs = vec![RoleErrorCost::new(0.5).unwrap()];
-    let merge = MergeStrategy::from_role_costs(&role_costs);
+    let merge = MergeStrategy::from_role_costs(&role_costs, 0.85);
 
     let events: Vec<H2AIEvent> = vec![
         H2AIEvent::CalibrationCompleted(CalibrationCompletedEvent {
@@ -207,6 +208,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             explorer_configs: vec![],
             auditor_config: AuditorConfig {
                 adapter: cloud_adapter(),
+                ..Default::default()
             },
             n_max: 3.0,
             interface_n_max: None,
@@ -230,7 +232,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
         H2AIEvent::Proposal(ProposalEvent {
             task_id: task_id(),
             explorer_id: explorer_id(),
-            tau: 0.5,
+            tau: TauValue::new(0.5).unwrap(),
             raw_output: "out".into(),
             token_cost: 10,
             adapter_kind: cloud_adapter(),

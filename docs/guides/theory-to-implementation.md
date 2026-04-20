@@ -1,6 +1,6 @@
 # From Theory to Implementation
 
-This guide bridges the mathematical apparatus (`docs/architecture/05-math-apparatus.md`) and the H2AI runtime. It answers: given a real engineering task, how do you configure the system to extract the maximum value from multi-agent collaboration without paying unnecessary coordination cost?
+This guide bridges the mathematical apparatus (`docs/architecture/math-apparatus.md`) and the H2AI runtime. It answers: given a real engineering task, how do you configure the system to extract the maximum value from multi-agent collaboration without paying unnecessary coordination cost?
 
 The guide is organised as: topology selection protocol → topology catalog → team-scale configuration → dark knowledge management → implementation mapping.
 
@@ -305,18 +305,18 @@ Diagnose low `J_eff` by examining the `missing_coverage` field in the `ContextUn
 | Mathematical concept | H2AI implementation |
 |---------------------|---------------------|
 | Calibrate α, κ_base, CG_mean | `POST /calibrate` → `CalibrationCompletedEvent` |
-| J_eff gate (Def 10) | Dark Knowledge Compiler in `crates/context`; `ContextUnderflowError` if below 0.4 |
+| J_eff gate (Def 10) | Dark Knowledge Compiler in `crates/h2ai-context`; `ContextUnderflowError` if below 0.4 |
 | N_max ceiling (Prop 1) | Explorer count capped at N_max during `TopologyProvisionedEvent` |
 | Multiplication condition (Prop 3) | Phase 2.5 hard gate; `MultiplicationConditionFailedEvent` names which condition failed |
 | θ_coord threshold (Prop 2) | Stored in calibration cache; enforced at topology construction |
-| CRDT merge (Prop 4, 5) | `MergeStrategy::CrdtSemilattice` in `crates/state` |
+| CRDT merge (Prop 4, 5) | `MergeStrategy::CrdtSemilattice` in `crates/h2ai-state` |
 | BFT merge (Prop 5 safety constraint) | `MergeStrategy::BftConsensus` when `max(c_i) > 0.85`; `ConsensusRequiredEvent` signals this path |
 | Auditor constraint checking (Def 10) | `BranchPrunedEvent` with ADR citation, emitted by Auditor adapter |
-| MAPE-K retry on zero survival | `ZeroSurvivalEvent` → `crates/autonomic` adjusts {N, τ} → new `TopologyProvisionedEvent` |
+| MAPE-K retry on zero survival | `ZeroSurvivalEvent` → `crates/h2ai-autonomic` adjusts {N, τ} → new `TopologyProvisionedEvent` |
 | Topology selection (three frontiers) | Phase 2: roles[] → TeamSwarmHybrid; explicit kind field; auto from ParetoWeights + N vs N_max |
 | Abstract AgentRole enum | `h2ai-types::AgentRole` — Coordinator / Executor / Evaluator / Synthesizer / Custom |
 | Review gate (intra-swarm Evaluator gate) | Phase 3b: `ReviewGateTriggeredEvent` → Evaluator runs → approve or `ReviewGateBlockedEvent` |
-| N_max^interface (Team-Swarm binding ceiling) | `crates/autonomic` computes from CG(liaison, Coordinator); `InterfaceSaturationWarningEvent` + `h2ai_interface_n_max` metric |
+| N_max^interface (Team-Swarm binding ceiling) | `crates/h2ai-autonomic` computes from CG(liaison, Coordinator); `InterfaceSaturationWarningEvent` + `h2ai_interface_n_max` metric |
 
 ### Task Manifest Parameters
 

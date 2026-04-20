@@ -1,6 +1,6 @@
 use h2ai_types::physics::{
     CoherencyCoefficients, CoordinationThreshold, JeffectiveGap, MergeStrategy,
-    MultiplicationCondition, MultiplicationConditionFailure, RoleErrorCost,
+    MultiplicationCondition, MultiplicationConditionFailure, RoleErrorCost, TauValue,
 };
 
 #[test]
@@ -56,7 +56,7 @@ fn coordination_threshold_is_min_of_cg_spread_and_floor() {
         kappa_base: 0.020,
         cg_samples: vec![0.6, 0.7, 0.65],
     };
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     assert!((theta.value() - 0.3).abs() < 1e-9);
 }
 
@@ -67,7 +67,7 @@ fn coordination_threshold_uses_spread_when_cg_very_low() {
         kappa_base: 0.020,
         cg_samples: vec![0.1, 0.15, 0.12],
     };
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     assert!(theta.value() < 0.3);
     assert!(theta.value() > 0.0);
 }
@@ -79,7 +79,7 @@ fn coordination_threshold_serde_round_trip() {
         kappa_base: 0.020,
         cg_samples: vec![0.6, 0.7, 0.65],
     };
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let json = serde_json::to_string(&theta).unwrap();
     let back: CoordinationThreshold = serde_json::from_str(&json).unwrap();
     assert_eq!(theta.value(), back.value());
@@ -113,7 +113,7 @@ fn merge_strategy_is_crdt_when_max_ci_at_or_below_threshold() {
         RoleErrorCost::new(0.85).unwrap(),
     ];
     assert_eq!(
-        MergeStrategy::from_role_costs(&costs),
+        MergeStrategy::from_role_costs(&costs, 0.85),
         MergeStrategy::CrdtSemilattice
     );
 }
@@ -125,7 +125,7 @@ fn merge_strategy_is_bft_when_max_ci_above_threshold() {
         RoleErrorCost::new(0.91).unwrap(),
     ];
     assert_eq!(
-        MergeStrategy::from_role_costs(&costs),
+        MergeStrategy::from_role_costs(&costs, 0.85),
         MergeStrategy::BftConsensus
     );
 }
@@ -166,13 +166,13 @@ fn j_effective_gap_is_not_below_threshold_when_sufficient() {
 
 #[test]
 fn multiplication_condition_passes_when_all_hold() {
-    let result = MultiplicationCondition::evaluate(0.7, 0.85, 0.65, 0.3);
+    let result = MultiplicationCondition::evaluate(0.7, 0.85, 0.65, 0.3, 0.5, 0.9);
     assert!(result.is_ok());
 }
 
 #[test]
 fn multiplication_condition_fails_on_low_competence() {
-    let result = MultiplicationCondition::evaluate(0.4, 0.85, 0.65, 0.3);
+    let result = MultiplicationCondition::evaluate(0.4, 0.85, 0.65, 0.3, 0.5, 0.9);
     assert!(matches!(
         result,
         Err(MultiplicationConditionFailure::InsufficientCompetence { .. })
@@ -181,7 +181,7 @@ fn multiplication_condition_fails_on_low_competence() {
 
 #[test]
 fn multiplication_condition_fails_on_high_correlation() {
-    let result = MultiplicationCondition::evaluate(0.7, 0.95, 0.65, 0.3);
+    let result = MultiplicationCondition::evaluate(0.7, 0.95, 0.65, 0.3, 0.5, 0.9);
     assert!(matches!(
         result,
         Err(MultiplicationConditionFailure::InsufficientDecorrelation { .. })
@@ -190,9 +190,31 @@ fn multiplication_condition_fails_on_high_correlation() {
 
 #[test]
 fn multiplication_condition_fails_when_cg_below_theta() {
-    let result = MultiplicationCondition::evaluate(0.7, 0.85, 0.2, 0.3);
+    let result = MultiplicationCondition::evaluate(0.7, 0.85, 0.2, 0.3, 0.5, 0.9);
     assert!(matches!(
         result,
         Err(MultiplicationConditionFailure::CommonGroundBelowFloor { .. })
     ));
+}
+
+#[test]
+fn tau_value_valid_range() {
+    assert!(TauValue::new(0.5).is_ok());
+    assert_eq!(TauValue::new(0.5).unwrap().value(), 0.5);
+}
+
+#[test]
+fn tau_value_boundary_one() {
+    assert!(TauValue::new(1.0).is_ok());
+    assert_eq!(TauValue::new(1.0).unwrap().value(), 1.0);
+}
+
+#[test]
+fn tau_value_zero_is_invalid() {
+    assert!(TauValue::new(0.0).is_err());
+}
+
+#[test]
+fn tau_value_above_one_invalid() {
+    assert!(TauValue::new(1.1).is_err());
 }

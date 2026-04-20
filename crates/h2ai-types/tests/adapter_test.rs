@@ -1,12 +1,13 @@
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse};
 use h2ai_types::config::AdapterKind;
+use h2ai_types::physics::TauValue;
 
 #[test]
 fn compute_request_serde_round_trip() {
     let req = ComputeRequest {
         system_context: "You must use stateless auth per ADR-004.".into(),
         task: "Write a JWT validation middleware.".into(),
-        tau: 0.6,
+        tau: TauValue::new(0.6).unwrap(),
         max_tokens: 2048,
     };
     let json = serde_json::to_string(&req).unwrap();

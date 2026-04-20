@@ -98,7 +98,7 @@ pub enum AdapterError {
 ## Example: Cloud HTTP adapter
 
 ```rust
-// crates/adapters/src/cloud.rs
+// crates/h2ai-adapters/src/cloud.rs
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -223,7 +223,7 @@ struct Usage { total_tokens: u32 }
 Local adapters **must** use `tokio::task::spawn_blocking` — llama.cpp inference is CPU-bound and must not run on the async worker pool.
 
 ```rust
-// crates/adapters/src/local.rs
+// crates/h2ai-adapters/src/local.rs
 
 use async_trait::async_trait;
 use h2ai_types::{AdapterKind, AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
@@ -284,11 +284,11 @@ Add the adapter instance to the pool in `adapters.toml`:
 id = "my-custom-adapter"
 kind = "custom"
 # Custom adapters are registered by ID in the binary's adapter registry.
-# See crates/adapters/src/registry.rs.
+# See crates/h2ai-adapters/src/registry.rs.
 role_error_cost = 0.1
 ```
 
-In `crates/adapters/src/registry.rs`, register the adapter:
+In `crates/h2ai-adapters/src/registry.rs`, register the adapter:
 
 ```rust
 pub fn build_pool(config: &AdapterConfig) -> Vec<Box<dyn IComputeAdapter>> {
@@ -305,10 +305,10 @@ pub fn build_pool(config: &AdapterConfig) -> Vec<Box<dyn IComputeAdapter>> {
 
 ## Testing an adapter
 
-Tests for adapters live in `crates/adapters/tests/`. The trait interface makes unit testing straightforward — no orchestrator or NATS required.
+Tests for adapters live in `crates/h2ai-adapters/tests/`. The trait interface makes unit testing straightforward — no orchestrator or NATS required.
 
 ```rust
-// crates/adapters/tests/cloud_adapter_test.rs
+// crates/h2ai-adapters/tests/cloud_adapter_test.rs
 
 #[cfg(test)]
 mod tests {

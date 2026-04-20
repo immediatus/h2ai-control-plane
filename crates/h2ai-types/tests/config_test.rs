@@ -2,6 +2,7 @@ use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, RoleSpec,
     TopologyKind,
 };
+use h2ai_types::physics::TauValue;
 use std::path::PathBuf;
 
 #[test]
@@ -65,7 +66,7 @@ fn agent_role_default_tau_and_ci() {
     assert_eq!(AgentRole::Evaluator.default_role_error_cost(), 0.9);
     let custom = AgentRole::Custom {
         name: "QA".into(),
-        tau: 0.3,
+        tau: TauValue::new(0.3).unwrap(),
         role_error_cost: 0.6,
     };
     assert_eq!(custom.default_tau(), 0.3);
@@ -76,7 +77,7 @@ fn agent_role_default_tau_and_ci() {
 fn agent_role_serde_round_trip() {
     let role = AgentRole::Custom {
         name: "QA".into(),
-        tau: 0.3,
+        tau: TauValue::new(0.3).unwrap(),
         role_error_cost: 0.6,
     };
     let json = serde_json::to_string(&role).unwrap();
@@ -115,7 +116,7 @@ fn explorer_config_serde_round_trip() {
     use h2ai_types::identity::ExplorerId;
     let cfg = ExplorerConfig {
         explorer_id: ExplorerId::new(),
-        tau: 0.7,
+        tau: TauValue::new(0.7).unwrap(),
         adapter: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
@@ -133,7 +134,7 @@ fn explorer_config_with_role_serde_round_trip() {
     use h2ai_types::identity::ExplorerId;
     let cfg = ExplorerConfig {
         explorer_id: ExplorerId::new(),
-        tau: 0.1,
+        tau: TauValue::new(0.1).unwrap(),
         adapter: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
@@ -146,14 +147,15 @@ fn explorer_config_with_role_serde_round_trip() {
 }
 
 #[test]
-fn auditor_config_tau_is_always_zero() {
+fn auditor_config_has_default_tau() {
     let cfg = AuditorConfig {
         adapter: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
         },
+        ..Default::default()
     };
-    assert_eq!(cfg.tau(), 0.0);
+    assert_eq!(cfg.tau, TauValue::new(0.1).unwrap());
 }
 
 #[test]

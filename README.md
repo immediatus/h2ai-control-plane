@@ -23,6 +23,9 @@ Reference implementation of the framework defined in **[One Equation Governs CPU
 | More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — ADR corpus becomes hard Auditor gate |
 | Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
+| Edge agent secrets leak | Long-lived API keys in containers | Scoped NATS NKeys per task_id — token expires when task closes |
+| Context lost between restarts | Agents rebuild context from scratch | MemoryProvider — control plane assembles and injects context before dispatch |
+| Audit log is an afterthought | Logs scattered across containers | AuditProvider with redaction middleware — immutable telemetry on NATS JetStream |
 
 ---
 
@@ -37,11 +40,11 @@ git clone https://github.com/h2ai/control-plane.git
 # Open in devcontainer — NATS and environment are pre-configured
 ```
 
-### Local (Profile A)
+### Local (Local Plan)
 
 ```bash
 git clone https://github.com/h2ai/control-plane.git
-cd h2ai-control-plane/deploy/profile-a
+cd h2ai-control-plane/deploy/local
 docker compose up -d
 
 # Seed your ADR corpus (your team's architectural decisions)
@@ -51,13 +54,38 @@ cp -r ../../docs/examples/ads-platform/adr/* ../../adr/
 # Calibrate the adapter pool
 curl -X POST http://localhost:8080/calibrate
 
-# Submit your first task
+# Task 1 — pure reasoning (no tools)
+# 3 pure LLM explorers reason in parallel about the architecture decision.
+# c_i ≈ 0.1 (text output, discard at zero cost) → CRDT merge.
 curl -X POST http://localhost:8080/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Design a budget enforcement mechanism that prevents double-billing during server restarts",
     "pareto_weights": {"diversity": 0.5, "containment": 0.4, "throughput": 0.1},
     "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.85}
+  }'
+
+# Task 2 — code generation with tool-using executors
+# Executors (CodeExecution + FileSystem) write and run code.
+# c_i ≈ 0.7 → max(c_i) approaches BFT threshold.
+# Evaluator (pure LLM, tau=0.1) forms a Review Gate before the Auditor.
+curl -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Write and test a Redis Lua script for atomic budget check-and-decrement with 30s TTL idempotency",
+    "pareto_weights": {"diversity": 0.3, "containment": 0.6, "throughput": 0.1},
+    "explorers": {
+      "roles": [
+        {"agent_id": "executor_A", "role": "Executor", "tau": 0.4},
+        {"agent_id": "executor_B", "role": "Executor", "tau": 0.5},
+        {"agent_id": "evaluator",  "role": "Evaluator", "tau": 0.1}
+      ],
+      "review_gates": [
+        {"reviewer": "evaluator", "blocks": "executor_A"},
+        {"reviewer": "evaluator", "blocks": "executor_B"}
+      ]
+    },
+    "constraints": ["ADR-004", "ADR-007"]
   }'
 
 # Stream events in real time
@@ -106,15 +134,67 @@ If `J_eff` passes → an immutable `system_context` is compiled from your ADRs +
 
 ### 3. Provisioning — topology selected by physics, not guesswork
 
-The autonomic loop reads `{α, κ_eff, ParetoWeights}` and selects:
-- **Flat Mesh** — when `N ≤ N_max` and diversity weight dominates. No coordinator. `O(N²)` edges, but acceptable for small N.
-- **Hierarchical Tree** — when `N > N_max` or containment weight dominates. One Swarm Coordinator + k sub-groups. Branching factor `k_opt = floor(N_max^flat)`. Coordination cost drops from `O(N²)` to `O(N)`.
+The autonomic loop reads `{α, κ_eff, ParetoWeights}` and selects one of three topologies:
+- **Ensemble + CRDT** — when `N ≤ N_max` and diversity weight dominates. No coordinator. All Explorers are peers. `O(N²)` edges, but structurally fine for small N. Pareto: T=84%, E=84%, D=90%.
+- **Hierarchical Tree** — when `N > N_max` or containment weight dominates. One Swarm Coordinator + k sub-groups. Branching factor `k_opt = floor(N_max^flat)`. Coordination cost drops from `O(N²)` to `O(N)`. Pareto: T=96%, E=96%, D=60%.
+- **Team-Swarm Hybrid** — when the manifest provides `explorers.roles[]`. Role-differentiated Explorers (Coordinator, Executor, Evaluator, Synthesizer) with declared review gates between specified pairs. The Evaluator forms a pre-Auditor gate that blocks Executor output. Pareto: T=84%, E=91%, D=95%.
 
 Before spawning a single inference token, the **Multiplication Condition Gate** enforces all three conditions from Proposition 3: competence > 0.5, error decorrelation ρ < 0.9, Common Ground mean ≥ θ_coord. Fail any one → re-enter provisioning with adjusted parameters.
 
 ### 4. Generation — parallel, isolated, bounded
 
 N Explorers run in a `tokio::task::JoinSet` wrapped in `tokio::time::timeout`. Each Explorer calls `IComputeAdapter::execute()` with its assigned `τ` value and terminates. No Explorer reads another Explorer's output. Coordination cost during generation is structurally zero. Every Explorer gets a guaranteed terminal state — `ProposalEvent` on success, `ProposalFailedEvent` on crash/OOM/timeout. The stream always closes with `GenerationPhaseCompletedEvent`.
+
+For **Team-Swarm Hybrid** topologies, an additional Review Gate phase runs after generation: each Executor proposal is routed to its designated Evaluator (τ≈0.1, c_i≈0.9) before reaching the ADR Auditor. Approved proposals proceed to Phase 5; blocked proposals are tombstoned at the gate with reason recorded (`ReviewGateBlockedEvent`) and visible in the Merge Authority UI.
+
+### How Explorers Execute — The Edge Agent Dispatch Pipeline
+
+The control plane never runs inference directly. Each Explorer is an **ephemeral, stateless edge agent** described by an `AgentDescriptor` and dispatched as a container over NATS. An agent is not a named product — it is any LLM-based container identified by the model it runs and the capabilities it has been granted:
+
+```rust
+pub struct AgentDescriptor {
+    pub model: String,         // "llama3-70b", "gpt-4o", "claude-3-opus", ...
+    pub tools: Vec<AgentTool>, // [] | [WebSearch] | [Shell, CodeExecution, FileSystem]
+}
+
+pub enum AgentTool {
+    Shell,
+    WebSearch,
+    CodeExecution,
+    FileSystem,
+}
+```
+
+**`tools` are capability flags, not features.** They directly affect three USL quantities that the system measures and controls:
+
+| Tool set | Effect on α | Effect on κ_base | Default c_i | Typical role |
+|---|---|---|---|---|
+| `[]` (pure LLM) | near 0 | 0 (text only) | 0.1–0.3 | Coordinator / Synthesizer |
+| `[WebSearch]` | +0.01–0.02 | +0.005 (retrieval nondeterminism) | 0.2–0.4 | Evaluator |
+| `[FileSystem]` | +0.02–0.05 | +0.01 (shared state writes) | 0.4–0.6 | Executor |
+| `[CodeExecution]` | +0.03–0.08 | +0.015 (env side effects) | 0.5–0.7 | Executor |
+| `[Shell]` | +0.05–0.15 | +0.02 (arbitrary side effects) | 0.6–0.9 | Executor |
+
+A pure LLM agent is `f(context, τ) → text` — deterministic given its inputs, zero side effects, errors cost nothing to discard. A tool-using agent is `f(context, τ, external_state_t) → text + side_effects` — its output depends on the world at execution time, and wrong outputs may leave irreversible state.
+
+This distinction flows directly into topology selection:
+- High c_i from tool-using agents drives `max(c_i) > 0.85`, switching `MergeStrategy` from CRDT semilattice to BFT consensus.
+- Tool-induced α increase lowers `N_max`, reducing the explorer count.
+- WebSearch nondeterminism raises CG variance, lowering `CG_mean`, raising `κ_eff`.
+- High-c_i Executor agents trigger Review Gates in TeamSwarmHybrid topology — the wrong output cannot reach the Auditor by graph construction.
+
+The full dispatch-and-await loop per Explorer:
+
+1. **Context assembly** — `MemoryProvider::get_recent_history` retrieves prior session history; assembled into the `context` field of `TaskPayload`.
+2. **Payload construction** — `TaskPayload { task_id, agent: AgentDescriptor, instructions, context, τ, max_tokens }` is built. The full descriptor travels with the payload so the edge agent knows what capabilities it has been granted.
+3. **Capacity check** — `AgentProvider::ensure_agent_capacity(descriptor, task_load)` verifies the container pool. The provider selects the container image from `descriptor.model` and configures volume mounts and security contexts from `descriptor.tools` — no hardcoded image names in the orchestrator.
+4. **Dispatch** — `TaskPayload` is published to `h2ai.tasks.ephemeral.{task_id}` on the durable JetStream `H2AI_TASKS` stream. A scoped **NKey** for this `task_id` is injected into the container — the edge agent has no NATS credentials before this moment and none after. The NKey's `allowed_publish` set is sized to match the tool set.
+5. **Live telemetry** — the control plane subscribes to `h2ai.telemetry.{task_id}`. Every `AgentTelemetryEvent` (LLM calls, shell commands, errors) is routed through `RedactionMiddleware` (secrets scrubbed before logging) into `AuditProvider::record_event` in real time.
+6. **Result wait** — the control plane subscribes to `h2ai.results.{task_id}`. The edge agent publishes `TaskResult` when done and terminates.
+7. **Memory commit** — on `TaskResult`, `MemoryProvider::commit_new_memories` persists the output for future context assembly. `AuditProvider::flush` drains the audit buffer.
+8. **NKey expiry** — the scoped NKey expires. The container loses all NATS permissions and is reaped.
+
+**Security invariant:** An edge agent can only publish to `h2ai.telemetry.{its agent_id}`, `audit.events.{its agent_id}`, and `h2ai.results.{its task_id}`. It cannot read other agents' payloads, write to the orchestration event bus, or retain credentials after its task closes. This is enforced at the NATS server level — not by application code.
 
 ### 5. Auditor Gate — reactive, never idle
 
@@ -154,10 +234,11 @@ Reference values for AI agents: **α ≈ 0.10–0.15, κ_base ≈ 0.015–0.025,
 
 ---
 
-## The 14-Event Vocabulary
+## The Event Vocabulary
 
 All state is immutable event log entries on NATS JetStream. Crash recovery = replay from offset 0.
 
+**Core orchestration events** (subject `h2ai.tasks.{task_id}`):
 ```
 CalibrationCompletedEvent          → α, κ_base, CG samples, θ_coord locked
 TaskBootstrappedEvent              → J_eff gate passed, system_context locked
@@ -166,13 +247,24 @@ MultiplicationConditionFailedEvent → which of 3 conditions failed, re-entering
 ProposalEvent                      → Explorer output appended, agent terminates
 ProposalFailedEvent                → Explorer crashed/OOM/timeout, terminal state guaranteed
 GenerationPhaseCompletedEvent      → JoinSet drained, stream closed
+ReviewGateTriggeredEvent           → Evaluator gating an Executor proposal
+ReviewGateBlockedEvent             → Evaluator rejected proposal (reason recorded)
 ValidationEvent                    → Auditor: proposal passed
 BranchPrunedEvent                  → Auditor: proposal rejected (reason + c_i weight)
 ZeroSurvivalEvent                  → all proposals pruned, autonomic retry fires
+InterfaceSaturationWarningEvent    → active sub-tasks approaching N_max^interface
 ConsensusRequiredEvent             → max(c_i) > 0.85, switching CRDT → BFT
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
 MergeResolvedEvent                 → human O(1) decision, task closed
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
+```
+
+**Edge agent telemetry events** (subject `h2ai.telemetry.*`):
+```
+AgentTelemetryEvent::LlmPromptSent        → tokens dispatched to edge agent LLM
+AgentTelemetryEvent::LlmResponseReceived  → completion tokens received from edge agent
+AgentTelemetryEvent::ShellCommandExecuted → shell command run by edge agent (exit code recorded)
+AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable error
 ```
 
 ---
@@ -182,23 +274,35 @@ TaskFailedEvent                    → retries exhausted, full diagnostic payloa
 ```
 h2ai-control-plane/
 ├── Dockerfile                      # multi-stage: builder (rust+clang) → runtime (debian-slim)
+├── typeshare.toml                  # typeshare CLI config — Go bindings output to bindings/go/
+├── bindings/
+│   └── go/                         # generated Go types (from typeshare CLI, committed to repo)
 ├── crates/
 │   ├── h2ai-types/                 # Pure types boundary — zero I/O deps
-│   │                               # All 14 event structs, IComputeAdapter trait,
-│   │                               # USL physics types, CoherencyCoefficients, MergeStrategy
+│   │                               # All 17 core events + AgentTelemetryEvent, IComputeAdapter,
+│   │                               # USL physics types, CoherencyCoefficients, MergeStrategy,
+│   │                               # AgentState, TaskPayload, TaskResult (typeshare-annotated)
+│   ├── h2ai-nats/                  # NATS subject constants + scoped NKey provisioning per task_id
+│   ├── config/                     # H2AIConfig — physics thresholds and role defaults (h2ai-config)
+│   ├── h2ai-provisioner/           # AgentProvider trait + StaticProvider + KubernetesProvider
+│   │                               # Decouples task routing from container lifecycle management
+│   ├── h2ai-memory/                # MemoryProvider trait + InMemoryCache + NatsKvStore
+│   │                               # Stateless edge agents: all context lives in the control plane
+│   ├── h2ai-telemetry/             # AuditProvider trait + DirectLogProvider + BrokerPublisherProvider
+│   │                               # Immutable audit log with secret redaction middleware
 │   ├── orchestrator/               # DAG builder + Pareto topology router
 │   ├── autonomic/                  # MAPE-K loop + calibration harness + N_max calculator
 │   ├── state/                      # CRDT semilattice + NATS JetStream I/O
 │   ├── context/                    # Dark Knowledge Compiler + Jaccard + J_eff measurement
 │   ├── adapters/                   # IComputeAdapter: llama.cpp FFI + cloud HTTP
-│   └── api/                        # axum REST gateway + Merge Authority web UI
+│   └── api/                        # axum REST gateway + Merge Authority web UI (planned)
 ├── nats/
-│   ├── dev.conf                    # single-node JetStream config (Profile A)
-│   └── cluster.conf                # 3-node cluster config (Profile B/C)
+│   ├── dev.conf                    # single-node JetStream config (Local Plan)
+│   └── cluster.conf                # 3-node cluster config (Server/Cloud Plan)
 ├── deploy/
-│   ├── profile-a/docker-compose.yml      # h2ai + NATS, single workstation
-│   ├── profile-b/docker-compose.yml      # 3-node NATS + 2× h2ai + nginx + observability
-│   ├── profile-c/                         # raw Kubernetes manifests
+│   ├── local/docker-compose.yml          # h2ai + NATS, single workstation
+│   ├── server/docker-compose.yml         # 3-node NATS + 2× h2ai + nginx + observability
+│   ├── cloud/                            # raw Kubernetes manifests
 │   └── helm/h2ai-control-plane/          # Helm chart for enterprise distribution
 ├── .devcontainer/                  # devcontainer: Rust toolchain + NATS sidecar
 ├── .github/workflows/
@@ -208,14 +312,14 @@ h2ai-control-plane/
     ├── guides/                     # Getting started, ADR corpus, adapter development
     ├── reference/                  # API reference, configuration reference
     ├── operations/                 # Operations guide, troubleshooting
-    ├── architecture/               # Design spec, USL physics, runtime phases, crate boundaries
+    ├── architecture/               # Design spec, math apparatus, runtime phases, crate boundaries
     └── examples/
         └── ads-platform/           # Reference ADR corpus + integration test task manifests
             ├── adr/                # 7 ADRs derived from "Architecting Real-Time Ads Platform"
             └── tasks/              # 3 task manifests with expected Auditor outcomes
 ```
 
-**Dependency rule:** `h2ai-types` has zero external I/O dependencies. Every other crate depends on it. `state` is the only crate that talks to NATS. `api` is the only crate that talks to HTTP. Nothing imports `api`.
+**Dependency rule:** `h2ai-types` and `h2ai-config` have zero external I/O dependencies. Four crates import `async-nats` directly, each on a dedicated subject namespace: `h2ai-nats` (subject constants + NKey provisioning), `state` (task event log), `h2ai-memory` (context history), `h2ai-telemetry` (audit log). `api` is the only crate that talks to HTTP. Nothing imports `api`.
 
 **Compute isolation:** llama.cpp FFI calls run on Tokio's bounded blocking thread pool (`spawn_blocking`, `max_blocking_threads` explicitly set). The async worker pool — NATS consumer, MAPE-K loop, axum HTTP — is never starved by inference work.
 
@@ -229,7 +333,9 @@ h2ai-control-plane/
 | Event log | NATS JetStream | Single static binary (MB of RAM), Tokio-native `async-nats`, clusters natively |
 | State model | Event-sourced CRDT | α→0 during generation (no locks), full provenance chain, crash recovery = replay |
 | Local compute | llama.cpp FFI | Zero-cost, 128GB RAM dedicated to weights |
+| Edge agents | `AgentDescriptor { model, tools }` | Any LLM-based container described by model name + capability flags; stateless `f(ctx, τ) → result`, scoped NKeys per task |
 | HTTP | axum | Tokio-native, same async runtime as orchestrator |
+| Type bindings | `typeshare` | Rust types → Go structs for edge agent contracts; no hand-maintained schemas |
 | Tracing | `tracing` + OpenTelemetry | task_id as root span, DAG execution visible in Jaeger/Grafana Tempo |
 | Metrics | Prometheus `/metrics` | 20 gauges: κ_eff, α, N_max, θ_coord, J_eff, VRAM, c_i per role, adapter latency |
 
@@ -237,13 +343,13 @@ h2ai-control-plane/
 
 ## Deployment
 
-The system is **C-first**: the distributed cluster is the architectural foundation, not a future upgrade. Profile A is Profile C running on one machine.
+The system is **C-first**: the distributed cluster is the architectural foundation, not a future upgrade. Local Plan is Cloud Plan running on one machine.
 
-| Profile | Target | Stack |
+| Plan | Target | Stack |
 |---|---|---|
-| **A — Local dev** | Single workstation (128GB RAM) | Static binary + nats-server, no container runtime required |
-| **B — Team node** | Dedicated server | 3-node NATS cluster + 2× h2ai + nginx + Prometheus + Grafana + Jaeger |
-| **C — Kubernetes** | Multi-region cluster | Helm chart, NATS StatefulSet, h2ai Deployment + HPA, ServiceMonitor |
+| **Local — Local dev** | Single workstation (128GB RAM) | Static binary + nats-server, no container runtime required |
+| **Server — Team node** | Dedicated server | 3-node NATS cluster + 2× h2ai + nginx + Prometheus + Grafana + Jaeger |
+| **Cloud — Kubernetes** | Multi-region cluster | Helm chart, NATS StatefulSet, h2ai Deployment + HPA, ServiceMonitor |
 
 ---
 
@@ -273,7 +379,8 @@ The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus f
 
 | Document | Contents |
 |---|---|
-| [Getting Started](docs/guides/getting-started.md) | First task end-to-end — Profile A local, Profile B team node, Profile C Kubernetes |
+| [Getting Started](docs/guides/getting-started.md) | First task end-to-end — Local Plan, Server Plan team node, Cloud Plan Kubernetes |
+| [Agent Descriptor Guide](docs/guides/agent-descriptor.md) | Pure LLM vs. tool-using agents — how tools affect α, κ_base, c_i, topology selection, and NKey scoping; worked examples |
 | [ADR Corpus Guide](docs/guides/adr-corpus.md) | What ADRs are, how the compiler reads them, diagnosing low J_eff, minimum viable corpus |
 | [Adapter Development](docs/guides/adapters.md) | Implementing `IComputeAdapter` for custom compute backends, testing, registration |
 | [Theory to Implementation](docs/guides/theory-to-implementation.md) | Topology selection protocol, 7-topology catalog with Pareto scores, team-swarm configuration, worked example |
@@ -282,19 +389,18 @@ The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus f
 
 | Document | Contents |
 |---|---|
-| [API Reference](docs/reference/api.md) | All REST endpoints, SSE event stream, complete JSON schemas for all 14 events, error codes |
+| [API Reference](docs/reference/api.md) | All REST endpoints, SSE event stream, complete JSON schemas for all 17 events, error codes |
 | [Configuration Reference](docs/reference/configuration.md) | All environment variables, `adapters.toml` format, 20 Prometheus metrics, Helm values |
 
 ### Architecture
 
 | Document | Contents |
 |---|---|
-| [Design Specification](docs/architecture/00-design-specification.md) | Full system design — all architectural decisions with rationale |
-| [USL Physics](docs/architecture/01-usl-physics.md) | Mathematical foundation — USL, CG, κ_eff, N_max, Multiplication Condition, Dark Knowledge Gap |
-| [Runtime Phases](docs/architecture/02-runtime-phases.md) | 6-phase execution flow, 14-event vocabulary, 10 structural guarantees |
-| [Crate Boundaries](docs/architecture/03-crate-boundaries.md) | Workspace layout, dependency rules, Tokio thread pool isolation |
-| [Deployment](docs/architecture/04-deployment.md) | Three profiles, NATS clustering, Kubernetes topology, observability |
-| [Mathematics Apparatus](docs/architecture/05-math-apparatus.md) | All 10 definitions, 5 propositions with proofs, calibration reference table, safety constraints, event vocabulary |
+| [Design Specification](docs/architecture/design-specification.md) | System overview — positioning, tech stack, deployment plans, API contract, math summary |
+| [Runtime Phases](docs/architecture/runtime-phases.md) | 6-phase execution flow, 17-event vocabulary, structural guarantees |
+| [Crate Boundaries](docs/architecture/crate-boundaries.md) | Workspace layout, 12 crates, dependency rules, Tokio thread pool isolation |
+| [Deployment](docs/architecture/deployment.md) | Three deployment plans, NATS clustering, Kubernetes topology, observability |
+| [Math Apparatus](docs/architecture/math-apparatus.md) | 10 definitions + 5 propositions with proofs, runtime callouts, calibration table, event vocabulary |
 
 ### Operations
 

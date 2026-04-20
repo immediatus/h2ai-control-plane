@@ -4,7 +4,7 @@ use crate::config::{
 use crate::identity::{ExplorerId, TaskId};
 use crate::physics::{
     CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
-    RoleErrorCost,
+    RoleErrorCost, TauValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub enum ProposalFailureReason {
 pub struct ProposalEvent {
     pub task_id: TaskId,
     pub explorer_id: ExplorerId,
-    pub tau: f64,
+    pub tau: TauValue,
     pub raw_output: String,
     pub token_cost: u64,
     pub adapter_kind: AdapterKind,
@@ -171,6 +171,26 @@ pub struct InterfaceSaturationWarningEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaoIterationEvent {
+    pub task_id: TaskId,
+    pub explorer_id: ExplorerId,
+    pub turn: u8,
+    pub observation: String,
+    pub passed: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationScoredEvent {
+    pub task_id: TaskId,
+    pub explorer_id: ExplorerId,
+    pub score: f64,
+    pub reason: String,
+    pub passed: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
 pub enum H2AIEvent {
     CalibrationCompleted(CalibrationCompletedEvent),
@@ -190,6 +210,8 @@ pub enum H2AIEvent {
     SemilatticeCompiled(SemilatticeCompiledEvent),
     MergeResolved(MergeResolvedEvent),
     TaskFailed(TaskFailedEvent),
+    TaoIteration(TaoIterationEvent),
+    VerificationScored(VerificationScoredEvent),
 }
 
 impl H2AIEvent {
