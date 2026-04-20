@@ -1,0 +1,20 @@
+[package]
+name        = "h2ai-adapters"
+description = "IComputeAdapter implementations — Mock and CloudGeneric"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types  = { path = "../h2ai-types" }
+h2ai-config = { path = "../h2ai-config" }
+async-trait = { workspace = true }
+reqwest     = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }

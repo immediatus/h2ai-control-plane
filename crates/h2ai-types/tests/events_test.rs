@@ -4,7 +4,7 @@ use h2ai_types::events::*;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::physics::{
     CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
-    RoleErrorCost,
+    RoleErrorCost, TauValue,
 };
 
 fn task_id() -> TaskId {
@@ -26,11 +26,12 @@ fn calibration() -> CoherencyCoefficients {
 #[test]
 fn calibration_completed_event_serde_round_trip() {
     let cc = calibration();
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let e = CalibrationCompletedEvent {
         calibration_id: task_id(),
         coefficients: cc,
         coordination_threshold: theta,
+        ensemble: None,
         timestamp: Utc::now(),
     };
     let json = serde_json::to_string(&e).unwrap();
@@ -56,35 +57,36 @@ fn task_bootstrapped_event_includes_j_eff() {
 #[test]
 fn topology_provisioned_event_includes_physics_fields() {
     let cc = calibration();
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let role_costs = vec![
         RoleErrorCost::new(0.3).unwrap(),
         RoleErrorCost::new(0.7).unwrap(),
     ];
-    let merge_strategy = MergeStrategy::from_role_costs(&role_costs);
+    let merge_strategy = MergeStrategy::from_role_costs(&role_costs, 0.85, 0.95, 0);
     let e = TopologyProvisionedEvent {
         task_id: task_id(),
         topology_kind: TopologyKind::Ensemble,
         explorer_configs: vec![
             ExplorerConfig {
                 explorer_id: explorer_id(),
-                tau: 0.2,
+                tau: TauValue::new(0.2).unwrap(),
                 adapter: cloud_adapter(),
                 role: None,
             },
             ExplorerConfig {
                 explorer_id: explorer_id(),
-                tau: 0.9,
+                tau: TauValue::new(0.9).unwrap(),
                 adapter: cloud_adapter(),
                 role: None,
             },
         ],
         auditor_config: AuditorConfig {
             adapter: cloud_adapter(),
+            ..Default::default()
         },
         n_max: 4.2,
         interface_n_max: None,
-        kappa_eff: 0.03,
+        beta_eff: 0.03,
         role_error_costs: role_costs,
         merge_strategy,
         coordination_threshold: theta,
@@ -95,7 +97,7 @@ fn topology_provisioned_event_includes_physics_fields() {
     let json = serde_json::to_string(&e).unwrap();
     let back: TopologyProvisionedEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(e.explorer_configs.len(), back.explorer_configs.len());
-    assert_eq!(back.merge_strategy, MergeStrategy::CrdtSemilattice);
+    assert_eq!(back.merge_strategy, MergeStrategy::ScoreOrdered);
     assert_eq!(e.retry_count, back.retry_count);
 }
 
@@ -106,6 +108,7 @@ fn branch_pruned_event_includes_error_cost() {
         explorer_id: explorer_id(),
         reason: "Violates ADR-004: Stateless Auth requirement".into(),
         constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
+        violated_constraints: vec![],
         timestamp: Utc::now(),
     };
     let json = serde_json::to_string(&e).unwrap();
@@ -140,12 +143,12 @@ fn semilattice_compiled_event_includes_merge_strategy() {
         task_id: task_id(),
         valid_proposals: vec![eid.clone()],
         pruned_proposals: vec![(eid, "ADR-004 violation".into())],
-        merge_strategy: MergeStrategy::CrdtSemilattice,
+        merge_strategy: MergeStrategy::ScoreOrdered,
         timestamp: Utc::now(),
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: SemilatticeCompiledEvent = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.merge_strategy, MergeStrategy::CrdtSemilattice);
+    assert_eq!(back.merge_strategy, MergeStrategy::ScoreOrdered);
 }
 
 #[test]
@@ -183,15 +186,16 @@ fn task_failed_event_may_include_multiplication_failure() {
 #[test]
 fn h2ai_event_enum_wraps_all_17_events() {
     let cc = calibration();
-    let theta = CoordinationThreshold::from_calibration(&cc);
+    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let role_costs = vec![RoleErrorCost::new(0.5).unwrap()];
-    let merge = MergeStrategy::from_role_costs(&role_costs);
+    let merge = MergeStrategy::from_role_costs(&role_costs, 0.85, 0.95, 0);
 
     let events: Vec<H2AIEvent> = vec![
         H2AIEvent::CalibrationCompleted(CalibrationCompletedEvent {
             calibration_id: task_id(),
             coefficients: cc,
             coordination_threshold: theta.clone(),
+            ensemble: None,
             timestamp: Utc::now(),
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
@@ -207,10 +211,11 @@ fn h2ai_event_enum_wraps_all_17_events() {
             explorer_configs: vec![],
             auditor_config: AuditorConfig {
                 adapter: cloud_adapter(),
+                ..Default::default()
             },
             n_max: 3.0,
             interface_n_max: None,
-            kappa_eff: 0.05,
+            beta_eff: 0.05,
             role_error_costs: vec![RoleErrorCost::new(0.5).unwrap()],
             merge_strategy: merge.clone(),
             coordination_threshold: theta.clone(),
@@ -230,7 +235,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
         H2AIEvent::Proposal(ProposalEvent {
             task_id: task_id(),
             explorer_id: explorer_id(),
-            tau: 0.5,
+            tau: TauValue::new(0.5).unwrap(),
             raw_output: "out".into(),
             token_cost: 10,
             adapter_kind: cloud_adapter(),
@@ -274,6 +279,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             explorer_id: explorer_id(),
             reason: "ADR-004".into(),
             constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
+            violated_constraints: vec![],
             timestamp: Utc::now(),
         }),
         H2AIEvent::ZeroSurvival(ZeroSurvivalEvent {

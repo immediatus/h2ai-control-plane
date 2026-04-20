@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: h2ai-control-plane
+  namespace: h2ai
+  labels:
+    app: h2ai-control-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: h2ai-control-plane
+  template:
+    metadata:
+      labels:
+        app: h2ai-control-plane
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: h2ai-control-plane
+          image: ghcr.io/h2ai/control-plane:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: h2ai-config
+          volumeMounts:
+            - name: constraint-corpus
+              mountPath: /adr
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 2
+              memory: 4Gi
+      volumes:
+        - name: constraint-corpus
+          configMap:
+            name: constraint-corpus

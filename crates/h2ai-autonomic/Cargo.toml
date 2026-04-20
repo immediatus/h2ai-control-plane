@@ -1,0 +1,23 @@
+[package]
+name        = "h2ai-autonomic"
+description = "MAPE-K control loop — physics checker, topology planner, merge engine, retry policy"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types    = { path = "../h2ai-types" }
+h2ai-config   = { path = "../h2ai-config" }
+h2ai-state    = { path = "../h2ai-state" }
+h2ai-adapters = { path = "../h2ai-adapters" }
+h2ai-context  = { path = "../h2ai-context" }
+chrono        = { workspace = true }
+futures       = { workspace = true }
+thiserror     = { workspace = true }
+tokio         = { workspace = true }
+
+[dev-dependencies]
+h2ai-adapters = { path = "../h2ai-adapters" }
+h2ai-config   = { path = "../h2ai-config" }
+tokio         = { workspace = true }

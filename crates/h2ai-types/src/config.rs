@@ -1,4 +1,5 @@
 use crate::identity::ExplorerId;
+use crate::physics::TauValue;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -43,7 +44,7 @@ pub enum AgentRole {
     Synthesizer,
     Custom {
         name: String,
-        tau: f64,
+        tau: TauValue,
         role_error_cost: f64,
     },
 }
@@ -55,7 +56,7 @@ impl AgentRole {
             Self::Executor => 0.40,
             Self::Evaluator => 0.10,
             Self::Synthesizer => 0.80,
-            Self::Custom { tau, .. } => *tau,
+            Self::Custom { tau, .. } => tau.value(),
         }
     }
 
@@ -76,7 +77,7 @@ impl AgentRole {
 pub struct RoleSpec {
     pub agent_id: String,
     pub role: AgentRole,
-    pub tau: Option<f64>,
+    pub tau: Option<TauValue>,
     pub role_error_cost: Option<f64>,
 }
 
@@ -103,12 +104,24 @@ pub enum AdapterKind {
         endpoint: String,
         api_key_env: String,
     },
+    OpenAI {
+        api_key_env: String,
+        model: String,
+    },
+    Anthropic {
+        api_key_env: String,
+        model: String,
+    },
+    Ollama {
+        endpoint: String,
+        model: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplorerConfig {
     pub explorer_id: ExplorerId,
-    pub tau: f64,
+    pub tau: TauValue,
     pub adapter: AdapterKind,
     pub role: Option<AgentRole>,
 }
@@ -116,10 +129,86 @@ pub struct ExplorerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditorConfig {
     pub adapter: AdapterKind,
+    pub tau: TauValue,
+    pub max_tokens: u64,
+    pub prompt_template: String,
 }
 
-impl AuditorConfig {
-    pub fn tau(&self) -> f64 {
-        0.0
+impl Default for AuditorConfig {
+    fn default() -> Self {
+        Self {
+            adapter: AdapterKind::CloudGeneric {
+                endpoint: String::new(),
+                api_key_env: String::new(),
+            },
+            tau: TauValue::new(0.1).unwrap(),
+            max_tokens: 256,
+            prompt_template:
+                "Review the following proposal for compliance with constraints: {constraints}.\n\nProposal:\n{proposal}\n\nRespond ONLY with JSON: {\"approved\": true, \"reason\": \"<brief explanation>\"}"
+                    .into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaoConfig {
+    pub max_turns: u8,
+    pub verify_pattern: Option<String>,
+    pub observation_pass: String,
+    pub observation_fail_pattern: String,
+    pub observation_fail_schema: String,
+    pub retry_instruction: String,
+    /// Jaccard similarity threshold above which successive TAO turn outputs are
+    /// considered a stuck repetition loop. When exceeded on a failed turn, the
+    /// loop returns Err immediately. Set to a value > 1.0 to disable.
+    pub repetition_threshold: f64,
+}
+
+impl Default for TaoConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: 3,
+            verify_pattern: None,
+            observation_pass: "verification passed".into(),
+            observation_fail_pattern:
+                "pattern not matched on turn {turn}; retrying".into(),
+            observation_fail_schema:
+                "schema validation failed on turn {turn}: {error}; retrying".into(),
+            retry_instruction:
+                "[OBSERVATION turn {turn}]: output did not satisfy verification. Revise your response."
+                    .into(),
+            repetition_threshold: 0.92,
+        }
+    }
+}
+
+/// Optional JSON schema config for validating TAO loop output.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OutputSchemaConfig {
+    /// JSON Schema string (Draft 7 / 2019-09 / 2020-12 — any jsonschema-supported format).
+    pub schema_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationConfig {
+    pub threshold: f64,
+    pub rubric: String,
+    pub evaluator_system_prompt: String,
+    pub evaluator_tau: TauValue,
+    pub evaluator_max_tokens: u64,
+}
+
+impl Default for VerificationConfig {
+    fn default() -> Self {
+        Self {
+            threshold: 0.45,
+            rubric: "Score this proposal from 0.0 to 1.0 on: constraint compliance, \
+                     coherence, completeness. Reply with a JSON object: \
+                     {\"score\": <float>, \"reason\": <string>}"
+                .into(),
+            evaluator_system_prompt: "You are a strict evaluator.".into(),
+            evaluator_tau: TauValue::new(0.1).unwrap(),
+            evaluator_max_tokens: 128,
+        }
     }
 }

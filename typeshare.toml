@@ -1,0 +1,3 @@
+[go]
+package = "h2aitypes"
+output_folder = "bindings/go"

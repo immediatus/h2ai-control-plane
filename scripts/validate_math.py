@@ -316,7 +316,7 @@ j_no_adr   = j_eff(k_no_adr,   k_task)
 j_one_adr  = j_eff(k_one_adr,  k_task)
 j_two_adrs = j_eff(k_two_adrs, k_task)
 check(
-    "J_eff increases monotonically as ADR corpus grows",
+    "J_eff increases monotonically as constraint corpus grows",
     j_no_adr < j_one_adr < j_two_adrs,
     f"no ADR={j_no_adr:.3f}, 1 ADR={j_one_adr:.3f}, 2 ADRs={j_two_adrs:.3f}"
 )
@@ -611,6 +611,170 @@ for layer, alpha, kappa_base, cg_mean, kappa_eff_exp, n_max_exp in CALIBRATION_T
         approx_eq(n_max_extended, n_max_simple, tol=1e-6),
         f"extended={n_max_extended:.3f}, simple={n_max_simple:.3f}"
     )
+
+# ---------------------------------------------------------------------------
+# §6–§7 Harness Physics Extensions (Definitions 11–13, Propositions 6–8)
+# ---------------------------------------------------------------------------
+
+# § Definition 11 — TAO Error Reduction  c_i_effective(t) = c_i × 0.60^(t-1)
+# TAO_DECAY = 0.60 must match simulate_usl.py TAO_DECAY constant
+section("Definition 11 — TAO Error Reduction  c_i × 0.60^(t-1)")
+
+TAO_DECAY = 0.60
+
+
+def tao_error_reduction(c_i: float, turns: int) -> float:
+    return c_i * (TAO_DECAY ** (turns - 1))
+
+
+check("t=1 → c_i unchanged",
+      approx_eq(tao_error_reduction(0.5, 1), 0.5),
+      f"got {tao_error_reduction(0.5, 1)}")
+check("t=2 → 60% of c_i",
+      approx_eq(tao_error_reduction(0.5, 2), 0.30),
+      f"got {tao_error_reduction(0.5, 2)}")
+check("t=3 → 36% of c_i",
+      approx_eq(tao_error_reduction(0.5, 3), 0.18),
+      f"got {tao_error_reduction(0.5, 3)}")
+check("monotone decrease across turns",
+      tao_error_reduction(0.5, 3) < tao_error_reduction(0.5, 2) < tao_error_reduction(0.5, 1))
+check("Shell agent (c_i=0.9) drops below BFT threshold at t=2",
+      tao_error_reduction(0.9, 2) < 0.85,
+      f"c_i_eff={tao_error_reduction(0.9, 2):.3f} at t=2")
+check("Executor (c_i=0.5) already below BFT threshold at t=1",
+      tao_error_reduction(0.5, 1) < 0.85,
+      f"c_i={tao_error_reduction(0.5, 1):.3f}")
+check("Shell agent exact crossover value t=2 ≈ 0.540",
+      approx_eq(tao_error_reduction(0.9, 2), 0.540, tol=0.01),
+      f"got {tao_error_reduction(0.9, 2):.3f}")
+
+# § Definition 12 — Verification Filter Gain
+# verification_gain(c_i, filter_ratio) = c_i × (1 - filter_ratio)
+section("Definition 12 — Verification Filter Gain  c_i × (1 − filter_ratio)")
+
+
+def verification_gain(c_i: float, filter_ratio: float) -> float:
+    return c_i * (1.0 - filter_ratio)
+
+
+check("zero gain at filter_ratio=1.0 (no filtering)",
+      approx_eq(verification_gain(0.5, 1.0), 0.0))
+check("maximum gain at filter_ratio=0.0 (all filtered)",
+      approx_eq(verification_gain(0.5, 0.0), 0.5))
+check("Executor +25pp at 50% filter",
+      approx_eq(verification_gain(0.5, 0.5), 0.25),
+      f"got {verification_gain(0.5, 0.5):.3f}")
+check("Shell agent +45pp at 50% filter",
+      approx_eq(verification_gain(0.9, 0.5), 0.45),
+      f"got {verification_gain(0.9, 0.5):.3f}")
+check("monotone: lower filter_ratio → higher gain",
+      verification_gain(0.5, 0.3) > verification_gain(0.5, 0.7))
+
+# § Definition 13 — Harness Attribution Decomposition
+# Q_total = Q_baseline + G_topology + G_tao + G_verify  (clamped to 1.0)
+section("Definition 13 — Harness Attribution  Q_total = baseline + topology + tao + verify")
+
+ALPHA_AI = 0.15
+KAPPA_AI = 0.025
+
+
+def harness_q_total(c_i: float, n: int, alpha: float, kappa_e: float,
+                    filter_ratio: float, tao_turns: float) -> float:
+    baseline = 1.0 - c_i
+    n = max(n, 1)
+    usl_n = n / (1.0 + alpha * (n - 1) + kappa_e * n * (n - 1))
+    usl_n = max(usl_n, 1.0)
+    g_topo = max(c_i * (1.0 - 1.0 / usl_n), 0.0)
+    tao_c = c_i * (TAO_DECAY ** (tao_turns - 1))
+    g_tao = max((1.0 - tao_c) - baseline, 0.0)
+    g_verify = c_i * (1.0 - filter_ratio)
+    return min(baseline + g_topo + g_tao + g_verify, 1.0)
+
+
+check("Q_total ≥ baseline (1-c_i) — harness never reduces quality",
+      harness_q_total(0.5, 1, ALPHA_AI, KAPPA_AI, 1.0, 1) >= (1.0 - 0.5),
+      f"got {harness_q_total(0.5, 1, ALPHA_AI, KAPPA_AI, 1.0, 1):.3f}")
+check("ensemble improves over single agent (N=4 > N=1)",
+      harness_q_total(0.5, 4, ALPHA_AI, KAPPA_AI, 1.0, 1) >=
+      harness_q_total(0.5, 1, ALPHA_AI, KAPPA_AI, 1.0, 1))
+check("TAO improves over no TAO",
+      harness_q_total(0.5, 4, ALPHA_AI, KAPPA_AI, 1.0, 3) >
+      harness_q_total(0.5, 4, ALPHA_AI, KAPPA_AI, 1.0, 1))
+check("full harness reaches quality ceiling (≤ 1.0)",
+      harness_q_total(0.5, 4, ALPHA_AI, KAPPA_AI, 0.5, 3) <= 1.0)
+check("Q_total always non-negative",
+      harness_q_total(0.0, 1, 0.0, 0.001, 1.0, 1) >= 0.0)
+
+# § Proposition 6 — Parallel Verification Speedup
+# T(N, P) = ceil(N/P) × T_eval
+section("Proposition 6 — Parallel Verification  T(N,P) = ceil(N/P) × T_eval")
+
+check("P=N → single T_eval (fully parallel)",
+      math.ceil(6 / 6) == 1)
+check("P=1 → N × T_eval (fully sequential)",
+      math.ceil(6 / 1) == 6)
+check("P=3 → 2 × T_eval",
+      math.ceil(6 / 3) == 2)
+check("P=N/2 → 3× speedup vs P=1  (T(6,3)=2 < T(6,1)=6)",
+      math.ceil(6 / 3) < math.ceil(6 / 1),
+      f"T(6,3)={math.ceil(6/3)}, T(6,1)={math.ceil(6/1)}")
+
+# § Proposition 7 — TAO Convergence turns
+# t* = ceil(log(ε/c_i) / log(0.6)) to reach error floor ε
+section("Proposition 7 — TAO Convergence  t* = ceil(log(ε/c_i) / log(TAO_DECAY))")
+
+
+def tao_convergence_turns(c_i: float, target_eps: float) -> int:
+    if c_i <= target_eps:
+        return 1
+    return math.ceil(math.log(target_eps / c_i) / math.log(TAO_DECAY))
+
+
+# Brute-force verification
+def brute_convergence(c_i: float, target_eps: float) -> int:
+    for t in range(1, 30):
+        if tao_error_reduction(c_i, t) <= target_eps:
+            return t
+    return 30
+
+
+check("formula matches brute force for c_i=0.5, eps=0.1",
+      abs(tao_convergence_turns(0.5, 0.1) - brute_convergence(0.5, 0.1)) <= 1,
+      f"formula={tao_convergence_turns(0.5, 0.1)}, brute={brute_convergence(0.5, 0.1)}")
+check("formula matches brute force for c_i=0.9, eps=0.1",
+      abs(tao_convergence_turns(0.9, 0.1) - brute_convergence(0.9, 0.1)) <= 1,
+      f"formula={tao_convergence_turns(0.9, 0.1)}, brute={brute_convergence(0.9, 0.1)}")
+check("Shell agent crosses BFT threshold in ≤2 turns",
+      brute_convergence(0.9, BFT_THRESHOLD) <= 2,
+      f"turns={brute_convergence(0.9, BFT_THRESHOLD)}")
+
+# § Proposition 8 — Attribution Monotonicity
+# Q_total is monotone in N (≤N_max), TAO turns, and (1-filter_ratio)
+section("Proposition 8 — Attribution Monotonicity  ∂Q/∂N≥0, ∂Q/∂t≥0, ∂Q/∂(1-f)≥0")
+
+n_max_ai = int(analytical_n_max(ALPHA_AI, KAPPA_AI))
+q_by_n = [harness_q_total(0.5, n, ALPHA_AI, KAPPA_AI, 1.0, 1) for n in range(1, n_max_ai + 1)]
+check("Q_total monotone in N (1..N_max)",
+      all(q_by_n[i] <= q_by_n[i+1] for i in range(len(q_by_n)-1)),
+      f"N=1..{n_max_ai} values: {[f'{v:.4f}' for v in q_by_n]}")
+
+q_by_tao = [harness_q_total(0.5, 4, ALPHA_AI, KAPPA_AI, 1.0, float(t)) for t in range(1, 5)]
+check("Q_total monotone in TAO turns (1..4)",
+      all(q_by_tao[i] <= q_by_tao[i+1] for i in range(len(q_by_tao)-1)),
+      f"t=1..4 values: {[f'{v:.4f}' for v in q_by_tao]}")
+
+q_by_fr = [harness_q_total(0.5, 4, ALPHA_AI, KAPPA_AI, fr, 1.0)
+           for fr in [1.0, 0.8, 0.6, 0.4, 0.2, 0.0]]
+check("Q_total monotone in verification strictness (filter_ratio 1.0→0.0)",
+      all(q_by_fr[i] <= q_by_fr[i+1] for i in range(len(q_by_fr)-1)),
+      f"fr=1.0..0.0 values: {[f'{v:.4f}' for v in q_by_fr]}")
+
+check("TAO gain magnitude: t=1→4 matches simulation finding (+21.88pp ±1pp)",
+      abs((q_by_tao[-1] - q_by_tao[0]) * 100 - 21.88) < 1.0,
+      f"Δ={( q_by_tao[-1] - q_by_tao[0])*100:.2f}pp")
+check("Marginal topology gain N=4→N_max smaller than TAO gain t=1→2",
+      (q_by_n[-1] - q_by_n[-2]) < (q_by_tao[1] - q_by_tao[0]),
+      f"Δ(N+1)={(q_by_n[-1]-q_by_n[-2])*100:.2f}pp < Δ(t+1)={(q_by_tao[1]-q_by_tao[0])*100:.2f}pp")
 
 # ---------------------------------------------------------------------------
 # Results

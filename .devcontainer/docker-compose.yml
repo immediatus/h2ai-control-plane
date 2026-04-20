@@ -14,21 +14,18 @@ services:
     volumes:
       - ../:/${WORKSPACES_PATH}:z
       - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/workspace/target
+      - target-cache:/${WORKSPACES_PATH}/target
       - ${HOME}/.claude:/home/${USER}/.claude:z
       - ${HOME}/.claude.json:/home/${USER}/.claude.json:z
       - ${HOME}/.local/bin/claude:/home/${USER}/.local/bin/claude:z
       - ${HOME}/.local/bin/claude:/usr/local/bin/claude:z
+      - ${HOME}/.local/share/claude:/home/${USER}/.local/share/claude:z
     command: sleep infinity
     environment:
       HOME: /home/${USER}
       USER: ${USER}
-      H2AI_NATS_URL: nats://nats:4222
       H2AI_LISTEN_ADDR: 0.0.0.0:8080
       H2AI_METRICS_ADDR: 0.0.0.0:9090
-      H2AI_PROFILE: a
-      RUST_LOG: h2ai=debug,info
-      RUST_BACKTRACE: "1"
     depends_on:
       nats:
         condition: service_healthy

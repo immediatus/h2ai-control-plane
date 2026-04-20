@@ -15,7 +15,7 @@ WORKDIR /build
 # Cache dependencies before copying source
 COPY Cargo.toml Cargo.lock* ./
 COPY crates/ crates/
-RUN cargo build --release --locked
+RUN cargo build --release --locked --bin h2ai-control-plane
 
 # ── runtime ───────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime

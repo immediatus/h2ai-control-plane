@@ -36,7 +36,7 @@ If this approaches `H2AI_MAX_BLOCKING_THREADS`, the blocking pool is saturated. 
 Alert: `h2ai_blocking_threads_active / H2AI_MAX_BLOCKING_THREADS > 0.9`
 
 **`h2ai_j_eff`** — Dark Knowledge gap per task.  
-Sustained low J_eff (even for tasks that pass the threshold) means the ADR corpus is thin relative to what tasks require. Invest in ADR authorship before adding more Explorers.
+Sustained low J_eff (even for tasks that pass the threshold) means the constraint corpus is thin relative to what tasks require. Invest in constraint authorship before adding more Explorers.
 
 No alert — trend awareness. Watch for steady decline over weeks.
 
@@ -108,7 +108,7 @@ groups:
 
 ### Grafana dashboard
 
-A reference Grafana dashboard JSON is provided at `deploy/profile-b/grafana/h2ai-dashboard.json`. Import it via **Dashboards → Import → Upload JSON**.
+A reference Grafana dashboard JSON is provided at `deploy/server/grafana/h2ai-dashboard.json`. Import it via **Dashboards → Import → Upload JSON**.
 
 The dashboard includes:
 - USL physics panel (`κ_eff`, `α`, `N_max`, `θ_coord` time series)
@@ -122,7 +122,7 @@ The dashboard includes:
 
 ## Scaling
 
-### Scaling the control plane (Profile C)
+### Scaling the control plane (Cloud Plan)
 
 The h2ai orchestrator is stateless with respect to task execution — all state is in NATS JetStream. Scale horizontally by increasing `replicaCount` or letting the HPA handle it:
 
@@ -143,7 +143,7 @@ The HPA scales on CPU and memory. For workloads dominated by cloud adapter calls
 NATS JetStream is a StatefulSet. It does not scale horizontally during operation without a plan:
 
 - **3 nodes:** minimum for quorum (tolerates 1 failure)
-- **5 nodes:** tolerates 2 failures — use for high-availability Profile C
+- **5 nodes:** tolerates 2 failures — use for high-availability Cloud Plan
 - Do not scale NATS during active task execution. Quorum reconfiguration is a maintenance operation.
 
 ```bash
@@ -151,7 +151,7 @@ NATS JetStream is a StatefulSet. It does not scale horizontally during operation
 kubectl scale statefulset nats --replicas=5 -n h2ai
 ```
 
-### Tuning for high-load profiles
+### Tuning for high-load plans
 
 When tasks per minute is high, tune these values before scaling replicas:
 
@@ -170,7 +170,7 @@ kubectl set env deployment/h2ai-control-plane H2AI_EXPLORER_TIMEOUT_SECS=180 -n 
 
 ## Upgrading
 
-### Rolling upgrade (Profile C)
+### Rolling upgrade (Cloud Plan)
 
 Kubernetes handles rolling updates automatically. The deployment uses `RollingUpdate` strategy with `maxUnavailable: 0` by default.
 
@@ -217,7 +217,7 @@ Calibration data from a previous binary version may not reflect changed adapter 
 
 **NATS JetStream file store** — contains the entire event log for all tasks. This is the only persistent state. Back it up.
 
-**ADR corpus** — your team's architectural knowledge. This lives in your git repository, not in the control plane. Ensure the ADR repository is backed up through normal git processes.
+**Constraint corpus** — your team's architectural knowledge (ADRs and typed ConstraintDocs). This lives in your git repository, not in the control plane. Ensure the constraint repository is backed up through normal git processes.
 
 **Adapter configuration** (`adapters.toml`) — also in git. Not runtime state.
 
@@ -226,14 +226,14 @@ Calibration data from a previous binary version may not reflect changed adapter 
 ### NATS backup
 
 ```bash
-# Profile A — back up the JetStream data directory
+# Local Plan — back up the JetStream data directory
 tar -czf nats-backup-$(date +%Y%m%d).tar.gz /var/lib/nats/jetstream/
 
-# Profile C — use the nats CLI tool
+# Cloud Plan — use the nats CLI tool
 nats stream backup H2AI_TASKS /backup/h2ai-tasks-$(date +%Y%m%d)/
 ```
 
-For Profile C, consider a CronJob that runs nightly:
+For Cloud Plan, consider a CronJob that runs nightly:
 
 ```yaml
 apiVersion: batch/v1
@@ -271,7 +271,7 @@ spec:
 Full recovery from the NATS file store is a replay operation:
 
 ```bash
-# Restore the file store (Profile A)
+# Restore the file store (Local Plan)
 tar -xzf nats-backup-20260419.tar.gz -C /var/lib/nats/
 
 # Restart NATS — it will replay from the restored file store
@@ -300,4 +300,4 @@ Recalibrate after any of these events:
 
 Recalibration takes as long as `H2AI_CALIBRATION_TASKS` full inference cycles. With 3 calibration tasks and 5 adapters, expect 3–10 minutes depending on adapter latency. Tasks submitted during calibration receive `503 CalibrationRequiredError` until the new data is committed.
 
-To avoid downtime during recalibration on Profile C, route traffic away from the recalibrating instance using pod labels before starting calibration.
+To avoid downtime during recalibration on Cloud Plan, route traffic away from the recalibrating instance using pod labels before starting calibration.

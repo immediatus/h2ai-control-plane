@@ -25,8 +25,8 @@ curl -X POST http://localhost:8080/tasks \
 
 | Cause | Fix |
 |---|---|
-| ADR corpus directory is empty or wrong path | Check `H2AI_ADR_CORPUS_PATH`. Run `ls $H2AI_ADR_CORPUS_PATH/*.md`. |
-| ADRs exist but constraints section is thin | Add explicit `## Constraints` bullets. See [ADR Corpus Guide](../guides/adr-corpus.md). |
+| Constraint corpus directory is empty or wrong path | Check `H2AI_CONSTRAINT_CORPUS_PATH`. Run `ls $H2AI_CONSTRAINT_CORPUS_PATH/*.md`. |
+| ADRs exist but constraints section is thin | Add explicit `## Constraints` bullets or use typed `ConstraintDoc` format. See [Constraint Corpus Guide](../guides/constraint-corpus.md). |
 | Task description uses domain language not in ADRs | Add the relevant ADR, or add explicit `context` to the task manifest. |
 | `H2AI_J_EFF_THRESHOLD` is set too high | Lower the threshold if your corpus is intentionally minimal: `--set config.jEffThreshold="0.25"`. |
 | h2ai did not reload the corpus after ADR changes | Send `SIGHUP` to the process or restart the container. |
@@ -173,7 +173,7 @@ docker compose exec nats cat /etc/nats/nats.conf
 docker compose exec nats ls -la /data/jetstream
 ```
 
-### NATS cluster not forming (Profile B)
+### NATS cluster not forming (Server Plan)
 
 Each NATS node must be able to reach the others on port 6222. In docker compose, container names are resolvable as hostnames within the network.
 
@@ -252,5 +252,5 @@ Read the payload fields:
 | `multiplication_condition_failure` | Which of the 3 conditions blocked. See condition-specific sections above. |
 | `branch_pruned_events[*].reason` | What the Auditor rejected and why. Pattern in rejections → ADR coverage gap. |
 | `branch_pruned_events[*].constraint_error_cost` | High c_i rejections → safety-critical constraint being violated consistently. |
-| `tau_ranges_tried` | If ranges are already at `[0.0, 1.0]`, τ widening cannot help. Root cause is elsewhere. |
+| `tau_values_tried` | If all τ sets already span `[0.0, 1.0]`, τ widening cannot help. Root cause is elsewhere. |
 | `topologies_tried` | If HierarchicalTree was tried, N_max was hit. Adapter pool may need recalibration. |

@@ -1,0 +1,18 @@
+[package]
+name        = "h2ai-planner"
+description = "LLM-based task decomposition and plan review for the H2AI Control Plane"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types   = { path = "../h2ai-types" }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+chrono       = { workspace = true }
+
+[dev-dependencies]
+h2ai-adapters = { path = "../h2ai-adapters" }
+tokio         = { workspace = true }

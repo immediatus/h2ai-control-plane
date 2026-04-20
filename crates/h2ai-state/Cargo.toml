@@ -1,0 +1,25 @@
+[package]
+name        = "h2ai-state"
+description = "CRDT semilattice + NATS JetStream event log for the H2AI Control Plane"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types   = { path = "../h2ai-types" }
+h2ai-nats    = { path = "../h2ai-nats" }
+h2ai-context = { path = "../h2ai-context" }
+async-nats  = "0.38"
+futures     = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tokio       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }

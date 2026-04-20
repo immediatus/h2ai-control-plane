@@ -23,15 +23,15 @@ ADRs are the mechanism by which Dark Knowledge becomes explicit context. A well-
 
 ### The J_eff effect in practice
 
-**Without ADRs:** A task about budget enforcement returns `ContextUnderflowError` — `J_eff = 0.12`, well below the 0.4 threshold. The system refuses to proceed because the constraint space is too underspecified.
+**Without a constraint corpus:** A task about budget enforcement returns `ContextUnderflowError` — `J_eff = 0.12`, well below the 0.4 threshold. The system refuses to proceed because the constraint space is too underspecified.
 
-**With ADRs:** The same task returns `202 Accepted` — `J_eff = 0.71`. Three Explorers generate proposals. One proposes reading budget from a cache (faster, but stale). The Auditor catches it — "ADR-004: budget checks must read from Redis atomic counters, never from cache" — and tombstones that branch. Two valid proposals reach the Merge Authority.
+**With a constraint corpus:** The same task returns `202 Accepted` — `J_eff = 0.71`. Three Explorers generate proposals. One proposes reading budget from a cache (faster, but stale). The Auditor catches it — "ADR-004: budget checks must read from Redis atomic counters, never from cache" — and tombstones that branch. Two valid proposals reach the Merge Authority.
 
-The ADR corpus is not overhead. It is the input that makes the Auditor work.
+The constraint corpus is not overhead. It is the input that makes the Auditor work.
 
 ---
 
-## Writing effective ADRs
+## Writing effective constraint documents
 
 The compiler extracts three things from each ADR:
 
@@ -61,12 +61,12 @@ Derived from the blog series *"Architecting Real-Time Ads Platform"* by Yuriy Po
 
 ```bash
 # Start the stack
-cd deploy/profile-a && docker compose up -d
+cd deploy/local && docker compose up -d
 
-# Load the ADR corpus
-export ADR_PATH=docs/examples/ads-platform/adr
+# Load the constraint corpus
+export CORPUS_PATH=docs/examples/ads-platform/adr
 docker compose exec h2ai \
-  sh -c "cp -r /workspace/$ADR_PATH/* /adr/ && kill -HUP 1"
+  sh -c "cp -r /workspace/$CORPUS_PATH/* /adr/ && kill -HUP 1"
 
 # Run calibration
 curl -X POST http://localhost:8080/calibrate
@@ -79,7 +79,7 @@ cargo nextest run --test integration -- --test-threads=1
 The integration test harness (`tests/integration/`) reads the `_expected` block from each task manifest JSON and asserts:
 - `j_eff` is at or above `j_eff_min`
 - Number of valid proposals is at or above `valid_proposals_min`
-- Each entry in `should_prune` produces a `BranchPrunedEvent` citing the specified ADR
+- Each entry in `should_prune` produces a `BranchPrunedEvent` citing the specified constraint
 - The task reaches `SemilatticeCompiledEvent` (not `TaskFailedEvent`)
 
 ---
@@ -87,8 +87,8 @@ The integration test harness (`tests/integration/`) reads the `_expected` block 
 ## Contributing a new example
 
 A good example project has:
-- At least 4 ADRs with a strong `## Constraints` section
-- At least 2 task manifests with distinct `should_prune` entries that cite different ADRs
+- At least 4 constraint documents with a strong `## Constraints` section
+- At least 2 task manifests with distinct `should_prune` entries that cite different constraints
 - At least 1 task manifest that exercises the MAPE-K retry path (`valid_proposals_min: 0` on first attempt, succeeds after retry)
 - An `_expected` block in every task manifest so the integration test harness can assert outcomes
 

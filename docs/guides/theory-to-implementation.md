@@ -1,6 +1,6 @@
 # From Theory to Implementation
 
-This guide bridges the mathematical apparatus (`docs/architecture/05-math-apparatus.md`) and the H2AI runtime. It answers: given a real engineering task, how do you configure the system to extract the maximum value from multi-agent collaboration without paying unnecessary coordination cost?
+This guide bridges the mathematical apparatus (`docs/architecture/math-apparatus.md`) and the H2AI runtime. It answers: given a real engineering task, how do you configure the system to extract the maximum value from multi-agent collaboration without paying unnecessary coordination cost?
 
 The guide is organised as: topology selection protocol → topology catalog → team-scale configuration → dark knowledge management → implementation mapping.
 
@@ -251,11 +251,11 @@ The role differentiation is not bureaucracy — it is temperature-calibrated err
 A Team-Swarm Hybrid has three simultaneous ceilings that must all hold:
 
 ```
-N_max^human-team = sqrt((1 − α_H) · CG_bar_HH / κ_base^H)  ≈ 10
+N_max^human-team = round(sqrt((1 − α_H) / β_eff^H))  ≈ 10   where β_eff^H = β₀^H / CG_bar_HH
 
-N_max^swarm      = sqrt((1 − α_A) · CG_bar_AA / κ_base^A)  ≈ 6
+N_max^swarm      = round(sqrt((1 − α_A) / β_eff^A))  ≈ 6    where β_eff^A = β₀^A / CG_bar_AA
 
-N_max^interface  = sqrt((1 − α_liaison) · CG(H_liaison, SC) / κ_base^liaison)
+N_max^interface  = round(sqrt((1 − α_liaison) / β_eff^liaison))   where β_eff^liaison = β₀^liaison / CG(H_liaison, SC)
 ```
 
 The interface ceiling — the number of concurrent swarm tasks the liaison can effectively coordinate — is typically 3–5. **This is the binding constraint in most team-swarm deployments**, not the intra-swarm or intra-human ceilings.
@@ -274,7 +274,7 @@ ADRs convert tacit team knowledge into explicit, machine-readable constraint sta
 - Phrases like "must", "is required", "always" → Auditor requirement statements
 - Service names, component names, compliance references → Scope identifiers
 
-**The `## Constraints` section is the only part of an ADR that the compiler uses for rejection decisions.** Write it as a bullet list of hard rules in imperative language. Every bullet is a potential `BranchPrunedEvent` reason.
+**The `## Constraints` section is the primary part of an ADR that the compiler uses for rejection decisions.** Write it as a bullet list of hard rules in imperative language. Every bullet becomes a `VocabularyPresence { AllOf }` term; the whole constraint is `Hard { threshold: 0.8 }` by default. For tighter control use the typed `ConstraintDoc` format with explicit `## Severity`, `## Predicate`, and `## Remediation` sections — see [Constraint Corpus Guide](../guides/constraint-corpus.md).
 
 ### The J_eff Effect in Practice
 
@@ -282,7 +282,7 @@ ADRs convert tacit team knowledge into explicit, machine-readable constraint sta
 
 **With ADRs:** The same task returns `202 Accepted` — `J_eff = 0.71`. Three Explorers generate proposals. One proposes reading budget from a cache (faster, but stale). The Auditor catches it — "ADR-004: budget checks must read from Redis atomic counters, never from cache" — and publishes `BranchPrunedEvent`. Two valid proposals reach the Merge Authority.
 
-### Minimum Viable ADR Corpus
+### Minimum Viable Constraint Corpus
 
 A corpus with fewer than 5 ADRs typically produces `J_eff < 0.4` for real architectural tasks. Target:
 
@@ -304,19 +304,19 @@ Diagnose low `J_eff` by examining the `missing_coverage` field in the `ContextUn
 
 | Mathematical concept | H2AI implementation |
 |---------------------|---------------------|
-| Calibrate α, κ_base, CG_mean | `POST /calibrate` → `CalibrationCompletedEvent` |
-| J_eff gate (Def 10) | Dark Knowledge Compiler in `crates/context`; `ContextUnderflowError` if below 0.4 |
+| Calibrate α, β_base, CG_mean | `POST /calibrate` → `CalibrationCompletedEvent` |
+| J_eff gate (Def 10) | Dark Knowledge Compiler in `crates/h2ai-context`; `ContextUnderflowError` if below 0.4 |
 | N_max ceiling (Prop 1) | Explorer count capped at N_max during `TopologyProvisionedEvent` |
 | Multiplication condition (Prop 3) | Phase 2.5 hard gate; `MultiplicationConditionFailedEvent` names which condition failed |
 | θ_coord threshold (Prop 2) | Stored in calibration cache; enforced at topology construction |
-| CRDT merge (Prop 4, 5) | `MergeStrategy::CrdtSemilattice` in `crates/state` |
+| CRDT merge (Prop 4, 5) | `MergeStrategy::CrdtSemilattice` in `crates/h2ai-state` |
 | BFT merge (Prop 5 safety constraint) | `MergeStrategy::BftConsensus` when `max(c_i) > 0.85`; `ConsensusRequiredEvent` signals this path |
 | Auditor constraint checking (Def 10) | `BranchPrunedEvent` with ADR citation, emitted by Auditor adapter |
-| MAPE-K retry on zero survival | `ZeroSurvivalEvent` → `crates/autonomic` adjusts {N, τ} → new `TopologyProvisionedEvent` |
+| MAPE-K retry on zero survival | `ZeroSurvivalEvent` → `crates/h2ai-autonomic` adjusts {N, τ} → new `TopologyProvisionedEvent` |
 | Topology selection (three frontiers) | Phase 2: roles[] → TeamSwarmHybrid; explicit kind field; auto from ParetoWeights + N vs N_max |
 | Abstract AgentRole enum | `h2ai-types::AgentRole` — Coordinator / Executor / Evaluator / Synthesizer / Custom |
 | Review gate (intra-swarm Evaluator gate) | Phase 3b: `ReviewGateTriggeredEvent` → Evaluator runs → approve or `ReviewGateBlockedEvent` |
-| N_max^interface (Team-Swarm binding ceiling) | `crates/autonomic` computes from CG(liaison, Coordinator); `InterfaceSaturationWarningEvent` + `h2ai_interface_n_max` metric |
+| N_max^interface (Team-Swarm binding ceiling) | `crates/h2ai-autonomic` computes from CG(liaison, Coordinator); `InterfaceSaturationWarningEvent` + `h2ai_interface_n_max` metric |
 
 ### Task Manifest Parameters
 
@@ -378,7 +378,7 @@ The `tau_min` / `tau_max` spread (Ensemble mode) enforces Proposition 3's decorr
 ### Event Stream for a Successful Task (Ensemble + CRDT)
 
 ```
-CalibrationCompletedEvent      → α=0.12, κ_eff=0.019, N_max=6.3
+CalibrationCompletedEvent      → α=0.15, β_eff=0.025, N_max=6  (AI-agent tier)
 TaskBootstrappedEvent          → J_eff=0.71 (above 0.40 threshold), system_context compiled
 TopologyProvisionedEvent       → topology_kind=Ensemble, N=3, merge_strategy=CrdtSemilattice
   (Phase 2.5: Multiplication Condition gate passes — no MultiplicationConditionFailedEvent)
@@ -442,4 +442,4 @@ The topology decision reduces to two questions. First: does the task require a h
 
 Oracle, Star, Panel, and Pipeline are acceptable for simple or low-stakes tasks, but they all leave value on the table on at least one Pareto axis.
 
-The practical ceiling that matters most is not the intra-swarm N_max or the human team N_max — it is the liaison's coordination ceiling: typically 3–5 concurrent swarm tasks. This is the binding constraint, and the answer to a saturated liaison is not to add more liaisons but to raise `CG(H_liaison, SC)` through better context compilation and ADR corpus quality.
+The practical ceiling that matters most is not the intra-swarm N_max or the human team N_max — it is the liaison's coordination ceiling: typically 3–5 concurrent swarm tasks. This is the binding constraint, and the answer to a saturated liaison is not to add more liaisons but to raise `CG(H_liaison, SC)` through better context compilation and constraint corpus quality.

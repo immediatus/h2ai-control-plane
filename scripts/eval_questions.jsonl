@@ -1,0 +1,5 @@
+{"question": "What is 2 + 2?", "correct_answer": "4", "keywords": ["4", "four"]}
+{"question": "What is the capital of France?", "correct_answer": "Paris", "keywords": ["Paris", "paris"]}
+{"question": "What programming language is known for memory safety without garbage collection?", "correct_answer": "Rust", "keywords": ["Rust", "rust"]}
+{"question": "What does HTTP stand for?", "correct_answer": "HyperText Transfer Protocol", "keywords": ["HyperText", "hypertext", "Hypertext Transfer Protocol"]}
+{"question": "What data structure uses LIFO order?", "correct_answer": "stack", "keywords": ["stack", "Stack", "LIFO"]}

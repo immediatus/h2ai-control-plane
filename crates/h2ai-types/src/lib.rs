@@ -7,16 +7,21 @@
 //!
 //! ## Modules
 //!
-//! - [`identity`] — `TaskId`, `ExplorerId` newtype identifiers
+//! - [`identity`] — `AgentId`, `TaskId`, `ExplorerId`, `SubtaskId` newtype identifiers
 //! - [`config`] — `ParetoWeights`, `TopologyKind`, `AdapterKind`, `AgentRole`, `RoleSpec`,
 //!   `ReviewGate`, `ExplorerConfig`, `AuditorConfig`
 //! - [`physics`] — `CoherencyCoefficients`, `RoleErrorCost`, `MergeStrategy`,
 //!   `CoordinationThreshold`, `MultiplicationCondition`, `JeffectiveGap`
 //! - [`adapter`] — `IComputeAdapter` trait, `ComputeRequest`, `ComputeResponse`, `AdapterError`
-//! - [`events`] — all 17 event structs and the `H2AIEvent` enum
+//! - [`events`] — all orchestration event structs and the `H2AIEvent` enum
+//! - [`agent`] — `AgentState`, `TaskPayload`, `TaskResult`, `AgentTelemetryEvent`
+//! - [`plan`] — `Subtask`, `SubtaskPlan`, `SubtaskResult`, `PlanStatus`
 
 pub mod adapter;
+pub mod agent;
 pub mod config;
 pub mod events;
 pub mod identity;
+pub mod manifest;
 pub mod physics;
+pub mod plan;

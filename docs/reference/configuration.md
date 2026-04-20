@@ -1,6 +1,6 @@
 # Configuration Reference
 
-H2AI Control Plane is configured entirely via environment variables. All variables have safe defaults for Profile A. Profile B/C deployments should review every section.
+H2AI Control Plane is configured entirely via environment variables. All variables have safe defaults for Local Plan. Server/Cloud Plan deployments should review every section.
 
 ---
 
@@ -8,7 +8,7 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 
 | Variable | Default | Description |
 |---|---|---|
-| `H2AI_PROFILE` | `a` | Deployment profile hint (`a`, `b`, `c`). Affects default log verbosity and startup checks. |
+| `H2AI_PLAN` | `local` | Deployment plan hint (`local`, `server`, `cloud`). Affects default log verbosity and startup checks. |
 | `H2AI_LISTEN_ADDR` | `0.0.0.0:8080` | HTTP bind address for the axum API gateway and Merge Authority UI. |
 | `H2AI_METRICS_ADDR` | `0.0.0.0:9090` | Prometheus `/metrics` bind address. Set to empty string to disable. |
 
@@ -21,7 +21,7 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 | `H2AI_NATS_URL` | `nats://localhost:4222` | NATS server URL. For clusters, comma-separate multiple URLs: `nats://n1:4222,nats://n2:4222,nats://n3:4222`. The client round-robins and reconnects automatically. |
 | `H2AI_NATS_STREAM_NAME` | `H2AI_TASKS` | JetStream stream name for task events. |
 | `H2AI_NATS_KV_BUCKET` | `H2AI_CALIBRATION` | KV bucket name for calibration cache. |
-| `H2AI_NATS_STREAM_REPLICAS` | `1` | Stream replication factor. Set to `3` for Profile B/C clusters. |
+| `H2AI_NATS_STREAM_REPLICAS` | `1` | Stream replication factor. Set to `3` for Server/Cloud Plan clusters. |
 | `H2AI_NATS_MAX_FILE_STORE` | `100GB` | Maximum JetStream file store size. |
 
 ---
@@ -38,6 +38,33 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 
 ---
 
+## Physics Config File (`H2AIConfig`)
+
+Runtime physics parameters may also be loaded from a JSON file via `H2AIConfig::load_from_file`. All fields are optional in the file — missing fields fall back to the defaults shown below.
+
+| Field | Default | Description |
+|---|---|---|
+| `j_eff_gate` | `0.4` | Context sufficiency gate. Identical to `H2AI_J_EFF_THRESHOLD`. |
+| `bft_threshold` | `0.85` | BFT merge strategy switch point. |
+| `coordination_threshold_max` | `0.3` | Cap on computed θ_coord. |
+| `min_baseline_competence` | `0.5` | Minimum c_i floor for Multiplication Condition. |
+| `max_error_correlation` | `0.9` | Maximum error correlation for Multiplication Condition. |
+| `tau_coordinator` | `0.05` | Default τ for Coordinator role. |
+| `tau_executor` | `0.40` | Default τ for Executor role. |
+| `tau_evaluator` | `0.10` | Default τ for Evaluator role. |
+| `tau_synthesizer` | `0.80` | Default τ for Synthesizer role. |
+| `cost_coordinator` | `0.1` | Default role error cost c_i for Coordinator. |
+| `cost_executor` | `0.5` | Default role error cost c_i for Executor. |
+| `cost_evaluator` | `0.9` | Default role error cost c_i for Evaluator. |
+| `cost_synthesizer` | `0.1` | Default role error cost c_i for Synthesizer. |
+| `max_context_tokens` | `null` | Token budget for context compaction. `null` = no limit. |
+| `explorer_max_tokens` | `1024` | Token budget per Explorer generation call. |
+| `calibration_max_tokens` | `256` | Token budget per calibration probe call. |
+| `optimizer_threshold_step` | `0.1` | How much `SelfOptimizer` lowers `verify_threshold` per MAPE-K step. |
+| `optimizer_threshold_floor` | `0.3` | Minimum `verify_threshold` the `SelfOptimizer` will suggest. |
+
+---
+
 ## Calibration
 
 | Variable | Default | Description |
@@ -51,61 +78,18 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 
 | Variable | Default | Description |
 |---|---|---|
-| `H2AI_ADR_CORPUS_PATH` | `./adr` | Path to the directory containing ADR Markdown files. Scanned recursively for `*.md` files. Reloaded on `SIGHUP`. |
+| `H2AI_CONSTRAINT_CORPUS_PATH` | `./adr` | Path to the directory containing constraint documents (ADRs and typed `ConstraintDoc` Markdown files). Scanned recursively for `*.md` files. Reloaded on `SIGHUP`. Accepts `H2AI_ADR_CORPUS_PATH` as a deprecated fallback for backward compatibility. |
 | `H2AI_ADR_RELOAD_INTERVAL_SECS` | `300` | Background corpus reload interval in seconds. Set to `0` to disable background reload (rely on `SIGHUP`). |
 
 ---
 
 ## Adapters
 
-Adapter configuration controls which compute backends are available to the Explorer pool and the Auditor.
+The explorer and auditor adapters are selected by environment variable at startup. The adapter factory resolves the provider name to a concrete `IComputeAdapter` implementation. Defaults to `mock` (deterministic test double).
 
-| Variable | Default | Description |
-|---|---|---|
-| `H2AI_ADAPTER_CONFIG_PATH` | `./adapters.toml` | Path to the adapter configuration file. See [Adapter Configuration](#adapter-configuration-file) below. |
+See the [LLM Adapters](#llm-adapters) section below for the full variable reference.
 
-### Adapter Configuration File
-
-`adapters.toml` defines the adapter pool. The calibration harness measures all listed adapters.
-
-```toml
-# adapters.toml
-
-[[explorer]]
-id = "local-llama-8b"
-kind = "local"
-model_path = "/models/llama-3-8b-instruct.Q4_K_M.gguf"
-context_size = 8192
-gpu_layers = 0          # 0 = CPU only; set to -1 for full GPU offload
-role_error_cost = 0.1
-
-[[explorer]]
-id = "cloud-gpt4o-mini"
-kind = "cloud"
-api_base = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"   # read from environment, never hardcoded
-model = "gpt-4o-mini"
-role_error_cost = 0.1
-
-[[explorer]]
-id = "cloud-claude-haiku"
-kind = "cloud"
-api_base = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-haiku-4-5-20251001"
-role_error_cost = 0.1
-
-[auditor]
-id = "auditor-cloud"
-kind = "cloud"
-api_base = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-4o"
-role_error_cost = 0.9   # Auditor: near-catastrophic false positive cost
-# tau is always 0.0 for the Auditor — set automatically, not configurable
-```
-
-**`role_error_cost` guidance:**
+**`role_error_cost` guidance** (set in `AuditorConfig` / `ExplorerConfig`):
 
 | Role | Typical c_i | Rationale |
 |---|---|---|
@@ -211,4 +195,64 @@ autoscaling:
   enabled: true
   minReplicas: 3
   maxReplicas: 20
+```
+
+---
+
+## LLM Adapters
+
+The explorer and auditor adapters are configured independently. Both default to `mock` (deterministic test double). Set provider and model at startup to use real LLMs.
+
+### Explorer (used for proposal generation and calibration)
+
+| Variable | Default | Description |
+|---|---|---|
+| `H2AI_EXPLORER_PROVIDER` | `mock` | Adapter type: `anthropic`, `openai`, `ollama`, `cloud`, `mock` |
+| `H2AI_EXPLORER_MODEL` | `gpt-4o` | Model name sent to the provider |
+| `H2AI_EXPLORER_API_KEY_ENV` | `OPENAI_API_KEY` | Name of the env var holding the API key |
+| `H2AI_EXPLORER_ENDPOINT` | _(provider default)_ | Override endpoint URL. Required for `ollama` and `cloud`. |
+
+### Auditor (used for ADR constraint gate)
+
+| Variable | Default | Description |
+|---|---|---|
+| `H2AI_AUDITOR_PROVIDER` | `mock` | Adapter type: same values as explorer |
+| `H2AI_AUDITOR_MODEL` | `gpt-4o` | Auditor model name |
+| `H2AI_AUDITOR_API_KEY_ENV` | `OPENAI_API_KEY` | Name of the env var holding the API key |
+| `H2AI_AUDITOR_ENDPOINT` | _(provider default)_ | Override endpoint URL |
+
+### Provider defaults
+
+| Provider | Default endpoint | Auth header |
+|---|---|---|
+| `anthropic` | `https://api.anthropic.com` | `x-api-key: <value of H2AI_EXPLORER_API_KEY_ENV>` |
+| `openai` | `https://api.openai.com/v1` | `Authorization: Bearer <value of H2AI_EXPLORER_API_KEY_ENV>` |
+| `ollama` | `http://localhost:11434` | none |
+| `cloud` | _(must set H2AI_EXPLORER_ENDPOINT)_ | `Authorization: Bearer <value of H2AI_EXPLORER_API_KEY_ENV>` |
+| `mock` | n/a | n/a |
+
+### Example: Anthropic explorer + Claude Haiku auditor
+
+```bash
+H2AI_EXPLORER_PROVIDER=anthropic
+H2AI_EXPLORER_MODEL=claude-3-5-sonnet-20241022
+H2AI_EXPLORER_API_KEY_ENV=ANTHROPIC_API_KEY
+
+H2AI_AUDITOR_PROVIDER=anthropic
+H2AI_AUDITOR_MODEL=claude-3-5-haiku-20241022
+H2AI_AUDITOR_API_KEY_ENV=ANTHROPIC_API_KEY
+
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Example: local Ollama
+
+```bash
+H2AI_EXPLORER_PROVIDER=ollama
+H2AI_EXPLORER_MODEL=llama3.2
+H2AI_EXPLORER_ENDPOINT=http://localhost:11434
+
+H2AI_AUDITOR_PROVIDER=ollama
+H2AI_AUDITOR_MODEL=llama3.2
+H2AI_AUDITOR_ENDPOINT=http://localhost:11434
 ```

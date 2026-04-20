@@ -1,10 +1,10 @@
 use crate::config::{
     AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, TopologyKind,
 };
-use crate::identity::{ExplorerId, TaskId};
+use crate::identity::{ExplorerId, SubtaskId, TaskId};
 use crate::physics::{
-    CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
-    RoleErrorCost,
+    CoherencyCoefficients, CoordinationThreshold, EnsembleCalibration, MergeStrategy,
+    MultiplicationConditionFailure, RoleErrorCost, TauValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,9 @@ pub struct CalibrationCompletedEvent {
     pub calibration_id: TaskId,
     pub coefficients: CoherencyCoefficients,
     pub coordination_threshold: CoordinationThreshold,
+    /// Condorcet-based ensemble calibration. `None` when < 2 adapters ran calibration
+    /// (falls back to config defaults).
+    pub ensemble: Option<EnsembleCalibration>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -34,7 +37,8 @@ pub struct TopologyProvisionedEvent {
     pub auditor_config: AuditorConfig,
     pub n_max: f64,
     pub interface_n_max: Option<f64>,
-    pub kappa_eff: f64,
+    #[serde(alias = "kappa_eff")]
+    pub beta_eff: f64,
     pub role_error_costs: Vec<RoleErrorCost>,
     pub merge_strategy: MergeStrategy,
     pub coordination_threshold: CoordinationThreshold,
@@ -62,7 +66,7 @@ pub enum ProposalFailureReason {
 pub struct ProposalEvent {
     pub task_id: TaskId,
     pub explorer_id: ExplorerId,
-    pub tau: f64,
+    pub tau: TauValue,
     pub raw_output: String,
     pub token_cost: u64,
     pub adapter_kind: AdapterKind,
@@ -94,11 +98,22 @@ pub struct ValidationEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintViolation {
+    pub constraint_id: String,
+    /// Predicate score [0,1]; 0 = total violation.
+    pub score: f64,
+    /// "Hard", "Soft", or "Advisory"
+    pub severity_label: String,
+    pub remediation_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchPrunedEvent {
     pub task_id: TaskId,
     pub explorer_id: ExplorerId,
     pub reason: String,
     pub constraint_error_cost: RoleErrorCost,
+    pub violated_constraints: Vec<ConstraintViolation>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -171,6 +186,63 @@ pub struct InterfaceSaturationWarningEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaoIterationEvent {
+    pub task_id: TaskId,
+    pub explorer_id: ExplorerId,
+    pub turn: u8,
+    pub observation: String,
+    pub passed: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationScoredEvent {
+    pub task_id: TaskId,
+    pub explorer_id: ExplorerId,
+    pub score: f64,
+    pub reason: String,
+    pub passed: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtaskPlanCreatedEvent {
+    pub task_id: TaskId,
+    pub plan_id: TaskId,
+    pub subtask_count: usize,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Covers both approved and rejected outcomes — use `approved` field to distinguish.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtaskPlanReviewedEvent {
+    pub task_id: TaskId,
+    pub plan_id: TaskId,
+    pub approved: bool,
+    pub reason: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtaskStartedEvent {
+    pub task_id: TaskId,
+    pub plan_id: TaskId,
+    pub subtask_id: SubtaskId,
+    pub description: String,
+    pub wave: usize,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtaskCompletedEvent {
+    pub task_id: TaskId,
+    pub plan_id: TaskId,
+    pub subtask_id: SubtaskId,
+    pub token_cost: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
 pub enum H2AIEvent {
     CalibrationCompleted(CalibrationCompletedEvent),
@@ -190,6 +262,12 @@ pub enum H2AIEvent {
     SemilatticeCompiled(SemilatticeCompiledEvent),
     MergeResolved(MergeResolvedEvent),
     TaskFailed(TaskFailedEvent),
+    TaoIteration(TaoIterationEvent),
+    VerificationScored(VerificationScoredEvent),
+    SubtaskPlanCreated(SubtaskPlanCreatedEvent),
+    SubtaskPlanReviewed(SubtaskPlanReviewedEvent),
+    SubtaskStarted(SubtaskStartedEvent),
+    SubtaskCompleted(SubtaskCompletedEvent),
 }
 
 impl H2AIEvent {

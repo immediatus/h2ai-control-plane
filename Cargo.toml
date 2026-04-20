@@ -1,6 +1,21 @@
 [workspace]
 members = [
     "crates/h2ai-types",
+    "crates/h2ai-state",
+    "crates/h2ai-context",
+    "crates/h2ai-config",
+    "crates/h2ai-adapters",
+    "crates/h2ai-autonomic",
+    "crates/h2ai-provisioner",
+    "crates/h2ai-memory",
+    "crates/h2ai-telemetry",
+    "crates/h2ai-nats",
+    "crates/h2ai-planner",
+    "crates/h2ai-orchestrator",
+    "crates/h2ai-api",
+    "crates/h2ai-tools",
+    "crates/h2ai-agent",
+    "crates/h2ai-constraints",
 ]
 resolver = "2"
 
@@ -18,3 +33,21 @@ serde_json  = "1"
 async-trait = "0.1"
 thiserror   = "1"
 tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"
+futures     = "0.3"
+walkdir     = "2"
+reqwest     = { version = "0.12", features = ["json"] }
+wiremock    = "0.6"
+typeshare   = "1"
+async-nats  = "0.38"
+bytes       = "1"
+dashmap     = "6"
+nkeys       = "0.4"
+regex       = "1"
+axum            = { version = "0.7", features = ["macros"] }
+tokio-stream    = "0.1"
+tower           = "0.4"
+tower-http      = { version = "0.5", features = ["trace", "cors"] }
+metrics         = "0.23"
+metrics-exporter-prometheus = "0.15"
+async-stream    = "0.3"

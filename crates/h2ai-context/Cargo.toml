@@ -1,0 +1,20 @@
+[package]
+name        = "h2ai-context"
+description = "Dark Knowledge Compiler — constraint corpus reader, Jaccard J_eff gate, system_context compiler"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types       = { path = "../h2ai-types" }
+h2ai-config      = { path = "../h2ai-config" }
+h2ai-constraints = { path = "../h2ai-constraints" }
+serde_json       = { workspace = true }
+thiserror        = { workspace = true }
+walkdir          = { workspace = true }
+
+[dev-dependencies]
+h2ai-adapters = { path = "../h2ai-adapters" }
+h2ai-config   = { path = "../h2ai-config" }
+tokio         = { workspace = true }

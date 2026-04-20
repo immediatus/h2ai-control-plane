@@ -48,8 +48,8 @@ spec:
           env:
             - name: H2AI_NATS_URL
               value: {{ include "h2ai.natsUrl" . | quote }}
-            - name: H2AI_ADR_CORPUS_PATH
-              value: {{ .Values.adrCorpus.mountPath | quote }}
+            - name: H2AI_CONSTRAINT_CORPUS_PATH
+              value: {{ .Values.constraintCorpus.mountPath | quote }}
             - name: H2AI_LISTEN_ADDR
               value: "0.0.0.0:8080"
             - name: H2AI_METRICS_ADDR
@@ -62,8 +62,8 @@ spec:
               value: {{ .Values.config.calibrationTasks | quote }}
             - name: H2AI_J_EFF_THRESHOLD
               value: {{ .Values.config.jEffThreshold | quote }}
-            - name: H2AI_PROFILE
-              value: {{ .Values.config.profile | quote }}
+            - name: H2AI_PLAN
+              value: {{ .Values.config.plan | quote }}
             - name: RUST_LOG
               value: {{ .Values.config.logLevel | quote }}
             {{- if and .Values.tracing.enabled .Values.tracing.otlpEndpoint }}
@@ -71,8 +71,8 @@ spec:
               value: {{ .Values.tracing.otlpEndpoint | quote }}
             {{- end }}
           volumeMounts:
-            - name: adr-corpus
-              mountPath: {{ .Values.adrCorpus.mountPath }}
+            - name: constraint-corpus
+              mountPath: {{ .Values.constraintCorpus.mountPath }}
               readOnly: true
           livenessProbe:
             httpGet:
@@ -89,9 +89,9 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        - name: adr-corpus
+        - name: constraint-corpus
           configMap:
-            name: {{ .Values.adrCorpus.configMapName }}
+            name: {{ .Values.constraintCorpus.configMapName }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -17,13 +17,13 @@ config:
   maxRetries: 3
   calibrationTasks: 3
   jEffThreshold: "0.4"
-  profile: c
+  plan: cloud
   logLevel: "h2ai=info"
 
-# ADR corpus — mount a ConfigMap containing your team's ADR files
-# kubectl create configmap adr-corpus --from-file=./adr/ -n h2ai
-adrCorpus:
-  configMapName: adr-corpus
+# Constraint corpus — mount a ConfigMap containing your team's constraint documents and ADRs
+# kubectl create configmap constraint-corpus --from-file=./adr/ -n h2ai
+constraintCorpus:
+  configMapName: constraint-corpus
   mountPath: /adr
 
 # ── Observability ─────────────────────────────────────────────────────────────

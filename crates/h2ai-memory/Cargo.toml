@@ -1,0 +1,23 @@
+[package]
+name        = "h2ai-memory"
+description = "Memory and context state abstraction for the H2AI Control Plane"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types  = { path = "../h2ai-types" }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+serde_json  = { workspace = true }
+dashmap     = { workspace = true }
+async-nats  = { workspace = true }
+bytes       = { workspace = true }
+
+[dev-dependencies]
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+uuid        = { workspace = true }
+async-nats  = { workspace = true }

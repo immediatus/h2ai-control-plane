@@ -1,4 +1,4 @@
-use h2ai_types::identity::{ExplorerId, TaskId};
+use h2ai_types::identity::{AgentId, ExplorerId, TaskId};
 
 #[test]
 fn task_id_is_unique_each_time() {
@@ -41,5 +41,25 @@ fn explorer_id_serde_round_trip() {
     let id = ExplorerId::new();
     let json = serde_json::to_string(&id).unwrap();
     let back: ExplorerId = serde_json::from_str(&json).unwrap();
+    assert_eq!(id, back);
+}
+
+#[test]
+fn agent_id_from_str_and_display() {
+    let id: AgentId = "agent-42".into();
+    assert_eq!(id.to_string(), "agent-42");
+}
+
+#[test]
+fn agent_id_from_string() {
+    let id: AgentId = String::from("agent-7").into();
+    assert_eq!(id.to_string(), "agent-7");
+}
+
+#[test]
+fn agent_id_serde_round_trip() {
+    let id: AgentId = "agent-99".into();
+    let json = serde_json::to_string(&id).unwrap();
+    let back: AgentId = serde_json::from_str(&json).unwrap();
     assert_eq!(id, back);
 }

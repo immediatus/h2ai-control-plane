@@ -6,18 +6,18 @@ This guide walks through running H2AI Control Plane for the first time: from zer
 
 ## Prerequisites
 
-| Requirement | Profile A | Profile B | Profile C |
+| Requirement | Local Plan | Server Plan | Cloud Plan |
 |---|---|---|---|
 | Docker + Compose | required | required | — |
 | Kubernetes 1.28+ | — | — | required |
 | Helm 3.x | — | — | required |
-| Cloud LLM API key | recommended (Auditor) | required | required |
+| Cloud LLM API key | optional (real results) | required | required |
 
-The Auditor is always routed to a cloud reasoning model. You need at minimum one cloud API key — OpenAI, Anthropic, or a compatible provider.
+Both explorer and auditor default to `mock` (deterministic test double). To get real LLM output you need at least one cloud API key — OpenAI, Anthropic, or an Ollama endpoint. The Auditor should be routed to a capable reasoning model for reliable ADR constraint enforcement.
 
 ---
 
-## Profile A — Local Dev (fastest path)
+## Local Plan — Local Dev (fastest path)
 
 ### 1. Clone and configure
 
@@ -30,20 +30,35 @@ cp .env.example .env
 Edit `.env`:
 
 ```bash
-# Cloud API key for the Auditor
-AUDITOR_API_KEY=sk-...
-AUDITOR_API_BASE=https://api.openai.com/v1
-AUDITOR_MODEL=gpt-4o
+# Explorer adapter (proposal generation + calibration)
+H2AI_EXPLORER_PROVIDER=anthropic
+H2AI_EXPLORER_MODEL=claude-3-5-sonnet-20241022
+H2AI_EXPLORER_API_KEY_ENV=ANTHROPIC_API_KEY
 
-# Optional: local model for Explorers
-# Leave empty to use cloud for all adapters
-LOCAL_MODEL_PATH=/models/llama-3-8b-instruct.Q4_K_M.gguf
+# Auditor adapter (ADR constraint gate — use a capable reasoning model)
+H2AI_AUDITOR_PROVIDER=anthropic
+H2AI_AUDITOR_MODEL=claude-3-5-haiku-20241022
+H2AI_AUDITOR_API_KEY_ENV=ANTHROPIC_API_KEY
+
+# The actual key value (not the var name)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Alternative: OpenAI
+# H2AI_EXPLORER_PROVIDER=openai
+# H2AI_EXPLORER_MODEL=gpt-4o-mini
+# H2AI_EXPLORER_API_KEY_ENV=OPENAI_API_KEY
+# OPENAI_API_KEY=sk-...
+
+# Alternative: local Ollama (no API key needed)
+# H2AI_EXPLORER_PROVIDER=ollama
+# H2AI_EXPLORER_MODEL=llama3.2
+# H2AI_EXPLORER_ENDPOINT=http://localhost:11434
 ```
 
 ### 2. Start the stack
 
 ```bash
-cd deploy/profile-a
+cd deploy/local
 docker compose up -d
 ```
 
@@ -58,9 +73,9 @@ docker compose ps
 
 NATS monitoring is available at `http://localhost:8222`. The H2AI API is at `http://localhost:8080`.
 
-### 3. Seed your ADR corpus
+### 3. Seed your constraint corpus
 
-The Dark Knowledge Compiler reads ADRs from the `./adr/` directory. Without ADRs, `J_eff` will be low and the system will reject tasks with `ContextUnderflowError`.
+The Dark Knowledge Compiler reads constraint documents from the `./adr/` directory. Without constraints, `J_eff` will be low and the system will reject tasks with `ContextUnderflowError`.
 
 Create at minimum one ADR:
 
@@ -114,7 +129,7 @@ curl -sN http://localhost:8080/calibrate/cal_01HXYZ.../events
 ```
 
 ```
-data: {"event_type":"CalibrationCompleted","payload":{"alpha":0.12,"kappa_base":0.021,"n_max":6.3,"theta_coord":0.28}}
+data: {"event_type":"CalibrationCompleted","payload":{"calibration_id":"cal_01HXYZ...","coefficients":{"alpha":0.12,"kappa_base":0.021,"cg_samples":[]},"coordination_threshold":{"value":0.28},"timestamp":"2026-04-19T10:00:00Z"}}
 ```
 
 Calibration is now cached. You will not need to repeat this unless your adapter pool changes.
@@ -156,7 +171,7 @@ curl -sN http://localhost:8080/tasks/task_01HYYZ.../events
 You will see events arrive in real time:
 
 ```
-data: {"event_type":"TopologyProvisioned","payload":{"topology_kind":"Ensemble","n":3,"tau_values":[0.3,0.55,0.8],"merge_strategy":"CrdtSemilattice"}}
+data: {"event_type":"TopologyProvisioned","payload":{"task_id":"task_01HYYZ...","topology_kind":"Ensemble","explorer_configs":[{"tau":0.3},{"tau":0.55},{"tau":0.8}],"merge_strategy":"CrdtSemilattice","n_max":6.3,"kappa_eff":0.019,"retry_count":0,...}}
 
 data: {"event_type":"Proposal","payload":{"explorer_id":"exp_A","tau":0.3,"token_cost":847,...}}
 
@@ -185,27 +200,27 @@ Select, synthesize, or reject proposals. Click **Resolve**. The task closes with
 
 ---
 
-## Profile B — Team Node
+## Server Plan — Team Node
 
 ```bash
-cd deploy/profile-b
+cd deploy/server
 docker compose up -d
 ```
 
 The Merge Authority UI is available at `http://<server-ip>`. Multiple team members can submit manifests concurrently. All task state is replicated across the 3-node NATS cluster — any node failure is tolerated without data loss.
 
-See [Deployment — Profile B](../architecture/04-deployment.md) for team ADR corpus setup.
+See [Deployment — Server Plan](../architecture/deployment.md) for team constraint corpus setup.
 
 ---
 
-## Profile C — Kubernetes
+## Cloud Plan — Kubernetes
 
 ```bash
 # Create namespace
-kubectl apply -f deploy/profile-c/namespace.yaml
+kubectl apply -f deploy/cloud/namespace.yaml
 
-# Upload your ADR corpus
-kubectl create configmap adr-corpus --from-file=./adr/ -n h2ai
+# Upload your constraint corpus
+kubectl create configmap constraint-corpus --from-file=./adr/ -n h2ai
 
 # Install via Helm
 helm repo add h2ai https://h2ai.github.io/control-plane
@@ -224,7 +239,7 @@ helm install h2ai h2ai/h2ai-control-plane \
 |---|---|
 | All REST endpoints and event schemas | [API Reference](../reference/api.md) |
 | All environment variables and Helm values | [Configuration Reference](../reference/configuration.md) |
-| Writing ADRs that the compiler understands | [ADR Corpus Guide](adr-corpus.md) |
+| Writing constraints that the compiler understands | [Constraint Corpus Guide](constraint-corpus.md) |
 | Implementing a custom compute adapter | [Adapter Development](adapters.md) |
 | Monitoring, alerting, upgrading | [Operations Guide](../operations/operations.md) |
 | Diagnosing common problems | [Troubleshooting](../operations/troubleshooting.md) |

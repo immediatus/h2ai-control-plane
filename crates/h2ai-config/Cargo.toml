@@ -1,0 +1,15 @@
+[package]
+name        = "h2ai-config"
+version.workspace     = true
+edition.workspace     = true
+authors.workspace     = true
+license.workspace     = true
+
+[dependencies]
+h2ai-types = { path = "../h2ai-types" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

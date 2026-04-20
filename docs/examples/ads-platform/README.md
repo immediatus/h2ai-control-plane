@@ -25,7 +25,7 @@ A real-time advertising platform with the following characteristics:
 | Feature Store | Materialized user targeting features, L1/L2 cache hierarchy |
 | User Profile Service | User identity and targeting attributes |
 
-## ADR corpus
+## Constraint corpus
 
 | ADR | Decision | Key constraints |
 |---|---|---|
@@ -48,7 +48,7 @@ A real-time advertising platform with the following characteristics:
 ## Running as integration tests
 
 ```bash
-# Copy ADR corpus into the configured path
+# Copy constraint corpus into the configured path
 cp -r docs/examples/ads-platform/adr/ /path/to/adr/
 
 # Run calibration
