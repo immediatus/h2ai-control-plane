@@ -29,7 +29,14 @@ pub struct TopologyPlanner;
 impl TopologyPlanner {
     pub fn provision(input: ProvisionInput<'_>) -> TopologyProvisionedEvent {
         let beta_eff = input.cc.beta_eff();
-        let n_max = input.cc.n_max();
+        let n_max = match input.cfg.max_context_tokens {
+            Some(max_tokens) => input.cc.n_max_context_aware(
+                input.cfg.explorer_max_tokens as f64,
+                max_tokens as f64,
+                input.cfg.context_pressure_gamma,
+            ),
+            None => input.cc.n_max(),
+        };
         let topology_kind = input.force_topology.clone().unwrap_or_else(|| {
             Self::select_topology(input.pareto_weights, &input.review_gates, n_max)
         });

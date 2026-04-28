@@ -13,6 +13,7 @@ serde       = { workspace = true }
 async-trait = { workspace = true }
 thiserror   = { workspace = true }
 typeshare   = { workspace = true }
+nalgebra    = { workspace = true }
 
 [dev-dependencies]
 serde_json  = { workspace = true }

@@ -1,5 +1,5 @@
 """
-USL simulation and visualisation — docs/architecture/05-math-apparatus.md
+USL simulation and visualisation — docs/architecture/math-apparatus.md
 
 Produces seven plots saved to scripts/output/ (or shown interactively with --show):
   1. 01_usl_three_layers.png      — USL throughput curves for all three calibrated layers
@@ -39,9 +39,9 @@ CROSS-REFERENCE MAP  (doc section → constants/functions/plots in this file)
 
 CONSTANTS THAT MUST STAY IN SYNC WITH THE DOC
 ----------------------------------------------
-    J_EFF_GATE    = 0.4   → docs/architecture/05-math-apparatus.md §4 (J_eff gate row)
-    BFT_THRESHOLD = 0.85  → docs/architecture/05-math-apparatus.md §Proposition 5 + Def 11 crossover
-    TAO_DECAY     = 0.60  → docs/architecture/05-math-apparatus.md Definition 11 (r_tao = 0.40)
+    J_EFF_GATE    = 0.4   → docs/architecture/math-apparatus.md §4 (J_eff gate row)
+    BFT_THRESHOLD = 0.85  → docs/architecture/math-apparatus.md §Proposition 5 + Def 11 crossover
+    TAO_DECAY     = 0.60  → docs/architecture/math-apparatus.md Definition 11 (r_tao = 0.40)
     LAYERS              → §3 Calibration and §Proposition 1 calibrated ceilings table
                            (must also match CALIBRATION_TABLE in validate_math.py)
     TOPOLOGIES          → docs/guides/theory-to-implementation.md Pareto Summary table
@@ -270,7 +270,7 @@ save_or_show(fig, "03_pareto_matrix.png")
 # ---------------------------------------------------------------------------
 
 # § Definition 10 (J_eff gate = 0.4)
-# J_EFF_GATE must match docs/architecture/05-math-apparatus.md §4 and validate_math.py
+# J_EFF_GATE must match docs/architecture/math-apparatus.md §4 and validate_math.py
 print("Plot 4 — Dark Knowledge Gap and J_eff gate")
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))

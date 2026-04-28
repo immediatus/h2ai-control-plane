@@ -51,3 +51,4 @@ tower-http      = { version = "0.5", features = ["trace", "cors"] }
 metrics         = "0.23"
 metrics-exporter-prometheus = "0.15"
 async-stream    = "0.3"
+nalgebra        = { version = "0.33", default-features = false, features = ["std"] }

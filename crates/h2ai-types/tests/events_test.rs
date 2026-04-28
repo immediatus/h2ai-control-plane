@@ -32,7 +32,9 @@ fn calibration_completed_event_serde_round_trip() {
         coefficients: cc,
         coordination_threshold: theta,
         ensemble: None,
+        eigen: None,
         timestamp: Utc::now(),
+        pairwise_beta: None,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -145,6 +147,8 @@ fn semilattice_compiled_event_includes_merge_strategy() {
         pruned_proposals: vec![(eid, "ADR-004 violation".into())],
         merge_strategy: MergeStrategy::ScoreOrdered,
         timestamp: Utc::now(),
+        merge_elapsed_secs: None,
+        n_input_proposals: 0,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: SemilatticeCompiledEvent = serde_json::from_str(&json).unwrap();
@@ -196,7 +200,9 @@ fn h2ai_event_enum_wraps_all_17_events() {
             coefficients: cc,
             coordination_threshold: theta.clone(),
             ensemble: None,
+            eigen: None,
             timestamp: Utc::now(),
+            pairwise_beta: None,
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
@@ -305,6 +311,8 @@ fn h2ai_event_enum_wraps_all_17_events() {
             pruned_proposals: vec![],
             merge_strategy: merge,
             timestamp: Utc::now(),
+            merge_elapsed_secs: None,
+            n_input_proposals: 0,
         }),
         H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: task_id(),

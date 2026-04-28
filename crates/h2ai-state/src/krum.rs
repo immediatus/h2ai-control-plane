@@ -226,3 +226,92 @@ fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
         .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)
 }
+
+// ── Async semantic Krum ───────────────────────────────────────────────────────
+
+/// Build the n×n semantic distance matrix via `semantic_jaccard`.
+/// All pairs computed concurrently via `join_all`.
+/// Falls back to token Jaccard when `adapter` is `None`.
+async fn semantic_distance_matrix(
+    proposals: &[ProposalEvent],
+    adapter: Option<&dyn IComputeAdapter>,
+) -> Vec<Vec<f64>> {
+    let n = proposals.len();
+    let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
+    let pairs: Vec<(usize, usize)> = (0..n)
+        .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
+        .collect();
+    let similarities = join_all(
+        pairs.iter().map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], adapter)),
+    )
+    .await;
+    let mut d = vec![vec![0.0f64; n]; n];
+    for (k, &(i, j)) in pairs.iter().enumerate() {
+        let dist = 1.0 - similarities[k];
+        d[i][j] = dist;
+        d[j][i] = dist;
+    }
+    d
+}
+
+/// **Semantic Krum** — selects the proposal with minimum sum of distances to its
+/// `n − f − 2` nearest neighbours, using semantic (not token) distance.
+///
+/// Uses `semantic_jaccard` for pairwise similarity so that lexically-distinct
+/// but semantically-equivalent proposals (synonyms, paraphrases) score as close.
+/// Falls back to token Jaccard when `adapter` is `None`.
+///
+/// Returns `None` when the quorum condition `n ≥ 2f + 3` is not met,
+/// or when `proposals` is empty.
+pub async fn krum_select_semantic<'a>(
+    proposals: &'a [ProposalEvent],
+    f: usize,
+    adapter: Option<&'a dyn IComputeAdapter>,
+) -> Option<&'a ProposalEvent> {
+    if proposals.is_empty() {
+        return None;
+    }
+    if f == 0 {
+        return proposals.first();
+    }
+    if !quorum_satisfied(proposals.len(), f) {
+        return None;
+    }
+    let distances = semantic_distance_matrix(proposals, adapter).await;
+    let k = proposals.len() - f - 2;
+    krum_index(&distances, k).map(|i| &proposals[i])
+}
+
+/// **Semantic Multi-Krum** — iteratively selects `m` proposals via semantic Krum.
+pub async fn multi_krum_select_semantic<'a>(
+    proposals: &'a [ProposalEvent],
+    f: usize,
+    m: usize,
+    adapter: Option<&'a dyn IComputeAdapter>,
+) -> Vec<&'a ProposalEvent> {
+    if proposals.is_empty() || m == 0 {
+        return vec![];
+    }
+    if f == 0 {
+        return proposals.iter().take(m).collect();
+    }
+    if !quorum_satisfied(proposals.len(), f) {
+        return vec![];
+    }
+    let distances = semantic_distance_matrix(proposals, adapter).await;
+    let mut remaining: Vec<usize> = (0..proposals.len()).collect();
+    let mut selected = Vec::with_capacity(m);
+    while selected.len() < m && remaining.len() > f + 2 {
+        let k = remaining.len() - f - 2;
+        let best_pos = (0..remaining.len())
+            .min_by(|&a, &b| {
+                let sa = krum_score_subset(remaining[a], &remaining, &distances, k);
+                let sb = krum_score_subset(remaining[b], &remaining, &distances, k);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("remaining is non-empty");
+        selected.push(&proposals[remaining[best_pos]]);
+        remaining.remove(best_pos);
+    }
+    selected
+}

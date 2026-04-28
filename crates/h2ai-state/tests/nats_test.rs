@@ -11,7 +11,9 @@ fn h2ai_event_serialises_to_tagged_json() {
         coefficients: cc,
         coordination_threshold: theta,
         ensemble: None,
+        eigen: None,
         timestamp: chrono::Utc::now(),
+        pairwise_beta: None,
     });
 
     let json = serde_json::to_string(&event).unwrap();
@@ -28,7 +30,9 @@ fn calibration_event_roundtrip() {
         coefficients: cc,
         coordination_threshold: theta,
         ensemble: None,
+        eigen: None,
         timestamp: chrono::Utc::now(),
+        pairwise_beta: None,
     };
     let bytes = serde_json::to_vec(&original).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_slice(&bytes).unwrap();

@@ -5,11 +5,39 @@
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-orange)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
 
-**H2AI Control Plane** is a distributed multi-agent orchestration runtime that treats LLM agent swarms as a control theory problem governed by the **Universal Scalability Law (USL)**.
-
-Most agentic frameworks default to flat-mesh prompt-chaining: agents feed outputs to each other in a loop until consensus. This is mathematically wrong. When `N` agents must maintain mutual consistency, coordination cost grows as `κN(N-1)` — quadratic. At some `N`, that cost overtakes the value of adding agents. Throughput goes into retrograde. H2AI predicts the exact `N` at which this happens and shifts topology before it is crossed.
+**H2AI Control Plane** is a distributed multi-agent orchestration runtime that prevents LLM agent swarms from degrading under their own coordination cost. It measures the overhead of making N agents agree, bounds ensemble size before that overhead exceeds the quality gain, and enforces typed constraints so agents share enough common ground to produce coherent results.
 
 Reference implementation of the framework defined in **[One Equation Governs CPU Caches, Human Teams, and AI Agent Systems](https://e-mindset.space/blog/coordination-constant-usl-human-ai-teams/)**.
+
+---
+
+## The Coordination Cost Problem
+
+When N agents work on a shared problem, two forces act in opposite directions.
+
+**The quality force** pushes toward more agents: each independent perspective reduces the chance that a wrong answer survives to the output (Condorcet Jury Theorem). More agents → higher probability of majority-correct result.
+
+**The coordination force** pushes back: to produce a *coherent* output, every pair of agents' conclusions must be checked for compatibility. That is O(N²) reconciliation operations. This is the split-brain problem applied to reasoning. Agents that started from the same context but reached divergent partial conclusions cannot simply be concatenated — their incompatibilities must be found and resolved. The cost of finding them grows quadratically.
+
+These two forces have an intersection. The Universal Scalability Law describes it precisely:
+
+```
+X(N) = N / (1 + α(N−1) + β·N(N−1))
+
+where:
+  α = serial fraction — planning, context compilation, final synthesis;
+      phases that cannot be parallelized regardless of N
+  β = pairwise reconciliation cost — integrating each new agent's output
+      with every existing one; modulated by how much agents have diverged
+```
+
+The peak of X(N) is `N_max = √((1−α)/β_eff)`. Beyond N_max, adding agents actively degrades output quality because reconciliation cost exceeds the Condorcet quality gain.
+
+**This is not a new observation.** Brook's Law (1975) measured it in human engineering teams — communication channels grow as N(N−1)/2. CPU cache coherency protocols hit the same ceiling at a different scale. LLM agent swarms exhibit the same phenomenon for the same structural reason: pairwise synchronization overhead scales quadratically with group size when agents must reach mutual consistency.
+
+The β parameter is modulated by **Common Ground (CG)** — the semantic overlap between agents' outputs. When agents have high CG (compatible partial solutions, shared vocabulary), reconciliation is cheap. When they have split, each pair requires more work to reconcile. `β_eff = β₀ × (1 − CG_mean)` captures this: split agents cost more to coordinate than aligned ones.
+
+H2AI measures both forces, finds their intersection, and enforces a Common Ground floor (θ_coord) before allowing generation to start — preventing split brain before it begins rather than trying to repair it after.
 
 ---
 
@@ -116,13 +144,13 @@ helm install h2ai h2ai/h2ai-control-plane \
 
 ### 1. Calibration — measure the physics before spawning anything
 
-The calibration harness runs representative tasks through the adapter pool and measures empirically:
+The calibration harness runs representative tasks through the adapter pool and measures the two parameters that bound ensemble size:
 
-- `α` — the serial contention fraction (shared context lock time)
-- `κ_base` — pairwise coherency cost (token exchange overhead between adapters)
-- `CG(i,j)` — Common Ground between every Explorer pair
+- `α` — the **serial bottleneck fraction**: time spent in planning, context compilation, and final synthesis — phases that serialize regardless of how many agents run in parallel. Measured as the fraction of total wall time that scales with N=1 behavior.
+- `κ_base` — the **pairwise reconciliation cost**: how expensive it is to integrate each pair of agents' outputs into a coherent answer. Measured from merge phase timing and output divergence (CG_mean). Scales as N(N−1) in the USL model.
+- `CG(i,j)` — **Common Ground** between every Explorer pair: vocabulary overlap of their outputs × temperature alignment. High CG means agents reached compatible conclusions; low CG means they have split and reconciliation is costly.
 
-From these it derives `N_max = sqrt((1−α) / κ_eff)` — the exact agent count at which throughput peaks. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
+From these it derives `N_max = sqrt((1−α) / κ_eff)` — the agent count at which Condorcet quality gain and reconciliation cost intersect. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
 
 ### 2. Bootstrap — compile Dark Knowledge into explicit constraints
 
@@ -223,14 +251,18 @@ X(N) = N / (1 + α(N−1) + κ_eff·N(N−1))
 N_max = sqrt((1 − α) / κ_eff)
 ```
 
-| System | α | κ_base | N_max |
-|---|---|---|---|
-| CPU cache coherency | 0.02 | 0.0003 | ~57 |
-| Human engineering team | 0.10 | 0.0083 | ~10 |
-| AI agents (same model) | 0.15 | 0.025 | ~4–5 |
-| AI agents (diverse backends) | 0.12 | 0.018 | ~6–7 |
+The same law governs coordination-dependent systems at every scale. The parameters change; the structure does not.
 
-Reference values for AI agents: **α ≈ 0.10–0.15, κ_base ≈ 0.015–0.025, N_max ≈ 4–7**.
+| System | α (serial bottleneck) | κ_base (pairwise sync cost) | N_max | What α and κ represent |
+|---|---|---|---|---|
+| CPU cache coherency | 0.02 | 0.0003 | ~57 | α = memory bus serialization; κ = cache-line exchange protocol |
+| Human engineering team | 0.10 | 0.0083 | ~10 | α = planning/review cycles; κ = pairwise communication overhead (Brook's Law) |
+| AI agents (same model) | 0.15 | 0.025 | ~4–5 | α = context compilation + synthesis; κ = pairwise output reconciliation at low CG |
+| AI agents (diverse backends) | 0.12 | 0.018 | ~6–7 | α = same; κ lower because diverse models share less vocabulary, but diverge less on facts |
+
+For AI agents, α captures the serial phases inherent to orchestration (you cannot parallelize task decomposition or final merge), and κ captures how expensive it is to find and resolve contradictions between N agents' partial answers. Higher κ = more divergence to reconcile = fewer agents before quality peaks.
+
+Reference values: **α ≈ 0.10–0.15, κ_base ≈ 0.015–0.025, N_max ≈ 4–7** for typical LLM ensembles.
 
 ---
 
@@ -348,6 +380,30 @@ h2ai-control-plane/
 
 ---
 
+## Research & Validation Scripts
+
+`scripts/baseline_eval.py` is a **production tool**: measures real per-adapter accuracy (p)
+and correlation (ρ) against `eval_questions.jsonl`. Run before high-stakes deployments to
+override the CG_mean proxy with empirical values (`baseline_accuracy_proxy` config field).
+
+The remaining scripts are **research/validation tools** — not required for deployment, but
+run them to verify formula correctness after any change to calibration constants or physics
+formulas. Each is the formal proof for a specific mathematical claim in
+[`docs/architecture/research-state.md`](docs/architecture/research-state.md):
+
+| Script | Validates |
+|---|---|
+| `validate_beta_coupling.py` | β_eff = β₀×(1−CG) is bounded; inverse form diverges at CG→0 |
+| `validate_bft_methods.py` | Weiszfeld breakdown point 50%; Token Krum fails on LLM paraphrases |
+| `validate_eigenvalue_calibration.py` | N_eff participation ratio detects hidden adapter redundancy |
+| `validate_information_theory.py` | I_marginal decay, N_it_optimal, Slepian-Wolf efficiency |
+| `validate_ensemble_theory.py` | CJT formula vs 100k-trial Monte Carlo; J_eff gate |
+| `validate_conformal_vs_cjt.py` | CJT over-prediction at ρ≥0.6 vs conformal coverage guarantee |
+| `validate_math.py` | Numerically validates all definitions and propositions in `docs/architecture/math-apparatus.md` (stdlib only, no dependencies) |
+| `simulate_usl.py` | USL throughput curves, CG effect, Pareto matrix (generates PNGs to `scripts/output/`) |
+
+---
+
 ## Technology Stack
 
 | Layer | Choice | Why |
@@ -422,10 +478,13 @@ The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus f
 | Document | Contents |
 |---|---|
 | [Design Specification](docs/architecture/design-specification.md) | System overview — positioning, tech stack, deployment plans, API contract, math summary |
+| [Design Rationale](docs/architecture/design-rationale.md) | *Why* each major decision was made: NATS, USL, NKeys, Rust, event sourcing, CJT+USL together; honest gaps |
+| [Differentiation](docs/architecture/differentiation.md) | How H2AI differs from LangGraph, AutoGen, CrewAI, Semantic Kernel — what it does better and worse |
 | [Runtime Phases](docs/architecture/runtime-phases.md) | 6-phase execution flow + compound task pipeline, 23-event vocabulary, structural guarantees |
 | [Crate Boundaries](docs/architecture/crate-boundaries.md) | Workspace layout, 15 crates, dependency rules, Tokio thread pool isolation |
 | [Deployment](docs/architecture/deployment.md) | Three deployment plans, NATS clustering, Kubernetes topology, observability |
-| [Math Apparatus](docs/architecture/math-apparatus.md) | 10 definitions + 5 propositions with proofs, runtime callouts, calibration table, event vocabulary |
+| [Math Apparatus](docs/architecture/math-apparatus.md) | USL/CJT theoretical foundations, 10 definitions + 5 propositions, calibration table, known limitations |
+| [Research State](docs/architecture/research-state.md) | Project thesis, implemented math with validation evidence, gap analysis and fix status, innovation synthesis, script catalog |
 
 ### Operations
 

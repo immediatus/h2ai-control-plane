@@ -115,6 +115,7 @@ async fn make_engine_input<'a>(
         task_prompts: vec!["Calibrate".into(), "Second task".into(), "Third".into()],
         adapters: vec![&cal_adapter as &dyn IComputeAdapter],
         cfg: &cal_cfg,
+        embedding_model: None,
     })
     .await
     .unwrap();

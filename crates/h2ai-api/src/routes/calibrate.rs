@@ -19,20 +19,30 @@ pub async fn start_calibration(
     let cal_id_str = cal_id.to_string();
     let events_url = format!("/calibrate/{cal_id_str}/events");
 
+    let m = state.cfg.calibration_adapter_count.max(1);
+    if m < 3 {
+        tracing::warn!(
+            calibration_adapter_count = m,
+            "calibration_adapter_count < 3; USL fit will use config fallback values"
+        );
+    }
     let state_clone = state.clone();
     let cal_id_clone = cal_id.clone();
     tokio::spawn(async move {
-        let adapter = state_clone.explorer_adapter.clone();
         let prompts = vec![
             "Describe a stateless auth approach".into(),
             "Explain CQRS and event sourcing".into(),
             "What is a good API boundary?".into(),
         ];
+        let adapter_refs: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = (0..m)
+            .map(|_| state_clone.explorer_adapter.as_ref())
+            .collect();
         let result = CalibrationHarness::run(CalibrationInput {
             calibration_id: cal_id_clone.clone(),
             task_prompts: prompts,
-            adapters: vec![adapter.as_ref()],
+            adapters: adapter_refs,
             cfg: &state_clone.cfg,
+            embedding_model: None,
         })
         .await;
 
@@ -58,7 +68,7 @@ pub async fn start_calibration(
         calibration_id: cal_id_str,
         status: "accepted".into(),
         events_url,
-        adapter_count: 1,
+        adapter_count: m,
     };
     Ok((StatusCode::ACCEPTED, Json(response)))
 }

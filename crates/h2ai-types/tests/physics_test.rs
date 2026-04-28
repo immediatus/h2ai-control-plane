@@ -1,36 +1,29 @@
 use h2ai_types::physics::{
-    CoherencyCoefficients, CoordinationThreshold, JeffectiveGap, MergeStrategy,
-    MultiplicationCondition, MultiplicationConditionFailure, RoleErrorCost, TauValue,
+    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
+    JeffectiveGap, MergeStrategy, MultiplicationCondition, MultiplicationConditionFailure,
+    RoleErrorCost, TauValue, n_it_optimal,
 };
 
 #[test]
 fn coherency_coefficients_beta_eff_computation() {
-    let cc = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.6, 0.7, 0.65],
-    };
+    let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.6, 0.7, 0.65]).unwrap();
     // CG_mean = (0.6+0.7+0.65)/3 = 0.65
-    // β_eff = 0.020 / 0.65 ≈ 0.03077
+    // β_eff = β₀ × (1 − CG_mean) = 0.020 × 0.35 = 0.007
     let beta_eff = cc.beta_eff();
-    let expected = 0.020 / 0.65;
+    let expected = 0.020 * (1.0 - 0.65);
     assert!(
         (beta_eff - expected).abs() < 1e-10,
-        "β_eff = β₀/CG_mean = {expected:.6}, got {beta_eff:.6}"
+        "β_eff = β₀×(1−CG_mean) = {expected:.6}, got {beta_eff:.6}"
     );
 }
 
 #[test]
 fn coherency_coefficients_computes_n_max_usl() {
-    let cc = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.65],
-    };
-    // β_eff = 0.020/0.65 ≈ 0.03077
-    // N_max = round(√(0.88/0.03077)) = round(√28.6) = round(5.35) = 5
+    let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.65]).unwrap();
+    // β_eff = 0.020 × (1 − 0.65) = 0.020 × 0.35 = 0.007
+    // N_max = round(√(0.88/0.007)) = round(√125.7) = round(11.21) = 11
     let n_max = cc.n_max();
-    let expected = ((1.0_f64 - 0.12) / (0.020 / 0.65)).sqrt().round();
+    let expected = ((1.0_f64 - 0.12) / (0.020 * (1.0 - 0.65))).sqrt().round();
     assert!(
         (n_max - expected).abs() < 1e-9,
         "N_max = round(√((1−α)/β_eff)) = {expected:.3}, got {n_max}"
@@ -41,11 +34,7 @@ fn coherency_coefficients_computes_n_max_usl() {
 fn coordination_threshold_formula_verified() {
     // θ_coord = clamp(CG_mean − CG_std_dev, 0, max)
     // For [0.6, 0.7, 0.65]: mean=0.65, std≈0.0408, spread≈0.6092 → clamped to 0.3
-    let cc = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.6, 0.7, 0.65],
-    };
+    let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.6, 0.7, 0.65]).unwrap();
     let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     // spread = 0.65 − 0.0408 ≈ 0.6092 → clamp to 0.3
     assert!(
@@ -55,11 +44,7 @@ fn coordination_threshold_formula_verified() {
     );
 
     // For low CG samples: spread < max → θ_coord = spread
-    let cc_low = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.1, 0.15, 0.12],
-    };
+    let cc_low = CoherencyCoefficients::new(0.12, 0.020, vec![0.1, 0.15, 0.12]).unwrap();
     let theta_low = CoordinationThreshold::from_calibration(&cc_low, 0.3);
     let mean_low = cc_low.cg_mean();
     let std_low = cc_low.cg_std_dev();
@@ -73,11 +58,7 @@ fn coordination_threshold_formula_verified() {
 
 #[test]
 fn coherency_coefficients_serde_round_trip() {
-    let cc = CoherencyCoefficients {
-        alpha: 0.10,
-        beta_base: 0.015,
-        cg_samples: vec![0.55, 0.70, 0.62],
-    };
+    let cc = CoherencyCoefficients::new(0.10, 0.015, vec![0.55, 0.70, 0.62]).unwrap();
     let json = serde_json::to_string(&cc).unwrap();
     let back: CoherencyCoefficients = serde_json::from_str(&json).unwrap();
     assert_eq!(cc.alpha, back.alpha);
@@ -110,35 +91,8 @@ fn coherency_coefficients_invalid_when_beta_base_negative() {
 }
 
 #[test]
-fn coordination_threshold_is_min_of_cg_spread_and_floor() {
-    let cc = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.6, 0.7, 0.65],
-    };
-    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
-    assert!((theta.value() - 0.3).abs() < 1e-9);
-}
-
-#[test]
-fn coordination_threshold_uses_spread_when_cg_very_low() {
-    let cc = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.1, 0.15, 0.12],
-    };
-    let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
-    assert!(theta.value() < 0.3);
-    assert!(theta.value() > 0.0);
-}
-
-#[test]
 fn coordination_threshold_serde_round_trip() {
-    let cc = CoherencyCoefficients {
-        alpha: 0.12,
-        beta_base: 0.020,
-        cg_samples: vec![0.6, 0.7, 0.65],
-    };
+    let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.6, 0.7, 0.65]).unwrap();
     let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
     let json = serde_json::to_string(&theta).unwrap();
     let back: CoordinationThreshold = serde_json::from_str(&json).unwrap();
@@ -353,44 +307,143 @@ fn multiplication_condition_competence_failure_takes_priority_over_others() {
 
 #[test]
 fn coherency_coefficients_usl_n_max_ai_agents() {
-    // AI-agent tier: α=0.15, β₀=0.01, CG_mean=0.4 → β_eff=0.025 → N_max=round(√34)=6
-    let cc = CoherencyCoefficients::new(0.15, 0.01, vec![0.4]).unwrap();
+    // AI-agent tier: α=0.15, β₀=0.039, CG=0.4
+    // β_eff = 0.039×(1−0.4) = 0.039×0.6 = 0.02340 → N_max = round(√(0.85/0.02340)) = round(6.02) = 6
+    let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.4]).unwrap();
     let n_max = cc.n_max();
     assert!(
         (n_max - 6.0).abs() < 1.0,
-        "AI-agent tier N_max must be ≈6, got {n_max}"
+        "AI-agent tier N_max must be ≈6 with proportional β_eff, got {n_max}"
     );
 }
 
 #[test]
-fn coherency_coefficients_beta_eff_divides_by_cg_mean() {
-    // β_eff = β₀ / CG_mean = 0.01 / 0.4 = 0.025
-    let cc = CoherencyCoefficients::new(0.15, 0.01, vec![0.4]).unwrap();
+fn coherency_coefficients_beta_eff_proportional_formula() {
+    // β_eff = β₀ × (1 − CG_mean) = 0.039 × 0.6 = 0.02340
+    let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.4]).unwrap();
     let beta_eff = cc.beta_eff();
     assert!(
-        (beta_eff - 0.025).abs() < 1e-10,
-        "β_eff = β₀/CG_mean = 0.025, got {beta_eff}"
+        (beta_eff - 0.02340).abs() < 1e-5,
+        "β_eff = β₀×(1−CG) = 0.02340, got {beta_eff}"
     );
+}
+
+#[test]
+fn coherency_coefficients_beta_eff_bounded_at_low_cg() {
+    // At CG→0, proportional form: β_eff = β₀×1.0 = β₀. Must not diverge.
+    let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.001]).unwrap();
+    let beta_eff = cc.beta_eff();
+    assert!(
+        beta_eff < 0.04,
+        "β_eff must be bounded (≤ β₀) even at CG≈0, got {beta_eff}"
+    );
+    assert!(beta_eff > 0.0, "β_eff must be positive, got {beta_eff}");
 }
 
 #[test]
 fn coherency_coefficients_human_team_tier() {
-    // Human team tier: α=0.10, β₀=0.005, CG_mean=0.6 → N_max≈10
-    let cc = CoherencyCoefficients::new(0.10, 0.005, vec![0.6]).unwrap();
+    // Human team tier: α=0.10, β₀=0.0225, CG=0.6
+    // β_eff = 0.0225×(1−0.6) = 0.0225×0.4 = 0.009 → N_max = round(√(0.9/0.009)) = round(10.0) = 10
+    let cc = CoherencyCoefficients::new(0.10, 0.0225, vec![0.6]).unwrap();
     let n_max = cc.n_max();
     assert!(
         (n_max - 10.0).abs() < 1.5,
-        "Human team N_max must be ≈10, got {n_max}"
+        "Human team N_max must be ≈10 with proportional β_eff, got {n_max}"
     );
 }
 
 #[test]
 fn coherency_coefficients_cpu_core_tier() {
-    // CPU tier: α=0.02, β₀=0.0003, CG_mean=1.0 → N_max≈57
+    // CPU tier: α=0.02, β₀=0.0003, CG=1.0.
+    // With proportional formula, β_eff = β₀×(1−1.0) ≈ 0 → retrograde disappears.
+    // CPU cores are coherency-free at full alignment; only α limits throughput.
+    // N_max with near-zero β_eff is very large (>> 57); assert ≥ 50.
     let cc = CoherencyCoefficients::new(0.02, 0.0003, vec![1.0]).unwrap();
     let n_max = cc.n_max();
     assert!(
-        (n_max - 57.0).abs() < 2.0,
-        "CPU core tier N_max must be ≈57, got {n_max}"
+        n_max >= 50.0,
+        "CPU core tier N_max must be ≥50 with proportional formula at CG=1.0, got {n_max}"
     );
+}
+
+#[test]
+fn eigen_calibration_full_independence_gives_n_eff_equal_n() {
+    use nalgebra::DMatrix;
+    // Identity matrix (N=4 fully independent adapters): all eigenvalues = 1
+    // N_eff = (4)² / 4 = 4
+    let sigma = DMatrix::<f64>::identity(4, 4);
+    let ec = EigenCalibration::from_cg_matrix(&sigma);
+    assert!(
+        (ec.n_effective - 4.0).abs() < 0.1,
+        "identity Σ → N_eff = 4, got {}", ec.n_effective
+    );
+    assert!(
+        (ec.h_diversity - 1.0).abs() < 0.01,
+        "identity Σ → H_norm = 1.0, got {}", ec.h_diversity
+    );
+}
+
+#[test]
+fn eigen_calibration_full_correlation_gives_n_eff_one() {
+    use nalgebra::DMatrix;
+    // Σ = all-ones matrix (rank 1): one eigenvalue = N, rest = 0
+    // N_eff = N² / N² = 1
+    let n = 4;
+    let sigma = DMatrix::<f64>::from_element(n, n, 1.0);
+    let ec = EigenCalibration::from_cg_matrix(&sigma);
+    assert!(
+        (ec.n_effective - 1.0).abs() < 0.5,
+        "all-ones Σ → N_eff ≈ 1, got {}", ec.n_effective
+    );
+}
+
+#[test]
+fn eigen_calibration_uniform_rho_matches_portfolio_formula() {
+    use nalgebra::DMatrix;
+    // Uniform ρ=0.5, N=5: Choueifaty formula N_eff = N×(1−ρ)+ρ = 5×0.5+0.5 = 3.0
+    let n = 5;
+    let rho = 0.5f64;
+    let mut sigma = DMatrix::<f64>::identity(n, n);
+    for i in 0..n {
+        for j in 0..n {
+            if i != j {
+                sigma[(i, j)] = rho;
+            }
+        }
+    }
+    let ec = EigenCalibration::from_cg_matrix(&sigma);
+    let expected = 2.5f64;  // participation ratio for uniform rho=0.5, N=5
+    assert!(
+        (ec.n_effective - expected).abs() < 0.3,
+        "uniform rho=0.5 -> N_eff approx {expected:.1}, got {:.3}", ec.n_effective
+    );
+}
+
+#[test]
+fn n_it_optimal_independent_returns_1() {
+    assert_eq!(n_it_optimal(0.0), 1);
+}
+
+#[test]
+fn n_it_optimal_fully_correlated_returns_9() {
+    assert_eq!(n_it_optimal(1.0), 9);
+}
+
+#[test]
+fn n_it_optimal_typical_rho_values() {
+    // ρ=0.3: n = 1 + ln(0.5)/ln(0.7) = 1 + 1.943 → ceil = 3
+    assert_eq!(n_it_optimal(0.3), 3);
+    // ρ=0.5: n = 1 + ln(0.5)/ln(0.5) = 1 + 1.0 = 2.0 → ceil = 2
+    assert_eq!(n_it_optimal(0.5), 2);
+    // ρ=0.7: n = 1 + ln(0.5)/ln(0.3) = 1 + 0.576 → ceil = 2
+    assert_eq!(n_it_optimal(0.7), 2);
+    // ρ=0.9: n = 1 + ln(0.5)/ln(0.1) = 1 + 0.301 → ceil = 2
+    assert_eq!(n_it_optimal(0.9), 2);
+}
+
+#[test]
+fn ensemble_calibration_n_it_optimal_delegates_to_free_function() {
+    // from_cg_mean(0.5, 9) → rho_mean = 1.0 - 0.5 = 0.5
+    let ec = EnsembleCalibration::from_cg_mean(0.5, 9);
+    assert_eq!(ec.n_it_optimal(), n_it_optimal(ec.rho_mean));
 }

@@ -33,7 +33,9 @@ async fn put_and_get_calibration_roundtrip() {
             0.3,
         ),
         ensemble: None,
+        eigen: None,
         timestamp: Utc::now(),
+        pairwise_beta: None,
     };
 
     client.put_calibration(&event).await.expect("put");

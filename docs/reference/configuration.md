@@ -72,6 +72,17 @@ Runtime physics parameters may also be loaded from a JSON file via `H2AIConfig::
 | `H2AI_CALIBRATION_TASKS` | `3` | Number of representative tasks the calibration harness runs. More tasks = more accurate `α` and `κ_base` measurements, but longer calibration time. |
 | `H2AI_CALIBRATION_MAX_AGE_SECS` | `86400` | Seconds before cached calibration is considered stale. Stale calibration triggers a `503 CalibrationRequiredError` on new task submissions. Set to `0` to disable expiry. |
 
+### Planned Calibration Config Fields (added in Task 1)
+
+The following fields are planned and will be added as part of the multi-adapter calibration
+fix (Gap P5). They are not yet active; the system currently falls back silently to config
+defaults when fewer than 3 adapters are present.
+
+| Field (`H2AIConfig`) | Type | Default | Description |
+|---|---|---|---|
+| `calibration_adapter_count` | `usize` | `3` | Number of adapter instances to run during calibration. Must be ≥ 3 for the two-phase USL fit to produce a valid β₀. When < 3, calibration will return a hard error rather than silently using defaults. |
+| `calibration_tau_spread` | `[f64; 2]` | `[0.3, 0.7]` | Temperature range `[τ_min, τ_max]` for calibration adapters, linearly spaced across all M instances. Wider spread produces more diverse CG samples for calibration; narrower spread reduces adapter output variance but may underestimate CG_mean. |
+
 ---
 
 ## Dark Knowledge Compiler
@@ -118,7 +129,7 @@ All metrics are exposed at `GET /metrics` in Prometheus text format.
 |---|---|---|---|
 | `h2ai_alpha` | Gauge | — | Contention coefficient α from last calibration |
 | `h2ai_kappa_base` | Gauge | — | Baseline coherency coefficient κ_base |
-| `h2ai_kappa_eff` | Gauge | — | Effective coherency κ_eff = κ_base / mean(CG) |
+| `h2ai_kappa_eff` | Gauge | — | Effective coherency κ_eff = κ_base × (1 − CG_mean) |
 | `h2ai_n_max` | Gauge | — | Scalability ceiling N_max = sqrt((1−α) / κ_eff) |
 | `h2ai_theta_coord` | Gauge | — | Coordination threshold θ_coord |
 | `h2ai_cg_mean` | Gauge | — | Mean Common Ground across Explorer pairs |

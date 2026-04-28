@@ -82,11 +82,28 @@ async fn main() {
     let scoring_adapter: Option<Arc<dyn IComputeAdapter>> =
         scoring_kind_opt.as_ref().map(build_adapter);
 
-    eprintln!("explorer adapter: {:?}", explorer_kind);
-    eprintln!("auditor  adapter: {:?}", auditor_kind);
-    eprintln!("scoring  adapter: {:?}", scoring_kind_opt);
+    let explorer2_kind_opt = {
+        let provider = env::var("H2AI_EXPLORER2_PROVIDER")
+            .unwrap_or_else(|_| "same".into())
+            .to_lowercase();
+        if provider == "same" || provider.is_empty() {
+            None
+        } else {
+            Some(adapter_kind_from_env("EXPLORER2"))
+        }
+    };
+    let explorer2_adapter: Arc<dyn IComputeAdapter> = explorer2_kind_opt
+        .as_ref()
+        .map(build_adapter)
+        .unwrap_or_else(|| explorer_adapter.clone());
 
-    let mut app_state = AppState::new(nats, cfg, explorer_adapter, auditor_adapter);
+    eprintln!("explorer  adapter: {:?}", explorer_kind);
+    eprintln!("explorer2 adapter: {:?}", explorer2_kind_opt.as_ref().unwrap_or(&explorer_kind));
+    eprintln!("auditor   adapter: {:?}", auditor_kind);
+    eprintln!("scoring   adapter: {:?}", scoring_kind_opt);
+
+    let mut app_state = AppState::new(nats, cfg, explorer_adapter, auditor_adapter)
+        .with_explorer2(explorer2_adapter);
     if let Some(sa) = scoring_adapter {
         app_state.scoring_adapter = Some(sa);
     }

@@ -2,9 +2,12 @@
 
 **Date:** 2026-04-19 · **Author:** Yuriy Polyulya · **Status:** Approved (rev 3)
 
-H2AI Control Plane is a distributed multi-agent orchestration runtime that treats agent swarms as a control theory problem governed by the Universal Scalability Law (USL). It is the definitive, mathematically sound alternative to unbounded prompt-chaining frameworks.
+H2AI Control Plane is a distributed multi-agent orchestration runtime that prevents LLM agent swarms from degrading under their own coordination cost. It measures the overhead of making N agents agree — using the Universal Scalability Law to model the serial planning bottleneck (α) and the pairwise semantic reconciliation cost (β) — and enforces typed constraints so agents share enough common ground to produce coherent results.
 
-The system is best understood as an **advanced distributed scheduler**: instead of scheduling static processes onto physical CPU cores, it schedules nondeterministic LLM inference tasks onto dynamically provisioned graph topologies — and mathematically bounds the coordination overhead at every step.
+The system is best understood as an **advanced distributed scheduler**: instead of scheduling static processes onto physical CPU cores, it schedules nondeterministic LLM inference tasks onto dynamically provisioned graph topologies — and bounds the coordination overhead at every step using measured parameters rather than configuration guesswork.
+
+**For a full explanation of design decisions and tradeoffs:** see [Design Rationale](design-rationale.md).  
+**For a comparison with LangGraph, AutoGen, CrewAI, and Semantic Kernel:** see [Differentiation](differentiation.md).
 
 ---
 

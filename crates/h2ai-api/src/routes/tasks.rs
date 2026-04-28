@@ -93,6 +93,7 @@ pub async fn submit_task(
         .insert(task_id.clone(), TaskState::new(task_id.clone()));
 
     let explorer = state.explorer_adapter.clone();
+    let explorer2 = state.explorer2_adapter.clone();
     let verifier = state.verification_adapter.clone();
     let auditor = state.auditor_adapter.clone();
     let registry = state.registry();
@@ -109,7 +110,7 @@ pub async fn submit_task(
             task_id: task_id_clone,
             manifest: manifest_clone,
             calibration: calibration_clone,
-            explorer_adapters: vec![explorer.as_ref(), explorer.as_ref()],
+            explorer_adapters: vec![explorer.as_ref(), explorer2.as_ref(), explorer.as_ref()],
             verification_adapter: verifier.as_ref(),
             auditor_adapter: auditor.as_ref(),
             auditor_config: h2ai_types::config::AuditorConfig {

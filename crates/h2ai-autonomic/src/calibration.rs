@@ -1,14 +1,15 @@
 use chrono::Utc;
 use futures::future::join_all;
 use h2ai_config::H2AIConfig;
-use h2ai_context::jaccard::{jaccard, tokenize};
+use h2ai_context::embedding::{semantic_jaccard, EmbeddingModel};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::events::CalibrationCompletedEvent;
 use h2ai_types::identity::TaskId;
 use h2ai_types::physics::{
-    CoherencyCoefficients, CoordinationThreshold, EnsembleCalibration, PhysicsError, TauValue,
-    tau_alignment,
+    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
+    PhysicsError, TauValue, tau_alignment,
 };
+use nalgebra::DMatrix;
 use thiserror::Error;
 use tokio::time::Instant;
 
@@ -27,6 +28,9 @@ pub struct CalibrationInput<'a> {
     pub task_prompts: Vec<String>,
     pub adapters: Vec<&'a dyn IComputeAdapter>,
     pub cfg: &'a H2AIConfig,
+    /// Optional embedding model for semantic CG measurement.
+    /// When `None`, falls back to token-level Jaccard (zero extra cost).
+    pub embedding_model: Option<&'a dyn EmbeddingModel>,
 }
 
 pub struct CalibrationHarness;
@@ -77,24 +81,32 @@ impl CalibrationHarness {
         );
 
         // CG_mean from pairwise Jaccard across all adapter output pairs.
-        let (cg_samples, ensemble) = if adapter_outputs.len() < 2 {
-            (vec![input.cfg.calibration_cg_fallback], None)
+        // Record one timestamp for the entire calibration run — all pairs are computed
+        // simultaneously so a single timestamp per run is the right granularity.
+        let calibration_ts = Utc::now().timestamp() as u64;
+        let (cg_samples, cg_timestamps, ensemble, pairwise_beta) = if adapter_outputs.len() < 2 {
+            (vec![input.cfg.calibration_cg_fallback], vec![calibration_ts], None, None)
         } else {
             let cal_tau = TauValue::new(input.cfg.calibration_tau)
                 .expect("calibration_tau must be in [0,1]");
             let align = tau_alignment(cal_tau, cal_tau); // = 1.0 when all taus equal
 
             let mut pairs = Vec::new();
+            let pairwise_start = Instant::now();
             for i in 0..adapter_outputs.len() {
                 for j in (i + 1)..adapter_outputs.len() {
-                    let oi = adapter_outputs[i].join(" ");
-                    let oj = adapter_outputs[j].join(" ");
-                    let ki = tokenize(&oi);
-                    let kj = tokenize(&oj);
-                    pairs.push(jaccard(&ki, &kj) * align);
+                    pairs.push(Self::adapter_pair_cg(&adapter_outputs[i], &adapter_outputs[j], input.embedding_model, align));
                 }
             }
-            let cg_mean_val: f64 = pairs.iter().sum::<f64>() / pairs.len() as f64;
+            let pairwise_elapsed = pairwise_start.elapsed().as_secs_f64();
+            let n_pairs = pairs.len();
+            let pairwise_beta = if n_pairs > 0 && t1_proxy > 1e-9 {
+                let per_pair = pairwise_elapsed / n_pairs as f64;
+                Some((per_pair / t1_proxy).clamp(1e-9, 0.1))
+            } else {
+                None
+            };
+            let cg_mean_val: f64 = pairs.iter().sum::<f64>() / n_pairs as f64;
             let ec = if input.cfg.baseline_accuracy_proxy > 0.0 {
                 EnsembleCalibration::from_measured_p(
                     input.cfg.baseline_accuracy_proxy,
@@ -104,10 +116,28 @@ impl CalibrationHarness {
             } else {
                 EnsembleCalibration::from_cg_mean(cg_mean_val, 9)
             };
-            (pairs, Some(ec))
+            (pairs, vec![calibration_ts; n_pairs], Some(ec), pairwise_beta)
         };
 
-        let cc = CoherencyCoefficients::new(alpha, beta_base, cg_samples)?;
+        // Compute eigenvalue calibration from the full pairwise CG matrix (N×N).
+        let eigen: Option<EigenCalibration> = if adapter_outputs.len() >= 2 {
+            let n = adapter_outputs.len();
+            let cal_tau = TauValue::new(input.cfg.calibration_tau).expect("calibration_tau valid");
+            let align = tau_alignment(cal_tau, cal_tau);
+            let mut sigma = DMatrix::<f64>::identity(n, n);
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let cg_ij = Self::adapter_pair_cg(&adapter_outputs[i], &adapter_outputs[j], input.embedding_model, align);
+                    sigma[(i, j)] = cg_ij;
+                    sigma[(j, i)] = cg_ij;
+                }
+            }
+            Some(EigenCalibration::from_cg_matrix(&sigma))
+        } else {
+            None
+        };
+
+        let cc = CoherencyCoefficients::new_with_timestamps(alpha, beta_base, cg_samples, cg_timestamps)?;
         let coordination_threshold =
             CoordinationThreshold::from_calibration(&cc, input.cfg.coordination_threshold_max);
 
@@ -116,7 +146,9 @@ impl CalibrationHarness {
             coefficients: cc,
             coordination_threshold,
             ensemble,
+            eigen,
             timestamp: Utc::now(),
+            pairwise_beta,
         })
     }
 
@@ -160,6 +192,19 @@ impl CalibrationHarness {
         (alpha.clamp(0.05, 0.5), beta0.clamp(1e-6, 0.1))
     }
 
+    /// Join the prompt-responses of two adapters into single strings and compute
+    /// their semantic similarity, scaled by tau alignment.
+    fn adapter_pair_cg(
+        outputs_i: &[String],
+        outputs_j: &[String],
+        model: Option<&dyn EmbeddingModel>,
+        align: f64,
+    ) -> f64 {
+        let oi = outputs_i.join(" ");
+        let oj = outputs_j.join(" ");
+        semantic_jaccard(&oi, &oj, model) * align
+    }
+
     /// Run a slice of adapters concurrently on all prompts.
     /// Returns (per-adapter (outputs, elapsed_secs), wall_clock_secs).
     async fn run_adapters_parallel(
@@ -200,6 +245,38 @@ impl CalibrationHarness {
         }
         Ok((per_adapter, t_wall))
     }
+}
+
+/// Derive β₀ from a set of merge phase timings.
+///
+/// `spans`: each tuple is `(merge_elapsed_secs, n_proposals)` from a
+/// `SemilatticeCompiledEvent`. `n_proposals` is `n_input_proposals`.
+/// `t1_secs`: serial T₁ from `CalibrationHarness` (the API call time proxy).
+///
+/// Formula: β₀ = mean(elapsed_i / pairs_i) / T₁
+/// where pairs_i = max(1, n_i × (n_i − 1) / 2).
+///
+/// **Note:** This denominator models O(n²) pairwise work and is accurate for
+/// `Krum`/`MultiKrum` merge strategies. For `ScoreOrdered` (O(n log n)) and
+/// `ConsensusMedian`, the derived β₀ will be inflated. Prefer collecting spans
+/// from Krum-strategy merges when using this function for USL fitting.
+///
+/// Returns `None` when `spans` is empty or `t1_secs` ≤ 0. Clamps to [1e-9, 0.1].
+pub fn beta_from_merge_spans(spans: &[(f64, usize)], t1_secs: f64) -> Option<f64> {
+    // Guard: t1_secs rounds to sub-nanosecond on mock/in-process adapters in fast CI runs.
+    // In that case pairwise_beta is undefined (any β / 0 → ∞); return None conservatively.
+    if spans.is_empty() || t1_secs < 1e-9 {
+        return None;
+    }
+    let sum: f64 = spans
+        .iter()
+        .map(|&(elapsed, n)| {
+            let pairs = (n * n.saturating_sub(1) / 2).max(1) as f64;
+            elapsed / pairs
+        })
+        .sum();
+    let mean_per_pair = sum / spans.len() as f64;
+    Some((mean_per_pair / t1_secs).clamp(1e-9, 0.1))
 }
 
 #[cfg(test)]

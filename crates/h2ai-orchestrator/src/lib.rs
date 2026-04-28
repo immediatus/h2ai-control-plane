@@ -28,6 +28,7 @@
 
 pub mod attribution;
 pub mod compound;
+pub mod diagnostics;
 pub mod diversity;
 pub mod engine;
 pub mod error;

@@ -1,6 +1,9 @@
 use chrono::Utc;
+use tokio::time::Instant;
 use h2ai_state::bft::ConsensusMedian;
-use h2ai_state::krum::{cluster_coherent, krum_select, multi_krum_select, quorum_satisfied};
+use h2ai_state::krum::{
+    cluster_coherent, krum_select_semantic, multi_krum_select_semantic, quorum_satisfied,
+};
 use h2ai_state::semilattice::{ProposalSet, SemilatticeResult};
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::events::{
@@ -28,6 +31,8 @@ impl MergeEngine {
         retry_count: u32,
         adapter: Option<&dyn IComputeAdapter>,
     ) -> MergeOutcome {
+        let merge_start = Instant::now();
+        let n_input = proposals.len() + pruned.len();
         let result = SemilatticeResult::compile(task_id.clone(), proposals, pruned);
 
         if result.valid_proposals.is_empty() {
@@ -51,7 +56,8 @@ impl MergeEngine {
             MergeStrategy::Krum { f } => {
                 let proposals = &result.valid_proposals;
                 if quorum_satisfied(proposals.len(), f) && cluster_coherent(proposals, adapter).await {
-                    krum_select(proposals, f)
+                    krum_select_semantic(proposals, f, adapter)
+                        .await
                         .map(|p| p.raw_output.clone())
                         .unwrap_or_default()
                 } else {
@@ -66,7 +72,7 @@ impl MergeEngine {
             MergeStrategy::MultiKrum { f, m } => {
                 let proposals = &result.valid_proposals;
                 if quorum_satisfied(proposals.len(), f) && cluster_coherent(proposals, adapter).await {
-                    let survivors = multi_krum_select(proposals, f, m);
+                    let survivors = multi_krum_select_semantic(proposals, f, m, adapter).await;
                     // valid_proposals is sorted by verification score descending.
                     // Pick the survivor that appears earliest (= highest verification score).
                     proposals
@@ -84,6 +90,7 @@ impl MergeEngine {
             }
         };
 
+        let merge_elapsed = merge_start.elapsed().as_secs_f64();
         let compiled = SemilatticeCompiledEvent {
             task_id: task_id.clone(),
             valid_proposals: result
@@ -98,6 +105,8 @@ impl MergeEngine {
                 .collect(),
             merge_strategy: strategy,
             timestamp: Utc::now(),
+            merge_elapsed_secs: Some(merge_elapsed),
+            n_input_proposals: n_input,
         };
 
         let resolved = MergeResolvedEvent {

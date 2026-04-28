@@ -32,6 +32,7 @@ async fn calibration() -> h2ai_types::events::CalibrationCompletedEvent {
         task_prompts: vec!["Calibrate".into(), "Second task".into(), "Third".into()],
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
+        embedding_model: None,
     })
     .await
     .unwrap()

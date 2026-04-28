@@ -1,3 +1,4 @@
+use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -38,21 +39,48 @@ impl TauValue {
 ///
 /// `alpha` is the contention (serial-fraction) coefficient from USL calibration.
 /// `beta_base` (β₀) is the base coherency cost per agent pair measured from calibration timing.
-/// `beta_eff` = β₀ / CG_mean couples coordination cost with how much common ground agents share.
+/// `beta_eff` = β₀ × (1 − CG_mean) couples coordination cost with how divergent adapter outputs are.
+/// Higher CG_mean → lower β_eff → higher N_max. Bounded at β₀ when CG_mean = 0.
 /// `n_max` = round(√((1−α)/β_eff)) is derived from USL Proposition 1 by setting dX/dN = 0
 /// in X(N) = N / (1 + α(N−1) + β·N(N−1)).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoherencyCoefficients {
     pub alpha: f64,
     /// Base coherency cost per agent pair (β₀), measured from calibration timing.
-    /// Lower CG_mean raises β_eff = β₀/CG_mean, reducing N_max.
+    /// β_eff = β₀ × (1 − CG_mean); bounded at β₀ when CG_mean = 0.
     #[serde(alias = "kappa_base")]
     pub beta_base: f64,
     pub cg_samples: Vec<f64>,
+    /// Unix timestamps (seconds) for each entry in `cg_samples`.
+    ///
+    /// When present (same length as `cg_samples`), `beta_eff_temporal` applies
+    /// Ebbinghaus decay so stale CG measurements contribute less weight, causing
+    /// β_eff to drift toward the conservative ceiling (β₀) without re-calibrating.
+    /// Empty when constructed via `new()` — `beta_eff_temporal` then falls back to
+    /// the unweighted `beta_eff()`.
+    #[serde(default)]
+    pub sample_timestamps: Vec<u64>,
 }
+
+/// Time constant τ for CG sample decay under exponential temporal weighting.
+/// 7 days: a sample one week old contributes at e^−1 ≈ 37% weight (`exp(-t/τ)` at t=τ).
+pub const CG_HALFLIFE_SECS: u64 = 604_800;
 
 impl CoherencyCoefficients {
     pub fn new(alpha: f64, beta_base: f64, cg_samples: Vec<f64>) -> Result<Self, PhysicsError> {
+        Self::new_with_timestamps(alpha, beta_base, cg_samples, vec![])
+    }
+
+    /// Construct with per-sample Unix timestamps (seconds) for temporal decay.
+    ///
+    /// `sample_timestamps` must be the same length as `cg_samples`; pass an
+    /// empty vec to skip temporal weighting (equivalent to `new`).
+    pub fn new_with_timestamps(
+        alpha: f64,
+        beta_base: f64,
+        cg_samples: Vec<f64>,
+        sample_timestamps: Vec<u64>,
+    ) -> Result<Self, PhysicsError> {
         if !(0.0..1.0).contains(&alpha) {
             return Err(PhysicsError::InvalidAlpha(alpha));
         }
@@ -66,15 +94,18 @@ impl CoherencyCoefficients {
             alpha,
             beta_base,
             cg_samples,
+            sample_timestamps,
         })
     }
 
-    /// Effective coordination cost per agent pair: β_eff = β₀ / CG_mean.
+    /// Effective coordination cost per agent pair: `β_eff = β₀ × (1 − CG_mean)`.
     ///
-    /// Higher common ground (CG_mean → 1) reduces effective coordination cost.
-    /// Lower common ground amplifies it. Used in `n_max()` via USL Proposition 1.
+    /// - At CG_mean = 0 (no overlap): β_eff = β₀ (maximum cost, bounded).
+    /// - At CG_mean = 1 (full overlap): β_eff ≈ 0 (coordination-free).
+    /// - Previous formula β₀/CG_mean diverged at CG→0; this form is bounded everywhere.
     pub fn beta_eff(&self) -> f64 {
-        self.beta_base / self.cg_mean().max(f64::EPSILON)
+        let cg = self.cg_mean().clamp(0.0, 1.0);
+        (self.beta_base * (1.0 - cg)).max(1e-6)
     }
 
     /// Maximum useful ensemble size from USL Proposition 1: round(√((1−α)/β_eff)).
@@ -85,6 +116,37 @@ impl CoherencyCoefficients {
     pub fn n_max(&self) -> f64 {
         let beta_eff = self.beta_eff().max(f64::EPSILON);
         ((1.0 - self.alpha).max(0.0) / beta_eff).sqrt().round()
+    }
+
+    /// N_max adjusted for context-window pressure.
+    ///
+    /// As N agents each contribute `proposal_tokens` to a context of `max_tokens`,
+    /// fill fraction `f(N) = min(1, N × proposal_tokens / max_tokens)` rises.
+    /// Context pressure amplifies β: `β_ctx(N) = β_eff × (1 + γ × f(N))`.
+    ///
+    /// Solves `N = √((1−α) / β_ctx(N))` iteratively (converges in ≤ 5 steps).
+    ///
+    /// Returns `n_max()` when `proposal_tokens` or `max_tokens` is < 1.0.
+    /// Result is always ≥ 1.0.
+    pub fn n_max_context_aware(&self, proposal_tokens: f64, max_tokens: f64, gamma: f64) -> f64 {
+        if proposal_tokens < 1.0 || max_tokens < 1.0 {
+            return self.n_max();
+        }
+        let beta_eff = self.beta_eff().max(f64::EPSILON);
+        let alpha = self.alpha;
+        let mut n = self.n_max();
+        for _ in 0..5 {
+            let fill = (n * proposal_tokens / max_tokens).min(1.0);
+            let beta_ctx = beta_eff * (1.0 + gamma * fill);
+            let n_new = ((1.0 - alpha).max(0.0) / beta_ctx.max(f64::EPSILON))
+                .sqrt()
+                .round();
+            if (n_new - n).abs() < 0.5 {
+                break;
+            }
+            n = n_new;
+        }
+        n.max(1.0)
     }
 
     pub fn cg_mean(&self) -> f64 {
@@ -100,6 +162,40 @@ impl CoherencyCoefficients {
             .sum::<f64>()
             / self.cg_samples.len() as f64;
         variance.sqrt()
+    }
+
+    /// Effective coordination cost with Ebbinghaus temporal decay.
+    ///
+    /// Each CG sample is weighted by `e^(-(now_secs − t) / CG_HALFLIFE_SECS)` using
+    /// `self.sample_timestamps`. As samples age their contribution fades, causing β_eff
+    /// to drift toward the conservative ceiling (β₀) without explicit re-calibration.
+    ///
+    /// Falls back to `beta_eff()` (unweighted) when `sample_timestamps` is empty or
+    /// its length does not match `cg_samples` — no timing information is available.
+    ///
+    /// Timestamps after `now_secs` are treated as age zero (weight 1.0) via saturating
+    /// subtraction — a future timestamp is never penalised.
+    pub fn beta_eff_temporal(&self, now_secs: u64) -> f64 {
+        let ts = &self.sample_timestamps;
+        if ts.len() != self.cg_samples.len() || ts.is_empty() {
+            return self.beta_eff();
+        }
+        let halflife = CG_HALFLIFE_SECS as f64;
+        let (weighted_cg, total_weight) = self
+            .cg_samples
+            .iter()
+            .zip(ts)
+            .fold((0.0f64, 0.0f64), |(wsum, wt), (cg, &t)| {
+                let w = (-(now_secs.saturating_sub(t) as f64) / halflife).exp();
+                (wsum + cg * w, wt + w)
+            });
+        // 1e-15: fires only when every sample has decayed beyond ~35 half-lives
+        // (~245 years at the 7-day halflife). Return beta_base — most conservative.
+        if total_weight < 1e-15 {
+            return self.beta_base.max(1e-6);
+        }
+        let cg_eff = (weighted_cg / total_weight).clamp(0.0, 1.0);
+        (self.beta_base * (1.0 - cg_eff)).max(1e-6)
     }
 }
 
@@ -348,6 +444,113 @@ impl EnsembleCalibration {
     pub fn topology_gain(&self) -> f64 {
         (self.q_optimal - self.p_mean).max(0.0)
     }
+
+    /// Information-theoretic optimal ensemble size from `rho_mean`.
+    ///
+    /// See [`n_it_optimal`] for the derivation.
+    pub fn n_it_optimal(&self) -> usize {
+        n_it_optimal(self.rho_mean)
+    }
+}
+
+/// Information-theoretic optimal ensemble size.
+///
+/// Returns the smallest N where the marginal information gain drops below half
+/// of the per-adapter entropy:
+///
+/// ```text
+/// I_marginal(N) = H(X) × (1 − ρ)^(N-1) < 0.5 × H(X)
+/// ⟹  (1 − ρ)^(N-1) < 0.5
+/// ⟹  N > 1 + log(0.5) / log(1 − ρ)
+/// N_it_optimal = ceil(1 + log(0.5) / log(1 − ρ))
+/// ```
+///
+/// Matches Condorcet `n_optimal` within ±1 for ρ ∈ [0.3, 0.95] (typical LLM ensembles).
+/// At ρ → 0 (independent sources) returns 1; at ρ → 1 returns 9 (capped).
+pub fn n_it_optimal(rho: f64) -> usize {
+    if rho <= 1e-10 {
+        return 1;
+    }
+    if rho >= 1.0 - 1e-10 {
+        return 9;
+    }
+    let n = 1.0 + 0.5_f64.ln() / (1.0 - rho).ln();
+    (n.ceil() as usize).clamp(1, 9)
+}
+
+/// Eigenvalue-based ensemble calibration from the pairwise CG similarity matrix.
+///
+/// Implements the portfolio theory "participation ratio" (Choueifaty & Coignard 2008):
+///   N_eff = (Σ λᵢ)² / Σ λᵢ²
+///
+/// At full independence (Σ = I), N_eff = N. At full correlation (Σ = 𝟏𝟏ᵀ), N_eff = 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EigenCalibration {
+    /// Effective number of independent adapters: (Σλ)²/Σλ².
+    pub n_effective: f64,
+    /// Normalized Shannon entropy of eigenvalue distribution ∈ [0, 1].
+    /// 1.0 = fully decorrelated; 0.0 = one adapter dominates.
+    pub h_diversity: f64,
+    /// Eigenvalues of the CG similarity matrix, sorted descending.
+    pub eigenvalues: Vec<f64>,
+    /// Recommended adapter count: first N where adding another raises N_eff by < 0.05.
+    pub n_pruned: usize,
+}
+
+impl EigenCalibration {
+    /// Compute from an N×N symmetric positive-semidefinite CG similarity matrix.
+    pub fn from_cg_matrix(sigma: &DMatrix<f64>) -> Self {
+        let eig = sigma.clone().symmetric_eigen();
+        let mut evs: Vec<f64> = eig.eigenvalues.iter().copied().map(|v| v.max(0.0)).collect();
+        evs.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+        let sum: f64 = evs.iter().sum();
+        let sum_sq: f64 = evs.iter().map(|l| l * l).sum();
+        let n_eff = if sum_sq > 1e-12 { sum * sum / sum_sq } else { 1.0 };
+
+        let h_div: f64 = evs
+            .iter()
+            .filter(|&&l| l > 1e-12)
+            .map(|&l| { let p = l / sum; -p * p.ln() })
+            .sum();
+        let h_norm = if evs.len() > 1 {
+            h_div / (evs.len() as f64).ln()
+        } else {
+            0.0
+        };
+
+        let n_pruned = {
+            let mut prev = 0.0f64;
+            let mut pruned = evs.len();
+            for (i, _) in evs.iter().enumerate() {
+                let partial_sum: f64 = evs[..=i].iter().sum();
+                let partial_sum_sq: f64 = evs[..=i].iter().map(|l| l * l).sum();
+                let current = if partial_sum_sq > 1e-12 {
+                    partial_sum * partial_sum / partial_sum_sq
+                } else {
+                    1.0
+                };
+                if i > 0 && current - prev < 0.05 {
+                    pruned = i;
+                    break;
+                }
+                prev = current;
+            }
+            pruned.max(1)
+        };
+
+        Self {
+            n_effective: n_eff,
+            h_diversity: h_norm.clamp(0.0, 1.0),
+            eigenvalues: evs,
+            n_pruned,
+        }
+    }
+
+    /// Derive effective correlation from N_eff: ρ_eff = 1 − N_eff/N.
+    pub fn rho_eff(&self, n: usize) -> f64 {
+        (1.0 - self.n_effective / n as f64).clamp(0.0, 1.0)
+    }
 }
 
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
@@ -388,6 +591,48 @@ impl MultiplicationCondition {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod context_aware_tests {
+    use super::*;
+
+    #[test]
+    fn n_max_context_aware_equals_n_max_when_no_pressure() {
+        // Huge context budget → fill ≈ 0 → β_ctx ≈ β_eff → same N_max
+        let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.4]).unwrap();
+        let n_base = cc.n_max();
+        let n_ctx = cc.n_max_context_aware(1024.0, 1_000_000.0, 0.5);
+        assert!((n_ctx - n_base).abs() < 1.0, "no pressure: n_ctx={n_ctx} n_base={n_base}");
+    }
+
+    #[test]
+    fn n_max_context_aware_reduces_n_when_context_full() {
+        // Tiny context: fill reaches 1 well before N_max
+        let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.4]).unwrap();
+        let n_base = cc.n_max();
+        // max_tokens = 512, proposal_tokens = 1024 → fill(N) = min(1, N*1024/512) ≥ 1 for any N≥1
+        let n_ctx = cc.n_max_context_aware(1024.0, 512.0, 0.5);
+        assert!(n_ctx <= n_base, "pressure must reduce N_max: n_ctx={n_ctx} n_base={n_base}");
+        assert!(n_ctx >= 1.0, "must be at least 1 agent");
+    }
+
+    #[test]
+    fn n_max_context_aware_clamps_at_one() {
+        // Extreme beta: even N=1 is near the ceiling; pressure pushes to floor
+        let cc = CoherencyCoefficients::new(0.15, 0.5, vec![0.0]).unwrap(); // β_eff = β₀(1-0)=0.5
+        let n_ctx = cc.n_max_context_aware(512.0, 256.0, 1.0);
+        assert!(n_ctx >= 1.0, "minimum 1 agent always");
+    }
+
+    #[test]
+    fn n_max_context_aware_falls_back_when_tokens_zero() {
+        let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.4]).unwrap();
+        let n_base = cc.n_max();
+        // proposal_tokens = 0 → fallback to n_max()
+        let n_ctx = cc.n_max_context_aware(0.0, 1000.0, 0.5);
+        assert!((n_ctx - n_base).abs() < 0.5, "zero proposal tokens must fall back to n_max()");
     }
 }
 
@@ -522,5 +767,55 @@ mod condorcet_tests {
     fn ensemble_calibration_from_measured_p_uses_given_p() {
         let ec = EnsembleCalibration::from_measured_p(0.9, 0.7, 9);
         assert!((ec.p_mean - 0.9).abs() < 1e-10, "p_mean should be 0.9, got {}", ec.p_mean);
+    }
+
+    #[test]
+    fn beta_eff_temporal_fresh_sample_equals_beta_eff() {
+        let now = 1_000_000u64;
+        let cc = CoherencyCoefficients::new_with_timestamps(0.1, 0.02, vec![0.6], vec![now]).unwrap();
+        let result = cc.beta_eff_temporal(now);
+        let expected = cc.beta_eff();
+        assert!((result - expected).abs() < 1e-9, "fresh sample: {result} vs {expected}");
+    }
+
+    #[test]
+    fn beta_eff_temporal_stale_sample_approaches_beta_base() {
+        let now = CG_HALFLIFE_SECS * 100;
+        let cc = CoherencyCoefficients::new_with_timestamps(0.1, 0.05, vec![0.8], vec![0]).unwrap();
+        let result = cc.beta_eff_temporal(now);
+        assert!(
+            (result - cc.beta_base).abs() < 0.001,
+            "stale sample must approach beta_base={}, got {result}", cc.beta_base
+        );
+    }
+
+    #[test]
+    fn beta_eff_temporal_no_timestamps_falls_back_to_beta_eff() {
+        // new() leaves sample_timestamps empty → beta_eff_temporal falls back to beta_eff()
+        let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6, 0.7]).unwrap();
+        let result = cc.beta_eff_temporal(1_000_000);
+        assert!((result - cc.beta_eff()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beta_eff_temporal_empty_struct_timestamps_falls_back() {
+        // new() without timestamps — same as above, explicit check for single-sample case
+        let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
+        let result = cc.beta_eff_temporal(1_000_000);
+        assert!((result - cc.beta_eff()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beta_eff_temporal_recent_low_cg_dominates_old_high_cg() {
+        let now = CG_HALFLIFE_SECS * 10;
+        let cc = CoherencyCoefficients::new_with_timestamps(
+            0.1, 0.05, vec![0.9, 0.2], vec![0u64, now],
+        ).unwrap();
+        let result = cc.beta_eff_temporal(now);
+        let fresh_only_beta = cc.beta_base * (1.0 - 0.2);
+        assert!(
+            (result - fresh_only_beta).abs() < 0.005,
+            "recent low-CG sample must dominate: expected ≈{fresh_only_beta:.4}, got {result:.4}"
+        );
     }
 }

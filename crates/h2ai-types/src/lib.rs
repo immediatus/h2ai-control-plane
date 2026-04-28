@@ -10,6 +10,7 @@
 //! - [`identity`] — `AgentId`, `TaskId`, `ExplorerId`, `SubtaskId` newtype identifiers
 //! - [`config`] — `ParetoWeights`, `TopologyKind`, `AdapterKind`, `AgentRole`, `RoleSpec`,
 //!   `ReviewGate`, `ExplorerConfig`, `AuditorConfig`
+//! - [`memory`] — `MemoryTier` enum (Working/Episodic/Semantic/Procedural) with ρ and halflife
 //! - [`physics`] — `CoherencyCoefficients`, `RoleErrorCost`, `MergeStrategy`,
 //!   `CoordinationThreshold`, `MultiplicationCondition`, `JeffectiveGap`
 //! - [`adapter`] — `IComputeAdapter` trait, `ComputeRequest`, `ComputeResponse`, `AdapterError`
@@ -23,5 +24,6 @@ pub mod config;
 pub mod events;
 pub mod identity;
 pub mod manifest;
+pub mod memory;
 pub mod physics;
 pub mod plan;

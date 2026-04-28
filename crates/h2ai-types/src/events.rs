@@ -3,8 +3,8 @@ use crate::config::{
 };
 use crate::identity::{ExplorerId, SubtaskId, TaskId};
 use crate::physics::{
-    CoherencyCoefficients, CoordinationThreshold, EnsembleCalibration, MergeStrategy,
-    MultiplicationConditionFailure, RoleErrorCost, TauValue,
+    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
+    MergeStrategy, MultiplicationConditionFailure, RoleErrorCost, TauValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,14 @@ pub struct CalibrationCompletedEvent {
     /// Condorcet-based ensemble calibration. `None` when < 2 adapters ran calibration
     /// (falls back to config defaults).
     pub ensemble: Option<EnsembleCalibration>,
+    /// Eigenvalue-based calibration (from pairwise CG matrix). `None` when fewer than 2 adapters.
+    pub eigen: Option<EigenCalibration>,
     pub timestamp: DateTime<Utc>,
+    /// β₀ derived from timing the pairwise CG reconciliation loop during calibration.
+    /// More accurate than I/O-timing-derived β₀ for semantic reconciliation cost.
+    /// `None` when fewer than 2 adapters ran calibration.
+    #[serde(default)]
+    pub pairwise_beta: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +145,13 @@ pub struct SemilatticeCompiledEvent {
     pub pruned_proposals: Vec<(ExplorerId, String)>,
     pub merge_strategy: MergeStrategy,
     pub timestamp: DateTime<Utc>,
+    /// Wall-clock seconds consumed by MergeEngine::resolve() for this event.
+    /// `None` for events reconstructed from older serialised logs.
+    #[serde(default)]
+    pub merge_elapsed_secs: Option<f64>,
+    /// Number of proposals (valid + pruned) that entered resolve().
+    #[serde(default)]
+    pub n_input_proposals: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

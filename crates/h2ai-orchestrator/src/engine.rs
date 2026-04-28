@@ -1,4 +1,5 @@
 pub use crate::nats_dispatch_adapter::NatsDispatchConfig;
+use crate::diagnostics::TalagrandDiagnostic;
 use crate::self_optimizer::{OptimizerParams, QualityMeasurement, SelfOptimizer, SuggestInput};
 use crate::task_store::{TaskPhase, TaskState, TaskStore};
 use chrono::Utc;
@@ -76,6 +77,14 @@ pub struct EngineOutput {
     pub semilattice: SemilatticeCompiledEvent,
     pub attribution: crate::attribution::HarnessAttribution,
     pub verification_events: Vec<VerificationScoredEvent>,
+    /// Rank-histogram calibration diagnostic built from this task's verification scores.
+    /// `None` when no verification events were produced.
+    /// Typically `Some(Insufficient)` state for a single task (< 20 runs needed for calibration).
+    pub talagrand: Option<crate::diagnostics::TalagrandDiagnostic>,
+    /// SelfOptimizer suggestion for the next task run, computed from this run's quality.
+    /// `None` only when no quality history was accumulated (should not happen on success).
+    /// Callers may apply this to their next `EngineInput` to improve throughput.
+    pub suggested_next_params: Option<crate::self_optimizer::OptimizerParams>,
 }
 
 #[derive(serde::Deserialize)]
@@ -238,6 +247,7 @@ impl ExecutionEngine {
                 force_topology: force_topology.clone(),
                 retry_count,
                 cfg: input.cfg,
+                eigen: input.calibration.eigen.as_ref(),
             });
 
             tried_topologies.push(provisioned.topology_kind.clone());
@@ -401,6 +411,7 @@ impl ExecutionEngine {
                             task_requirements: nd_cfg.task_requirements.clone(),
                             task_timeout: nd_cfg.task_timeout,
                         }));
+                        let generation = retry_count as u64;
                         let fut: ExplorerFuture<'_> = Box::pin(async move {
                             use crate::tao_loop::{TaoInput, TaoLoop};
                             match TaoLoop::run(TaoInput {
@@ -410,6 +421,7 @@ impl ExecutionEngine {
                                 initial_request: req,
                                 config: tao_cfg,
                                 schema_config: None,
+                                generation,
                             })
                             .await
                             {
@@ -428,6 +440,7 @@ impl ExecutionEngine {
                     } else {
                         let adapter_idx = idx % input.explorer_adapters.len();
                         let adapter = input.explorer_adapters[adapter_idx];
+                        let generation = retry_count as u64;
                         let fut: ExplorerFuture<'_> = Box::pin(async move {
                             use crate::tao_loop::{TaoInput, TaoLoop};
                             match TaoLoop::run(TaoInput {
@@ -437,6 +450,7 @@ impl ExecutionEngine {
                                 initial_request: req,
                                 config: tao_cfg,
                                 schema_config: None,
+                                generation,
                             })
                             .await
                             {
@@ -737,6 +751,7 @@ impl ExecutionEngine {
                 provisioned.merge_strategy.clone(),
                 retry_count,
                 Some(input.registry.resolve(&TaskProfile::Scoring)),
+                None,
             )
             .await;
 
@@ -752,7 +767,7 @@ impl ExecutionEngine {
                         q_total: attribution.total_quality,
                     });
                     // SelfOptimizer suggestion recorded for observability but not applied on success
-                    let _suggested = SelfOptimizer::suggest(SuggestInput {
+                    let suggested_next = SelfOptimizer::suggest(SuggestInput {
                         current: &current_params,
                         history: &quality_history,
                         n_max_ceiling,
@@ -764,12 +779,19 @@ impl ExecutionEngine {
                     });
 
                     input.store.mark_resolved(&task_id);
+                    let run_scores: Vec<f64> = all_verification_events
+                        .iter()
+                        .map(|e| e.score)
+                        .collect();
+                    let talagrand = TalagrandDiagnostic::from_verification_scores(&[run_scores]);
                     return Ok(EngineOutput {
                         task_id,
                         resolved_output: resolved.resolved_output,
                         semilattice,
                         attribution,
                         verification_events: all_verification_events,
+                        talagrand,
+                        suggested_next_params: Some(suggested_next),
                     });
                 }
                 MergeOutcome::ZeroSurvival(zero_event) => {

@@ -95,6 +95,7 @@ async fn run_calibration(
         task_prompts: vec!["Calibrate".into(), "Second".into()],
         adapters: adapters.to_vec(),
         cfg: &cfg,
+        embedding_model: None,
     })
     .await
     .unwrap()
