@@ -31,6 +31,11 @@ dashmap         = { workspace = true }
 chrono          = { workspace = true }
 regex           = { workspace = true }
 jsonschema      = { version = "0.26", default-features = false }
+reqwest         = { workspace = true }
+rand            = { workspace = true }
+rand_distr      = { workspace = true }
+sha2            = { workspace = true }
+hex             = { workspace = true }
 
 [dev-dependencies]
 h2ai-adapters    = { path = "../h2ai-adapters" }

@@ -43,14 +43,17 @@ impl AgentProvider for FakeProvider {
 async fn nats_dispatch_adapter_round_trip() {
     use futures::StreamExt;
 
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
 
     // Connect two clients: one for the adapter, one for the mock edge agent
-    let nats_adapter = Arc::new(
-        NatsClient::connect(&nats_url)
-            .await
-            .expect("connect adapter client"),
-    );
+    let nats_adapter = Arc::new(match NatsClient::connect(&nats_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+            return;
+        }
+    });
     let nats_agent = NatsClient::connect(&nats_url)
         .await
         .expect("connect agent client");
@@ -81,6 +84,10 @@ async fn nats_dispatch_adapter_round_trip() {
         agent_descriptor: descriptor,
         task_requirements: requirements,
         task_timeout: Duration::from_secs(5),
+        payload_store: std::sync::Arc::new(
+            h2ai_orchestrator::payload_store::MemoryPayloadStore::new(),
+        ),
+        offload_threshold_bytes: 524_288,
     });
 
     // Spawn a mock edge agent that subscribes to ephemeral task subjects and publishes results.

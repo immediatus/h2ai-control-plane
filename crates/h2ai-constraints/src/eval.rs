@@ -1,7 +1,10 @@
 use crate::types::{CompositeOp, ConstraintPredicate, NumericOp, VocabularyMode};
 
 /// Evaluate a sync predicate against an output string.
-/// Returns a score in [0.0, 1.0]. LlmJudge returns 1.0 (pass-through — async path only).
+///
+/// Returns a score in [0.0, 1.0].
+/// - `LlmJudge`: returns 1.0 (pass-through — use the async LLM path).
+/// - `OracleExecution`: returns 0.0 (safe degradation — use `eval_async` for oracle predicates).
 pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
     let lower = output.to_lowercase();
     match pred {
@@ -11,15 +14,20 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
         ConstraintPredicate::NegativeKeyword { terms } => {
             eval_vocabulary(&VocabularyMode::NoneOf, terms, &lower)
         }
-        ConstraintPredicate::RegexMatch { pattern, must_match } => {
-            match regex::Regex::new(pattern) {
-                Ok(re) => {
-                    let matched = re.is_match(output);
-                    if matched == *must_match { 1.0 } else { 0.0 }
+        ConstraintPredicate::RegexMatch {
+            pattern,
+            must_match,
+        } => match regex::Regex::new(pattern) {
+            Ok(re) => {
+                let matched = re.is_match(output);
+                if matched == *must_match {
+                    1.0
+                } else {
+                    0.0
                 }
-                Err(_) => 0.0,
             }
-        }
+            Err(_) => 0.0,
+        },
         ConstraintPredicate::NumericThreshold {
             field_pattern,
             op,
@@ -28,6 +36,39 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
         ConstraintPredicate::LlmJudge { .. } => {
             // Must be evaluated via async path; sync path is a pass-through.
             1.0
+        }
+        ConstraintPredicate::OracleExecution { .. } => {
+            // Requires an async HTTP call; sync path always returns 0.0 (safe degradation).
+            // Use eval_async in h2ai-orchestrator::verification for oracle predicates.
+            0.0
+        }
+        ConstraintPredicate::JsonSchema { schema } => {
+            let instance = match serde_json::from_str::<serde_json::Value>(output) {
+                Ok(v) => v,
+                Err(_) => return 0.0,
+            };
+            match jsonschema::validator_for(schema) {
+                Ok(validator) => {
+                    if validator.is_valid(&instance) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                Err(_) => 0.0,
+            }
+        }
+        ConstraintPredicate::LengthRange {
+            min_chars,
+            max_chars,
+        } => {
+            let len = output.chars().count();
+            let ok = min_chars.map_or(true, |m| len >= m) && max_chars.map_or(true, |m| len <= m);
+            if ok {
+                1.0
+            } else {
+                0.0
+            }
         }
         ConstraintPredicate::Composite { op, children } => {
             let scores: Vec<f64> = children.iter().map(|c| eval_sync(c, output)).collect();
@@ -54,10 +95,18 @@ fn eval_vocabulary(mode: &VocabularyMode, terms: &[String], lower_output: &str) 
     match mode {
         VocabularyMode::AllOf => hit_count as f64 / terms.len() as f64,
         VocabularyMode::AnyOf => {
-            if hit_count > 0 { 1.0 } else { 0.0 }
+            if hit_count > 0 {
+                1.0
+            } else {
+                0.0
+            }
         }
         VocabularyMode::NoneOf => {
-            if hit_count == 0 { 1.0 } else { 0.0 }
+            if hit_count == 0 {
+                1.0
+            } else {
+                0.0
+            }
         }
     }
 }
@@ -87,5 +136,9 @@ fn eval_numeric(
         NumericOp::Ge => v >= threshold,
         NumericOp::Gt => v > threshold,
     };
-    if passes { 1.0 } else { 0.0 }
+    if passes {
+        1.0
+    } else {
+        0.0
+    }
 }

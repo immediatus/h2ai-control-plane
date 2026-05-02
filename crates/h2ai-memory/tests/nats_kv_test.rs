@@ -6,7 +6,8 @@ use h2ai_memory::provider::MemoryProvider;
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
 async fn session_history_survives_provider_restart() {
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
     let nats = async_nats::connect(&url).await.expect("connect");
     let session_id = format!("test-{}", uuid::Uuid::new_v4());
 
@@ -47,7 +48,8 @@ async fn session_history_survives_provider_restart() {
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
 async fn get_recent_history_respects_limit_and_preserves_order() {
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
     let nats = async_nats::connect(&url).await.expect("connect");
     let session_id = format!("test-limit-{}", uuid::Uuid::new_v4());
 

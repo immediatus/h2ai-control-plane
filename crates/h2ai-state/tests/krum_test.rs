@@ -1,18 +1,81 @@
 use chrono::Utc;
+use h2ai_context::jaccard::{jaccard, tokenize};
 use h2ai_state::krum::{
-    cluster_coherent, krum_select, mean_pairwise_distance, min_quorum, multi_krum_select,
+    cluster_coherent, krum_index, krum_score_subset, mean_pairwise_distance, min_quorum,
     quorum_satisfied,
 };
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::physics::TauValue;
+use std::collections::HashSet;
+
+fn build_token_sets(proposals: &[ProposalEvent]) -> Vec<HashSet<String>> {
+    proposals.iter().map(|p| tokenize(&p.raw_output)).collect()
+}
+
+fn jaccard_distance_matrix(token_sets: &[HashSet<String>]) -> Vec<Vec<f64>> {
+    let n = token_sets.len();
+    let mut d = vec![vec![0.0f64; n]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let dist = 1.0 - jaccard(&token_sets[i], &token_sets[j]);
+            d[i][j] = dist;
+            d[j][i] = dist;
+        }
+    }
+    d
+}
+
+fn krum_select(proposals: &[ProposalEvent], f: usize) -> Option<&ProposalEvent> {
+    if proposals.is_empty() {
+        return None;
+    }
+    if f == 0 {
+        return proposals.first();
+    }
+    if !quorum_satisfied(proposals.len(), f) {
+        return None;
+    }
+    let distances = jaccard_distance_matrix(&build_token_sets(proposals));
+    let k = proposals.len() - f - 2;
+    krum_index(&distances, k).map(|i| &proposals[i])
+}
+
+fn multi_krum_select(proposals: &[ProposalEvent], f: usize, m: usize) -> Vec<&ProposalEvent> {
+    if proposals.is_empty() || m == 0 {
+        return vec![];
+    }
+    if f == 0 {
+        return proposals.iter().take(m).collect();
+    }
+    if !quorum_satisfied(proposals.len(), f) {
+        return vec![];
+    }
+    let distances = jaccard_distance_matrix(&build_token_sets(proposals));
+    let mut remaining: Vec<usize> = (0..proposals.len()).collect();
+    let mut selected = Vec::with_capacity(m);
+    while selected.len() < m && remaining.len() > f + 2 {
+        let k = remaining.len() - f - 2;
+        let best_pos = (0..remaining.len())
+            .min_by(|&a, &b| {
+                let sa = krum_score_subset(remaining[a], &remaining, &distances, k);
+                let sb = krum_score_subset(remaining[b], &remaining, &distances, k);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("remaining is non-empty");
+        selected.push(&proposals[remaining[best_pos]]);
+        remaining.remove(best_pos);
+    }
+    selected
+}
 
 fn prop(text: &str) -> ProposalEvent {
     ProposalEvent {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),
         tau: TauValue::new(0.5).unwrap(),
+        generation: 0,
         raw_output: text.into(),
         token_cost: text.len() as u64,
         adapter_kind: AdapterKind::CloudGeneric {
@@ -212,7 +275,10 @@ fn multi_krum_m_larger_than_selectable_returns_partial() {
 
 #[tokio::test]
 async fn mean_pairwise_distance_zero_for_single_proposal() {
-    assert_eq!(mean_pairwise_distance(&[prop("stateless jwt")], None).await, 0.0);
+    assert_eq!(
+        mean_pairwise_distance(&[prop("stateless jwt")], None).await,
+        0.0
+    );
 }
 
 #[tokio::test]
@@ -225,7 +291,10 @@ async fn mean_pairwise_distance_one_for_totally_disjoint_pair() {
     // No shared tokens → Jaccard = 0 → distance = 1.0
     let proposals = vec![prop("alpha bravo charlie"), prop("delta echo foxtrot")];
     let d = mean_pairwise_distance(&proposals, None).await;
-    assert!((d - 1.0).abs() < 1e-9, "totally disjoint proposals must have distance 1.0, got {d}");
+    assert!(
+        (d - 1.0).abs() < 1e-9,
+        "totally disjoint proposals must have distance 1.0, got {d}"
+    );
 }
 
 #[tokio::test]
@@ -233,7 +302,10 @@ async fn mean_pairwise_distance_zero_for_identical_pair() {
     let text = "stateless jwt auth token";
     let proposals = vec![prop(text), prop(text)];
     let d = mean_pairwise_distance(&proposals, None).await;
-    assert!(d.abs() < 1e-9, "identical proposals must have distance 0.0, got {d}");
+    assert!(
+        d.abs() < 1e-9,
+        "identical proposals must have distance 0.0, got {d}"
+    );
 }
 
 #[tokio::test]

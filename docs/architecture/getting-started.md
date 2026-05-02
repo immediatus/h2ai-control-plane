@@ -13,7 +13,7 @@ This guide walks through running H2AI Control Plane for the first time: from zer
 | Helm 3.x | — | — | required |
 | Cloud LLM API key | optional (real results) | required | required |
 
-Both explorer and auditor default to `mock` (deterministic test double). To get real LLM output you need at least one cloud API key — OpenAI, Anthropic, or an Ollama endpoint. The Auditor should be routed to a capable reasoning model for reliable ADR constraint enforcement.
+Both explorer and auditor default to `mock` (deterministic test double). To get real LLM output you need at least one cloud API key — OpenAI, Anthropic, or an Ollama endpoint. The Auditor should be routed to a capable reasoning model for reliable constraint enforcement.
 
 ---
 
@@ -35,7 +35,7 @@ H2AI_EXPLORER_PROVIDER=anthropic
 H2AI_EXPLORER_MODEL=claude-3-5-sonnet-20241022
 H2AI_EXPLORER_API_KEY_ENV=ANTHROPIC_API_KEY
 
-# Auditor adapter (ADR constraint gate — use a capable reasoning model)
+# Auditor adapter (constraint gate — use a capable reasoning model)
 H2AI_AUDITOR_PROVIDER=anthropic
 H2AI_AUDITOR_MODEL=claude-3-5-haiku-20241022
 H2AI_AUDITOR_API_KEY_ENV=ANTHROPIC_API_KEY
@@ -75,29 +75,28 @@ NATS monitoring is available at `http://localhost:8222`. The H2AI API is at `htt
 
 ### 3. Seed your constraint corpus
 
-The Dark Knowledge Compiler reads constraint documents from the `./adr/` directory. Without constraints, `J_eff` will be low and the system will reject tasks with `ContextUnderflowError`.
+The Dark Knowledge Compiler reads constraint documents from the `./constraints/` directory. Without constraints, `J_eff` will be low and the system will reject tasks with `ContextUnderflowError`.
 
-Create at minimum one ADR:
+Create at minimum one constraint document:
 
 ```bash
-mkdir -p adr
-cat > adr/ADR-001-stateless-auth.md << 'EOF'
-# ADR-001: Stateless Authentication
+mkdir -p constraints
+cat > constraints/CONSTRAINT-001-stateless-auth.md << 'EOF'
+# CONSTRAINT-001: Stateless Authentication
 
-## Status
-Accepted
+## Severity
+Hard threshold=0.8
 
-## Context
-The API layer must not store session tokens. Compliance requirement CR-2024-07.
+## Predicate
+VocabularyPresence AllOf
+- jwt
+- stateless
+- no session state
+- token expiry
 
-## Decision
-All authentication is JWT-based. No session store. Tokens are validated on every
-request via the shared signing key. Services must not write auth state to any
-database.
-
-## Consequences
-- Services are horizontally scalable without sticky sessions.
-- Token revocation requires short expiry + refresh token rotation.
+## Remediation
+The proposal must state that authentication is JWT-based and stateless. No session
+tokens may be written to any storage medium. Token expiry must be specified.
 EOF
 ```
 
@@ -183,7 +182,7 @@ data: {"event_type":"GenerationPhaseCompleted","payload":{"proposal_count":3}}
 
 data: {"event_type":"Validation","payload":{"explorer_id":"exp_A"}}
 data: {"event_type":"Validation","payload":{"explorer_id":"exp_B"}}
-data: {"event_type":"BranchPruned","payload":{"explorer_id":"exp_C","reason":"Proposes storing refresh tokens in Redis — violates ADR-001 stateless auth requirement","constraint_error_cost":0.72}}
+data: {"event_type":"BranchPruned","payload":{"explorer_id":"exp_C","reason":"Proposes storing refresh tokens in Redis — violates CONSTRAINT-001 stateless auth requirement","constraint_error_cost":0.72}}
 
 data: {"event_type":"SemilatticeCompiled","payload":{"valid_proposals":2,"pruned_proposals":1,"merge_strategy":"CrdtSemilattice"}}
 ```
@@ -220,7 +219,7 @@ See [Deployment — Server Plan](../architecture/deployment.md) for team constra
 kubectl apply -f deploy/cloud/namespace.yaml
 
 # Upload your constraint corpus
-kubectl create configmap constraint-corpus --from-file=./adr/ -n h2ai
+kubectl create configmap constraint-corpus --from-file=./constraints/ -n h2ai
 
 # Install via Helm
 helm repo add h2ai https://h2ai.github.io/control-plane
@@ -237,9 +236,9 @@ helm install h2ai h2ai/h2ai-control-plane \
 
 | Topic | Document |
 |---|---|
-| All REST endpoints and event schemas | [API Reference](../reference/api.md) |
-| All environment variables and Helm values | [Configuration Reference](../reference/configuration.md) |
+| All REST endpoints and event schemas | [API Reference](api.md) |
+| All environment variables and Helm values | [Configuration Reference](configuration.md) |
 | Writing constraints that the compiler understands | [Constraint Corpus Guide](constraint-corpus.md) |
 | Implementing a custom compute adapter | [Adapter Development](adapters.md) |
-| Monitoring, alerting, upgrading | [Operations Guide](../operations/operations.md) |
-| Diagnosing common problems | [Troubleshooting](../operations/troubleshooting.md) |
+| Monitoring, alerting, upgrading | [Operations Guide](operations.md) |
+| Diagnosing common problems | [Troubleshooting](troubleshooting.md) |

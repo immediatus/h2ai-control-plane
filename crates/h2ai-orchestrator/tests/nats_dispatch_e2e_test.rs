@@ -35,6 +35,7 @@ impl IComputeAdapter for FixedCostAdapter {
                 endpoint: "fixed://localhost".into(),
                 api_key_env: "NONE".into(),
             },
+            tokens_used: None,
         })
     }
 
@@ -58,14 +59,17 @@ impl IComputeAdapter for FixedCostAdapter {
 #[tokio::test]
 #[ignore]
 async fn nats_dispatch_e2e_full_pipeline() {
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
 
     // Step 1: Connect and ensure JetStream infrastructure.
-    let nats_orchestrator = Arc::new(
-        NatsClient::connect(&nats_url)
-            .await
-            .expect("connect orchestrator NATS client"),
-    );
+    let nats_orchestrator = Arc::new(match NatsClient::connect(&nats_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+            return;
+        }
+    });
     nats_orchestrator
         .ensure_infrastructure()
         .await
@@ -107,6 +111,10 @@ async fn nats_dispatch_e2e_full_pipeline() {
             required_tools: vec![],
         },
         task_timeout: Duration::from_secs(5),
+        payload_store: std::sync::Arc::new(
+            h2ai_orchestrator::payload_store::MemoryPayloadStore::new(),
+        ),
+        offload_threshold_bytes: 524_288,
     });
 
     let request = ComputeRequest {

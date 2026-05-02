@@ -1,7 +1,7 @@
 use h2ai_types::physics::{
-    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
-    JeffectiveGap, MergeStrategy, MultiplicationCondition, MultiplicationConditionFailure,
-    RoleErrorCost, TauValue, n_it_optimal,
+    n_it_optimal, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
+    EnsembleCalibration, JeffectiveGap, MergeStrategy, MultiplicationCondition,
+    MultiplicationConditionFailure, RoleErrorCost, TauValue,
 };
 
 #[test]
@@ -234,26 +234,26 @@ fn tau_value_above_one_invalid() {
 }
 
 #[test]
-fn merge_strategy_krum_serializes_and_deserializes() {
-    let s = MergeStrategy::Krum { f: 1 };
+fn merge_strategy_outlier_resistant_serializes_and_deserializes() {
+    let s = MergeStrategy::OutlierResistant { f: 1 };
     let json = serde_json::to_string(&s).unwrap();
     let back: MergeStrategy = serde_json::from_str(&json).unwrap();
     assert_eq!(back, s);
 }
 
 #[test]
-fn merge_strategy_multi_krum_serializes_and_deserializes() {
-    let s = MergeStrategy::MultiKrum { f: 2, m: 3 };
+fn merge_strategy_multi_outlier_resistant_serializes_and_deserializes() {
+    let s = MergeStrategy::MultiOutlierResistant { f: 2, m: 3 };
     let json = serde_json::to_string(&s).unwrap();
     let back: MergeStrategy = serde_json::from_str(&json).unwrap();
     assert_eq!(back, s);
 }
 
 #[test]
-fn from_role_costs_selects_krum_above_krum_threshold() {
+fn from_role_costs_selects_outlier_resistant_above_krum_threshold() {
     let costs = vec![RoleErrorCost::new(0.97).unwrap()];
     let strategy = MergeStrategy::from_role_costs(&costs, 0.85, 0.95, 1);
-    assert_eq!(strategy, MergeStrategy::Krum { f: 1 });
+    assert_eq!(strategy, MergeStrategy::OutlierResistant { f: 1 });
 }
 
 #[test]
@@ -264,8 +264,8 @@ fn from_role_costs_selects_condorcet_in_middle_tier() {
 }
 
 #[test]
-fn from_role_costs_krum_disabled_when_f_is_zero() {
-    // krum_f=0 disables Krum even above krum_threshold
+fn from_role_costs_outlier_resistant_disabled_when_f_is_zero() {
+    // krum_f=0 disables OutlierResistant even above krum_threshold
     let costs = vec![RoleErrorCost::new(0.99).unwrap()];
     let strategy = MergeStrategy::from_role_costs(&costs, 0.85, 0.95, 0);
     assert_eq!(strategy, MergeStrategy::ConsensusMedian);
@@ -282,7 +282,10 @@ fn from_role_costs_empty_slice_selects_score_ordered() {
 fn multiplication_condition_cg_mean_exactly_at_theta_passes() {
     // cg_mean < theta_coord is strict less-than → equality must pass.
     let result = MultiplicationCondition::evaluate(0.7, 0.85, 0.3, 0.3, 0.5, 0.9);
-    assert!(result.is_ok(), "cg_mean == theta must pass (strict < semantics)");
+    assert!(
+        result.is_ok(),
+        "cg_mean == theta must pass (strict < semantics)"
+    );
 }
 
 #[test]
@@ -292,9 +295,7 @@ fn multiplication_condition_competence_failure_takes_priority_over_others() {
         0.1,  // competence below min 0.5
         0.99, // correlation above max 0.9
         0.0,  // cg below theta 0.3
-        0.3,
-        0.5,
-        0.9,
+        0.3, 0.5, 0.9,
     );
     assert!(
         matches!(
@@ -375,11 +376,13 @@ fn eigen_calibration_full_independence_gives_n_eff_equal_n() {
     let ec = EigenCalibration::from_cg_matrix(&sigma);
     assert!(
         (ec.n_effective - 4.0).abs() < 0.1,
-        "identity Σ → N_eff = 4, got {}", ec.n_effective
+        "identity Σ → N_eff = 4, got {}",
+        ec.n_effective
     );
     assert!(
         (ec.h_diversity - 1.0).abs() < 0.01,
-        "identity Σ → H_norm = 1.0, got {}", ec.h_diversity
+        "identity Σ → H_norm = 1.0, got {}",
+        ec.h_diversity
     );
 }
 
@@ -393,7 +396,8 @@ fn eigen_calibration_full_correlation_gives_n_eff_one() {
     let ec = EigenCalibration::from_cg_matrix(&sigma);
     assert!(
         (ec.n_effective - 1.0).abs() < 0.5,
-        "all-ones Σ → N_eff ≈ 1, got {}", ec.n_effective
+        "all-ones Σ → N_eff ≈ 1, got {}",
+        ec.n_effective
     );
 }
 
@@ -412,10 +416,11 @@ fn eigen_calibration_uniform_rho_matches_portfolio_formula() {
         }
     }
     let ec = EigenCalibration::from_cg_matrix(&sigma);
-    let expected = 2.5f64;  // participation ratio for uniform rho=0.5, N=5
+    let expected = 2.5f64; // participation ratio for uniform rho=0.5, N=5
     assert!(
         (ec.n_effective - expected).abs() < 0.3,
-        "uniform rho=0.5 -> N_eff approx {expected:.1}, got {:.3}", ec.n_effective
+        "uniform rho=0.5 -> N_eff approx {expected:.1}, got {:.3}",
+        ec.n_effective
     );
 }
 
@@ -446,4 +451,26 @@ fn ensemble_calibration_n_it_optimal_delegates_to_free_function() {
     // from_cg_mean(0.5, 9) → rho_mean = 1.0 - 0.5 = 0.5
     let ec = EnsembleCalibration::from_cg_mean(0.5, 9);
     assert_eq!(ec.n_it_optimal(), n_it_optimal(ec.rho_mean));
+}
+
+#[test]
+fn ensemble_calibration_from_cg_mean_is_heuristic() {
+    use h2ai_types::physics::PredictionBasis;
+    let ec = EnsembleCalibration::from_cg_mean(0.7, 9);
+    assert_eq!(
+        ec.prediction_basis,
+        PredictionBasis::Heuristic,
+        "from_cg_mean must label prediction as Heuristic"
+    );
+}
+
+#[test]
+fn ensemble_calibration_from_measured_p_is_empirical() {
+    use h2ai_types::physics::PredictionBasis;
+    let ec = EnsembleCalibration::from_measured_p(0.85, 0.7, 9);
+    assert_eq!(
+        ec.prediction_basis,
+        PredictionBasis::Empirical,
+        "from_measured_p must label prediction as Empirical"
+    );
 }

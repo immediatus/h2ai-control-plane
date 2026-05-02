@@ -1,4 +1,4 @@
-# ADR-002: Service Communication Protocols — gRPC Internal, REST External
+# CONSTRAINT-002: Service Communication Protocols — gRPC Internal, REST External
 
 ## Status
 

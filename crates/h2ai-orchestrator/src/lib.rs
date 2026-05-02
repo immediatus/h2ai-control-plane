@@ -27,6 +27,7 @@
 //! - [`compound`] — `CompoundTaskEngine::run` — decompose → review → schedule pipeline
 
 pub mod attribution;
+pub mod bandit;
 pub mod compound;
 pub mod diagnostics;
 pub mod diversity;
@@ -35,6 +36,7 @@ pub mod error;
 pub mod error_class;
 pub mod nats_dispatch_adapter;
 pub mod output_schema;
+pub mod payload_store;
 pub mod pipeline;
 pub mod repetition;
 pub mod scheduler;

@@ -58,6 +58,7 @@ fn apply_proposal_increments_completed_and_sets_generating() {
             task_id: tid.clone(),
             explorer_id: explorer_id(),
             tau: TauValue::new(0.5).unwrap(),
+            generation: 0,
             raw_output: "output".into(),
             token_cost: 100,
             adapter_kind: AdapterKind::CloudGeneric {
@@ -202,6 +203,30 @@ fn apply_branch_pruned_increments_proposals_pruned() {
     assert_eq!(state.proposals_valid, 0);
 }
 
+// ── TaskState serde ───────────────────────────────────────────────────────────
+
+#[test]
+fn task_state_serde_roundtrip() {
+    let tid = task_id();
+    let mut state = TaskState::new(tid.clone());
+    state.status = "generating".into();
+    state.phase = TaskPhase::ParallelGeneration as u8;
+    state.phase_name = "ParallelGeneration".into();
+    state.explorers_completed = 3;
+    state.explorers_total = 5;
+    state.proposals_valid = 2;
+    state.proposals_pruned = 1;
+    state.autonomic_retries = 1;
+
+    let json = serde_json::to_string(&state).unwrap();
+    let back: TaskState = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.task_id, tid);
+    assert_eq!(back.status, "generating");
+    assert_eq!(back.explorers_completed, 3);
+    assert_eq!(back.proposals_valid, 2);
+    assert_eq!(back.autonomic_retries, 1);
+}
+
 // ── integration (ignored — requires live NATS) ────────────────────────────────
 
 #[tokio::test]
@@ -211,11 +236,15 @@ async fn replay_reconstructs_resolved_task_state() {
     use h2ai_state::nats::NatsClient;
     use std::sync::Arc;
 
-    let nats = Arc::new(
-        NatsClient::connect("nats://localhost:4222")
-            .await
-            .expect("NATS connection failed"),
-    );
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats = Arc::new(match NatsClient::connect(&nats_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+            return;
+        }
+    });
     nats.ensure_infrastructure()
         .await
         .expect("infra setup failed");
@@ -261,4 +290,81 @@ async fn replay_reconstructs_resolved_task_state() {
         TaskPhase::try_from(state.phase).unwrap(),
         TaskPhase::Resolved
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn snapshot_written_and_recovered_via_replay() {
+    use h2ai_orchestrator::session_journal::SessionJournal;
+    use h2ai_state::nats::NatsClient;
+    use std::sync::Arc;
+
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats = Arc::new(match NatsClient::connect(&nats_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+            return;
+        }
+    });
+    nats.ensure_infrastructure()
+        .await
+        .expect("infra setup failed");
+
+    let tid = task_id();
+
+    // Publish events and capture the last sequence.
+    let seq = nats
+        .publish_event_seq(
+            &tid,
+            &H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
+                task_id: tid.clone(),
+                system_context: "ctx".into(),
+                pareto_weights: pareto_weights(),
+                j_eff: 1.0,
+                timestamp: Utc::now(),
+            }),
+        )
+        .await
+        .expect("publish_event_seq");
+
+    // Manually write a snapshot as if note_event had fired.
+    let state_before = TaskState::new(tid.clone());
+    let snap = h2ai_types::events::TaskSnapshot {
+        task_id: tid.clone(),
+        last_sequence: seq,
+        task_state_json: serde_json::to_string(&state_before).unwrap(),
+        taken_at: Utc::now(),
+    };
+    nats.put_snapshot(&snap).await.expect("put_snapshot");
+
+    // Now publish a MergeResolved event AFTER the snapshot.
+    nats.publish_event(
+        &tid,
+        &H2AIEvent::MergeResolved(MergeResolvedEvent {
+            task_id: tid.clone(),
+            resolved_output: "final".into(),
+            timestamp: Utc::now(),
+        }),
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let journal = SessionJournal::new(nats.clone()).with_snapshot_interval(50);
+    let recovered = journal
+        .replay(&tid)
+        .await
+        .expect("replay")
+        .expect("state present");
+
+    // The journal should have loaded the snapshot and then replayed only MergeResolved.
+    assert_eq!(recovered.status, "resolved");
+
+    // Verify get_snapshot round-trips correctly.
+    let loaded = nats.get_snapshot(&tid).await.expect("get_snapshot");
+    assert!(loaded.is_some());
+    assert_eq!(loaded.unwrap().last_sequence, seq);
 }

@@ -59,25 +59,14 @@ impl PlanReviewer {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let prompt = format!(
-            "You are reviewing a subtask decomposition plan.\n\
-             \n\
-             Original task: {original_description}\n\
-             \n\
-             Proposed plan:\n{subtask_summary}\n\
-             \n\
-             Evaluate:\n\
-             1. Does this plan fully address the original task with no obvious missing steps?\n\
-             2. Is the dependency order logical?\n\
-             \n\
-             Respond ONLY with valid JSON:\n\
-             {{\"approved\": true, \"reason\": \"...\"}}"
-        );
+        let prompt = h2ai_config::prompts::PLAN_REVIEWER_TASK.render(&[
+            ("original_description", original_description),
+            ("subtask_summary", &subtask_summary),
+        ]);
 
         let response = adapter
             .execute(ComputeRequest {
-                system_context: "You are a critical plan reviewer. Respond only with valid JSON."
-                    .into(),
+                system_context: h2ai_config::prompts::PLAN_REVIEWER_SYSTEM.as_str().into(),
                 task: prompt,
                 tau,
                 max_tokens: 256,

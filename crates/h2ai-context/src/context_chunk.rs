@@ -16,7 +16,11 @@ pub struct ContextChunk<'a> {
 
 impl<'a> ContextChunk<'a> {
     pub fn new(content: &'a str, tier: MemoryTier, timestamp_secs: u64) -> Self {
-        Self { content, tier, timestamp_secs }
+        Self {
+            content,
+            tier,
+            timestamp_secs,
+        }
     }
 
     /// Ebbinghaus decay weight at `now_secs`: `e^(-(now - t) / halflife)`.
@@ -69,7 +73,9 @@ pub fn build_tiered_context(
 
     // Primary: higher tier first (Procedural=3 > Working=0). Secondary: higher weight first.
     ordered.sort_by(|(a, wa), (b, wb)| {
-        b.tier.cmp(&a.tier).then(wb.partial_cmp(wa).unwrap_or(std::cmp::Ordering::Equal))
+        b.tier
+            .cmp(&a.tier)
+            .then(wb.partial_cmp(wa).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let mut parts = vec![format!("## Task Manifest\n{manifest}")];
@@ -156,7 +162,10 @@ mod tests {
     fn build_tiered_context_manifest_always_first() {
         let chunks = vec![chunk("working obs", MemoryTier::Working, 0)];
         let ctx = build_tiered_context("manifest text", &chunks, NOW, 0.0);
-        assert!(ctx.starts_with("## Task Manifest"), "manifest must open the context");
+        assert!(
+            ctx.starts_with("## Task Manifest"),
+            "manifest must open the context"
+        );
     }
 
     #[test]
@@ -168,7 +177,10 @@ mod tests {
         let ctx = build_tiered_context("m", &chunks, NOW, 0.0);
         let proc_pos = ctx.find("## Procedural Memory").unwrap();
         let work_pos = ctx.find("## Working Memory").unwrap();
-        assert!(proc_pos < work_pos, "Procedural must precede Working in context");
+        assert!(
+            proc_pos < work_pos,
+            "Procedural must precede Working in context"
+        );
     }
 
     #[test]
@@ -180,7 +192,10 @@ mod tests {
         ];
         let ctx = build_tiered_context("m", &chunks, NOW, 0.01);
         assert!(ctx.contains("fresh"));
-        assert!(!ctx.contains("stale"), "chunk below min_weight must be excluded");
+        assert!(
+            !ctx.contains("stale"),
+            "chunk below min_weight must be excluded"
+        );
     }
 
     #[test]
@@ -192,6 +207,9 @@ mod tests {
         let ctx = build_tiered_context("m", &chunks, NOW, 0.0);
         let pos_new = ctx.find("new proc").unwrap();
         let pos_old = ctx.find("old proc").unwrap();
-        assert!(pos_new < pos_old, "more recent chunk must appear first within tier");
+        assert!(
+            pos_new < pos_old,
+            "more recent chunk must appear first within tier"
+        );
     }
 }

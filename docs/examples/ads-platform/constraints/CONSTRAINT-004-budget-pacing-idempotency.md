@@ -1,4 +1,4 @@
-# ADR-004: Budget Pacing — Pre-Allocation with Idempotency Protection
+# CONSTRAINT-004: Budget Pacing — Pre-Allocation with Idempotency Protection
 
 ## Status
 

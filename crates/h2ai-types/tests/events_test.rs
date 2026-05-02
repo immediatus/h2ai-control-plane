@@ -35,6 +35,10 @@ fn calibration_completed_event_serde_round_trip() {
         eigen: None,
         timestamp: Utc::now(),
         pairwise_beta: None,
+        cg_mode: Default::default(),
+        adapter_families: Vec::new(),
+        explorer_verification_family_match: false,
+        single_family_warning: false,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -203,6 +207,10 @@ fn h2ai_event_enum_wraps_all_17_events() {
             eigen: None,
             timestamp: Utc::now(),
             pairwise_beta: None,
+            cg_mode: Default::default(),
+            adapter_families: Vec::new(),
+            explorer_verification_family_match: false,
+            single_family_warning: false,
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
@@ -242,6 +250,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             task_id: task_id(),
             explorer_id: explorer_id(),
             tau: TauValue::new(0.5).unwrap(),
+            generation: 0,
             raw_output: "out".into(),
             token_cost: 10,
             adapter_kind: cloud_adapter(),

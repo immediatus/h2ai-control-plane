@@ -9,7 +9,11 @@ use h2ai_types::plan::{PlanStatus, Subtask, SubtaskPlan, SubtaskResult};
 struct FailExecutor;
 #[async_trait]
 impl SubtaskExecutor for FailExecutor {
-    async fn execute(&self, id: SubtaskId, _m: TaskManifest) -> Result<SubtaskResult, SchedulerError> {
+    async fn execute(
+        &self,
+        id: SubtaskId,
+        _m: TaskManifest,
+    ) -> Result<SubtaskResult, SchedulerError> {
         Err(SchedulerError::ExecutionFailed {
             subtask_id: id,
             message: "intentional failure".into(),

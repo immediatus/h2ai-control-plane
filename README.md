@@ -35,7 +35,7 @@ The peak of X(N) is `N_max = √((1−α)/β_eff)`. Beyond N_max, adding agents 
 
 **This is not a new observation.** Brook's Law (1975) measured it in human engineering teams — communication channels grow as N(N−1)/2. CPU cache coherency protocols hit the same ceiling at a different scale. LLM agent swarms exhibit the same phenomenon for the same structural reason: pairwise synchronization overhead scales quadratically with group size when agents must reach mutual consistency.
 
-The β parameter is modulated by **Common Ground (CG)** — the semantic overlap between agents' outputs. When agents have high CG (compatible partial solutions, shared vocabulary), reconciliation is cheap. When they have split, each pair requires more work to reconcile. `β_eff = β₀ × (1 − CG_mean)` captures this: split agents cost more to coordinate than aligned ones.
+The β parameter is modulated by **Common Ground (CG)** — the semantic embedding cosine agreement rate across the calibration adapter pool. When agents have high CG (compatible partial solutions), reconciliation is cheap and β_eff is small: `β_eff = β₀ × (1 − CG_mean)`. At CG=1 (full overlap) β_eff ≈ 0; at CG=0 β_eff = β₀. CG is measured as the fraction of calibration prompts where `cosine(embed_i, embed_j) > 0.85`.
 
 H2AI measures both forces, finds their intersection, and enforces a Common Ground floor (θ_coord) before allowing generation to start — preventing split brain before it begins rather than trying to repair it after.
 
@@ -76,8 +76,8 @@ cd h2ai-control-plane/deploy/local
 docker compose up -d
 
 # Seed your constraint corpus (your team's architectural decisions)
-mkdir -p ../../adr
-cp -r ../../docs/examples/ads-platform/adr/* ../../adr/
+mkdir -p ../../constraints
+cp -r ../../docs/examples/ads-platform/constraints/* ../../constraints/
 
 # Calibrate the adapter pool
 curl -X POST http://localhost:8080/calibrate
@@ -113,7 +113,7 @@ curl -X POST http://localhost:8080/tasks \
         {"reviewer": "evaluator", "blocks": "executor_B"}
       ]
     },
-    "constraints": ["ADR-004", "ADR-007"]
+    "constraints": ["CONSTRAINT-004", "CONSTRAINT-007"]
   }'
 
 # Stream events in real time
@@ -129,7 +129,7 @@ open http://localhost:8080
 helm repo add h2ai https://h2ai.github.io/control-plane
 helm repo update
 
-kubectl create configmap constraint-corpus --from-file=./adr/ -n h2ai
+kubectl create configmap constraint-corpus --from-file=./constraints/ -n h2ai
 
 helm install h2ai h2ai/h2ai-control-plane \
   --namespace h2ai --create-namespace \
@@ -158,7 +158,7 @@ You submit a task manifest. The **Dark Knowledge Compiler** computes `J_eff = J(
 
 If `J_eff` is below threshold → synchronous `400 ContextUnderflowError`. The human must add constraints before proceeding. Nothing touches NATS.
 
-If `J_eff` passes → an immutable `system_context` is compiled from your ADRs + manifest. Every agent — Explorer and Auditor alike — receives exactly this context and nothing else.
+If `J_eff` passes → an immutable `system_context` is compiled from your constraint corpus + manifest. Every agent — Explorer and Auditor alike — receives exactly this context and nothing else.
 
 ### 3. Provisioning — topology selected by physics, not guesswork
 
@@ -173,7 +173,7 @@ Before spawning a single inference token, the **Multiplication Condition Gate** 
 
 N Explorers run in a `tokio::task::JoinSet` wrapped in `tokio::time::timeout`. Each Explorer calls `IComputeAdapter::execute()` with its assigned `τ` value and terminates. No Explorer reads another Explorer's output. Coordination cost during generation is structurally zero. Every Explorer gets a guaranteed terminal state — `ProposalEvent` on success, `ProposalFailedEvent` on crash/OOM/timeout. The stream always closes with `GenerationPhaseCompletedEvent`.
 
-For **Team-Swarm Hybrid** topologies, an additional Review Gate phase runs after generation: each Executor proposal is routed to its designated Evaluator (τ≈0.1, c_i≈0.9) before reaching the ADR Auditor. Approved proposals proceed to Phase 5; blocked proposals are tombstoned at the gate with reason recorded (`ReviewGateBlockedEvent`) and visible in the Merge Authority UI.
+For **Team-Swarm Hybrid** topologies, an additional Review Gate phase runs after generation: each Executor proposal is routed to its designated Evaluator (τ≈0.1, c_i≈0.9) before reaching the Auditor. Approved proposals proceed to Phase 5; blocked proposals are tombstoned at the gate with reason recorded (`ReviewGateBlockedEvent`) and visible in the Merge Authority UI.
 
 ### How Explorers Execute — The Edge Agent Dispatch Pipeline
 
@@ -226,7 +226,7 @@ The full dispatch-and-await loop per Explorer:
 
 ### 5. Auditor Gate — reactive, never idle
 
-The Auditor spins up on `TopologyProvisionedEvent` — before generation starts. It validates proposals as they arrive against the compiled `system_context`. Every ADR constraint in your corpus is a potential rejection. Rejected proposals become `BranchPrunedEvent` tombstones: permanently preserved in the log with rejection reason and constraint cost (`c_i`), visible in the Merge Authority UI.
+The Auditor spins up on `TopologyProvisionedEvent` — before generation starts. It validates proposals as they arrive against the compiled `system_context`. Every constraint in your corpus is a potential rejection. Rejected proposals become `BranchPrunedEvent` tombstones: permanently preserved in the log with rejection reason and constraint cost (`c_i`), visible in the Merge Authority UI.
 
 If all proposals are pruned → `ZeroSurvivalEvent` → the MAPE-K loop adjusts `{N, τ}` and retries. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload.
 
@@ -331,7 +331,7 @@ h2ai-control-plane/
 │   ├── h2ai-constraints/           # ConstraintDoc/ConstraintPredicate type system + sync evaluator
 │   │                               # VocabularyPresence/NegativeKeyword/RegexMatch/NumericThreshold/
 │   │                               # LlmJudge/Composite predicates; Hard/Soft/Advisory severity;
-│   │                               # compliance formula: hard_gate × soft_score; ADR loader (backward-compat)
+│   │                               # compliance formula: hard_gate × soft_score
 │   ├── h2ai-provisioner/           # AgentProvider + SchedulingPolicy + NatsAgentProvider
 │   │                               # Capability filter + cost-tier ceiling + least-loaded scheduling
 │   ├── h2ai-memory/                # MemoryProvider trait + InMemoryCache + NatsKvStore
@@ -347,7 +347,7 @@ h2ai-control-plane/
 │   ├── h2ai-autonomic/             # MAPE-K loop + calibration harness + N_max calculator
 │   ├── h2ai-state/                 # CRDT semilattice + NATS JetStream I/O + task dispatch wire protocol
 │   ├── h2ai-context/               # Dark Knowledge Compiler + Jaccard + J_eff measurement
-│   │                               # corpus_keywords from ConstraintDoc::vocabulary(); ADR shim
+│   │                               # corpus_keywords from ConstraintDoc::vocabulary()
 │   ├── h2ai-adapters/              # IComputeAdapter: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + AdapterFactory
 │   ├── h2ai-api/                   # axum REST gateway + Merge Authority web UI
 │   └── h2ai-agent/                 # Edge agent binary — heartbeat publisher + NATS task dispatch loop
@@ -364,13 +364,15 @@ h2ai-control-plane/
 │   ├── ci.yml                      # fmt → clippy -D warnings → nextest → docker → helm lint
 │   └── release.yml                 # image → ghcr.io, Helm chart → GitHub Pages, binary release
 └── docs/
-    ├── guides/                     # Getting started, constraint corpus, adapter development
-    ├── reference/                  # API reference, configuration reference
-    ├── operations/                 # Operations guide, troubleshooting
-    ├── architecture/               # Design spec, math apparatus, runtime phases, crate boundaries
+    ├── architecture/               # All documentation: architecture, guides, reference, operations
+    │   ├── design-specification.md, design-rationale.md, differentiation.md
+    │   ├── math-apparatus.md, research-state.md, runtime-phases.md, crate-boundaries.md
+    │   ├── deployment.md, operations.md, troubleshooting.md
+    │   ├── api.md, configuration.md
+    │   └── getting-started.md, adapters.md, agent-descriptor.md, constraint-corpus.md, theory-to-implementation.md
     └── examples/
         └── ads-platform/           # Reference constraint corpus + integration test task manifests
-            ├── adr/                # 7 ADRs derived from "Architecting Real-Time Ads Platform"
+            ├── constraints/        # 7 constraint docs derived from "Architecting Real-Time Ads Platform"
             └── tasks/              # 3 task manifests with expected Auditor outcomes
 ```
 
@@ -391,16 +393,20 @@ run them to verify formula correctness after any change to calibration constants
 formulas. Each is the formal proof for a specific mathematical claim in
 [`docs/architecture/research-state.md`](docs/architecture/research-state.md):
 
-| Script | Validates |
-|---|---|
-| `validate_beta_coupling.py` | β_eff = β₀×(1−CG) is bounded; inverse form diverges at CG→0 |
-| `validate_bft_methods.py` | Weiszfeld breakdown point 50%; Token Krum fails on LLM paraphrases |
-| `validate_eigenvalue_calibration.py` | N_eff participation ratio detects hidden adapter redundancy |
-| `validate_information_theory.py` | I_marginal decay, N_it_optimal, Slepian-Wolf efficiency |
-| `validate_ensemble_theory.py` | CJT formula vs 100k-trial Monte Carlo; J_eff gate |
-| `validate_conformal_vs_cjt.py` | CJT over-prediction at ρ≥0.6 vs conformal coverage guarantee |
-| `validate_math.py` | Numerically validates all definitions and propositions in `docs/architecture/math-apparatus.md` (stdlib only, no dependencies) |
-| `simulate_usl.py` | USL throughput curves, CG effect, Pareto matrix (generates PNGs to `scripts/output/`) |
+| Script | Status | Validates |
+|---|---|---|
+| `validate_ensemble_theory.py` | ✅ Current | CJT formula vs 100k-trial Monte Carlo; J_eff gate; proxy sensibility |
+| `validate_conformal_vs_cjt.py` | ✅ Current | CJT over-prediction at ρ≥0.6 vs conformal coverage guarantee |
+| `validate_bft_methods.py` | ✅ Current | Weiszfeld breakdown point 50%; Token Krum fails on LLM paraphrases |
+| `validate_information_theory.py` | ✅ Current | I_marginal decay, N_it_optimal, Slepian-Wolf efficiency |
+| `validate_eigenvalue_calibration.py` | ✅ Current | N_eff participation ratio detects hidden adapter redundancy |
+| `validate_beta_coupling.py` | ✅ Current | β_eff = β₀×(1−CG) formula bounds; singularity test at CG→0 |
+| `validate_math.py` | ✅ Current | Numerically validates all definitions and propositions in `math-apparatus.md` |
+| `simulate_usl.py` | ✅ Current | USL throughput curves, CG effect, Pareto matrix (generates PNGs to `scripts/output/`) |
+| `benchmark/smoke_test.py` | ✅ New | 5-problem GSM8K end-to-end smoke test (< $0.50) |
+| `benchmark/run_gsm8k.py` | ✅ New | GSM8K 500-sample evaluation vs B0/B1/B2/B3/H2 baselines |
+| `benchmark/run_humaneval.py` | ✅ New | HumanEval pass@1 with code execution oracle |
+| `benchmark/compare.py` | ✅ New | Cost-normalized quality table + paired t-test across baselines |
 
 ---
 
@@ -434,44 +440,44 @@ The system is **C-first**: the distributed cluster is the architectural foundati
 
 ## Constraint Corpus and Integration Examples
 
-The **Dark Knowledge Compiler** reads your team's constraint documents and ADRs. Each document becomes a typed `ConstraintDoc` with a `ConstraintPredicate` (vocabulary presence, negative keywords, regex, numeric threshold, LLM judge, or composites) and a severity (`Hard`, `Soft`, or `Advisory`). Hard constraints gate the merge; Soft constraints contribute a weighted compliance score; `constraint_error_cost = 1.0 − compliance` feeds back into the BFT merge strategy selector.
-
-Every `## Constraints` bullet in a standard ADR is automatically parsed as a `Hard { threshold: 0.8 }` constraint — **existing ADR corpora require no changes**.
+The **Dark Knowledge Compiler** reads your team's `ConstraintDoc` files. Each document becomes a typed `ConstraintDoc` with a `ConstraintPredicate` (vocabulary presence, negative keywords, regex, numeric threshold, LLM judge, or composites) and a severity (`Hard`, `Soft`, or `Advisory`). Hard constraints gate the merge; Soft constraints contribute a weighted compliance score; `constraint_error_cost = 1.0 − compliance` feeds back into the BFT merge strategy selector.
 
 `docs/examples/ads-platform/` is a complete reference corpus derived from the blog series **[Architecting Real-Time Ads Platform](https://e-mindset.space/series/architecting-ads-platforms/)**:
 
-| ADR | Decision |
+| Constraint | Decision |
 |---|---|
-| ADR-001 | Stateless request services — no per-user state across requests |
-| ADR-002 | gRPC internal / REST external — JSON overhead consumes 20% of latency budget at 1M QPS |
-| ADR-003 | Adaptive RTB timeouts via HdrHistogram — per-DSP P95, capped at 100ms global |
-| ADR-004 | Budget pacing with idempotency — Redis Lua atomic check-and-set, 30s TTL |
-| ADR-005 | Dual-ledger audit log — Kafka → ClickHouse append-only, 7-year retention, SOX |
-| ADR-006 | Java 21 + Generational ZGC — 32GB heap, <2ms P99.9 GC pauses |
-| ADR-007 | Tiered consistency — budget=strong, profiles=eventual, billing=linearizable |
+| CONSTRAINT-001 | Stateless request services — no per-user state across requests |
+| CONSTRAINT-002 | gRPC internal / REST external — JSON overhead consumes 20% of latency budget at 1M QPS |
+| CONSTRAINT-003 | Adaptive RTB timeouts via HdrHistogram — per-DSP P95, capped at 100ms global |
+| CONSTRAINT-004 | Budget pacing with idempotency — Redis Lua atomic check-and-set, 30s TTL |
+| CONSTRAINT-005 | Dual-ledger audit log — Kafka → ClickHouse append-only, 7-year retention, SOX |
+| CONSTRAINT-006 | Java 21 + Generational ZGC — 32GB heap, <2ms P99.9 GC pauses |
+| CONSTRAINT-007 | Tiered consistency — budget=strong, profiles=eventual, billing=linearizable |
 
-The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus for the integration test suite. They specify the expected Auditor outcomes — which proposals should be pruned, which ADR they violate — so that `cargo nextest run --test integration` can assert system behavior end-to-end.
+The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus for the integration test suite. They specify the expected Auditor outcomes — which proposals should be pruned, which constraint they violate — so that `cargo nextest run --test integration` can assert system behavior end-to-end.
 
 ---
 
 ## Documentation
 
-### Guides
+All documentation is under `docs/architecture/`.
+
+### Getting Started & Guides
 
 | Document | Contents |
 |---|---|
-| [Getting Started](docs/guides/getting-started.md) | First task end-to-end — Local Plan, Server Plan team node, Cloud Plan Kubernetes |
-| [Agent Descriptor Guide](docs/guides/agent-descriptor.md) | Pure LLM vs. tool-using agents — how tools affect α, κ_base, c_i, topology selection, and NKey scoping; worked examples |
-| [Constraint Corpus Guide](docs/guides/constraint-corpus.md) | ConstraintDoc/ConstraintPredicate type system, Hard/Soft/Advisory severity, compliance formula, ADR backward-compat, diagnosing low J_eff, remediation hints for MAPE-K retry |
-| [Adapter Development](docs/guides/adapters.md) | Implementing `IComputeAdapter` for custom compute backends, testing, registration |
-| [Theory to Implementation](docs/guides/theory-to-implementation.md) | Topology selection protocol, 7-topology catalog with Pareto scores, team-swarm configuration, worked example |
+| [Getting Started](docs/architecture/getting-started.md) | First task end-to-end — Local Plan, Server Plan team node, Cloud Plan Kubernetes |
+| [Agent Descriptor Guide](docs/architecture/agent-descriptor.md) | Pure LLM vs. tool-using agents — how tools affect α, β₀, c_i, topology selection, and NKey scoping |
+| [Constraint Corpus Guide](docs/architecture/constraint-corpus.md) | ConstraintDoc/ConstraintPredicate type system, Hard/Soft/Advisory severity, compliance formula, diagnosing low J_eff |
+| [Adapter Development](docs/architecture/adapters.md) | Implementing `IComputeAdapter` for custom compute backends, testing, registration |
+| [Theory to Implementation](docs/architecture/theory-to-implementation.md) | Topology selection protocol, 7-topology catalog with Pareto scores, team-swarm configuration, worked example |
 
 ### Reference
 
 | Document | Contents |
 |---|---|
-| [API Reference](docs/reference/api.md) | All REST endpoints, SSE event stream, complete JSON schemas for all 23 events, error codes |
-| [Configuration Reference](docs/reference/configuration.md) | All environment variables, LLM adapter providers, 20 Prometheus metrics, Helm values |
+| [API Reference](docs/architecture/api.md) | All REST endpoints, SSE event stream, complete JSON schemas for all 24 events, error codes |
+| [Configuration Reference](docs/architecture/configuration.md) | All environment variables, full H2AIConfig field reference, Prometheus metrics, Helm values |
 
 ### Architecture
 
@@ -480,25 +486,25 @@ The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus f
 | [Design Specification](docs/architecture/design-specification.md) | System overview — positioning, tech stack, deployment plans, API contract, math summary |
 | [Design Rationale](docs/architecture/design-rationale.md) | *Why* each major decision was made: NATS, USL, NKeys, Rust, event sourcing, CJT+USL together; honest gaps |
 | [Differentiation](docs/architecture/differentiation.md) | How H2AI differs from LangGraph, AutoGen, CrewAI, Semantic Kernel — what it does better and worse |
-| [Runtime Phases](docs/architecture/runtime-phases.md) | 6-phase execution flow + compound task pipeline, 23-event vocabulary, structural guarantees |
-| [Crate Boundaries](docs/architecture/crate-boundaries.md) | Workspace layout, 15 crates, dependency rules, Tokio thread pool isolation |
+| [Runtime Phases](docs/architecture/runtime-phases.md) | 6-phase execution flow + compound task pipeline, 24-event vocabulary, structural guarantees |
+| [Crate Boundaries](docs/architecture/crate-boundaries.md) | Workspace layout, 16 crates, dependency rules, Tokio thread pool isolation |
 | [Deployment](docs/architecture/deployment.md) | Three deployment plans, NATS clustering, Kubernetes topology, observability |
-| [Math Apparatus](docs/architecture/math-apparatus.md) | USL/CJT theoretical foundations, 10 definitions + 5 propositions, calibration table, known limitations |
-| [Research State](docs/architecture/research-state.md) | Project thesis, implemented math with validation evidence, gap analysis and fix status, innovation synthesis, script catalog |
+| [Math Apparatus](docs/architecture/math-apparatus.md) | USL/CJT theoretical foundations, 10 definitions + 5 propositions, calibration table |
+| [Research State](docs/architecture/research-state.md) | Project thesis, math with validation evidence, gap analysis, empirical benchmarking strategy |
 
 ### Operations
 
 | Document | Contents |
 |---|---|
-| [Operations Guide](docs/operations/operations.md) | 6 key metrics, alert rules, scaling, rolling upgrade procedure, NATS backup |
-| [Troubleshooting](docs/operations/troubleshooting.md) | ContextUnderflowError, zero-survival, Multiplication Condition failures, high α/κ |
+| [Operations Guide](docs/architecture/operations.md) | Key metrics, alert rules, scaling, rolling upgrade procedure, NATS backup |
+| [Troubleshooting](docs/architecture/troubleshooting.md) | ContextUnderflowError, zero-survival, Multiplication Condition failures, high α/β |
 
 ### Examples
 
 | Document | Contents |
 |---|---|
-| [Examples Overview](docs/examples/README.md) | What ADRs are, J_eff effect, how to run integration tests |
-| [Ads Platform](docs/examples/ads-platform/README.md) | 7 ADRs + 3 integration test tasks derived from "Architecting Real-Time Ads Platform" |
+| [Examples Overview](docs/examples/README.md) | Constraint corpus format, J_eff effect, how to run integration tests |
+| [Ads Platform](docs/examples/ads-platform/README.md) | 7 constraint docs + 3 integration test tasks derived from "Architecting Real-Time Ads Platform" |
 
 ---
 

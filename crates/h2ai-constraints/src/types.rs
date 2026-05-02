@@ -23,6 +23,10 @@ pub enum CompositeOp {
     Not,
 }
 
+fn default_oracle_timeout_secs() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum ConstraintPredicate {
     VocabularyPresence {
@@ -47,6 +51,25 @@ pub enum ConstraintPredicate {
     Composite {
         op: CompositeOp,
         children: Vec<ConstraintPredicate>,
+    },
+    /// Tier 1: calls an external HTTP test runner for binary pass/fail oracle evaluation.
+    OracleExecution {
+        /// POST endpoint. Request: `{output, test_suite}`. Response: `{passed, failure_count, output_text, duration_ms}`.
+        test_runner_uri: String,
+        /// Test suite identifier passed to the runner (e.g., test file path or suite name).
+        test_suite: String,
+        /// Request timeout in seconds. Default 30.
+        #[serde(default = "default_oracle_timeout_secs")]
+        timeout_secs: u64,
+    },
+    /// Tier 2: validates that the output is valid JSON conforming to the given JSON Schema.
+    JsonSchema {
+        schema: serde_json::Value,
+    },
+    /// Tier 2: validates that the output character count falls within the given range.
+    LengthRange {
+        min_chars: Option<usize>,
+        max_chars: Option<usize>,
     },
 }
 
@@ -94,9 +117,10 @@ fn collect_positive_vocabulary(pred: &ConstraintPredicate) -> HashSet<String> {
             mode: VocabularyMode::AllOf | VocabularyMode::AnyOf,
             terms,
         } => terms.iter().cloned().collect(),
-        ConstraintPredicate::Composite { children, .. } => {
-            children.iter().flat_map(collect_positive_vocabulary).collect()
-        }
+        ConstraintPredicate::Composite { children, .. } => children
+            .iter()
+            .flat_map(collect_positive_vocabulary)
+            .collect(),
         _ => HashSet::new(),
     }
 }
@@ -108,9 +132,10 @@ fn collect_negative_vocabulary(pred: &ConstraintPredicate) -> HashSet<String> {
             terms,
         } => terms.iter().cloned().collect(),
         ConstraintPredicate::NegativeKeyword { terms } => terms.iter().cloned().collect(),
-        ConstraintPredicate::Composite { children, .. } => {
-            children.iter().flat_map(collect_negative_vocabulary).collect()
-        }
+        ConstraintPredicate::Composite { children, .. } => children
+            .iter()
+            .flat_map(collect_negative_vocabulary)
+            .collect(),
         _ => HashSet::new(),
     }
 }

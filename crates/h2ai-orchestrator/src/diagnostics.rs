@@ -28,6 +28,29 @@ pub struct TalagrandDiagnostic {
 }
 
 impl TalagrandDiagnostic {
+    /// Compute the τ-spread expansion factor for the next MAPE-K iteration.
+    ///
+    /// - `OverConfident` (U-curve): expand by 20%, capped at `max_factor`.
+    /// - `Calibrated` or `Insufficient`: no change (return `current_factor`).
+    /// - `UnderDispersed` (Λ-curve): proposals are converging; logs a warning and
+    ///   returns `current_factor` unchanged (expanding τ doesn't help when adapters share a bias).
+    pub fn tau_expansion_factor(&self, current_factor: f64, max_factor: f64) -> f64 {
+        match self.calibration_state {
+            CalibrationState::OverConfident => {
+                (current_factor * 1.2).min(max_factor.max(current_factor))
+            }
+            CalibrationState::UnderDispersed => {
+                tracing::warn!(
+                    chi_sq = self.chi_sq_from_uniform,
+                    "Talagrand Λ-curve detected: proposals may be converging on a shared \
+                     incorrect answer. Consider increasing adapter diversity."
+                );
+                current_factor
+            }
+            CalibrationState::Calibrated | CalibrationState::Insufficient => current_factor,
+        }
+    }
+
     /// Build a Talagrand diagnostic from a collection of per-run verification scores.
     ///
     /// `per_run_scores`: each element is a Vec of N adapter verification scores for one run.
@@ -177,6 +200,10 @@ mod tests {
         let run = vec![0.9f64, 0.7, 0.5, 0.3];
         let scores: Vec<Vec<f64>> = std::iter::repeat(run).take(5).collect();
         let d = TalagrandDiagnostic::from_verification_scores(&scores).unwrap();
-        assert_eq!(d.rank_histogram.len(), 5, "histogram length should be N+1=5");
+        assert_eq!(
+            d.rank_histogram.len(),
+            5,
+            "histogram length should be N+1=5"
+        );
     }
 }

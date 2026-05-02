@@ -42,7 +42,7 @@ This document explains *why* each major design decision was made — the problem
 
 **The key reframe:** USL was designed for shared-state distributed systems where α and β have physical meanings (queueing for a lock, cache-line coherency protocol). For agent orchestration, α and β have *reasoning-space* meanings: α is the serial fraction inherent to planning and synthesis, β is the pairwise cost of reconciling agents that have diverged. The mathematical structure is identical; the physical substrate is different.
 
-**What the calibration actually measures:** The current two-phase timing harness measures wall-clock time for N concurrent API calls. This captures I/O scheduling overhead — a real but incomplete proxy for β. The ideal measurement is merge phase timing: how long does `MergeEngine` take as a function of N, divided by N(N−1)/2 pairs? The NATS event log records the timestamps to compute this; a future calibration harness will use them. The current measurement is conservative (network latency is more predictable than task-domain reconciliation cost) and corrects dynamically through the CG_mean coupling.
+**What the calibration measures:** β₀ is computed via online EMA from actual merge token cost: `β₀ = (merge_step_token_cost / N*(N-1)/2) / mean_proposal_tokens`. This replaces an earlier wall-clock proxy. The EMA update is `β₀_ema = 0.95 × β₀_ema + 0.05 × observed_merge_ratio` with a timing prior that phases out as task count grows.
 
 **Honest limitation:** With M < 3 adapters, the USL fit degenerates and the system falls back to configured default parameters. Most small deployments run on hardcoded conservative values, not empirically derived ones. This is safe (defaults are calibrated to produce N_max ≈ 4–6 for typical LLM ensembles) but should be understood: the "physics-derived N_max" is only fully physics-derived when M ≥ 3 adapters are available for calibration.
 
@@ -101,10 +101,10 @@ When N_optimal > N_max (coordination cost is high and quality benefit is also hi
 
 ## What Is Not Yet Solved — Honest Gaps
 
-**TalagrandDiagnostic is computed but not acted on.** The rank histogram diagnostic is implemented and returns calibration status (`WellCalibrated`, `OverConfident`, `UnderDispersed`, `UnderConfident`). No engine path currently adjusts τ spread or triggers re-calibration in response to these states. The diagnostic is informational until this feedback loop is wired.
-
 **SelfOptimizer runs on every success but its suggestion is discarded on success.** The optimizer is applied only in the retry loop. On a successful first-pass run, its output is computed and dropped. The optimizer's value (suggesting τ/N adjustments to improve quality on next run) is not captured.
 
-**CG_mean from token Jaccard underestimates semantic divergence in reasoning-heavy tasks.** Two adapters can produce different-vocabulary correct answers (low CG, both right) or similar-vocabulary wrong answers (high CG, both wrong). The `EmbeddingModel` path in `hybrid_search` closes this for retrieval; the same approach should be applied to CG measurement during calibration.
+**Eigenvalue stopping rule Δ<0.05 is hardcoded.** Everything else in the calibration path is operator-configurable. This threshold should be in `H2AIConfig`.
 
-**β₀ calibration from merge phase timing is not yet implemented.** The current two-phase timing harness is a practical starting point. The correct measurement is merge phase cost as a function of N. Instrumentation exists (NATS event timestamps); the calibration harness needs to be updated to read merge spans rather than parallel execution spans.
+**Validation scripts are stale.** `validate_beta_coupling.py`, `validate_math.py`, and `simulate_usl.py` still reference the old `β₀×(1−CG)` formula. They must be updated before use. `validate_ensemble_theory.py`, `validate_conformal_vs_cjt.py`, `validate_bft_methods.py`, `validate_information_theory.py`, and `validate_eigenvalue_calibration.py` are current.
+
+**`physics.rs` name is a framing error.** USL, CJT, and Krum are engineering heuristics, not physical laws. Pending rename to `sizing.rs`.

@@ -14,19 +14,81 @@
 //!    can select the Byzantine output.
 
 use chrono::Utc;
+use h2ai_context::jaccard::{jaccard, tokenize};
 use h2ai_state::bft::ConsensusMedian;
-use h2ai_state::krum::krum_select;
-use h2ai_types::adapter::IComputeAdapter;
+use h2ai_state::krum::{krum_index, krum_score_subset, quorum_satisfied};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::physics::TauValue;
+use std::collections::HashSet;
+
+fn build_token_sets(proposals: &[ProposalEvent]) -> Vec<HashSet<String>> {
+    proposals.iter().map(|p| tokenize(&p.raw_output)).collect()
+}
+
+fn jaccard_distance_matrix(token_sets: &[HashSet<String>]) -> Vec<Vec<f64>> {
+    let n = token_sets.len();
+    let mut d = vec![vec![0.0f64; n]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let dist = 1.0 - jaccard(&token_sets[i], &token_sets[j]);
+            d[i][j] = dist;
+            d[j][i] = dist;
+        }
+    }
+    d
+}
+
+fn krum_select(proposals: &[ProposalEvent], f: usize) -> Option<&ProposalEvent> {
+    if proposals.is_empty() {
+        return None;
+    }
+    if f == 0 {
+        return proposals.first();
+    }
+    if !quorum_satisfied(proposals.len(), f) {
+        return None;
+    }
+    let distances = jaccard_distance_matrix(&build_token_sets(proposals));
+    let k = proposals.len() - f - 2;
+    krum_index(&distances, k).map(|i| &proposals[i])
+}
+
+fn multi_krum_select(proposals: &[ProposalEvent], f: usize, m: usize) -> Vec<&ProposalEvent> {
+    if proposals.is_empty() || m == 0 {
+        return vec![];
+    }
+    if f == 0 {
+        return proposals.iter().take(m).collect();
+    }
+    if !quorum_satisfied(proposals.len(), f) {
+        return vec![];
+    }
+    let distances = jaccard_distance_matrix(&build_token_sets(proposals));
+    let mut remaining: Vec<usize> = (0..proposals.len()).collect();
+    let mut selected = Vec::with_capacity(m);
+    while selected.len() < m && remaining.len() > f + 2 {
+        let k = remaining.len() - f - 2;
+        let best_pos = (0..remaining.len())
+            .min_by(|&a, &b| {
+                let sa = krum_score_subset(remaining[a], &remaining, &distances, k);
+                let sb = krum_score_subset(remaining[b], &remaining, &distances, k);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("remaining is non-empty");
+        selected.push(&proposals[remaining[best_pos]]);
+        remaining.remove(best_pos);
+    }
+    selected
+}
 
 fn prop(text: &str) -> ProposalEvent {
     ProposalEvent {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),
         tau: TauValue::new(0.5).unwrap(),
+        generation: 0,
         raw_output: text.into(),
         token_cost: text.len() as u64,
         adapter_kind: AdapterKind::CloudGeneric {
@@ -155,9 +217,7 @@ async fn condorcet_vulnerable_when_byzantine_form_majority() {
     // Byzantine proposals score ~0.33 vs honest ~0.07. The Sybil clone gives each
     // Byzantine proposal perfect self-similarity (J=1.0) that the isolated honest
     // proposals cannot match. Rust's max_by returns the last maximum element (b2).
-    let selected = ConsensusMedian::resolve(&proposals, None::<&dyn IComputeAdapter>)
-        .await
-        .unwrap();
+    let selected = ConsensusMedian::resolve(&proposals, None).await.unwrap();
 
     // The test ASSERTS the vulnerability — Condorcet fails under this attack.
     // If ConsensusMedian is ever fixed to handle this, update the assertion.
@@ -200,8 +260,6 @@ fn krum_returns_none_below_quorum() {
 /// beat honest ones).  The safe bound is `m ≤ n − f − 2`.
 #[test]
 fn multi_krum_selects_byzantine_free_survivors_up_to_safe_maximum() {
-    use h2ai_state::krum::multi_krum_select;
-
     let f = 2usize;
     let n_honest = 5;
 

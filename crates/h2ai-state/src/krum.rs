@@ -51,12 +51,9 @@
 /// are too lexically diverse for Krum's BFT proof to apply.
 pub const MAX_CLUSTER_DIAMETER: f64 = 0.7;
 
-use futures::future::join_all;
-use h2ai_context::jaccard::{jaccard, tokenize};
+use h2ai_context::embedding::EmbeddingModel;
 use h2ai_context::similarity::semantic_jaccard;
-use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::events::ProposalEvent;
-use std::collections::HashSet;
 
 // ── Public helpers ───────────────────────────────────────────────────────────
 
@@ -80,7 +77,7 @@ pub fn quorum_satisfied(n: usize, f: usize) -> bool {
 /// Returns 0.0 for fewer than 2 proposals (trivially coherent).
 pub async fn mean_pairwise_distance(
     proposals: &[ProposalEvent],
-    adapter: Option<&dyn IComputeAdapter>,
+    embedding_model: Option<&dyn EmbeddingModel>,
 ) -> f64 {
     let n = proposals.len();
     if n < 2 {
@@ -90,10 +87,10 @@ pub async fn mean_pairwise_distance(
     let pairs: Vec<(usize, usize)> = (0..n)
         .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
         .collect();
-    let similarities = join_all(
-        pairs.iter().map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], adapter)),
-    )
-    .await;
+    let similarities: Vec<f64> = pairs
+        .iter()
+        .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], embedding_model))
+        .collect();
     let total: f64 = similarities.iter().map(|s| 1.0 - s).sum();
     total / similarities.len() as f64
 }
@@ -107,114 +104,27 @@ pub async fn mean_pairwise_distance(
 /// to `ConsensusMedian` which handles honest stochastic divergence.
 pub async fn cluster_coherent(
     proposals: &[ProposalEvent],
-    adapter: Option<&dyn IComputeAdapter>,
+    embedding_model: Option<&dyn EmbeddingModel>,
 ) -> bool {
-    mean_pairwise_distance(proposals, adapter).await < MAX_CLUSTER_DIAMETER
+    mean_pairwise_distance(proposals, embedding_model).await < MAX_CLUSTER_DIAMETER
 }
 
-// ── Krum ─────────────────────────────────────────────────────────────────────
-
-/// **Krum** — returns the proposal with minimum sum of distances to its
-/// `n − f − 2` nearest neighbours in Jaccard-distance space.
-///
-/// Returns `None` when the quorum condition `n ≥ 2f + 3` is not met,
-/// or when `proposals` is empty.
-///
-/// When `f == 0`, returns `proposals.first()` (no Byzantine adversaries assumed).
-pub fn krum_select(proposals: &[ProposalEvent], f: usize) -> Option<&ProposalEvent> {
-    if proposals.is_empty() {
-        return None;
-    }
-    if f == 0 {
-        return proposals.first();
-    }
-    if !quorum_satisfied(proposals.len(), f) {
-        return None;
-    }
-    let token_sets = build_token_sets(proposals);
-    let distances = distance_matrix(&token_sets);
-    let k = proposals.len() - f - 2;
-    krum_index(&distances, k).map(|i| &proposals[i])
-}
-
-/// **Multi-Krum** — iteratively selects the `m` proposals with minimum Krum
-/// score, removing each winner before the next round. Returns them in
-/// selection order (best Krum score first).
-///
-/// Returns an empty `Vec` when the quorum condition `n ≥ 2f + 3` is not met,
-/// or when `proposals` is empty or `m == 0`.
-///
-/// When `f == 0`, returns the first `m` proposals unchanged.
-pub fn multi_krum_select(proposals: &[ProposalEvent], f: usize, m: usize) -> Vec<&ProposalEvent> {
-    if proposals.is_empty() || m == 0 {
-        return vec![];
-    }
-    if f == 0 {
-        return proposals.iter().take(m).collect();
-    }
-    if !quorum_satisfied(proposals.len(), f) {
-        return vec![];
-    }
-    let token_sets = build_token_sets(proposals);
-    let distances = distance_matrix(&token_sets);
-
-    // Working set of proposal indices not yet selected.
-    let mut remaining: Vec<usize> = (0..proposals.len()).collect();
-    let mut selected = Vec::with_capacity(m);
-
-    while selected.len() < m && remaining.len() > f + 2 {
-        let k = remaining.len() - f - 2;
-        // Compute Krum score for each remaining proposal using the sub-matrix.
-        let best_pos = (0..remaining.len())
-            .min_by(|&a, &b| {
-                let sa = krum_score_subset(remaining[a], &remaining, &distances, k);
-                let sb = krum_score_subset(remaining[b], &remaining, &distances, k);
-                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .expect("remaining is non-empty");
-        selected.push(&proposals[remaining[best_pos]]);
-        remaining.remove(best_pos);
-    }
-
-    selected
-}
-
-// ── Private helpers ──────────────────────────────────────────────────────────
-
-fn build_token_sets(proposals: &[ProposalEvent]) -> Vec<HashSet<String>> {
-    proposals.iter().map(|p| tokenize(&p.raw_output)).collect()
-}
-
-/// Compute the n×n symmetric Jaccard-distance matrix.
-/// `distances[i][j] = 1 − J(token_sets[i], token_sets[j])`.
-fn distance_matrix(token_sets: &[HashSet<String>]) -> Vec<Vec<f64>> {
-    let n = token_sets.len();
-    let mut d = vec![vec![0.0f64; n]; n];
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let dist = 1.0 - jaccard(&token_sets[i], &token_sets[j]);
-            d[i][j] = dist;
-            d[j][i] = dist;
-        }
-    }
-    d
-}
+// ── Private helpers (shared by sync and async Krum) ─────────────────────────
 
 /// Krum score for proposal at global index `idx`, considering only proposals
 /// whose global indices are in `subset`. Uses the `k` nearest neighbours.
-fn krum_score_subset(idx: usize, subset: &[usize], distances: &[Vec<f64>], k: usize) -> f64 {
+pub fn krum_score_subset(idx: usize, subset: &[usize], distances: &[Vec<f64>], k: usize) -> f64 {
     let mut dists: Vec<f64> = subset
         .iter()
         .filter(|&&j| j != idx)
         .map(|&j| distances[idx][j])
         .collect();
-    // Sort ascending; sum the k smallest distances.
     dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     dists.iter().take(k).sum()
 }
 
 /// Find the index (in `0..n`) with minimum Krum score using `k` neighbours.
-fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
+pub fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
     let n = distances.len();
     let all: Vec<usize> = (0..n).collect();
     let scores: Vec<f64> = (0..n)
@@ -234,17 +144,17 @@ fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
 /// Falls back to token Jaccard when `adapter` is `None`.
 async fn semantic_distance_matrix(
     proposals: &[ProposalEvent],
-    adapter: Option<&dyn IComputeAdapter>,
+    embedding_model: Option<&dyn EmbeddingModel>,
 ) -> Vec<Vec<f64>> {
     let n = proposals.len();
     let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
     let pairs: Vec<(usize, usize)> = (0..n)
         .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
         .collect();
-    let similarities = join_all(
-        pairs.iter().map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], adapter)),
-    )
-    .await;
+    let similarities: Vec<f64> = pairs
+        .iter()
+        .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], embedding_model))
+        .collect();
     let mut d = vec![vec![0.0f64; n]; n];
     for (k, &(i, j)) in pairs.iter().enumerate() {
         let dist = 1.0 - similarities[k];
@@ -266,7 +176,7 @@ async fn semantic_distance_matrix(
 pub async fn krum_select_semantic<'a>(
     proposals: &'a [ProposalEvent],
     f: usize,
-    adapter: Option<&'a dyn IComputeAdapter>,
+    embedding_model: Option<&'a dyn EmbeddingModel>,
 ) -> Option<&'a ProposalEvent> {
     if proposals.is_empty() {
         return None;
@@ -277,7 +187,7 @@ pub async fn krum_select_semantic<'a>(
     if !quorum_satisfied(proposals.len(), f) {
         return None;
     }
-    let distances = semantic_distance_matrix(proposals, adapter).await;
+    let distances = semantic_distance_matrix(proposals, embedding_model).await;
     let k = proposals.len() - f - 2;
     krum_index(&distances, k).map(|i| &proposals[i])
 }
@@ -287,7 +197,7 @@ pub async fn multi_krum_select_semantic<'a>(
     proposals: &'a [ProposalEvent],
     f: usize,
     m: usize,
-    adapter: Option<&'a dyn IComputeAdapter>,
+    embedding_model: Option<&'a dyn EmbeddingModel>,
 ) -> Vec<&'a ProposalEvent> {
     if proposals.is_empty() || m == 0 {
         return vec![];
@@ -298,7 +208,7 @@ pub async fn multi_krum_select_semantic<'a>(
     if !quorum_satisfied(proposals.len(), f) {
         return vec![];
     }
-    let distances = semantic_distance_matrix(proposals, adapter).await;
+    let distances = semantic_distance_matrix(proposals, embedding_model).await;
     let mut remaining: Vec<usize> = (0..proposals.len()).collect();
     let mut selected = Vec::with_capacity(m);
     while selected.len() < m && remaining.len() > f + 2 {

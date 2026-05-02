@@ -1,4 +1,4 @@
-# ADR-003: RTB Timeout Strategy — Adaptive Per-DSP Timeouts with HdrHistogram
+# CONSTRAINT-003: RTB Timeout Strategy — Adaptive Per-DSP Timeouts with HdrHistogram
 
 ## Status
 

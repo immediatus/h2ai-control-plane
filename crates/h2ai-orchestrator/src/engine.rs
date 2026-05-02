@@ -1,5 +1,5 @@
-pub use crate::nats_dispatch_adapter::NatsDispatchConfig;
 use crate::diagnostics::TalagrandDiagnostic;
+pub use crate::nats_dispatch_adapter::NatsDispatchConfig;
 use crate::self_optimizer::{OptimizerParams, QualityMeasurement, SelfOptimizer, SuggestInput};
 use crate::task_store::{TaskPhase, TaskState, TaskStore};
 use chrono::Utc;
@@ -12,8 +12,9 @@ use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_context::compaction::{compact, CompactionConfig};
 use h2ai_context::compiler;
+use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::semilattice::ProposalSet;
-use h2ai_types::adapter::{AdapterRegistry, ComputeRequest, IComputeAdapter, TaskProfile};
+use h2ai_types::adapter::{AdapterRegistry, ComputeRequest, IComputeAdapter};
 use h2ai_types::config::{
     AgentRole, AuditorConfig, RoleSpec, TaoConfig, TopologyKind, VerificationConfig,
 };
@@ -24,7 +25,9 @@ use h2ai_types::events::{
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::TaskManifest;
-use h2ai_types::physics::{MergeStrategy, MultiplicationConditionFailure, RoleErrorCost, TauValue};
+use h2ai_types::physics::{
+    MergeStrategy, MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -41,7 +44,7 @@ pub enum EngineError {
     Parse(String),
     #[error("task deadline exceeded (budget {budget_secs}s)")]
     DeadlineExceeded { budget_secs: u64 },
-    #[error("insufficient quorum for Krum f={f}: need n ≥ {required}, got n={n}")]
+    #[error("insufficient quorum for OutlierResistant f={f}: need n ≥ {required}, got n={n}")]
     InsufficientQuorum { n: usize, f: usize, required: usize },
 }
 
@@ -64,10 +67,10 @@ pub struct EngineInput<'a> {
     /// drawing from explorer_adapters. explorer_adapters may be empty.
     pub nats_dispatch: Option<NatsDispatchConfig>,
     /// Adapter registry for profile-based routing.
-    /// `TaskProfile::Scoring` resolves to a cheap SLM if configured; otherwise falls
-    /// back to the reasoning adapter. Used for J_eff semantic scoring and cluster
-    /// coherence checks.
     pub registry: &'a AdapterRegistry,
+    /// Optional embedding model for Weiszfeld geometric median and cosine similarity.
+    /// When `Some`, enables the Weiszfeld path in incoherent merge clusters.
+    pub embedding_model: Option<&'a dyn EmbeddingModel>,
 }
 
 #[derive(Debug)]
@@ -76,6 +79,8 @@ pub struct EngineOutput {
     pub resolved_output: String,
     pub semilattice: SemilatticeCompiledEvent,
     pub attribution: crate::attribution::HarnessAttribution,
+    /// Bootstrap CI over Q_total from CG sample variance. `None` when < 2 CG samples.
+    pub attribution_interval: Option<crate::attribution::AttributionInterval>,
     pub verification_events: Vec<VerificationScoredEvent>,
     /// Rank-histogram calibration diagnostic built from this task's verification scores.
     /// `None` when no verification events were produced.
@@ -85,6 +90,13 @@ pub struct EngineOutput {
     /// `None` only when no quality history was accumulated (should not happen on success).
     /// Callers may apply this to their next `EngineInput` to improve throughput.
     pub suggested_next_params: Option<crate::self_optimizer::OptimizerParams>,
+    /// Fraction of dispatched proposals that survived verification (valid / total_evaluated).
+    /// 1.0 = no waste; below `cfg.optimizer_waste_threshold` = wasteful run.
+    pub waste_ratio: f64,
+    /// SelfOptimizer suggestions derived from this wasteful-but-successful run.
+    /// Empty when not wasteful or no applicable suggestion was found.
+    /// Callers should apply these to AppState (τ spread EMA, topology hint).
+    pub applied_optimizations: Vec<h2ai_types::events::AppliedOptimization>,
 }
 
 #[derive(serde::Deserialize)]
@@ -124,7 +136,7 @@ impl ExecutionEngine {
             &input.constraint_corpus,
             &required_kw,
             input.cfg,
-            Some(input.registry.resolve(&TaskProfile::Scoring)),
+            input.embedding_model,
         )
         .await
         .map_err(|e| {
@@ -184,6 +196,9 @@ impl ExecutionEngine {
         let mut force_topology: Option<TopologyKind> = None;
         let mut tried_topologies: Vec<TopologyKind> = Vec::new();
         let mut tau_reduction_factor: f64 = 1.0;
+        // τ-spread expansion factor driven by Talagrand U-curve detection.
+        // Starts at 1.0; increases by 20% per over-confident iteration, capped at tau_spread_max_factor.
+        let mut tau_spread_factor: f64 = 1.0;
         let mut all_pruned: Vec<BranchPrunedEvent> = Vec::new();
         let mut tau_values_tried: Vec<Vec<f64>> = Vec::new();
         let mut quality_history: Vec<QualityMeasurement> = Vec::new();
@@ -207,8 +222,15 @@ impl ExecutionEngine {
             // ── Phase 2: Topology Provisioning ─────────────────────────────
             let role_specs: Vec<RoleSpec> = if input.manifest.explorers.roles.is_empty() {
                 let count = current_params.n_agents.max(1);
-                let tau_min = input.manifest.explorers.tau_min.unwrap_or(0.2);
-                let tau_max = input.manifest.explorers.tau_max.unwrap_or(0.9);
+                let tau_min_manifest = input.manifest.explorers.tau_min.unwrap_or(0.2);
+                let tau_max_manifest = input.manifest.explorers.tau_max.unwrap_or(0.9);
+                // Apply τ-spread expansion (Talagrand U-curve feedback) around the manifest centre.
+                let tau_center = (tau_max_manifest + tau_min_manifest) / 2.0;
+                let half_spread = (tau_max_manifest - tau_min_manifest) / 2.0;
+                let max_half = tau_center.min(1.0 - tau_center); // can't exceed [0,1]
+                let expanded_half = (half_spread * tau_spread_factor).min(max_half);
+                let tau_min = tau_center - expanded_half;
+                let tau_max = tau_center + expanded_half;
                 let step = if count > 1 {
                     (tau_max - tau_min) / (count - 1) as f64
                 } else {
@@ -221,7 +243,7 @@ impl ExecutionEngine {
                         tau: Some(
                             TauValue::new(
                                 ((tau_min + step * i as f64) * tau_reduction_factor)
-                                    .clamp(0.0, 1.0),
+                                    .clamp(0.05, 0.95),
                             )
                             .unwrap_or_else(|_| TauValue::new(0.05).unwrap()),
                         ),
@@ -236,7 +258,7 @@ impl ExecutionEngine {
                 .store
                 .set_phase(&task_id, TaskPhase::Provisioning, 0, retry_count);
 
-            let provisioned = TopologyPlanner::provision(ProvisionInput {
+            let (provisioned, _cg_collapse) = TopologyPlanner::provision(ProvisionInput {
                 task_id: task_id.clone(),
                 cc: &input.calibration.coefficients,
                 pareto_weights: &input.manifest.pareto_weights,
@@ -254,9 +276,9 @@ impl ExecutionEngine {
             let explorer_count = provisioned.explorer_configs.len() as u32;
             current_params.n_agents = explorer_count;
 
-            // Guard: Krum requires n ≥ 2f+3. Fail early rather than silently falling back.
-            if let MergeStrategy::Krum { f } | MergeStrategy::MultiKrum { f, .. } =
-                &provisioned.merge_strategy
+            // Guard: OutlierResistant requires n ≥ 2f+3. Fail early rather than silently falling back.
+            if let MergeStrategy::OutlierResistant { f }
+            | MergeStrategy::MultiOutlierResistant { f, .. } = &provisioned.merge_strategy
             {
                 let f = *f;
                 let n = provisioned.explorer_configs.len();
@@ -274,13 +296,17 @@ impl ExecutionEngine {
                 retry_count,
             );
 
-            // Derive p_mean and rho_mean from EnsembleCalibration when available.
-            // Fallback proxies when < 2 adapters ran calibration:
+            // Derive p_mean, rho_mean, and prediction_basis from EnsembleCalibration when available.
+            // Fallback proxies when calibration is absent (Heuristic basis):
             //   p = 0.5 + CG_mean / 2  (accuracy proxy from output similarity)
             //   ρ = 1 - CG_mean        (correlation proxy from output similarity)
-            let (p_mean, rho_mean) = match &input.calibration.ensemble {
-                Some(ec) => (ec.p_mean, ec.rho_mean),
-                None => (0.5 + cg_mean / 2.0, (1.0 - cg_mean).clamp(0.0, 1.0)),
+            let (p_mean, rho_mean, attribution_basis) = match &input.calibration.ensemble {
+                Some(ec) => (ec.p_mean, ec.rho_mean, ec.prediction_basis),
+                None => (
+                    0.5 + cg_mean / 2.0,
+                    (1.0 - cg_mean).clamp(0.0, 1.0),
+                    PredictionBasis::Heuristic,
+                ),
             };
             let baseline_competence = p_mean;
             let error_correlation = rho_mean;
@@ -410,6 +436,8 @@ impl ExecutionEngine {
                             agent_descriptor: nd_cfg.agent_descriptor.clone(),
                             task_requirements: nd_cfg.task_requirements.clone(),
                             task_timeout: nd_cfg.task_timeout,
+                            payload_store: nd_cfg.payload_store.clone(),
+                            offload_threshold_bytes: nd_cfg.offload_threshold_bytes,
                         }));
                         let generation = retry_count as u64;
                         let fut: ExplorerFuture<'_> = Box::pin(async move {
@@ -626,8 +654,7 @@ impl ExecutionEngine {
                     passed: false,
                     timestamp: Utc::now(),
                 });
-                let error_cost =
-                    RoleErrorCost::new((1.0 - compliance).clamp(0.0, 1.0)).unwrap();
+                let error_cost = RoleErrorCost::new((1.0 - compliance).clamp(0.0, 1.0)).unwrap();
                 let cost = provisioned
                     .explorer_configs
                     .iter()
@@ -728,16 +755,40 @@ impl ExecutionEngine {
                 1.0
             };
 
-            let attribution = {
-                use crate::attribution::{AttributionInput, HarnessAttribution};
-                HarnessAttribution::compute(&AttributionInput {
+            let (attribution, attribution_interval) = {
+                use crate::attribution::{
+                    bootstrap_interval, AttributionInput, HarnessAttribution,
+                };
+                // Compute per-iteration Talagrand from current verification scores for S7 ρ correction.
+                let iter_talagrand_state = {
+                    let scores: Vec<f64> = iteration_verification_events
+                        .iter()
+                        .map(|e| e.score)
+                        .collect();
+                    TalagrandDiagnostic::from_verification_scores(&[scores])
+                        .map(|d| d.calibration_state)
+                };
+                let attr_input = AttributionInput {
                     p_mean,
                     rho_mean,
                     n_agents: explorer_count,
                     verification_filter_ratio: filter_ratio,
                     tao_turns_mean,
                     tao_per_turn_factor: input.cfg.tao_per_turn_factor,
-                })
+                    prediction_basis: attribution_basis,
+                    talagrand_state: iter_talagrand_state,
+                    eigen_calibration: input.calibration.eigen.clone(),
+                };
+                let attr = HarnessAttribution::compute(&attr_input);
+                let interval = {
+                    let cg_samples = &input.calibration.coefficients.cg_samples;
+                    if cg_samples.len() >= 2 {
+                        Some(bootstrap_interval(&attr_input, cg_samples, 1000))
+                    } else {
+                        None
+                    }
+                };
+                (attr, interval)
             };
 
             // Accumulate all_pruned before moving pruned into resolve
@@ -750,12 +801,25 @@ impl ExecutionEngine {
                 pruned,
                 provisioned.merge_strategy.clone(),
                 retry_count,
-                Some(input.registry.resolve(&TaskProfile::Scoring)),
-                None,
+                input.embedding_model,
             )
             .await;
 
-            all_verification_events.extend(iteration_verification_events);
+            all_verification_events.extend(iteration_verification_events.clone());
+
+            // Talagrand τ feedback: after each iteration, update τ-spread expansion factor.
+            // Using the current iteration's scores — typically Insufficient (< 20 runs) for a
+            // single task iteration, but may trigger on longer sessions with accumulated data.
+            {
+                let iter_scores: Vec<f64> = iteration_verification_events
+                    .iter()
+                    .map(|e| e.score)
+                    .collect();
+                if let Some(diag) = TalagrandDiagnostic::from_verification_scores(&[iter_scores]) {
+                    tau_spread_factor = diag
+                        .tau_expansion_factor(tau_spread_factor, input.cfg.tau_spread_max_factor);
+                }
+            }
 
             match outcome {
                 MergeOutcome::Resolved {
@@ -766,32 +830,60 @@ impl ExecutionEngine {
                         params: current_params.clone(),
                         q_total: attribution.total_quality,
                     });
-                    // SelfOptimizer suggestion recorded for observability but not applied on success
                     let suggested_next = SelfOptimizer::suggest(SuggestInput {
                         current: &current_params,
                         history: &quality_history,
                         n_max_ceiling,
-                        n_optimal: input.calibration.ensemble.as_ref().map(|ec| ec.n_optimal as u32),
+                        n_optimal: input
+                            .calibration
+                            .ensemble
+                            .as_ref()
+                            .map(|ec| ec.n_optimal as u32),
                         p_mean,
                         rho_mean,
                         filter_ratio,
                         cfg: input.cfg,
                     });
 
+                    let waste_ratio = filter_ratio;
+                    let applied_optimizations = if waste_ratio < input.cfg.optimizer_waste_threshold
+                    {
+                        // N changes are bandit-owned; only record threshold suggestions.
+                        let mut opts = Vec::new();
+                        if (suggested_next.verify_threshold - current_params.verify_threshold).abs()
+                            > 1e-9
+                        {
+                            opts.push(h2ai_types::events::AppliedOptimization {
+                                kind: h2ai_types::events::OptimizationKind::TauSpreadAdjusted,
+                                reason: format!(
+                                    "waste_ratio={:.2} < threshold {:.2}; \
+                                         tighten verify_threshold to reduce pruned proposals",
+                                    waste_ratio, input.cfg.optimizer_waste_threshold
+                                ),
+                                before: format!("{:.3}", current_params.verify_threshold),
+                                after: format!("{:.3}", suggested_next.verify_threshold),
+                            });
+                        }
+                        opts
+                    } else {
+                        vec![]
+                    };
+
                     input.store.mark_resolved(&task_id);
-                    let run_scores: Vec<f64> = all_verification_events
-                        .iter()
-                        .map(|e| e.score)
-                        .collect();
+                    let run_scores: Vec<f64> =
+                        all_verification_events.iter().map(|e| e.score).collect();
                     let talagrand = TalagrandDiagnostic::from_verification_scores(&[run_scores]);
                     return Ok(EngineOutput {
                         task_id,
                         resolved_output: resolved.resolved_output,
                         semilattice,
                         attribution,
+                        attribution_interval,
                         verification_events: all_verification_events,
                         talagrand,
                         suggested_next_params: Some(suggested_next),
+                        waste_ratio,
+                        applied_optimizations,
                     });
                 }
                 MergeOutcome::ZeroSurvival(zero_event) => {

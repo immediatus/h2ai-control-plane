@@ -12,6 +12,7 @@ fn make_proposal(task_id: TaskId, text: &str) -> ProposalEvent {
         task_id,
         explorer_id: ExplorerId::new(),
         tau: TauValue::new(0.5).unwrap(),
+        generation: 0,
         raw_output: text.into(),
         token_cost: 10,
         adapter_kind: AdapterKind::CloudGeneric {
@@ -41,7 +42,11 @@ async fn verification_passes_high_score() {
     assert_eq!(out.passed.len(), 1, "expected 1 passed proposal");
     assert_eq!(out.failed.len(), 0, "expected 0 failed proposals");
     let (_, results) = &out.passed[0];
-    assert_eq!(results.len(), 1, "expected 1 compliance result (fallback rubric)");
+    assert_eq!(
+        results.len(),
+        1,
+        "expected 1 compliance result (fallback rubric)"
+    );
     assert!(
         (results[0].score - 0.85).abs() < 1e-9,
         "expected raw score 0.85, got {}",
@@ -152,7 +157,11 @@ async fn verification_evaluator_error_fails_safe() {
     assert_eq!(out.passed.len(), 0, "empty evaluator output must not pass");
     assert_eq!(out.failed.len(), 1);
     let (_, results, _violations) = &out.failed[0];
-    assert!((results[0].score).abs() < 1e-9, "expected 0.0, got {}", results[0].score);
+    assert!(
+        (results[0].score).abs() < 1e-9,
+        "expected 0.0, got {}",
+        results[0].score
+    );
 }
 
 #[tokio::test]
@@ -161,9 +170,8 @@ async fn verification_score_exactly_at_threshold_passes() {
     // Hard threshold in __rubric__ fallback is 0.45; we set both config threshold and
     // ensure the LLM score equals the hard threshold so it just passes.
     let threshold = 0.45;
-    let evaluator = MockAdapter::new(
-        format!(r#"{{"score": {threshold}, "reason": "at threshold"}}"#).into(),
-    );
+    let evaluator =
+        MockAdapter::new(format!(r#"{{"score": {threshold}, "reason": "at threshold"}}"#).into());
     let proposal = make_proposal(TaskId::new(), "Proposal at threshold");
     let config = VerificationConfig {
         threshold,
@@ -266,4 +274,102 @@ async fn verification_aggregate_score_used_for_passed() {
         (agg - 1.0).abs() < 1e-9,
         "aggregate of Hard-only results should be 1.0, got {agg}"
     );
+}
+
+#[tokio::test]
+async fn verification_json_schema_predicate_passes_valid_json() {
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let schema = serde_json::json!({"type": "object", "required": ["result"]});
+    let doc = ConstraintDoc {
+        id: "schema_check".into(),
+        source_file: "test".into(),
+        description: "output must be JSON with result field".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::JsonSchema { schema },
+        remediation_hint: None,
+    };
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
+    let proposal = make_proposal(TaskId::new(), r#"{"result": "ok"}"#);
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+    })
+    .await;
+
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "valid JSON output must pass JsonSchema"
+    );
+    assert!((out.passed[0].1[0].score - 1.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn verification_length_range_predicate_rejects_long_output() {
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "length_check".into(),
+        source_file: "test".into(),
+        description: "output must be ≤ 10 chars".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::LengthRange {
+            min_chars: None,
+            max_chars: Some(10),
+        },
+        remediation_hint: None,
+    };
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
+    let proposal = make_proposal(
+        TaskId::new(),
+        "this is definitely longer than ten characters",
+    );
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+    })
+    .await;
+
+    assert_eq!(out.failed.len(), 1, "output exceeding max_chars must fail");
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn verification_oracle_execution_unreachable_scores_zero() {
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    // Point at a URI that will immediately refuse — oracle_timeout/request_failed → 0.0
+    let doc = ConstraintDoc {
+        id: "oracle_check".into(),
+        source_file: "test".into(),
+        description: "run test suite".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::OracleExecution {
+            test_runner_uri: "http://127.0.0.1:19999/run".into(),
+            test_suite: "suite.py".into(),
+            timeout_secs: 1,
+        },
+        remediation_hint: None,
+    };
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "some output");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+    })
+    .await;
+
+    assert_eq!(
+        out.failed.len(),
+        1,
+        "unreachable oracle must fail the constraint"
+    );
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
 }

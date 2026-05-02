@@ -1,16 +1,16 @@
 use h2ai_config::H2AIConfig;
+use h2ai_constraints::loader::parse_constraint_doc;
 use h2ai_constraints::types::{
     ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
 };
-use h2ai_context::adr::parse_adr;
 use h2ai_context::compiler::{compile, ContextError};
 
 fn cfg() -> H2AIConfig {
     H2AIConfig::default()
 }
 
-fn adr_budget() -> ConstraintDoc {
-    parse_adr(
+fn constraint_budget() -> ConstraintDoc {
+    parse_constraint_doc(
         "ADR-004",
         r#"
 ## Constraints
@@ -20,8 +20,8 @@ fn adr_budget() -> ConstraintDoc {
     )
 }
 
-fn adr_grpc() -> ConstraintDoc {
-    parse_adr(
+fn constraint_grpc() -> ConstraintDoc {
+    parse_constraint_doc(
         "ADR-002",
         r#"
 ## Constraints
@@ -46,7 +46,7 @@ async fn compile_returns_error_when_j_eff_below_threshold() {
 
 #[tokio::test]
 async fn compile_succeeds_when_j_eff_at_or_above_threshold() {
-    let corpus = vec![adr_budget(), adr_grpc()];
+    let corpus = vec![constraint_budget(), constraint_grpc()];
     let result = compile(
         "enforce budget pacing idempotency with redis and grpc internal services",
         &corpus,
@@ -62,7 +62,7 @@ async fn compile_succeeds_when_j_eff_at_or_above_threshold() {
 
 #[tokio::test]
 async fn compiled_system_context_contains_adr_source_name() {
-    let corpus = vec![adr_budget()];
+    let corpus = vec![constraint_budget()];
     let result = compile(
         "prevent double-billing on restart using redis idempotency budget mutations memory",
         &corpus,
@@ -79,7 +79,7 @@ async fn compiled_system_context_contains_adr_source_name() {
 async fn compiled_system_context_contains_manifest() {
     let manifest =
         "prevent double-billing on restart using redis idempotency budget mutations memory";
-    let corpus = vec![adr_budget()];
+    let corpus = vec![constraint_budget()];
     let result = compile(
         manifest,
         &corpus,
@@ -94,7 +94,7 @@ async fn compiled_system_context_contains_manifest() {
 
 #[tokio::test]
 async fn j_eff_recorded_in_result() {
-    let corpus = vec![adr_budget(), adr_grpc()];
+    let corpus = vec![constraint_budget(), constraint_grpc()];
     let result = compile(
         "budget redis idempotency grpc internal services memory",
         &corpus,
@@ -111,7 +111,7 @@ async fn j_eff_recorded_in_result() {
 async fn compile_respects_custom_j_eff_gate() {
     let mut custom = H2AIConfig::default();
     custom.j_eff_gate = 0.99;
-    let corpus = vec![adr_budget()];
+    let corpus = vec![constraint_budget()];
     let result = compile(
         "prevent double-billing on restart using redis idempotency budget mutations memory",
         &corpus,
@@ -152,9 +152,7 @@ async fn compile_with_empty_required_keywords_fails_gate() {
 #[tokio::test]
 async fn compile_empty_manifest_with_empty_required_keywords_fails_gate() {
     let result = compile("", &[], "", &cfg(), None).await;
-    assert!(
-        matches!(result, Err(ContextError::ContextUnderflow { j_eff, .. }) if j_eff == 0.0),
-    );
+    assert!(matches!(result, Err(ContextError::ContextUnderflow { j_eff, .. }) if j_eff == 0.0),);
 }
 
 // ── Signed J_eff / contamination tests ───────────────────────────────────────
@@ -184,7 +182,7 @@ fn adr_with_negative_keyword(id: &str, positive: &[&str], negative: &[&str]) -> 
 
 #[tokio::test]
 async fn contamination_is_zero_when_no_negative_vocab() {
-    let corpus = vec![adr_budget()];
+    let corpus = vec![constraint_budget()];
     let result = compile(
         "enforce budget pacing idempotency with redis and grpc internal services",
         &corpus,
@@ -309,7 +307,10 @@ async fn j_eff_penalises_multiple_prohibited_terms() {
         no_violation.j_eff,
         heavy_violation.j_eff
     );
-    assert_eq!(no_violation.contamination, 0.0, "no-violation manifest must have zero contamination");
+    assert_eq!(
+        no_violation.contamination, 0.0,
+        "no-violation manifest must have zero contamination"
+    );
     assert!(
         heavy_violation.contamination > 0.0,
         "heavy-violation manifest must have positive contamination"

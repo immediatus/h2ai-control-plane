@@ -41,7 +41,10 @@ fn adr_constraints_section_parsed_as_hard() {
     assert_eq!(doc.id, "ADR-001");
     match &doc.severity {
         ConstraintSeverity::Hard { threshold } => {
-            assert!((*threshold - 0.8).abs() < 1e-9, "default threshold must be 0.8")
+            assert!(
+                (*threshold - 0.8).abs() < 1e-9,
+                "default threshold must be 0.8"
+            )
         }
         other => panic!("expected Hard, got {:?}", other),
     }

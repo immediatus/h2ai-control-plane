@@ -14,6 +14,10 @@ fn h2ai_event_serialises_to_tagged_json() {
         eigen: None,
         timestamp: chrono::Utc::now(),
         pairwise_beta: None,
+        cg_mode: Default::default(),
+        adapter_families: Vec::new(),
+        explorer_verification_family_match: false,
+        single_family_warning: false,
     });
 
     let json = serde_json::to_string(&event).unwrap();
@@ -33,6 +37,10 @@ fn calibration_event_roundtrip() {
         eigen: None,
         timestamp: chrono::Utc::now(),
         pairwise_beta: None,
+        cg_mode: Default::default(),
+        adapter_families: Vec::new(),
+        explorer_verification_family_match: false,
+        single_family_warning: false,
     };
     let bytes = serde_json::to_vec(&original).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_slice(&bytes).unwrap();

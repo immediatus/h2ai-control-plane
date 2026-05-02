@@ -12,13 +12,6 @@ Cargo.lock
 .env.*
 !.env.example
 
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
 # OS
 .DS_Store
 Thumbs.db
@@ -36,4 +29,3 @@ weights/
 
 # Other
 .claude/
-docs/.plans/

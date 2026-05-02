@@ -78,7 +78,7 @@ def n_max(alpha: float, beta: float) -> float:
 
 
 def beta_eff(beta_base: float, cg_mean: float) -> float:
-    return beta_base / cg_mean
+    return beta_base / max(cg_mean, 0.05)
 
 
 def save_or_show(fig: plt.Figure, filename: str) -> None:

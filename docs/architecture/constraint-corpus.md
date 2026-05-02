@@ -1,6 +1,6 @@
 # Constraint Corpus Guide
 
-The Dark Knowledge Compiler is only as good as the constraints it reads. This guide explains the typed constraint system, what makes an effective corpus, how the compiler reads ADRs and `ConstraintDoc` files, and how to diagnose `ContextUnderflowError`.
+The Dark Knowledge Compiler is only as good as the constraints it reads. This guide explains the typed constraint system, what makes an effective corpus, how the compiler reads `ConstraintDoc` files, and how to diagnose `ContextUnderflowError`.
 
 ---
 
@@ -16,42 +16,9 @@ Constraints are the mechanism by which your team's tacit knowledge becomes expli
 
 ---
 
-## Constraint document types
+## Constraint document format
 
-### Option A — ADR format (backward-compatible)
-
-The compiler recognizes ADRs in standard format. The `## Constraints` section is what matters for Auditor enforcement; everything else is context.
-
-```markdown
-# ADR-{number}: {short title}
-
-## Status
-{Proposed | Accepted | Deprecated | Superseded by ADR-N}
-
-## Context
-What is the situation that forced this decision? Be explicit about constraints —
-compliance requirements, team conventions, integration dependencies.
-
-## Decision
-The decision, stated as an active sentence.
-
-## Consequences
-What becomes easier? What becomes harder?
-
-## Constraints
-
-(strongly recommended)
-Bullet list of hard rules that agents must not violate:
-- Service X must not write directly to the database.
-- All tokens expire in ≤ 15 minutes.
-- No synchronous calls across service boundary Y.
-```
-
-The `## Constraints` heading produces a `ConstraintDoc` with `Hard { threshold: 0.8 }` severity and a `VocabularyPresence { AllOf }` predicate built from the bullet terms. This is the backward-compatible path — **no existing ADR files need to be changed**.
-
-### Option B — Typed ConstraintDoc format
-
-For precise, machine-checkable rules, you can use the full typed format with explicit severity and predicate sections:
+Constraint documents use the typed `ConstraintDoc` format with explicit severity and predicate sections:
 
 ```markdown
 # CONSTRAINT-{id}: {short title}
@@ -67,7 +34,7 @@ VocabularyPresence AllOf
 
 ## Remediation
 Ensure the proposal explicitly states that auth is stateless and does not store
-session state. Reference ADR-001.
+session state.
 ```
 
 The `## Severity` heading accepts:
@@ -83,6 +50,8 @@ The `## Predicate` heading accepts one of:
 - `LlmJudge` + rubric text (evaluated async via the auditor adapter)
 
 The `## Remediation` section provides the `remediation_hint` that the MAPE-K `RetryWithHints` action surfaces to the next generation round.
+
+Documents that only contain a `## Constraints` section (bulleted list of terms) are also valid. The compiler parses them as `VocabularyPresence { AllOf }` with `Hard { threshold: 0.8 }` severity — the minimal form for quick authoring.
 
 ---
 
@@ -113,7 +82,7 @@ When a proposal is pruned, `BranchPrunedEvent.violated_constraints` carries one 
 
 ```json
 {
-  "constraint_id": "ADR-001",
+  "constraint_id": "CONSTRAINT-001",
   "score": 0.2,
   "severity_label": "Hard",
   "remediation_hint": "Ensure the proposal explicitly states that auth is stateless."
@@ -146,14 +115,16 @@ We use JWT authentication.
 
 Effective:
 ```markdown
-## Decision
-All services authenticate via JWT. No service stores session state.
+## Predicate
+VocabularyPresence AllOf
+- jwt
+- stateless
+- no session state
+- token expiry
 
-## Constraints
-- Services must not write session tokens to any storage medium.
-- Services must not maintain a session revocation list (use short expiry instead).
-- Token expiry must not exceed 15 minutes for access tokens.
-- Refresh token rotation must invalidate the previous token on use.
+## Remediation
+The proposal must state auth is stateless and specify token expiry. No session
+storage is permitted.
 ```
 
 The explicit prohibitions are what the Auditor checks proposals against. "We use JWT" tells an Explorer what to use. "Must not store session state" tells the Auditor what to reject.
@@ -167,10 +138,16 @@ We don't allow direct database access.
 
 Effective:
 ```markdown
-## Constraints
-- The `api-gateway` service must not query the `orders` or `inventory`
-  databases directly. All reads go through `order-service` or
-  `inventory-service` via gRPC.
+## Predicate
+VocabularyPresence AllOf
+- api-gateway
+- grpc
+- order-service
+- inventory-service
+
+## Remediation
+The api-gateway must access order and inventory data via gRPC service calls,
+not direct database queries.
 ```
 
 ### Always add a remediation hint to Hard constraints
@@ -178,7 +155,7 @@ Effective:
 ```markdown
 ## Remediation
 Add explicit language stating all reads go through the service boundary.
-Reference ADR-003 gRPC requirement.
+Reference the gRPC requirement.
 ```
 
 Remediation hints power `RetryWithHints` — without them, the MAPE-K loop falls back to generic τ adjustment or keyword-based hallucination detection, which is less precise.
@@ -186,10 +163,15 @@ Remediation hints power `RetryWithHints` — without them, the MAPE-K loop falls
 ### Reference compliance requirements
 
 ```markdown
-## Constraints
-- Personal data (as defined by GDPR Article 4) must not be logged in
-  plaintext. Log entries must use pseudonymized identifiers only.
-  [Compliance: GDPR-LOG-001]
+## Predicate
+VocabularyPresence AllOf
+- pseudonymized
+- gdpr
+- no plaintext
+
+## Remediation
+Personal data must use pseudonymized identifiers in logs. No plaintext PII.
+[Compliance: GDPR-LOG-001]
 ```
 
 Compliance references increase `J_eff` for tasks in regulated domains.
@@ -199,21 +181,21 @@ Compliance references increase `J_eff` for tasks in regulated domains.
 ## Corpus organization
 
 ```
-adr/
+constraints/
 ├── architecture/
-│   ├── ADR-001-stateless-auth.md
-│   ├── ADR-002-event-sourced-state.md
-│   └── ADR-007-no-direct-db-access.md
+│   ├── CONSTRAINT-001-stateless-auth.md
+│   ├── CONSTRAINT-002-event-sourced-state.md
+│   └── CONSTRAINT-007-no-direct-db-access.md
 ├── security/
-│   ├── ADR-010-gdpr-logging.md
+│   ├── CONSTRAINT-010-gdpr-logging.md
 │   └── CONSTRAINT-SEC-001-injection-prevention.md
 ├── infrastructure/
-│   └── ADR-021-nats-as-event-log.md
+│   └── CONSTRAINT-021-nats-as-event-log.md
 └── deprecated/
-    └── ADR-005-redis-session-store.md  # Status: Deprecated
+    └── CONSTRAINT-005-redis-session-store.md  # Status: Deprecated
 ```
 
-The compiler scans the entire directory recursively. Deprecated ADRs are still indexed — the `Status: Deprecated` tag teaches the Auditor that a historical decision was explicitly reversed. Both ADR-format and typed ConstraintDoc-format files are loaded via the same `load_corpus` call.
+The compiler scans the entire directory recursively. Deprecated constraints are still indexed — the `Status: Deprecated` tag teaches the Auditor about explicitly reversed decisions. All files are loaded via the same `load_corpus` call.
 
 ---
 
@@ -236,8 +218,8 @@ When `POST /tasks` returns `ContextUnderflowError`, the response includes `missi
 
 For each item in `missing_coverage`:
 
-1. Check if a constraint doc exists but is poorly worded — rewrite the `## Constraints` or `## Predicate` section.
-2. If no constraint doc exists — this is Dark Knowledge. Write the ADR or ConstraintDoc before resubmitting.
+1. Check if a constraint doc exists but is poorly worded — rewrite the `## Predicate` section.
+2. If no constraint doc exists — this is Dark Knowledge. Write a `ConstraintDoc` before resubmitting.
 3. As a short-term workaround, add the constraint directly to the task manifest `context` field.
 
 ### The manifest context field
@@ -257,11 +239,11 @@ This raises `J_eff` for the task without adding noise to the corpus.
 
 ## Corpus maintenance
 
-**After every architectural decision:** Write the ADR or ConstraintDoc immediately. Dark Knowledge accretes fastest in the gap between "we decided" and "we wrote it down."
+**After every architectural decision:** Write a `ConstraintDoc` immediately. Dark Knowledge accretes fastest in the gap between "we decided" and "we wrote it down."
 
 **After an incident:** Add a Hard constraint with a remediation hint that would have caught it. `BranchPrunedEvent.violated_constraints` from a `ZeroSurvivalEvent` shows exactly which constraints fired — extend them with remediation hints so future retries are targeted.
 
-**After deprecating a pattern:** Mark the ADR `Status: Deprecated` and add a `Superseded by ADR-N` line. Do not delete it — the compiler uses deprecated ADRs to teach the Auditor about explicitly reversed decisions.
+**After deprecating a pattern:** Mark the constraint `Status: Deprecated` and add a `Superseded by CONSTRAINT-N` line. Do not delete it — the compiler uses deprecated constraints to teach the Auditor about explicitly reversed decisions.
 
 **Quarterly review:** Run `POST /calibrate` after significant corpus changes. If `κ_eff` drops, your Common Ground improved — agents share more knowledge and coordinate cheaper. If it rises, new constraints introduced epistemic distance between adapters.
 
@@ -269,7 +251,7 @@ This raises `J_eff` for the task without adding noise to the corpus.
 
 ## Minimum viable corpus
 
-For a team starting from zero, these five ADRs cover the most common `ContextUnderflowError` causes:
+For a team starting from zero, these five constraints cover the most common `ContextUnderflowError` causes:
 
 1. **Authentication and session management** — how users are identified, token lifecycle, revocation policy
 2. **Database access policy** — which services can read/write which databases, direct vs. service-mediated access

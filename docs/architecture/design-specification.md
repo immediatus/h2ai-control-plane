@@ -178,7 +178,7 @@ The system is governed by the Universal Scalability Law extended with epistemic 
 | Symbol | Formula | Meaning |
 |--------|---------|---------|
 | α | measured | Serial contention fraction |
-| β_eff | β_base / CG_mean | Effective coherency cost per pair |
+| β_eff | β_base / max(CG_embed, 0.05) | Effective coherency cost per pair; CG_embed < 0.10 forces N=1 |
 | N_max | round(sqrt((1−α) / β_eff)) | Throughput ceiling — USL Proposition 1 (Gunther 1993) |
 | θ_coord | min(CG_mean − σ_CG, 0.3) | Minimum CG any Explorer pair must meet |
 | J_eff | J(K_prompt, K_task_required) | Dark Knowledge Gap; gate at 0.4 |

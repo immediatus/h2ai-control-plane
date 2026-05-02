@@ -4,9 +4,9 @@ use h2ai_types::physics::{CoherencyCoefficients, CoordinationThreshold};
 fn calibration_event_has_valid_n_max() {
     let cc = CoherencyCoefficients::new(0.12, 0.021, vec![0.68, 0.74, 0.71]).unwrap();
     let n_max = cc.n_max();
-    // With proportional β_eff = β₀×(1−CG): 0.021×0.29≈0.0061 → N_max≈12
+    // New formula β_eff = β₀/max(CG,0.05): CG_mean≈0.71, β_eff=0.021/0.71≈0.030 → N_max≈5
     assert!(
-        n_max > 4.0 && n_max < 20.0,
+        n_max > 1.0 && n_max < 20.0,
         "n_max={n_max} out of expected range"
     );
 }

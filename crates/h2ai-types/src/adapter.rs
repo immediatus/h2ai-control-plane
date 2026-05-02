@@ -5,6 +5,53 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 
+/// Model provider family. Used for correlated hallucination detection at calibration time.
+///
+/// When all non-Mock adapters in the calibration pool belong to the same family,
+/// their failures are correlated: the same hallucination appears in 2/3 of proposals
+/// simultaneously, breaking the Weiszfeld BFT breakdown-point guarantee.
+///
+/// `Mock` is family-neutral: Mock adapters do not participate in family diversity checks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AdapterFamily {
+    Anthropic,
+    OpenAI,
+    Google,
+    Meta,
+    Mistral,
+    /// Local or self-hosted model (Ollama, llama.cpp, CloudGeneric endpoint, NATS dispatch).
+    Local,
+    /// Test double — exempt from multi-family enforcement.
+    Mock,
+}
+
+impl std::fmt::Display for AdapterFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            AdapterFamily::Anthropic => "Anthropic",
+            AdapterFamily::OpenAI => "OpenAI",
+            AdapterFamily::Google => "Google",
+            AdapterFamily::Meta => "Meta",
+            AdapterFamily::Mistral => "Mistral",
+            AdapterFamily::Local => "Local",
+            AdapterFamily::Mock => "Mock",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl From<&AdapterKind> for AdapterFamily {
+    fn from(kind: &AdapterKind) -> Self {
+        match kind {
+            AdapterKind::Anthropic { .. } => AdapterFamily::Anthropic,
+            AdapterKind::OpenAI { .. } => AdapterFamily::OpenAI,
+            AdapterKind::Ollama { .. }
+            | AdapterKind::CloudGeneric { .. }
+            | AdapterKind::LocalLlamaCpp { .. } => AdapterFamily::Local,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputeRequest {
     pub system_context: String,
@@ -18,6 +65,10 @@ pub struct ComputeResponse {
     pub output: String,
     pub token_cost: u64,
     pub adapter_kind: AdapterKind,
+    /// Tokens consumed by this response, when reported by the adapter.
+    /// Used for token-cost β₀ EMA (`beta_from_token_spans`).
+    #[serde(default)]
+    pub tokens_used: Option<u64>,
 }
 
 #[derive(Debug, Error)]
@@ -36,6 +87,13 @@ pub enum AdapterError {
 pub trait IComputeAdapter: Send + Sync + std::fmt::Debug {
     async fn execute(&self, request: ComputeRequest) -> Result<ComputeResponse, AdapterError>;
     fn kind(&self) -> &AdapterKind;
+
+    /// Provider family for correlated hallucination detection.
+    /// Derived from `kind()` by default; override only for adapters whose `AdapterKind`
+    /// does not unambiguously identify the family (e.g. `MockAdapter`).
+    fn family(&self) -> AdapterFamily {
+        AdapterFamily::from(self.kind())
+    }
 }
 
 /// Capability tier required by a compute task.
@@ -96,10 +154,7 @@ impl AdapterRegistry {
     pub fn resolve(&self, profile: &TaskProfile) -> &dyn IComputeAdapter {
         match profile {
             TaskProfile::Reasoning => self.reasoning.as_ref(),
-            TaskProfile::Scoring => self
-                .scoring
-                .as_deref()
-                .unwrap_or(self.reasoning.as_ref()),
+            TaskProfile::Scoring => self.scoring.as_deref().unwrap_or(self.reasoning.as_ref()),
             TaskProfile::Structural => self
                 .structural
                 .as_deref()
@@ -115,5 +170,134 @@ impl std::fmt::Debug for AdapterRegistry {
             .field("scoring", &self.scoring.as_ref().map(|a| a.kind()))
             .field("structural", &self.structural.as_ref().map(|a| a.kind()))
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AdapterKind;
+    use std::collections::HashSet;
+
+    fn family_of(kind: AdapterKind) -> AdapterFamily {
+        AdapterFamily::from(&kind)
+    }
+
+    #[test]
+    fn adapter_kind_to_family_mapping() {
+        assert_eq!(
+            family_of(AdapterKind::Anthropic {
+                api_key_env: "K".into(),
+                model: "m".into()
+            }),
+            AdapterFamily::Anthropic
+        );
+        assert_eq!(
+            family_of(AdapterKind::OpenAI {
+                api_key_env: "K".into(),
+                model: "m".into()
+            }),
+            AdapterFamily::OpenAI
+        );
+        assert_eq!(
+            family_of(AdapterKind::Ollama {
+                endpoint: "http://localhost".into(),
+                model: "m".into()
+            }),
+            AdapterFamily::Local
+        );
+        assert_eq!(
+            family_of(AdapterKind::CloudGeneric {
+                endpoint: "http://x".into(),
+                api_key_env: "K".into()
+            }),
+            AdapterFamily::Local
+        );
+        assert_eq!(
+            family_of(AdapterKind::LocalLlamaCpp {
+                model_path: "/m".into(),
+                n_threads: 4
+            }),
+            AdapterFamily::Local
+        );
+    }
+
+    #[test]
+    fn single_family_detection_all_anthropic() {
+        let families: HashSet<AdapterFamily> = [
+            AdapterFamily::Anthropic,
+            AdapterFamily::Anthropic,
+            AdapterFamily::Anthropic,
+        ]
+        .into_iter()
+        .collect();
+        let non_mock: Vec<_> = families
+            .iter()
+            .filter(|f| **f != AdapterFamily::Mock)
+            .collect();
+        assert_eq!(
+            non_mock.len(),
+            1,
+            "three identical families must collapse to one"
+        );
+    }
+
+    #[test]
+    fn single_family_detection_mixed_families() {
+        let families: HashSet<AdapterFamily> = [AdapterFamily::Anthropic, AdapterFamily::OpenAI]
+            .into_iter()
+            .collect();
+        let non_mock: Vec<_> = families
+            .iter()
+            .filter(|f| **f != AdapterFamily::Mock)
+            .collect();
+        assert_eq!(
+            non_mock.len(),
+            2,
+            "two distinct families must not trigger single-family warning"
+        );
+    }
+
+    #[test]
+    fn mock_only_pool_exempt_from_enforcement() {
+        let families: HashSet<AdapterFamily> = [AdapterFamily::Mock, AdapterFamily::Mock]
+            .into_iter()
+            .collect();
+        let non_mock: Vec<_> = families
+            .iter()
+            .filter(|f| **f != AdapterFamily::Mock)
+            .collect();
+        assert!(
+            non_mock.is_empty(),
+            "all-Mock pool must be exempt (non_mock.len() == 0)"
+        );
+    }
+
+    #[test]
+    fn mixed_mock_and_real_counts_real_only() {
+        let families: HashSet<AdapterFamily> = [
+            AdapterFamily::Mock,
+            AdapterFamily::Anthropic,
+            AdapterFamily::Anthropic,
+        ]
+        .into_iter()
+        .collect();
+        let non_mock: Vec<_> = families
+            .iter()
+            .filter(|f| **f != AdapterFamily::Mock)
+            .collect();
+        assert_eq!(
+            non_mock.len(),
+            1,
+            "Mock must be excluded; one real family remains"
+        );
+    }
+
+    #[test]
+    fn adapter_family_display() {
+        assert_eq!(AdapterFamily::Anthropic.to_string(), "Anthropic");
+        assert_eq!(AdapterFamily::OpenAI.to_string(), "OpenAI");
+        assert_eq!(AdapterFamily::Mock.to_string(), "Mock");
+        assert_eq!(AdapterFamily::Local.to_string(), "Local");
     }
 }

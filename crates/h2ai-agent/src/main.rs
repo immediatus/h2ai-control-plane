@@ -1,5 +1,6 @@
 use h2ai_agent::dispatch;
 use h2ai_agent::heartbeat::HeartbeatTask;
+use h2ai_config::H2AIConfig;
 use h2ai_types::agent::{AgentDescriptor, CostTier};
 use h2ai_types::identity::AgentId;
 use std::sync::atomic::AtomicU32;
@@ -12,8 +13,8 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let nats_url =
-        std::env::var("H2AI_NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let cfg = H2AIConfig::default();
+    let nats_url = cfg.nats_url;
 
     let agent_id_str = std::env::var("H2AI_AGENT_ID").unwrap_or_else(|_| String::new());
     let agent_id: AgentId = if agent_id_str.is_empty() {

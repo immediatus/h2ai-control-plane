@@ -60,7 +60,8 @@ impl crate::ToolExecutor for ShellExecutor {
     fn schema(&self) -> crate::ToolSchema {
         crate::ToolSchema {
             name: "shell",
-            description: "Execute a shell command via `sh -c`. Returns stdout on success, stderr on failure.",
+            description:
+                "Execute a shell command via `sh -c`. Returns stdout on success, stderr on failure.",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

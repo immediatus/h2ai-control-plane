@@ -1,9 +1,12 @@
 use crate::error::ProvisionError;
 use crate::provider::AgentProvider;
-use crate::scheduling::{AgentCandidate, LeastLoadedPolicy, SchedulingPolicy};
+use crate::scheduling::{
+    AgentCandidate, CostAwareSpilloverPolicy, LeastLoadedPolicy, SchedulingPolicy,
+};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
+use h2ai_config::SchedulerPolicy;
 use h2ai_nats::subjects::agent_terminate_subject;
 use h2ai_types::agent::{AgentDescriptor, AgentHeartbeat, TaskRequirements};
 use h2ai_types::identity::AgentId;
@@ -81,6 +84,21 @@ impl NatsAgentProvider {
     pub fn with_policy(mut self, policy: Arc<dyn SchedulingPolicy>) -> Self {
         self.policy = policy;
         self
+    }
+
+    /// Build and apply a scheduling policy from config.
+    pub fn with_policy_from_config(
+        self,
+        policy: &SchedulerPolicy,
+        spillover_threshold: usize,
+    ) -> Self {
+        let p: Arc<dyn SchedulingPolicy> = match policy {
+            SchedulerPolicy::LeastLoaded => Arc::new(LeastLoadedPolicy),
+            SchedulerPolicy::CostAwareSpillover => Arc::new(CostAwareSpilloverPolicy {
+                spillover_threshold,
+            }),
+        };
+        self.with_policy(p)
     }
 
     fn live_matching(&self, descriptor: &AgentDescriptor) -> usize {

@@ -1,4 +1,4 @@
-# ADR-005: Dual-Ledger Architecture — Immutable Financial Audit Log
+# CONSTRAINT-005: Dual-Ledger Architecture — Immutable Financial Audit Log
 
 ## Status
 

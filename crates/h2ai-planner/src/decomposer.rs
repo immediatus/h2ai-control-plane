@@ -41,36 +41,18 @@ impl PlanningEngine {
         tau: TauValue,
     ) -> Result<SubtaskPlan, PlannerError> {
         let constraints_csv = manifest.constraints.join(", ");
-        let prompt = format!(
-            "You are decomposing a complex task into an ordered subtask plan.\n\
-             \n\
-             Original task: {description}\n\
-             Constraints: {constraints}\n\
-             \n\
-             Decompose this into 2 to 7 subtasks. Each subtask must be a specific, \
-             independently executable step whose output is useful to later subtasks.\n\
-             \n\
-             Respond ONLY with valid JSON matching this schema exactly:\n\
-             {{\n\
-               \"subtasks\": [\n\
-                 {{\n\
-                   \"description\": \"<specific instruction for this subtask>\",\n\
-                   \"depends_on\": [<0-based indices of prior subtasks this depends on>],\n\
-                   \"role_hint\": \"<Executor|Evaluator|Synthesizer|Coordinator|null>\"\n\
-                 }}\n\
-               ]\n\
-             }}",
-            description = manifest.description,
-            constraints = if constraints_csv.is_empty() {
-                "none".into()
-            } else {
-                constraints_csv
-            },
-        );
+        let constraints_str = if constraints_csv.is_empty() {
+            "none"
+        } else {
+            &constraints_csv
+        };
+        let prompt = h2ai_config::prompts::DECOMPOSER_TASK.render(&[
+            ("description", &manifest.description),
+            ("constraints", constraints_str),
+        ]);
 
         let request = ComputeRequest {
-            system_context: "You are a senior software architect. Respond only with valid JSON."
-                .into(),
+            system_context: h2ai_config::prompts::DECOMPOSER_SYSTEM.as_str().into(),
             task: prompt,
             tau,
             max_tokens: 1024,

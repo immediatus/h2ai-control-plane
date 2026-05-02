@@ -1,6 +1,4 @@
-use crate::types::{
-    ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
-};
+use crate::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -44,16 +42,22 @@ pub fn parse_constraint_doc(id: &str, content: &str) -> ConstraintDoc {
     }
 }
 
-fn find_constraint_section<'a>(
-    content: &'a str,
-    lower: &str,
-) -> (&'a str, ConstraintSeverity) {
+fn find_constraint_section<'a>(content: &'a str, lower: &str) -> (&'a str, ConstraintSeverity) {
     // Priority order: Hard > Soft > Advisory > plain Constraints
     let candidates: &[(&str, ConstraintSeverity)] = &[
-        ("## hard constraints", ConstraintSeverity::Hard { threshold: 0.8 }),
-        ("## soft constraints", ConstraintSeverity::Soft { weight: 1.0 }),
-        ("## advisory",         ConstraintSeverity::Advisory),
-        ("## constraints",      ConstraintSeverity::Hard { threshold: 0.8 }),
+        (
+            "## hard constraints",
+            ConstraintSeverity::Hard { threshold: 0.8 },
+        ),
+        (
+            "## soft constraints",
+            ConstraintSeverity::Soft { weight: 1.0 },
+        ),
+        ("## advisory", ConstraintSeverity::Advisory),
+        (
+            "## constraints",
+            ConstraintSeverity::Hard { threshold: 0.8 },
+        ),
     ];
     for (heading, severity) in candidates {
         if let Some(start) = lower.find(heading) {
@@ -68,7 +72,10 @@ fn find_constraint_section<'a>(
 fn tokenize_section(section: &str) -> Vec<String> {
     section
         .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
         .filter(|w| w.len() >= 3)
         .collect::<HashSet<_>>()
         .into_iter()

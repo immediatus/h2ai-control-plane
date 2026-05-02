@@ -23,9 +23,8 @@
 //! When `adapter` is `Some(...)`, uses semantic Jaccard (synonyms score as close).
 //! When `adapter` is `None`, falls back to token Jaccard (deterministic, no I/O).
 
-use futures::future::join_all;
+use h2ai_context::embedding::EmbeddingModel;
 use h2ai_context::similarity::semantic_jaccard;
-use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::events::ProposalEvent;
 use std::cmp::Ordering;
 
@@ -41,7 +40,7 @@ impl ConsensusMedian {
     /// When `adapter` is `None`, uses token Jaccard (offline/test mode).
     pub async fn resolve<'a>(
         proposals: &'a [ProposalEvent],
-        adapter: Option<&'a dyn IComputeAdapter>,
+        embedding_model: Option<&'a dyn EmbeddingModel>,
     ) -> Option<&'a ProposalEvent> {
         if proposals.is_empty() {
             return None;
@@ -59,12 +58,10 @@ impl ConsensusMedian {
             .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
             .collect();
 
-        let pair_sims = join_all(
-            pairs
-                .iter()
-                .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], adapter)),
-        )
-        .await;
+        let pair_sims: Vec<f64> = pairs
+            .iter()
+            .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], embedding_model))
+            .collect();
 
         // Populate symmetric similarity matrix.
         let mut sims = vec![vec![1.0f64; n]; n]; // diagonal = 1.0 (self-similarity)
@@ -100,6 +97,7 @@ mod tests {
             task_id: TaskId::new(),
             explorer_id: ExplorerId::new(),
             tau: TauValue::new(0.5).unwrap(),
+            generation: 0,
             raw_output: text.into(),
             token_cost: text.len() as u64,
             adapter_kind: AdapterKind::CloudGeneric {
@@ -112,14 +110,14 @@ mod tests {
 
     #[tokio::test]
     async fn empty_proposals_returns_none() {
-        assert!(ConsensusMedian::resolve(&[], None::<&dyn IComputeAdapter>).await.is_none());
+        assert!(ConsensusMedian::resolve(&[], None).await.is_none());
     }
 
     #[tokio::test]
     async fn single_proposal_returns_itself() {
         let p = prop("only proposal");
         let proposals = [p.clone()];
-        let result = ConsensusMedian::resolve(&proposals, None::<&dyn IComputeAdapter>).await.unwrap();
+        let result = ConsensusMedian::resolve(&proposals, None).await.unwrap();
         assert_eq!(result.raw_output, p.raw_output);
     }
 
@@ -129,7 +127,7 @@ mod tests {
         let cb = prop("JWT stateless authentication compliant ADR-001 rotation");
         let outlier = prop("Redis session store sliding window expiry completely different");
         let proposals = vec![ca.clone(), cb.clone(), outlier];
-        let selected = ConsensusMedian::resolve(&proposals, None::<&dyn IComputeAdapter>).await.unwrap();
+        let selected = ConsensusMedian::resolve(&proposals, None).await.unwrap();
         assert!(
             selected.raw_output == ca.raw_output || selected.raw_output == cb.raw_output,
             "expected consensus proposal, got: {}",
@@ -142,7 +140,7 @@ mod tests {
         let p1 = prop("identical stateless JWT auth ADR-001");
         let p2 = prop("identical stateless JWT auth ADR-001");
         let proposals = vec![p1.clone(), p2];
-        let result = ConsensusMedian::resolve(&proposals, None::<&dyn IComputeAdapter>).await.unwrap();
+        let result = ConsensusMedian::resolve(&proposals, None).await.unwrap();
         assert_eq!(result.raw_output, p1.raw_output);
     }
 
@@ -152,7 +150,7 @@ mod tests {
         let p2 = prop("JWT auth token stateless rotation ADR-001 implementation");
         let outlier = prop("Redis session store sliding window expiry database cache");
         let proposals = vec![p1.clone(), p2.clone(), outlier];
-        let selected = ConsensusMedian::resolve(&proposals, None::<&dyn IComputeAdapter>).await.unwrap();
+        let selected = ConsensusMedian::resolve(&proposals, None).await.unwrap();
         assert!(
             selected.raw_output == p1.raw_output || selected.raw_output == p2.raw_output,
             "Fréchet median must select from the close pair, got: {}",

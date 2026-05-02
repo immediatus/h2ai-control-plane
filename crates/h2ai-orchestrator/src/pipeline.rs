@@ -6,7 +6,9 @@ use h2ai_nats::subjects::{agent_telemetry_subject, ephemeral_task_subject, task_
 use h2ai_provisioner::provider::AgentProvider;
 use h2ai_telemetry::provider::AuditProvider;
 use h2ai_telemetry::redaction::redact_event;
-use h2ai_types::agent::{AgentDescriptor, AgentTelemetryEvent, TaskPayload, TaskResult};
+use h2ai_types::agent::{
+    AgentDescriptor, AgentTelemetryEvent, ContextPayload, TaskPayload, TaskResult,
+};
 use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::physics::TauValue;
 use std::time::Duration;
@@ -64,7 +66,7 @@ where
             agent_id: agent_id.clone(),
             agent: agent.clone(),
             instructions: instructions.to_string(),
-            context,
+            context: ContextPayload::Inline(context),
             tau,
             max_tokens,
         };
@@ -147,7 +149,7 @@ where
             agent_id: agent_id.clone(),
             agent: agent.clone(),
             instructions: instructions.to_string(),
-            context,
+            context: ContextPayload::Inline(context),
             tau,
             max_tokens,
         };

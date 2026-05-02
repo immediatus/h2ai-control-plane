@@ -12,7 +12,10 @@ fn constraint_violation_serde_round_trip() {
     let back: ConstraintViolation = serde_json::from_str(&json).unwrap();
     assert_eq!(back.constraint_id, "ADR-001");
     assert!((back.score - 0.25).abs() < 1e-9);
-    assert_eq!(back.remediation_hint.unwrap(), "Include 'data minimization' in the response.");
+    assert_eq!(
+        back.remediation_hint.unwrap(),
+        "Include 'data minimization' in the response."
+    );
 }
 
 #[test]

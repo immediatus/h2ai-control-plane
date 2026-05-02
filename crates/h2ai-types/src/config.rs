@@ -143,9 +143,7 @@ impl Default for AuditorConfig {
             },
             tau: TauValue::new(0.1).unwrap(),
             max_tokens: 256,
-            prompt_template:
-                "Review the following proposal for compliance with constraints: {constraints}.\n\nProposal:\n{proposal}\n\nRespond ONLY with JSON: {\"approved\": true, \"reason\": \"<brief explanation>\"}"
-                    .into(),
+            prompt_template: crate::prompts::AUDITOR_PROMPT_TEMPLATE.into(),
         }
     }
 }
@@ -169,14 +167,10 @@ impl Default for TaoConfig {
         Self {
             max_turns: 3,
             verify_pattern: None,
-            observation_pass: "verification passed".into(),
-            observation_fail_pattern:
-                "pattern not matched on turn {turn}; retrying".into(),
-            observation_fail_schema:
-                "schema validation failed on turn {turn}: {error}; retrying".into(),
-            retry_instruction:
-                "[OBSERVATION turn {turn}]: output did not satisfy verification. Revise your response."
-                    .into(),
+            observation_pass: crate::prompts::TAO_OBSERVATION_PASS.into(),
+            observation_fail_pattern: crate::prompts::TAO_OBSERVATION_FAIL_PATTERN.into(),
+            observation_fail_schema: crate::prompts::TAO_OBSERVATION_FAIL_SCHEMA.into(),
+            retry_instruction: crate::prompts::TAO_RETRY_INSTRUCTION.into(),
             repetition_threshold: 0.92,
         }
     }
@@ -202,11 +196,8 @@ impl Default for VerificationConfig {
     fn default() -> Self {
         Self {
             threshold: 0.45,
-            rubric: "Score this proposal from 0.0 to 1.0 on: constraint compliance, \
-                     coherence, completeness. Reply with a JSON object: \
-                     {\"score\": <float>, \"reason\": <string>}"
-                .into(),
-            evaluator_system_prompt: "You are a strict evaluator.".into(),
+            rubric: crate::prompts::COT_RUBRIC.into(),
+            evaluator_system_prompt: crate::prompts::EVALUATOR_SYSTEM_PROMPT.into(),
             evaluator_tau: TauValue::new(0.1).unwrap(),
             evaluator_max_tokens: 128,
         }

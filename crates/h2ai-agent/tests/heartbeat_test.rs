@@ -9,8 +9,15 @@ use std::time::Duration;
 #[tokio::test]
 #[ignore]
 async fn heartbeat_publishes_to_correct_subject() {
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
-    let client = async_nats::connect(&nats_url).await.unwrap();
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let client = match async_nats::connect(&nats_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+            return;
+        }
+    };
     let agent_id = AgentId::from(uuid::Uuid::new_v4().to_string());
     let descriptor = AgentDescriptor {
         model: "mock".into(),

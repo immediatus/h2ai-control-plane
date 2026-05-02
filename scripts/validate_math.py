@@ -89,9 +89,16 @@ def usl_throughput(N: float, alpha: float, kappa: float) -> float:
     return N / (1 + alpha * (N - 1) + kappa * N * (N - 1))
 
 
+CG_FLOOR = 0.05
+
+
+def kappa_eff(kappa_base: float, cg_mean: float) -> float:
+    """κ_eff = κ_base / max(CG_mean, CG_FLOOR)"""
+    return kappa_base / max(cg_mean, CG_FLOOR)
+
+
 def usl_throughput_extended(N: float, alpha: float, kappa_base: float, cg_mean: float) -> float:
-    kappa_eff = kappa_base / cg_mean
-    return usl_throughput(N, alpha, kappa_eff)
+    return usl_throughput(N, alpha, kappa_eff(kappa_base, cg_mean))
 
 
 # § Definition 2 — docs/architecture/05-math-apparatus.md
@@ -127,20 +134,36 @@ CALIBRATION_TABLE = [
 ]
 
 for layer, alpha, kappa_base, cg_mean, kappa_eff_exp, _ in CALIBRATION_TABLE:
-    kappa_eff_calc = kappa_base / cg_mean
+    kappa_eff_calc = kappa_eff(kappa_base, cg_mean)
     check(
         f"κ_eff = κ_base / CG_mean  [{layer}]",
         approx_eq(kappa_eff_calc, kappa_eff_exp, tol=0.05),
         f"κ_base={kappa_base}, CG_mean={cg_mean} → κ_eff={kappa_eff_calc:.5f} (expected ≈{kappa_eff_exp})"
     )
 
+kappa_base_ai = 0.01
+
 # Higher CG → lower κ_eff (agents share more context, pay less coordination cost)
-kappa_eff_low_cg  = 0.01 / 0.4   # AI agents
-kappa_eff_high_cg = 0.01 / 1.0   # same κ_base, perfect CG
+kappa_eff_low_cg  = kappa_eff(kappa_base_ai, cg_mean=0.4)   # AI agents
+kappa_eff_high_cg = kappa_eff(kappa_base_ai, cg_mean=1.0)   # same κ_base, perfect CG
 check(
     "Higher CG_mean → lower κ_eff (invariant)",
     kappa_eff_high_cg < kappa_eff_low_cg,
     f"CG=1.0 → κ_eff={kappa_eff_high_cg:.4f}; CG=0.4 → κ_eff={kappa_eff_low_cg:.4f}"
+)
+
+# κ_eff(CG=1.0) == κ_base: at perfect coordination, no extra coherency cost
+check(
+    "κ_eff(CG=1.0) = κ_base (floor inactive at perfect alignment)",
+    abs(kappa_eff(kappa_base_ai, cg_mean=1.0) - kappa_base_ai) < 1e-10,
+    f"κ_eff(CG=1.0)={kappa_eff(kappa_base_ai, 1.0):.6f} == κ_base={kappa_base_ai}"
+)
+
+# Collapse floor: κ_eff(CG=0.02) == κ_eff(CG=CG_FLOOR) — singularity clamped
+check(
+    "κ_eff(CG=0.02) = κ_eff(CG=CG_FLOOR) (collapse floor clamps singularity)",
+    abs(kappa_eff(kappa_base_ai, cg_mean=0.02) - kappa_eff(kappa_base_ai, cg_mean=CG_FLOOR)) < 1e-10,
+    f"κ_eff(0.02)={kappa_eff(kappa_base_ai, 0.02):.5f} == κ_eff({CG_FLOOR})={kappa_eff(kappa_base_ai, CG_FLOOR):.5f}"
 )
 
 # ---------------------------------------------------------------------------
@@ -167,9 +190,9 @@ def numerical_n_max(alpha: float, kappa: float, n_range: int = 200) -> float:
     return float(best_n)
 
 
-for layer, alpha, kappa_base, cg_mean, kappa_eff, n_max_exp in CALIBRATION_TABLE:
-    n_analytical = analytical_n_max(alpha, kappa_eff)
-    n_numerical  = numerical_n_max(alpha, kappa_eff)
+for layer, alpha, kappa_base, cg_mean, kappa_eff_val, n_max_exp in CALIBRATION_TABLE:
+    n_analytical = analytical_n_max(alpha, kappa_eff_val)
+    n_numerical  = numerical_n_max(alpha, kappa_eff_val)
 
     check(
         f"Analytical N_max ≈ {n_max_exp}  [{layer}]",
@@ -183,9 +206,9 @@ for layer, alpha, kappa_base, cg_mean, kappa_eff, n_max_exp in CALIBRATION_TABLE
     )
 
 # Retrograde: throughput at N=2*N_max must be less than at N=N_max
-for layer, alpha, kappa_base, cg_mean, kappa_eff, n_max_exp in CALIBRATION_TABLE:
-    x_at_peak    = usl_throughput(n_max_exp, alpha, kappa_eff)
-    x_past_peak  = usl_throughput(n_max_exp * 2, alpha, kappa_eff)
+for layer, alpha, kappa_base, cg_mean, kappa_eff_val, n_max_exp in CALIBRATION_TABLE:
+    x_at_peak    = usl_throughput(n_max_exp, alpha, kappa_eff_val)
+    x_past_peak  = usl_throughput(n_max_exp * 2, alpha, kappa_eff_val)
     check(
         f"Retrograde: X(2·N_max) < X(N_max)  [{layer}]",
         x_past_peak < x_at_peak,
@@ -194,11 +217,11 @@ for layer, alpha, kappa_base, cg_mean, kappa_eff, n_max_exp in CALIBRATION_TABLE
 
 # Derivative is zero at N_max (proposition proof sanity check)
 # dX/dN ≈ 0 at N_max; check sign change: positive just before, negative just after
-for layer, alpha, kappa_base, cg_mean, kappa_eff, n_max_exp in CALIBRATION_TABLE:
-    n_peak = analytical_n_max(alpha, kappa_eff)
+for layer, alpha, kappa_base, cg_mean, kappa_eff_val, n_max_exp in CALIBRATION_TABLE:
+    n_peak = analytical_n_max(alpha, kappa_eff_val)
     delta = 0.5
-    slope_before = usl_throughput(n_peak - delta, alpha, kappa_eff) - usl_throughput(n_peak - delta - 0.1, alpha, kappa_eff)
-    slope_after  = usl_throughput(n_peak + delta + 0.1, alpha, kappa_eff) - usl_throughput(n_peak + delta, alpha, kappa_eff)
+    slope_before = usl_throughput(n_peak - delta, alpha, kappa_eff_val) - usl_throughput(n_peak - delta - 0.1, alpha, kappa_eff_val)
+    slope_after  = usl_throughput(n_peak + delta + 0.1, alpha, kappa_eff_val) - usl_throughput(n_peak + delta, alpha, kappa_eff_val)
     check(
         f"dX/dN changes sign at N_max (maximum confirmed)  [{layer}]",
         slope_before > 0 and slope_after < 0,
@@ -264,7 +287,7 @@ check(
 # CG_mean < 1 → κ_eff > κ_base (agents pay extra coordination cost)
 cg_mean_example = 0.4
 kappa_base_example = 0.01
-kappa_eff_example = kappa_base_example / cg_mean_example
+kappa_eff_example = kappa_eff(kappa_base_example, cg_mean_example)
 check(
     "CG_mean < 1.0 → κ_eff > κ_base",
     kappa_eff_example > kappa_base_example,
@@ -588,13 +611,13 @@ check(
 section("Calibration Reference Table — Full Cross-Check")
 
 for layer, alpha, kappa_base, cg_mean, kappa_eff_exp, n_max_exp in CALIBRATION_TABLE:
-    kappa_eff_calc = kappa_base / cg_mean
+    kappa_eff_calc = kappa_eff(kappa_base, cg_mean)
     n_max_calc = analytical_n_max(alpha, kappa_eff_calc)
 
     check(
         f"[{layer}] κ_eff = {kappa_eff_exp}",
         approx_eq(kappa_eff_calc, kappa_eff_exp, tol=0.06),
-        f"κ_base/CG_mean = {kappa_base}/{cg_mean} = {kappa_eff_calc:.5f}"
+        f"κ_eff({kappa_base}, {cg_mean}) = {kappa_eff_calc:.5f}"
     )
     check(
         f"[{layer}] N_max ≈ {n_max_exp}",
@@ -605,7 +628,7 @@ for layer, alpha, kappa_base, cg_mean, kappa_eff_exp, n_max_exp in CALIBRATION_T
 # Extended USL N_max formula with CG_mean factored in
 for layer, alpha, kappa_base, cg_mean, kappa_eff_exp, n_max_exp in CALIBRATION_TABLE:
     n_max_extended = math.sqrt((1 - alpha) * cg_mean / kappa_base)
-    n_max_simple   = math.sqrt((1 - alpha) / (kappa_base / cg_mean))
+    n_max_simple   = math.sqrt((1 - alpha) / kappa_eff(kappa_base, cg_mean))
     check(
         f"[{layer}] Extended USL N_max form is algebraically equivalent",
         approx_eq(n_max_extended, n_max_simple, tol=1e-6),

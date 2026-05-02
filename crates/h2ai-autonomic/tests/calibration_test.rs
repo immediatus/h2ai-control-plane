@@ -210,7 +210,9 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
     // We verify the multi-adapter code path ran by checking ensemble and eigen.
     let a1 = MockAdapter::new("stateless JWT authentication using signed tokens".into());
     let a2 = MockAdapter::new("event sourcing with CQRS separating reads from writes".into());
-    let a3 = MockAdapter::new("clean API boundary defined by domain interfaces not implementation".into());
+    let a3 = MockAdapter::new(
+        "clean API boundary defined by domain interfaces not implementation".into(),
+    );
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -234,10 +236,7 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
         event.ensemble.is_some(),
         "ensemble must be Some with 3 adapters"
     );
-    assert!(
-        event.eigen.is_some(),
-        "eigen must be Some with 3 adapters"
-    );
+    assert!(event.eigen.is_some(), "eigen must be Some with 3 adapters");
     // 3 adapters → C(3,2) = 3 pairwise CG samples.
     assert_eq!(
         event.coefficients.cg_samples.len(),

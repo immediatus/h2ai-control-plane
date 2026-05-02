@@ -37,6 +37,9 @@ pub struct TaoInput<'a> {
     pub initial_request: ComputeRequest,
     pub config: TaoConfig,
     pub schema_config: Option<OutputSchemaConfig>,
+    /// MAPE-K retry-loop generation counter (0-based). Threaded into `ProposalEvent::generation`
+    /// so `ProposalSet` can apply generation-first LUB semantics.
+    pub generation: u64,
 }
 
 pub struct TaoProposal {
@@ -51,6 +54,45 @@ impl std::fmt::Debug for TaoProposal {
             .field("tao_turns", &self.tao_turns)
             .field("iterations_len", &self.iterations.len())
             .finish()
+    }
+}
+
+/// Online estimator for the TAO loop per-turn quality improvement factor.
+///
+/// Records `q_after / q_before` from Tier 1 verified multi-turn tasks and
+/// converges on an empirical multiplier. Falls back to the heuristic prior (0.6)
+/// until 20 samples are accumulated.
+#[derive(Debug, Clone, Default)]
+pub struct TaoMultiplierEstimator {
+    samples: Vec<f64>,
+}
+
+impl TaoMultiplierEstimator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a TAO turn's quality change from a Tier 1 verified task.
+    /// `q_before` and `q_after` must both be in [0, 1].
+    pub fn update(&mut self, q_before: f64, q_after: f64) {
+        if q_before > 0.0 {
+            self.samples.push((q_after / q_before).clamp(0.0, 2.0));
+        }
+    }
+
+    /// Current estimate of the per-turn decay factor.
+    /// Returns the heuristic prior (0.6) until 20 samples are available.
+    pub fn multiplier(&self) -> f64 {
+        if self.samples.len() < 20 {
+            0.6
+        } else {
+            self.samples.iter().sum::<f64>() / self.samples.len() as f64
+        }
+    }
+
+    /// Number of samples collected so far.
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
     }
 }
 
@@ -130,6 +172,7 @@ impl TaoLoop {
                         task_id: input.task_id.clone(),
                         explorer_id: input.explorer_id.clone(),
                         tau: req.tau,
+                        generation: input.generation,
                         raw_output: resp.output,
                         token_cost: resp.token_cost,
                         adapter_kind: resp.adapter_kind,

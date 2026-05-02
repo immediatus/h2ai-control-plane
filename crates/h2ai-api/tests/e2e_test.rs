@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 /// Boots the full axum app on a random OS-assigned port.
 /// Returns the base URL, e.g. "http://127.0.0.1:54321".
 async fn boot_app() -> (String, tokio::task::JoinHandle<()>) {
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| H2AIConfig::default().nats_url);
     let nats = NatsClient::connect(&nats_url).await.expect("NATS connect");
     nats.ensure_infrastructure().await.expect("infra");
 

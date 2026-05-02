@@ -13,6 +13,13 @@ h2ai-constraints = { path = "../h2ai-constraints" }
 serde_json       = { workspace = true }
 thiserror        = { workspace = true }
 walkdir          = { workspace = true }
+fastembed        = { version = "3", optional = true }
+ureq             = { version = "3", features = ["rustls"], optional = true }
+
+[features]
+# Enable concrete FastEmbedModel implementation. Requires ORT (ONNX Runtime) available.
+# Build with: cargo build -p h2ai-context --features fastembed
+fastembed-embed = ["dep:fastembed", "dep:ureq"]
 
 [dev-dependencies]
 h2ai-adapters = { path = "../h2ai-adapters" }

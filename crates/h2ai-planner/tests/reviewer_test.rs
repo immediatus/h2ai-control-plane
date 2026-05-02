@@ -129,10 +129,9 @@ async fn reviewer_rejects_self_referential_cycle() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let outcome =
-        PlanReviewer::evaluate(&plan, "anything", &adapter, TauValue::new(0.2).unwrap())
-            .await
-            .unwrap();
+    let outcome = PlanReviewer::evaluate(&plan, "anything", &adapter, TauValue::new(0.2).unwrap())
+        .await
+        .unwrap();
     assert!(
         matches!(outcome, ReviewOutcome::Rejected { .. }),
         "self-referential dependency must be rejected"
@@ -172,10 +171,9 @@ async fn reviewer_rejects_three_node_cycle() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let outcome =
-        PlanReviewer::evaluate(&plan, "anything", &adapter, TauValue::new(0.2).unwrap())
-            .await
-            .unwrap();
+    let outcome = PlanReviewer::evaluate(&plan, "anything", &adapter, TauValue::new(0.2).unwrap())
+        .await
+        .unwrap();
     assert!(
         matches!(outcome, ReviewOutcome::Rejected { .. }),
         "3-node cycle must be rejected"

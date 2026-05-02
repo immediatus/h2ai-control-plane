@@ -1,5 +1,43 @@
 use crate::attribution::{AttributionInput, HarnessAttribution};
 use h2ai_config::H2AIConfig;
+use h2ai_types::physics::PredictionBasis;
+
+const TAU_EMA_ALPHA: f64 = 0.1;
+
+/// Online EMA estimator for τ spread (tau_min, tau_max).
+/// Updated when SelfOptimizer suggests τ adjustments on wasteful successful tasks.
+/// User-specified τ bounds in task manifests always override this estimator.
+#[derive(Debug, Clone)]
+pub struct TauSpreadEstimator {
+    tau_min_ema: f64,
+    tau_max_ema: f64,
+}
+
+impl TauSpreadEstimator {
+    pub fn new(initial_tau_min: f64, initial_tau_max: f64) -> Self {
+        Self {
+            tau_min_ema: initial_tau_min.clamp(0.0, 1.0),
+            tau_max_ema: initial_tau_max.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Update EMA with a suggested (tau_min, tau_max) pair.
+    pub fn update(&mut self, suggested_min: f64, suggested_max: f64) {
+        self.tau_min_ema = (TAU_EMA_ALPHA * suggested_min.clamp(0.0, 1.0)
+            + (1.0 - TAU_EMA_ALPHA) * self.tau_min_ema)
+            .clamp(0.0, 1.0);
+        self.tau_max_ema = (TAU_EMA_ALPHA * suggested_max.clamp(0.0, 1.0)
+            + (1.0 - TAU_EMA_ALPHA) * self.tau_max_ema)
+            .clamp(0.0, 1.0);
+    }
+
+    pub fn tau_min(&self) -> f64 {
+        self.tau_min_ema
+    }
+    pub fn tau_max(&self) -> f64 {
+        self.tau_max_ema
+    }
+}
 
 pub struct SuggestInput<'a> {
     pub current: &'a OptimizerParams,
@@ -127,11 +165,44 @@ impl SelfOptimizer {
             verification_filter_ratio: filter_ratio,
             tao_turns_mean: params.max_turns as f64,
             tao_per_turn_factor,
+            prediction_basis: PredictionBasis::Heuristic,
+            talagrand_state: None,
+            eigen_calibration: None,
         });
         attr.total_quality
     }
 
     fn already_tried(candidate: &OptimizerParams, history: &[QualityMeasurement]) -> bool {
         history.iter().any(|m| &m.params == candidate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tau_spread_estimator_defaults_to_initial_values() {
+        let est = TauSpreadEstimator::new(0.2, 0.8);
+        assert!((est.tau_min() - 0.2).abs() < 1e-9);
+        assert!((est.tau_max() - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tau_spread_estimator_updates_toward_new_value() {
+        let mut est = TauSpreadEstimator::new(0.2, 0.8);
+        // EMA alpha=0.1: new_min = 0.2*0.9 + 0.3*0.1 = 0.21
+        //                new_max = 0.8*0.9 + 0.9*0.1 = 0.81
+        est.update(0.3, 0.9);
+        assert!((est.tau_min() - 0.21).abs() < 1e-9, "got {}", est.tau_min());
+        assert!((est.tau_max() - 0.81).abs() < 1e-9, "got {}", est.tau_max());
+    }
+
+    #[test]
+    fn tau_spread_estimator_clamps_to_unit_interval() {
+        let mut est = TauSpreadEstimator::new(0.0, 1.0);
+        est.update(-0.5, 1.5);
+        assert!(est.tau_min() >= 0.0);
+        assert!(est.tau_max() <= 1.0);
     }
 }

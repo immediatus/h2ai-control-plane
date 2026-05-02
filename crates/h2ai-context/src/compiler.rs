@@ -1,13 +1,15 @@
+use crate::embedding::EmbeddingModel;
 use crate::jaccard::tokenize;
 use crate::similarity::semantic_jaccard;
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
-use h2ai_types::adapter::IComputeAdapter;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ContextError {
-    #[error("J_eff={j_eff:.3} < {threshold:.1} — context underflow; add more constraint documents")]
+    #[error(
+        "J_eff={j_eff:.3} < {threshold:.1} — context underflow; add more constraint documents"
+    )]
     ContextUnderflow { j_eff: f64, threshold: f64 },
 }
 
@@ -33,7 +35,7 @@ pub async fn compile(
     corpus: &[ConstraintDoc],
     task_required_keywords: &str,
     cfg: &H2AIConfig,
-    adapter: Option<&dyn IComputeAdapter>,
+    embedding_model: Option<&dyn EmbeddingModel>,
 ) -> Result<CompilerResult, ContextError> {
     let manifest_tokens = tokenize(manifest);
 
@@ -58,7 +60,7 @@ pub async fn compile(
     // Positive coverage: semantic similarity between manifest and the required-keyword set.
     // Uses SLM adapter when available for semantic understanding (synonyms, paraphrases).
     // Falls back to token-level Jaccard when adapter is None — zero extra cost.
-    let j_positive = semantic_jaccard(manifest, task_required_keywords, adapter).await;
+    let j_positive = semantic_jaccard(manifest, task_required_keywords, embedding_model);
 
     // Signed J_eff: reward domain vocabulary coverage, penalise negative-term contamination.
     let j_eff = j_positive * (1.0 - contamination);

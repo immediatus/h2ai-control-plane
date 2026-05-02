@@ -9,7 +9,8 @@ use std::time::Duration;
 async fn heartbeat_registers_agent_and_capacity_check_passes() {
     use h2ai_provisioner::nats_provider::NatsAgentProvider;
 
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
     let nats = async_nats::connect(&url).await.expect("connect");
     let provider = NatsAgentProvider::new(nats.clone(), Duration::from_secs(10))
         .await
@@ -44,7 +45,8 @@ async fn heartbeat_registers_agent_and_capacity_check_passes() {
 async fn no_heartbeat_means_capacity_limit_reached() {
     use h2ai_provisioner::nats_provider::NatsAgentProvider;
 
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
     let nats = async_nats::connect(&url).await.expect("connect");
     let provider = NatsAgentProvider::new(nats, Duration::from_secs(10))
         .await

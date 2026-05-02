@@ -1,5 +1,5 @@
 use h2ai_adapters::mock::MockAdapter;
-use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop};
+use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop, TaoMultiplierEstimator};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::{OutputSchemaConfig, TaoConfig};
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -23,6 +23,7 @@ fn make_input<'a>(
         },
         config: cfg,
         schema_config,
+        generation: 0,
     }
 }
 
@@ -48,6 +49,7 @@ async fn tao_loop_passes_on_first_turn_when_output_matches_pattern() {
         initial_request: req,
         config: cfg,
         schema_config: None,
+        generation: 0,
     })
     .await;
     assert!(result.is_ok());
@@ -79,6 +81,7 @@ async fn tao_loop_exhausts_turns_and_returns_best() {
         initial_request: req,
         config: cfg,
         schema_config: None,
+        generation: 0,
     })
     .await;
     assert!(result.is_ok());
@@ -109,6 +112,7 @@ async fn tao_memory_accumulates_on_failed_turns() {
             ..Default::default()
         },
         schema_config: None,
+        generation: 0,
     })
     .await;
 
@@ -136,7 +140,10 @@ async fn tao_max_turns_zero_returns_error() {
     let result = TaoLoop::run(make_input(&adapter as &dyn IComputeAdapter, cfg, None)).await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("max_turns"), "expected max_turns in error, got: {msg}");
+    assert!(
+        msg.contains("max_turns"),
+        "expected max_turns in error, got: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -184,12 +191,16 @@ async fn tao_schema_validation_fail_counts_as_turn_failure() {
     };
     let cfg = TaoConfig {
         max_turns: 2,
-        verify_pattern: None, // no pattern — only schema controls
+        verify_pattern: None,      // no pattern — only schema controls
         repetition_threshold: 1.1, // disable repetition guard
         ..Default::default()
     };
-    let result =
-        TaoLoop::run(make_input(&adapter as &dyn IComputeAdapter, cfg, Some(schema_cfg))).await;
+    let result = TaoLoop::run(make_input(
+        &adapter as &dyn IComputeAdapter,
+        cfg,
+        Some(schema_cfg),
+    ))
+    .await;
     // Loop exhausts turns and returns the last proposal (schema failure is non-fatal)
     let proposal = result.expect("schema failure is non-fatal — loop returns after max_turns");
     assert_eq!(proposal.tao_turns, 2);
@@ -211,4 +222,64 @@ async fn tao_max_turns_one_with_no_pattern_passes_immediately() {
     let proposal = result.expect("single turn with no pattern should always pass");
     assert_eq!(proposal.tao_turns, 1);
     assert!(proposal.iterations[0].passed);
+}
+
+// ── TaoMultiplierEstimator ────────────────────────────────────────────────────
+
+#[test]
+fn tao_multiplier_estimator_prior_before_20_samples() {
+    let estimator = TaoMultiplierEstimator::new();
+    assert!(
+        (estimator.multiplier() - 0.6).abs() < 1e-9,
+        "prior must be 0.6 before any samples, got {}",
+        estimator.multiplier()
+    );
+}
+
+#[test]
+fn tao_multiplier_estimator_converges_after_20_samples() {
+    let mut estimator = TaoMultiplierEstimator::new();
+    // All turns improve quality by factor 0.8 (q_after / q_before = 0.8)
+    for _ in 0..20 {
+        estimator.update(0.5, 0.4); // ratio = 0.8
+    }
+    let m = estimator.multiplier();
+    assert!(
+        (m - 0.8).abs() < 1e-9,
+        "with 20 samples of ratio 0.8, multiplier must be 0.8, got {m:.6}"
+    );
+}
+
+#[test]
+fn tao_multiplier_estimator_uses_prior_at_exactly_19_samples() {
+    let mut estimator = TaoMultiplierEstimator::new();
+    for _ in 0..19 {
+        estimator.update(0.5, 0.4);
+    }
+    assert!(
+        (estimator.multiplier() - 0.6).abs() < 1e-9,
+        "19 samples is still below threshold — prior must hold, got {}",
+        estimator.multiplier()
+    );
+}
+
+#[test]
+fn tao_multiplier_estimator_ignores_zero_q_before() {
+    let mut estimator = TaoMultiplierEstimator::new();
+    estimator.update(0.0, 0.5); // q_before = 0 → division by zero guard
+    assert_eq!(
+        estimator.sample_count(),
+        0,
+        "zero q_before must not add a sample"
+    );
+}
+
+#[test]
+fn tao_multiplier_estimator_sample_count_increments() {
+    let mut estimator = TaoMultiplierEstimator::new();
+    assert_eq!(estimator.sample_count(), 0);
+    estimator.update(0.5, 0.6);
+    assert_eq!(estimator.sample_count(), 1);
+    estimator.update(0.6, 0.7);
+    assert_eq!(estimator.sample_count(), 2);
 }

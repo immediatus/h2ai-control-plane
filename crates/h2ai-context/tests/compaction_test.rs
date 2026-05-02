@@ -95,7 +95,10 @@ fn compaction_preserves_head_and_tail_dropping_middle() {
 fn compaction_max_tokens_zero_returns_empty_or_keywords_only() {
     // max_tokens=0 → body budget saturates to 0 → only keywords remain (or empty).
     let out_no_kw = compact("some long context here", &cfg(0, vec![]));
-    assert!(out_no_kw.is_empty(), "zero budget with no keywords must return empty");
+    assert!(
+        out_no_kw.is_empty(),
+        "zero budget with no keywords must return empty"
+    );
 
     let out_kw = compact("some long context here", &cfg(0, vec!["ADR-001"]));
     assert!(

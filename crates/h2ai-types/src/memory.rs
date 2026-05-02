@@ -78,7 +78,10 @@ mod tests {
         let np = MemoryTier::Procedural.n_it_optimal();
         assert!(nw >= ne, "Working({nw}) must need ≥ Episodic({ne}) agents");
         assert!(ne >= ns, "Episodic({ne}) must need ≥ Semantic({ns}) agents");
-        assert!(ns >= np, "Semantic({ns}) must need ≥ Procedural({np}) agents");
+        assert!(
+            ns >= np,
+            "Semantic({ns}) must need ≥ Procedural({np}) agents"
+        );
     }
 
     #[test]
@@ -91,9 +94,16 @@ mod tests {
 
     #[test]
     fn higher_tier_longer_halflife() {
-        assert!(MemoryTier::Working.decay_halflife_secs() < MemoryTier::Episodic.decay_halflife_secs());
-        assert!(MemoryTier::Episodic.decay_halflife_secs() < MemoryTier::Semantic.decay_halflife_secs());
-        assert!(MemoryTier::Semantic.decay_halflife_secs() < MemoryTier::Procedural.decay_halflife_secs());
+        assert!(
+            MemoryTier::Working.decay_halflife_secs() < MemoryTier::Episodic.decay_halflife_secs()
+        );
+        assert!(
+            MemoryTier::Episodic.decay_halflife_secs() < MemoryTier::Semantic.decay_halflife_secs()
+        );
+        assert!(
+            MemoryTier::Semantic.decay_halflife_secs()
+                < MemoryTier::Procedural.decay_halflife_secs()
+        );
     }
 
     #[test]

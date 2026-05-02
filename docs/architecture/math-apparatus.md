@@ -46,23 +46,35 @@ the formula matches empirical voting outcomes at 100k trials per parameter set (
 
 ### 2.1 Common Ground (CG)
 
-**Definition 3:**
+**Definition 3 — Target (requires EmbeddingModel):**
+
+```
+CG(i, j) = mean over calibration_prompts of
+            [cosine(embed(output_i), embed(output_j)) > θ_agree]
+
+where θ_agree = 0.85   (agreement threshold in embedding space)
+```
+
+This is the agreement rate between adapter i and adapter j on a calibration set —
+the fraction of calibration prompts where their outputs are semantically equivalent.
+Matches the blog's specification: "fraction of prompts where agents produce the same answer."
+
+**Definition 3B — Current (fallback when EmbeddingModel unavailable):**
 
 ```
 CG(i, j) = jaccard(K_i, K_j) × tau_alignment(τ_i, τ_j)
-```
 
 where:
-- `K_i` = vocabulary set of adapter i's output tokens
-- `τ_i` = creativity temperature of adapter i
-- `tau_alignment(τ_i, τ_j) = exp(−3 × |τ_i − τ_j|)` ∈ (0, 1]
+  K_i = vocabulary set of adapter i's output tokens
+  tau_alignment(τ_i, τ_j) = exp(−3 × |τ_i − τ_j|) ∈ (0, 1]
+```
 
-During calibration, all adapters run at the same `calibration_tau`, so `tau_alignment = 1.0`.
-The factor is applied in code so the formula is correct when multi-τ calibration is introduced.
+**What Definition 3B measures:** Vocabulary overlap of outputs, not semantic agreement.
+Paraphrases of identical content score low (false negatives). Two adapters producing
+similar-looking wrong answers score high (false positives). Use only until EmbeddingModel
+is wired.
 
-**CG_mean** is the mean of all pairwise CG values across calibration adapters.
-
-**What CG measures:** Vocabulary overlap of outputs, not semantic agreement. High CG means adapters used similar words; it does not guarantee they reached the same conclusion.
+**CG_mean / CG_embed** is the mean of all pairwise CG values across calibration adapters.
 
 ### 2.2 Accuracy and Correlation Proxies
 
@@ -127,7 +139,12 @@ The answer lies in what coordination means for a reasoning system, not a compute
 
 **Why β scales as N(N-1):** To verify that N agents' outputs are mutually consistent, you must check every pair. The CRDT merge and Krum selection in H2AI perform this explicitly — pairwise Jaccard distances, pairwise semantic distances. For N=5 agents: 10 pair comparisons. For N=8: 28. The quadratic growth is structural, not incidental.
 
-**CG_mean as split-brain severity:** When agents share high Common Ground — similar vocabulary, compatible partial conclusions — each pair is cheap to reconcile (low divergence, low β_eff). When agents have split on key decisions, each pair is expensive to reconcile (high divergence, high β_eff). The coupling `β_eff = β₀ × (1 − CG_mean)` quantifies this: low CG = high split-brain severity = high pairwise reconciliation cost.
+**CG as split-brain severity:** When agents share high Common Ground — semantically compatible
+partial conclusions — reconciliation is cheap (low β_eff). When agents have split, reconciliation
+is expensive (high β_eff). The coupling `β_eff = β₀ / CG_embed` quantifies this: low CG → high
+coordination cost. At CG=1 (perfect alignment): β_eff = β₀ (baseline, nonzero — even perfectly
+aligned CPU cores have β=0.0003). At CG→0: β_eff → ∞, N_max → 1 (coordination collapses —
+this is the intended behavior, not a numerical bug to be suppressed).
 
 **The human team analogy confirms the model.** Brook's Law (1975) observed that adding engineers to a late project makes it later — because adding person N introduces N−1 new communication channels, and each channel is a reconciliation obligation. The β parameter Gunther measured in computer systems, Brooks observed in human teams, and H2AI models in agent swarms is the same phenomenon: **pairwise synchronization cost scales quadratically with group size when members must maintain mutual consistency.**
 
@@ -153,12 +170,21 @@ alpha, beta_base  — measured via two-phase USL linearization (Gunther 1993).
   Falls back to config `alpha_contention` and `beta_base_default` when M < 3
   or timing is degenerate (negative derived params, near-zero inputs).
 
-beta_eff   = beta_base × (1 − CG_mean)    [Definition 6 — USL+CG coupling, bounded]
-             Higher CG_mean → lower beta_eff → higher N_max.
-             At CG_mean → 0: beta_eff = beta_base (maximum, finite — agents have split).
-             At CG_mean = 1: beta_eff → 0 (agents fully aligned; only α limits N_max).
-             Floor: max(beta_base × (1−CG), 1e-6) prevents zero in pathological cases.
-             Previous inverse form beta_base/CG_mean diverged at CG→0.
+beta_eff   = beta_base / max(CG_embed, 0.05)    [Definition 6 — USL+CG coupling, blog-correct]
+             Lower CG_embed → higher beta_eff → lower N_max (correct direction).
+             At CG_embed = 1.0: beta_eff = beta_base (baseline, nonzero — matches blog and hardware).
+             At CG_embed = 0.4: beta_eff = 2.5 × beta_base (blog's AI-agent calibration table).
+             At CG_embed < 0.10: emit ZeroCoordinationQualityEvent, force N_max = 1.
+             Numerical floor: max(CG_embed, 0.05) prevents division by zero.
+
+             CORRECTION from previous implementation: beta_base × (1 − CG_mean) was wrong in
+             both directions — gave beta_eff=0 at CG=1 (free coordination, physically impossible)
+             and beta_eff=beta_base at CG=0 (manageable, inverts intended collapse). The blog
+             formula β₀/C̄ is the correct semantics. See research-state.md §2.2 for full analysis.
+
+             CG_embed source:
+               Preferred: mean over calibration_prompts of [cosine(embed_i, embed_j) > 0.85]
+               Fallback:  token Jaccard (current implementation, pending EmbeddingModel)
 
 N_max      = round(√((1 − α) / β_eff))    [USL Proposition 1]
              Derived by setting dX/dN = 0 in X(N) = N/(1 + α(N−1) + β·N(N−1)).
@@ -211,6 +237,13 @@ but scalar CG_mean proxy gives ρ_mean ≈ 0.27 → N_eff_scalar ≈ 3.9 (over-e
 
 **Adapter pruning rule:** Add adapter N+1 only if N_eff increases by ≥ 0.05.
 For typical LLM ensembles with ρ ≈ 0.9: optimal N = 2 (further adapters redundant).
+The result is stored in `EigenCalibration.n_pruned`.
+
+**Provisioning ceiling:** `N_optimal` (`n_pruned`) is used as a provisioning ceiling in
+`h2ai-autonomic/src/planner.rs` — `ProvisionInput.eigen`. After computing `n_max_usl` from
+USL/context pressure, the planner applies: `n_max = n_max_usl.min(n_pruned)`.
+This ensures the ensemble never exceeds the eigenvalue-derived stopping point even when
+the USL capacity ceiling is higher. Guard: skipped when `n_pruned == 0` (degenerate).
 
 **Validated by:** `scripts/validate_eigenvalue_calibration.py` — validates formula against
 uniform and heterogeneous correlation matrices; stopping rule comparison.
@@ -360,14 +393,24 @@ where `MAX_CLUSTER_DIAMETER = 0.7` (constant in `krum.rs`).
 
 **Effect:** Before applying Krum BFT selection, the merger checks whether the surviving proposals
 form a coherent cluster. If `cluster_coherent` returns false, the Blanchard et al. geometric
-assumption is violated and Krum's BFT guarantee does not hold. The merger falls back to
-`ConsensusMedian` (the Fréchet median), which tolerates ⌊n/2⌋ − 1 outliers (breakdown
-point 1/2, Vardi & Zhang 2000) and does not require the cluster assumption.
+assumption is violated and Krum's BFT guarantee does not hold. The updated fallback chain is:
+
+```
+cluster_coherent → semantic Krum / Multi-Krum
+cluster incoherent + embedding_model present → Weiszfeld geometric median (breakdown 50%)
+cluster incoherent + no embedding model → ConsensusMedian (token Fréchet median)
+```
+
+`Weiszfeld` (Pillutla et al. 2019, arXiv:1912.13445) minimises the sum of Euclidean distances
+to all input vectors and tolerates ⌊n/2⌋ − 1 corrupted inputs (breakdown point 1/2, Vardi &
+Zhang 2000). It operates directly in the embedding's Euclidean space, giving a metric guarantee
+that token-based ConsensusMedian lacks. When no embedding model is provided, ConsensusMedian
+is retained as a zero-cost fallback that does not require the cluster assumption.
 
 **Why semantic distance matters:** If honest agents produce lexically diverse paraphrases of
 the same correct answer (high token distance, low semantic distance), token-based
 `mean_pairwise_distance` would incorrectly classify a coherent cluster as incoherent,
-triggering a needless ConsensusMedian fallback. Semantic distance avoids this.
+triggering a needless fallback. Semantic distance avoids this.
 
 ---
 
@@ -388,13 +431,12 @@ triggering a needless ConsensusMedian fallback. Semantic distance avoids this.
 
 ```bash
 python3 scripts/validate_ensemble_theory.py
-python3 scripts/simulate_usl.py               # generates charts in scripts/output/
-python3 scripts/validate_beta_coupling.py     # β_eff formulas and singularity test
 python3 scripts/validate_conformal_vs_cjt.py  # CJT over-prediction vs conformal
 python3 scripts/validate_bft_methods.py       # Token Krum vs Embedding Krum vs Weiszfeld
 python3 scripts/validate_information_theory.py  # I_marginal, N_it_optimal, Kuramoto/USL
 python3 scripts/validate_eigenvalue_calibration.py  # N_eff from portfolio eigenvalues
 ```
+
 
 The simulations verify:
 

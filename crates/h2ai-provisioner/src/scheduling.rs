@@ -32,6 +32,54 @@ impl SchedulingPolicy for LeastLoadedPolicy {
     }
 }
 
+/// Routes to the lowest cost tier that has at least one agent below `spillover_threshold`.
+/// When all tiers are at or above the threshold, falls back to globally least-loaded.
+pub struct CostAwareSpilloverPolicy {
+    pub spillover_threshold: usize,
+}
+
+impl SchedulingPolicy for CostAwareSpilloverPolicy {
+    fn select(&self, candidates: &[AgentCandidate]) -> Option<AgentId> {
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let mut tiers: Vec<_> = candidates
+            .iter()
+            .map(|c| c.descriptor.cost_tier.clone())
+            .collect();
+        tiers.sort();
+        tiers.dedup();
+
+        for tier in &tiers {
+            let tier_agents: Vec<_> = candidates
+                .iter()
+                .filter(|c| &c.descriptor.cost_tier == tier)
+                .collect();
+            let min_load = tier_agents
+                .iter()
+                .map(|c| c.active_tasks)
+                .min()
+                .unwrap_or(u32::MAX);
+            if (min_load as usize) < self.spillover_threshold {
+                return tier_agents
+                    .iter()
+                    .filter(|c| c.active_tasks == min_load)
+                    .min_by(|a, b| a.agent_id.to_string().cmp(&b.agent_id.to_string()))
+                    .map(|c| c.agent_id.clone());
+            }
+        }
+
+        // All tiers saturated: fall back to globally least loaded
+        let min_load = candidates.iter().map(|c| c.active_tasks).min().unwrap_or(0);
+        candidates
+            .iter()
+            .filter(|c| c.active_tasks == min_load)
+            .min_by(|a, b| a.agent_id.to_string().cmp(&b.agent_id.to_string()))
+            .map(|c| c.agent_id.clone())
+    }
+}
+
 /// Cycles through eligible candidates by sorted AgentId. Ignores cost and load.
 pub struct RoundRobinPolicy {
     counter: AtomicUsize,

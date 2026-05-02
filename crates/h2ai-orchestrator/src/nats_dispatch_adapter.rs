@@ -8,6 +8,8 @@ use h2ai_types::identity::TaskId;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::payload_store::{offload_if_large, PayloadStore};
+
 pub struct NatsDispatchConfig {
     pub nats: Arc<NatsClient>,
     pub provider: Arc<dyn AgentProvider>,
@@ -16,6 +18,10 @@ pub struct NatsDispatchConfig {
     /// Used for select_agent — what we require from the selected agent.
     pub task_requirements: TaskRequirements,
     pub task_timeout: Duration,
+    /// Content-addressed store for large context offloading.
+    pub payload_store: Arc<dyn PayloadStore>,
+    /// Byte threshold above which system_context is offloaded to the store.
+    pub offload_threshold_bytes: usize,
 }
 
 pub struct NatsDispatchAdapter {
@@ -25,6 +31,8 @@ pub struct NatsDispatchAdapter {
     requirements: TaskRequirements,
     timeout: Duration,
     kind: AdapterKind,
+    payload_store: Arc<dyn PayloadStore>,
+    offload_threshold_bytes: usize,
 }
 
 impl std::fmt::Debug for NatsDispatchAdapter {
@@ -33,6 +41,7 @@ impl std::fmt::Debug for NatsDispatchAdapter {
             .field("descriptor", &self.descriptor)
             .field("timeout", &self.timeout)
             .field("kind", &self.kind)
+            .field("offload_threshold_bytes", &self.offload_threshold_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -45,6 +54,8 @@ impl NatsDispatchAdapter {
             descriptor: cfg.agent_descriptor,
             requirements: cfg.task_requirements,
             timeout: cfg.task_timeout,
+            payload_store: cfg.payload_store,
+            offload_threshold_bytes: cfg.offload_threshold_bytes,
             kind: AdapterKind::CloudGeneric {
                 endpoint: "nats://dispatch".into(),
                 api_key_env: String::new(),
@@ -68,12 +79,20 @@ impl IComputeAdapter for NatsDispatchAdapter {
 
         let task_id = TaskId::new();
 
+        let context = offload_if_large(
+            request.system_context,
+            self.offload_threshold_bytes,
+            self.payload_store.as_ref(),
+        )
+        .await
+        .map_err(|e| AdapterError::NetworkError(format!("payload offload failed: {e}")))?;
+
         let payload = TaskPayload {
             task_id: task_id.clone(),
             agent_id,
             agent: self.descriptor.clone(),
             instructions: request.task,
-            context: request.system_context,
+            context,
             tau: request.tau,
             max_tokens: request.max_tokens,
         };
@@ -105,6 +124,7 @@ impl IComputeAdapter for NatsDispatchAdapter {
             output: result.output,
             token_cost: result.token_cost,
             adapter_kind: self.kind.clone(),
+            tokens_used: None,
         })
     }
 }

@@ -34,20 +34,91 @@ pub async fn start_calibration(
             "Explain CQRS and event sourcing".into(),
             "What is a good API boundary?".into(),
         ];
-        let adapter_refs: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = (0..m)
-            .map(|_| state_clone.explorer_adapter.as_ref())
+        // Cycle all distinct configured adapters so CG_mean reflects inter-adapter
+        // coordination cost, not just within-adapter temperature variance.
+        let pool: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = {
+            use std::collections::HashSet;
+            let candidates = [
+                state_clone.explorer_adapter.as_ref(),
+                state_clone.explorer2_adapter.as_ref(),
+                state_clone.verification_adapter.as_ref(),
+            ];
+            let mut seen: HashSet<*const dyn h2ai_types::adapter::IComputeAdapter> = HashSet::new();
+            let mut distinct = Vec::new();
+            for a in candidates {
+                let ptr = a as *const dyn h2ai_types::adapter::IComputeAdapter;
+                if seen.insert(ptr) {
+                    distinct.push(a);
+                }
+            }
+            distinct
+        };
+        let n_distinct = pool.len();
+        let adapter_refs: Vec<&dyn h2ai_types::adapter::IComputeAdapter> =
+            pool.into_iter().cycle().take(m).collect();
+        if n_distinct < 3 {
+            tracing::warn!(
+                n_distinct,
+                "fewer than 3 distinct adapters configured; USL fit will use config fallback values"
+            );
+        }
+
+        // ── Multi-family enforcement ──────────────────────────────────────────
+        use h2ai_types::adapter::AdapterFamily;
+        use std::collections::HashSet;
+
+        let families: HashSet<AdapterFamily> = adapter_refs
+            .iter()
+            .map(|a| a.family())
+            .filter(|f| *f != AdapterFamily::Mock)
             .collect();
+
+        let single_family_warning = families.len() == 1;
+
+        if single_family_warning && !state_clone.cfg.allow_single_family {
+            let family = families
+                .iter()
+                .next()
+                .map(|f| f.to_string())
+                .unwrap_or_default();
+            tracing::error!(
+                target: "h2ai.calibration",
+                family,
+                "single-family adapter pool: calibration aborted. \
+                 Add adapters from a different family or set allow_single_family=true."
+            );
+            return;
+        }
+        if single_family_warning {
+            tracing::warn!(
+                target: "h2ai.calibration",
+                "single-family adapter pool: Weiszfeld BFT correlated hallucination protection \
+                 degraded. Set allow_single_family=true to acknowledge."
+            );
+        }
+
+        let mut adapter_families: Vec<String> = families.iter().map(|f| f.to_string()).collect();
+        adapter_families.sort();
+
+        let explorer_verification_family_match = state_clone.explorer_adapter.family()
+            == state_clone.verification_adapter.family()
+            && state_clone.explorer_adapter.family() != AdapterFamily::Mock;
+        // ─────────────────────────────────────────────────────────────────────
+
         let result = CalibrationHarness::run(CalibrationInput {
             calibration_id: cal_id_clone.clone(),
             task_prompts: prompts,
             adapters: adapter_refs,
             cfg: &state_clone.cfg,
-            embedding_model: None,
+            embedding_model: state_clone.embedding_model.as_deref(),
         })
         .await;
 
         match result {
-            Ok(event) => {
+            Ok(mut event) => {
+                event.adapter_families = adapter_families;
+                event.explorer_verification_family_match = explorer_verification_family_match;
+                event.single_family_warning = single_family_warning;
                 let mut cal = state_clone.calibration.write().await;
                 *cal = Some(event.clone());
                 drop(cal);

@@ -15,7 +15,14 @@ async fn compile_accepts_constraint_docs() {
         "ADR-001",
         "# ADR-001\n\n## Constraints\npersonal data minimization privacy gdpr\n",
     );
-    let result = compile("use personal data minimization techniques", &[doc], "personal data", &cfg(), None).await;
+    let result = compile(
+        "use personal data minimization techniques",
+        &[doc],
+        "personal data",
+        &cfg(),
+        None,
+    )
+    .await;
     assert!(result.is_ok());
     let cr = result.unwrap();
     assert!(cr.j_eff > 0.0);
@@ -27,7 +34,17 @@ async fn compile_system_context_contains_constraint_id() {
         "GDPR-001",
         "# GDPR-001\n\n## Constraints\npersonal data privacy\n",
     );
-    let result = compile("handle personal data carefully", &[doc], "personal", &cfg(), None).await;
+    let result = compile(
+        "handle personal data carefully",
+        &[doc],
+        "personal",
+        &cfg(),
+        None,
+    )
+    .await;
     let ctx = result.unwrap().system_context;
-    assert!(ctx.contains("GDPR-001"), "system context must include constraint id");
+    assert!(
+        ctx.contains("GDPR-001"),
+        "system context must include constraint id"
+    );
 }

@@ -1,33 +1,154 @@
 use crate::error::OrchestratorError;
 use crate::task_store::{TaskPhase, TaskState};
+use dashmap::DashMap;
 use futures::StreamExt;
 use h2ai_state::nats::NatsClient;
-use h2ai_types::events::H2AIEvent;
+use h2ai_types::events::{H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::TaskId;
 use std::sync::Arc;
 use std::time::Duration;
 
+struct EventCounter {
+    interval: usize,
+    count: usize,
+}
+
+impl EventCounter {
+    fn new(interval: usize) -> Self {
+        Self { interval, count: 0 }
+    }
+
+    /// Increments the counter and returns `true` when a snapshot should be taken.
+    fn tick(&mut self) -> bool {
+        self.count += 1;
+        self.interval > 0 && self.count % self.interval == 0
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::EventCounter;
+
+    #[test]
+    fn zero_interval_never_triggers() {
+        let mut c = EventCounter::new(0);
+        for _ in 0..100 {
+            assert!(!c.tick());
+        }
+    }
+
+    #[test]
+    fn triggers_at_every_multiple_of_interval() {
+        let mut c = EventCounter::new(5);
+        for i in 1usize..=20 {
+            let triggered = c.tick();
+            assert_eq!(triggered, i % 5 == 0, "at event {i}");
+        }
+    }
+
+    #[test]
+    fn interval_of_one_triggers_every_event() {
+        let mut c = EventCounter::new(1);
+        for _ in 0..10 {
+            assert!(c.tick());
+        }
+    }
+}
+
 pub struct SessionJournal {
     nats: Arc<NatsClient>,
+    snapshot_interval: usize,
+    counters: Arc<DashMap<TaskId, EventCounter>>,
 }
 
 impl SessionJournal {
     pub fn new(nats: Arc<NatsClient>) -> Self {
-        Self { nats }
+        Self {
+            nats,
+            snapshot_interval: 0,
+            counters: Arc::new(DashMap::new()),
+        }
     }
 
-    /// Replay all stored H2AIEvents for `task_id` from JetStream offset 0 and
-    /// reconstruct the current `TaskState`. Stops on the first terminal event
-    /// (MergeResolved / TaskFailed) or after 200 ms of inactivity (in-flight tasks).
+    /// Enable periodic snapshotting: write a snapshot every `interval` events per task.
+    /// `interval = 0` disables snapshotting (default).
+    pub fn with_snapshot_interval(mut self, interval: usize) -> Self {
+        self.snapshot_interval = interval;
+        self
+    }
+
+    /// Record that an event at `seq` was published for `task_id`.
+    /// When the per-task event count hits the snapshot interval, fires a fire-and-forget
+    /// background task to write the current state to NATS KV.
+    pub fn note_event(&self, task_id: &TaskId, seq: u64, state: &TaskState) {
+        if self.snapshot_interval == 0 {
+            return;
+        }
+        let mut entry = self
+            .counters
+            .entry(task_id.clone())
+            .or_insert_with(|| EventCounter::new(self.snapshot_interval));
+        if entry.tick() {
+            let snapshot = TaskSnapshot {
+                task_id: task_id.clone(),
+                last_sequence: seq,
+                task_state_json: serde_json::to_string(state).unwrap_or_default(),
+                taken_at: chrono::Utc::now(),
+            };
+            let nats = self.nats.clone();
+            tokio::spawn(async move {
+                if let Err(e) = nats.put_snapshot(&snapshot).await {
+                    tracing::warn!(
+                        target: "h2ai.journal",
+                        task_id = %snapshot.task_id,
+                        error = %e,
+                        "snapshot write failed"
+                    );
+                }
+            });
+        }
+    }
+
+    /// Replay all stored H2AIEvents for `task_id` from JetStream, reconstructing `TaskState`.
+    /// If a snapshot exists, restores state from it and replays only events after the snapshot
+    /// sequence number. Falls back to full replay (from sequence 0) when no snapshot is found.
+    /// Stops on the first terminal event (MergeResolved / TaskFailed) or after 200 ms of inactivity.
     pub async fn replay(&self, task_id: &TaskId) -> Result<Option<TaskState>, OrchestratorError> {
+        // Try to load the latest snapshot to short-circuit full history replay.
+        let (mut state, from_seq) = match self.nats.get_snapshot(task_id).await {
+            Ok(Some(snapshot)) => {
+                match serde_json::from_str::<TaskState>(&snapshot.task_state_json) {
+                    Ok(restored) => (restored, snapshot.last_sequence),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "h2ai.journal",
+                            task_id = %task_id,
+                            error = %e,
+                            "snapshot deserialization failed, falling back to full replay"
+                        );
+                        (TaskState::new(task_id.clone()), 0)
+                    }
+                }
+            }
+            Ok(None) => (TaskState::new(task_id.clone()), 0),
+            Err(e) => {
+                tracing::warn!(
+                    target: "h2ai.journal",
+                    task_id = %task_id,
+                    error = %e,
+                    "snapshot load failed, falling back to full replay"
+                );
+                (TaskState::new(task_id.clone()), 0)
+            }
+        };
+
         let stream = self
             .nats
-            .tail_task_events(task_id, 0)
+            .tail_task_events(task_id, from_seq)
             .await
             .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
 
         futures::pin_mut!(stream);
-        let mut state = TaskState::new(task_id.clone());
         let mut events_seen: u32 = 0;
 
         loop {
@@ -51,7 +172,8 @@ impl SessionJournal {
             }
         }
 
-        if events_seen == 0 {
+        // A snapshot alone (no new events) is a valid recovered state.
+        if events_seen == 0 && from_seq == 0 {
             Ok(None)
         } else {
             Ok(Some(state))

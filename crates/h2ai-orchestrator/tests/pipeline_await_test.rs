@@ -60,7 +60,8 @@ async fn spawn_fake_agent(nats: Client) {
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
 async fn execute_and_await_returns_task_result() {
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
 
     let state_client = h2ai_state::nats::NatsClient::connect(&url)
         .await
@@ -103,7 +104,8 @@ async fn execute_and_await_returns_task_result() {
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
 async fn execute_and_await_times_out_without_agent() {
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
 
     let state_client = h2ai_state::nats::NatsClient::connect(&url)
         .await

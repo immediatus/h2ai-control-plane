@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use h2ai_agent::dispatch::DispatchLoop;
-use h2ai_types::agent::{AgentDescriptor, CostTier, TaskPayload};
+use h2ai_types::agent::{AgentDescriptor, ContextPayload, CostTier, TaskPayload};
 use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::physics::TauValue;
 use std::sync::atomic::AtomicU32;
@@ -10,8 +10,15 @@ use std::time::Duration;
 #[tokio::test]
 #[ignore]
 async fn dispatch_executes_addressed_task_and_publishes_result() {
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
-    let nats = Arc::new(h2ai_state::NatsClient::connect(&nats_url).await.unwrap());
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats = match h2ai_state::NatsClient::connect(&nats_url).await {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+            return;
+        }
+    };
     nats.ensure_infrastructure().await.unwrap();
 
     let agent_id = AgentId::from(uuid::Uuid::new_v4().to_string());
@@ -64,7 +71,7 @@ async fn dispatch_executes_addressed_task_and_publishes_result() {
         agent_id: agent_id.clone(),
         agent: descriptor,
         instructions: "test task".into(),
-        context: "test context".into(),
+        context: ContextPayload::Inline("test context".into()),
         tau: TauValue::new(0.5).unwrap(),
         max_tokens: 64,
     };

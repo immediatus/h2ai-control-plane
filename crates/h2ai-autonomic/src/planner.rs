@@ -3,10 +3,11 @@ use h2ai_config::H2AIConfig;
 use h2ai_types::config::{
     AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, RoleSpec, TopologyKind,
 };
-use h2ai_types::events::TopologyProvisionedEvent;
+use h2ai_types::events::{TopologyProvisionedEvent, ZeroCoordinationQualityEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::physics::{
-    CoherencyCoefficients, CoordinationThreshold, MergeStrategy, RoleErrorCost, TauValue,
+    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, MergeStrategy, RoleErrorCost,
+    TauValue,
 };
 
 #[derive(Debug)]
@@ -22,20 +23,58 @@ pub struct ProvisionInput<'a> {
     pub force_topology: Option<TopologyKind>,
     pub retry_count: u32,
     pub cfg: &'a H2AIConfig,
+    /// When present, caps n_max at the eigenvalue-derived optimal adapter count.
+    pub eigen: Option<&'a EigenCalibration>,
 }
 
 pub struct TopologyPlanner;
 
 impl TopologyPlanner {
-    pub fn provision(input: ProvisionInput<'_>) -> TopologyProvisionedEvent {
+    /// Returns the provisioned topology event and, when CG has collapsed below
+    /// `cfg.cg_collapse_threshold`, an accompanying `ZeroCoordinationQualityEvent`.
+    /// The caller (engine) must publish the coordination quality event to NATS when `Some`.
+    pub fn provision(
+        input: ProvisionInput<'_>,
+    ) -> (
+        TopologyProvisionedEvent,
+        Option<ZeroCoordinationQualityEvent>,
+    ) {
         let beta_eff = input.cc.beta_eff();
-        let n_max = match input.cfg.max_context_tokens {
-            Some(max_tokens) => input.cc.n_max_context_aware(
-                input.cfg.explorer_max_tokens as f64,
-                max_tokens as f64,
-                input.cfg.context_pressure_gamma,
-            ),
-            None => input.cc.n_max(),
+        let cg_mean = input.cc.cg_mean();
+
+        // CG collapse guard: when coordination quality falls below the configured threshold,
+        // no ensemble benefit is possible. Force N_max=1 and surface a diagnostic event.
+        let cg_collapsed = cg_mean < input.cfg.cg_collapse_threshold;
+        let collapse_event = if cg_collapsed {
+            Some(ZeroCoordinationQualityEvent {
+                task_id: input.task_id.clone(),
+                cg_embed: cg_mean,
+                forced_n_max: 1,
+                timestamp: Utc::now(),
+            })
+        } else {
+            None
+        };
+
+        let n_max_usl = if cg_collapsed {
+            1.0
+        } else {
+            match input.cfg.max_context_tokens {
+                Some(max_tokens) => input.cc.n_max_context_aware(
+                    input.cfg.explorer_max_tokens as f64,
+                    max_tokens as f64,
+                    input.cfg.context_pressure_gamma,
+                ),
+                None => input.cc.n_max(),
+            }
+        };
+        let n_max = if cg_collapsed {
+            1.0
+        } else {
+            match input.eigen {
+                Some(eigen) if eigen.n_pruned > 0 => n_max_usl.min(eigen.n_pruned as f64),
+                _ => n_max_usl,
+            }
         };
         let topology_kind = input.force_topology.clone().unwrap_or_else(|| {
             Self::select_topology(input.pareto_weights, &input.review_gates, n_max)
@@ -78,7 +117,7 @@ impl TopologyPlanner {
             })
             .collect();
 
-        TopologyProvisionedEvent {
+        let event = TopologyProvisionedEvent {
             task_id: input.task_id,
             topology_kind,
             explorer_configs,
@@ -92,7 +131,8 @@ impl TopologyPlanner {
             review_gates: input.review_gates,
             retry_count: input.retry_count,
             timestamp: Utc::now(),
-        }
+        };
+        (event, collapse_event)
     }
 
     fn select_topology(
@@ -113,19 +153,25 @@ impl TopologyPlanner {
         }
         let candidates: [Candidate; 3] = [
             Candidate {
-                score_t: 0.96, score_e: 0.96, score_d: 0.60,
+                score_t: 0.96,
+                score_e: 0.96,
+                score_d: 0.60,
                 make: |n| TopologyKind::HierarchicalTree {
                     branching_factor: Some((n.floor() as u8).max(2)),
                 },
             },
             Candidate {
-                score_t: 0.84, score_e: 0.91, score_d: 0.95,
+                score_t: 0.84,
+                score_e: 0.91,
+                score_d: 0.95,
                 make: |_| TopologyKind::TeamSwarmHybrid,
             },
             // Ensemble is weakly dominated by TeamSwarmHybrid on E and D; retained as an
             // explicit architecture option for future score calibration or forced selection.
             Candidate {
-                score_t: 0.84, score_e: 0.84, score_d: 0.90,
+                score_t: 0.84,
+                score_e: 0.84,
+                score_d: 0.90,
                 make: |_| TopologyKind::Ensemble,
             },
         ];
@@ -159,7 +205,8 @@ mod tests {
         let result = TopologyPlanner::select_topology(&weights(0.1, 0.8, 0.1), &[], 9.0);
         assert!(
             matches!(result, TopologyKind::HierarchicalTree { .. }),
-            "containment-heavy weights → HierarchicalTree, got {:?}", result
+            "containment-heavy weights → HierarchicalTree, got {:?}",
+            result
         );
     }
 
@@ -168,13 +215,17 @@ mod tests {
         let result = TopologyPlanner::select_topology(&weights(0.1, 0.1, 0.8), &[], 9.0);
         assert!(
             matches!(result, TopologyKind::TeamSwarmHybrid),
-            "diversity-heavy weights → TeamSwarmHybrid, got {:?}", result
+            "diversity-heavy weights → TeamSwarmHybrid, got {:?}",
+            result
         );
     }
 
     #[test]
     fn select_topology_review_gates_override_weights() {
-        let gate = ReviewGate { reviewer: "b".into(), blocks: "a".into() };
+        let gate = ReviewGate {
+            reviewer: "b".into(),
+            blocks: "a".into(),
+        };
         let result = TopologyPlanner::select_topology(&weights(0.9, 0.05, 0.05), &[gate], 9.0);
         assert!(
             matches!(result, TopologyKind::TeamSwarmHybrid),
@@ -191,7 +242,8 @@ mod tests {
         let result = TopologyPlanner::select_topology(&weights(0.333, 0.333, 0.334), &[], 9.0);
         assert!(
             matches!(result, TopologyKind::TeamSwarmHybrid),
-            "equal weights → TeamSwarmHybrid (score 0.900), got {:?}", result
+            "equal weights → TeamSwarmHybrid (score 0.900), got {:?}",
+            result
         );
     }
 }

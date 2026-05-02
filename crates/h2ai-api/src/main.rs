@@ -12,6 +12,7 @@ use h2ai_types::config::AdapterKind;
 use state::AppState;
 use std::env;
 use std::sync::Arc;
+use tracing::warn;
 
 fn adapter_kind_from_env(prefix: &str) -> AdapterKind {
     let provider = env::var(format!("H2AI_{prefix}_PROVIDER"))
@@ -40,6 +41,16 @@ fn adapter_kind_from_env(prefix: &str) -> AdapterKind {
     }
 }
 
+fn adapter_family(kind: &AdapterKind) -> &'static str {
+    match kind {
+        AdapterKind::Anthropic { .. } => "anthropic",
+        AdapterKind::OpenAI { .. } => "openai",
+        AdapterKind::Ollama { .. } => "ollama",
+        AdapterKind::LocalLlamaCpp { .. } => "llamacpp",
+        AdapterKind::CloudGeneric { .. } => "cloudgeneric",
+    }
+}
+
 fn build_adapter(kind: &AdapterKind) -> Arc<dyn IComputeAdapter> {
     match AdapterFactory::build(kind) {
         Ok(a) => a,
@@ -54,15 +65,31 @@ fn build_adapter(kind: &AdapterKind) -> Arc<dyn IComputeAdapter> {
 
 #[tokio::main]
 async fn main() {
-    let nats_url = env::var("H2AI_NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
     let listen_addr = env::var("H2AI_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
 
-    let nats = NatsClient::connect(&nats_url).await.expect("NATS connect");
+    let cfg = {
+        use std::path::Path;
+        if let Ok(path) = env::var("H2AI_CONFIG") {
+            let p = Path::new(&path);
+            eprintln!("INFO: loading config from H2AI_CONFIG={path}");
+            H2AIConfig::load_layered(Some(p))
+                .unwrap_or_else(|e| panic!("H2AI_CONFIG={path} failed to load: {e}"))
+        } else if Path::new("h2ai.toml").exists() {
+            eprintln!("INFO: loading config from ./h2ai.toml");
+            H2AIConfig::load_layered(Some(Path::new("h2ai.toml")))
+                .unwrap_or_else(|e| panic!("h2ai.toml failed to load: {e}"))
+        } else {
+            eprintln!("INFO: no override config found — using reference defaults");
+            H2AIConfig::load_layered(None).expect("embedded reference.toml is always valid")
+        }
+    };
+
+    let nats = NatsClient::connect(&cfg.nats_url)
+        .await
+        .expect("NATS connect");
     nats.ensure_infrastructure()
         .await
         .expect("NATS infrastructure setup");
-
-    let cfg = H2AIConfig::default();
 
     let explorer_kind = adapter_kind_from_env("EXPLORER");
     let auditor_kind = adapter_kind_from_env("AUDITOR");
@@ -98,14 +125,54 @@ async fn main() {
         .unwrap_or_else(|| explorer_adapter.clone());
 
     eprintln!("explorer  adapter: {:?}", explorer_kind);
-    eprintln!("explorer2 adapter: {:?}", explorer2_kind_opt.as_ref().unwrap_or(&explorer_kind));
+    eprintln!(
+        "explorer2 adapter: {:?}",
+        explorer2_kind_opt.as_ref().unwrap_or(&explorer_kind)
+    );
     eprintln!("auditor   adapter: {:?}", auditor_kind);
     eprintln!("scoring   adapter: {:?}", scoring_kind_opt);
+
+    if adapter_family(&explorer_kind) == adapter_family(&auditor_kind) {
+        warn!(
+            target: "h2ai.verification",
+            family = adapter_family(&explorer_kind),
+            "verification_adapter and explorer_adapter are the same family — \
+             self-preference bias likely. Configure a different model family for verification."
+        );
+    }
 
     let mut app_state = AppState::new(nats, cfg, explorer_adapter, auditor_adapter)
         .with_explorer2(explorer2_adapter);
     if let Some(sa) = scoring_adapter {
         app_state.scoring_adapter = Some(sa);
+    }
+
+    // Wire embedding model for semantic CG measurement (requires fastembed-embed feature + ORT).
+    // Falls back to token Jaccard silently when the feature is absent or model fails to load.
+    #[cfg(feature = "fastembed-embed")]
+    {
+        use h2ai_context::embedding::{EmbeddingModel, FastEmbedModel};
+        use tracing::info;
+        let model_name = app_state.cfg.embedding_model_name.clone();
+        match FastEmbedModel::new_with(&model_name) {
+            Ok(m) => {
+                info!(target: "h2ai.embedding", model = ?model_name,
+                      "embedding model loaded — CG uses cosine agreement rate");
+                app_state = app_state.with_embedding_model(Arc::new(m) as Arc<dyn EmbeddingModel>);
+            }
+            Err(e) => {
+                warn!(target: "h2ai.embedding", error = %e,
+                      "embedding model unavailable — CG falls back to token Jaccard; \
+                       configure ORT or disable fastembed-embed feature to suppress this warning");
+            }
+        }
+    }
+    #[cfg(not(feature = "fastembed-embed"))]
+    {
+        eprintln!(
+            "INFO: fastembed-embed feature disabled — CG uses token Jaccard fallback. \
+                   Rebuild with --features fastembed-embed for semantic CG."
+        );
     }
 
     let app = Router::new()

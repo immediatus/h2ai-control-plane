@@ -1,16 +1,16 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_context::adr::parse_adr;
+use h2ai_constraints::loader::parse_constraint_doc;
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
-use std::sync::Arc;
 use h2ai_types::config::{
     AdapterKind, AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
+use std::sync::Arc;
 
 async fn make_engine_input<'a>(
     explorer_adapters: Vec<&'a dyn IComputeAdapter>,
@@ -33,7 +33,7 @@ async fn make_engine_input<'a>(
     .await
     .unwrap();
 
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )];
@@ -77,6 +77,7 @@ async fn make_engine_input<'a>(
         store,
         nats_dispatch: None,
         registry,
+        embedding_model: None,
     }
 }
 

@@ -1,16 +1,17 @@
 use chrono::Utc;
-use tokio::time::Instant;
+use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::bft::ConsensusMedian;
 use h2ai_state::krum::{
     cluster_coherent, krum_select_semantic, multi_krum_select_semantic, quorum_satisfied,
 };
 use h2ai_state::semilattice::{ProposalSet, SemilatticeResult};
-use h2ai_types::adapter::IComputeAdapter;
+use h2ai_state::weiszfeld;
 use h2ai_types::events::{
     BranchPrunedEvent, MergeResolvedEvent, SemilatticeCompiledEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::physics::MergeStrategy;
+use tokio::time::Instant;
 
 pub enum MergeOutcome {
     Resolved {
@@ -29,7 +30,7 @@ impl MergeEngine {
         pruned: Vec<BranchPrunedEvent>,
         strategy: MergeStrategy,
         retry_count: u32,
-        adapter: Option<&dyn IComputeAdapter>,
+        embedding_model: Option<&dyn EmbeddingModel>,
     ) -> MergeOutcome {
         let merge_start = Instant::now();
         let n_input = proposals.len() + pruned.len();
@@ -44,35 +45,56 @@ impl MergeEngine {
         }
 
         let resolved_output = match strategy {
-            MergeStrategy::ConsensusMedian => ConsensusMedian::resolve(&result.valid_proposals, adapter)
-                .await
-                .map(|p| p.raw_output.clone())
-                .unwrap_or_default(),
+            MergeStrategy::ConsensusMedian => {
+                ConsensusMedian::resolve(&result.valid_proposals, embedding_model)
+                    .await
+                    .map(|p| p.raw_output.clone())
+                    .unwrap_or_default()
+            }
             MergeStrategy::ScoreOrdered => result
                 .valid_proposals
                 .first()
                 .map(|p| p.raw_output.clone())
                 .unwrap_or_default(),
-            MergeStrategy::Krum { f } => {
+            MergeStrategy::OutlierResistant { f } => {
                 let proposals = &result.valid_proposals;
-                if quorum_satisfied(proposals.len(), f) && cluster_coherent(proposals, adapter).await {
-                    krum_select_semantic(proposals, f, adapter)
+                if quorum_satisfied(proposals.len(), f)
+                    && cluster_coherent(proposals, embedding_model).await
+                {
+                    krum_select_semantic(proposals, f, embedding_model)
                         .await
                         .map(|p| p.raw_output.clone())
                         .unwrap_or_default()
                 } else {
                     // Quorum not met OR cluster assumption violated (diverse stochastic outputs).
-                    // ConsensusMedian handles honest divergence without requiring a cluster.
-                    ConsensusMedian::resolve(proposals, adapter)
-                        .await
-                        .map(|p| p.raw_output.clone())
-                        .unwrap_or_default()
+                    // With an embedding model: Weiszfeld geometric median (breakdown 50%).
+                    // Without: ConsensusMedian handles honest divergence without requiring a cluster.
+                    match embedding_model {
+                        Some(model) => {
+                            let embeddings: Vec<Vec<f32>> = proposals
+                                .iter()
+                                .map(|p| model.embed(&p.raw_output))
+                                .collect();
+                            let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
+                            proposals
+                                .get(idx)
+                                .map(|p| p.raw_output.clone())
+                                .unwrap_or_default()
+                        }
+                        None => ConsensusMedian::resolve(proposals, embedding_model)
+                            .await
+                            .map(|p| p.raw_output.clone())
+                            .unwrap_or_default(),
+                    }
                 }
             }
-            MergeStrategy::MultiKrum { f, m } => {
+            MergeStrategy::MultiOutlierResistant { f, m } => {
                 let proposals = &result.valid_proposals;
-                if quorum_satisfied(proposals.len(), f) && cluster_coherent(proposals, adapter).await {
-                    let survivors = multi_krum_select_semantic(proposals, f, m, adapter).await;
+                if quorum_satisfied(proposals.len(), f)
+                    && cluster_coherent(proposals, embedding_model).await
+                {
+                    let survivors =
+                        multi_krum_select_semantic(proposals, f, m, embedding_model).await;
                     // valid_proposals is sorted by verification score descending.
                     // Pick the survivor that appears earliest (= highest verification score).
                     proposals
@@ -81,11 +103,26 @@ impl MergeEngine {
                         .map(|p| p.raw_output.clone())
                         .unwrap_or_default()
                 } else {
-                    // Quorum not met OR cluster assumption violated — fall back to ConsensusMedian.
-                    ConsensusMedian::resolve(proposals, adapter)
-                        .await
-                        .map(|p| p.raw_output.clone())
-                        .unwrap_or_default()
+                    // Quorum not met OR cluster assumption violated.
+                    // With an embedding model: Weiszfeld geometric median (breakdown 50%).
+                    // Without: ConsensusMedian handles honest stochastic divergence.
+                    match embedding_model {
+                        Some(model) => {
+                            let embeddings: Vec<Vec<f32>> = proposals
+                                .iter()
+                                .map(|p| model.embed(&p.raw_output))
+                                .collect();
+                            let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
+                            proposals
+                                .get(idx)
+                                .map(|p| p.raw_output.clone())
+                                .unwrap_or_default()
+                        }
+                        None => ConsensusMedian::resolve(proposals, embedding_model)
+                            .await
+                            .map(|p| p.raw_output.clone())
+                            .unwrap_or_default(),
+                    }
                 }
             }
         };

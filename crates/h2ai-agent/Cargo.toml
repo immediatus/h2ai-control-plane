@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 h2ai-types    = { path = "../h2ai-types" }
+h2ai-config   = { path = "../h2ai-config" }
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-state    = { path = "../h2ai-state" }
 h2ai-nats     = { path = "../h2ai-nats" }
@@ -32,6 +33,7 @@ uuid          = { workspace = true }
 
 [dev-dependencies]
 tokio         = { workspace = true }
+h2ai-config   = { path = "../h2ai-config" }
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-state    = { path = "../h2ai-state" }
 h2ai-nats     = { path = "../h2ai-nats" }

@@ -181,14 +181,14 @@ impl CoherencyCoefficients {
             return self.beta_eff();
         }
         let halflife = CG_HALFLIFE_SECS as f64;
-        let (weighted_cg, total_weight) = self
-            .cg_samples
-            .iter()
-            .zip(ts)
-            .fold((0.0f64, 0.0f64), |(wsum, wt), (cg, &t)| {
-                let w = (-(now_secs.saturating_sub(t) as f64) / halflife).exp();
-                (wsum + cg * w, wt + w)
-            });
+        let (weighted_cg, total_weight) =
+            self.cg_samples
+                .iter()
+                .zip(ts)
+                .fold((0.0f64, 0.0f64), |(wsum, wt), (cg, &t)| {
+                    let w = (-(now_secs.saturating_sub(t) as f64) / halflife).exp();
+                    (wsum + cg * w, wt + w)
+                });
         // 1e-15: fires only when every sample has decayed beyond ~35 half-lives
         // (~245 years at the 7-day halflife). Return beta_base — most conservative.
         if total_weight < 1e-15 {
@@ -237,20 +237,20 @@ pub enum MergeStrategy {
     /// Picks the proposal with highest mean Jaccard similarity to the rest of the ensemble.
     /// NOTE: not Byzantine-resistant. Vulnerable to coordinated Byzantine proposals at f ≥ n/2.
     ConsensusMedian,
-    /// High error cost (max c_i > krum_threshold) with explicit f > 0: Krum single-selection.
-    /// Byzantine-resistant for n ≥ 2f+3. Selects the proposal minimising sum of distances
-    /// to its n-f-2 nearest neighbours in Jaccard-distance space.
-    Krum { f: usize },
-    /// Multi-Krum: iteratively select m Byzantine-resistant survivors, then take the
-    /// highest verification-scored one. Requires n ≥ 2f+3.
-    MultiKrum { f: usize, m: usize },
+    /// High error cost (max c_i > krum_threshold) with explicit f > 0: outlier-resistant
+    /// single-selection. Selects the proposal with smallest sum of distances to its
+    /// n-f-2 nearest neighbours in Jaccard-distance space. Requires n ≥ 2f+3.
+    OutlierResistant { f: usize },
+    /// Multi-step outlier-resistant selection: iteratively select m survivors via
+    /// OutlierResistant scoring, then take the highest verification-scored one. Requires n ≥ 2f+3.
+    MultiOutlierResistant { f: usize, m: usize },
 }
 
 impl MergeStrategy {
     /// Select merge strategy based on role error costs.
     ///
     /// Three-tier selection:
-    /// 1. `krum_f > 0` AND `max_ci > krum_threshold` → `Krum { f: krum_f }`
+    /// 1. `krum_f > 0` AND `max_ci > krum_threshold` → `OutlierResistant { f: krum_f }`
     /// 2. `max_ci > bft_threshold` → `ConsensusMedian`
     /// 3. Otherwise → `ScoreOrdered`
     pub fn from_role_costs(
@@ -264,7 +264,7 @@ impl MergeStrategy {
             .map(|c| c.value())
             .fold(f64::NEG_INFINITY, f64::max);
         if krum_f > 0 && max_ci > krum_threshold {
-            MergeStrategy::Krum { f: krum_f }
+            MergeStrategy::OutlierResistant { f: krum_f }
         } else if max_ci > bft_threshold {
             MergeStrategy::ConsensusMedian
         } else {
@@ -272,7 +272,7 @@ impl MergeStrategy {
         }
     }
 
-    /// Minimum number of proposals needed to safely run Krum/MultiKrum with fault bound f.
+    /// Minimum number of proposals needed for OutlierResistant/MultiOutlierResistant with fault bound f.
     /// Derived from n ≥ 2f + 3 (Blanchard et al. 2017, Theorem 2).
     pub const fn min_krum_quorum(f: usize) -> usize {
         2 * f + 3
@@ -336,17 +336,14 @@ pub fn condorcet_quality(n_agents: usize, p: f64, rho: f64) -> f64 {
         let majority = n / 2 + 1; // strict majority: > N/2 votes needed
         let mut sum = 0.0f64;
         for k in majority..=n {
-            let log_term = log_binom_coeff(n, k)
-                + k as f64 * p.ln()
-                + (n - k) as f64 * (1.0 - p).ln();
+            let log_term =
+                log_binom_coeff(n, k) + k as f64 * p.ln() + (n - k) as f64 * (1.0 - p).ln();
             sum += log_term.exp();
         }
         // For even N, exact tie → 0.5 probability of being correct
         if n.is_multiple_of(2) {
             let k = n / 2;
-            let log_term = log_binom_coeff(n, k)
-                + k as f64 * p.ln()
-                + k as f64 * (1.0 - p).ln();
+            let log_term = log_binom_coeff(n, k) + k as f64 * p.ln() + k as f64 * (1.0 - p).ln();
             sum += 0.5 * log_term.exp();
         }
         sum.clamp(0.0, 1.0)
@@ -371,11 +368,29 @@ fn log_gamma(n: usize) -> f64 {
     (1..n).map(|i| (i as f64).ln()).sum()
 }
 
+/// Labels whether Condorcet quality predictions are grounded in empirical measurement
+/// or derived from the CG-mean proxy (which underestimates ρ_actual by 0.2–0.3 on
+/// factual tasks per arxiv 2511.12309).
+///
+/// `Heuristic`: p and ρ are proxied from CG_mean — not empirically validated.
+/// `Empirical`: p is from `baseline_accuracy_proxy` (measured on a held-out set via
+///              `scripts/baseline_eval.py`). Better grounded but still uses CG proxy for ρ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PredictionBasis {
+    #[default]
+    Heuristic,
+    Empirical,
+}
+
 /// Condorcet-based calibration result for an ensemble of compute adapters.
 ///
 /// Produced alongside `CoherencyCoefficients` by `CalibrationHarness`.
 /// Provides the theoretically optimal ensemble size and the expected quality
 /// gain at that size, derived from the Condorcet Jury Theorem.
+///
+/// `topology_gain` is derived from the CG embedding proxy for ρ. Empirical
+/// validation via `scripts/baseline_eval.py` is recommended for production
+/// quality claims. See `prediction_basis` for the source of p and ρ estimates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnsembleCalibration {
     /// Mean per-adapter estimated accuracy proxy: `0.5 + CG_mean / 2`.
@@ -386,6 +401,10 @@ pub struct EnsembleCalibration {
     pub n_optimal: usize,
     /// Expected ensemble quality Q(n_optimal, p_mean, rho_mean).
     pub q_optimal: f64,
+    /// Whether quality predictions are CG-proxy-based (Heuristic) or from
+    /// measured baseline accuracy (Empirical).
+    #[serde(default)]
+    pub prediction_basis: PredictionBasis,
 }
 
 impl EnsembleCalibration {
@@ -412,7 +431,13 @@ impl EnsembleCalibration {
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or((1, 0.0));
         let q_optimal = condorcet_quality(n_optimal, p_mean, rho_mean);
-        Self { p_mean, rho_mean, n_optimal, q_optimal }
+        Self {
+            p_mean,
+            rho_mean,
+            n_optimal,
+            q_optimal,
+            prediction_basis: PredictionBasis::Heuristic,
+        }
     }
 
     /// Construct with a directly measured accuracy value, overriding the CG-mean proxy.
@@ -432,7 +457,13 @@ impl EnsembleCalibration {
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or((1, 0.0));
         let q_optimal = condorcet_quality(n_optimal, p, rho_mean);
-        Self { p_mean: p, rho_mean, n_optimal, q_optimal }
+        Self {
+            p_mean: p,
+            rho_mean,
+            n_optimal,
+            q_optimal,
+            prediction_basis: PredictionBasis::Empirical,
+        }
     }
 
     /// Expected quality at a given ensemble size.
@@ -484,7 +515,7 @@ pub fn n_it_optimal(rho: f64) -> usize {
 ///   N_eff = (Σ λᵢ)² / Σ λᵢ²
 ///
 /// At full independence (Σ = I), N_eff = N. At full correlation (Σ = 𝟏𝟏ᵀ), N_eff = 1.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EigenCalibration {
     /// Effective number of independent adapters: (Σλ)²/Σλ².
     pub n_effective: f64,
@@ -501,17 +532,29 @@ impl EigenCalibration {
     /// Compute from an N×N symmetric positive-semidefinite CG similarity matrix.
     pub fn from_cg_matrix(sigma: &DMatrix<f64>) -> Self {
         let eig = sigma.clone().symmetric_eigen();
-        let mut evs: Vec<f64> = eig.eigenvalues.iter().copied().map(|v| v.max(0.0)).collect();
+        let mut evs: Vec<f64> = eig
+            .eigenvalues
+            .iter()
+            .copied()
+            .map(|v| v.max(0.0))
+            .collect();
         evs.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
         let sum: f64 = evs.iter().sum();
         let sum_sq: f64 = evs.iter().map(|l| l * l).sum();
-        let n_eff = if sum_sq > 1e-12 { sum * sum / sum_sq } else { 1.0 };
+        let n_eff = if sum_sq > 1e-12 {
+            sum * sum / sum_sq
+        } else {
+            1.0
+        };
 
         let h_div: f64 = evs
             .iter()
             .filter(|&&l| l > 1e-12)
-            .map(|&l| { let p = l / sum; -p * p.ln() })
+            .map(|&l| {
+                let p = l / sum;
+                -p * p.ln()
+            })
             .sum();
         let h_norm = if evs.len() > 1 {
             h_div / (evs.len() as f64).ln()
@@ -604,7 +647,10 @@ mod context_aware_tests {
         let cc = CoherencyCoefficients::new(0.15, 0.039, vec![0.4]).unwrap();
         let n_base = cc.n_max();
         let n_ctx = cc.n_max_context_aware(1024.0, 1_000_000.0, 0.5);
-        assert!((n_ctx - n_base).abs() < 1.0, "no pressure: n_ctx={n_ctx} n_base={n_base}");
+        assert!(
+            (n_ctx - n_base).abs() < 1.0,
+            "no pressure: n_ctx={n_ctx} n_base={n_base}"
+        );
     }
 
     #[test]
@@ -614,13 +660,16 @@ mod context_aware_tests {
         let n_base = cc.n_max();
         // max_tokens = 512, proposal_tokens = 1024 → fill(N) = min(1, N*1024/512) ≥ 1 for any N≥1
         let n_ctx = cc.n_max_context_aware(1024.0, 512.0, 0.5);
-        assert!(n_ctx <= n_base, "pressure must reduce N_max: n_ctx={n_ctx} n_base={n_base}");
+        assert!(
+            n_ctx <= n_base,
+            "pressure must reduce N_max: n_ctx={n_ctx} n_base={n_base}"
+        );
         assert!(n_ctx >= 1.0, "must be at least 1 agent");
     }
 
     #[test]
     fn n_max_context_aware_clamps_at_one() {
-        // Extreme beta: even N=1 is near the ceiling; pressure pushes to floor
+        // Extreme beta: CG=0 → β_eff = β₀×(1−0) = 0.5; pressure pushes to N=1 floor
         let cc = CoherencyCoefficients::new(0.15, 0.5, vec![0.0]).unwrap(); // β_eff = β₀(1-0)=0.5
         let n_ctx = cc.n_max_context_aware(512.0, 256.0, 1.0);
         assert!(n_ctx >= 1.0, "minimum 1 agent always");
@@ -632,7 +681,10 @@ mod context_aware_tests {
         let n_base = cc.n_max();
         // proposal_tokens = 0 → fallback to n_max()
         let n_ctx = cc.n_max_context_aware(0.0, 1000.0, 0.5);
-        assert!((n_ctx - n_base).abs() < 0.5, "zero proposal tokens must fall back to n_max()");
+        assert!(
+            (n_ctx - n_base).abs() < 0.5,
+            "zero proposal tokens must fall back to n_max()"
+        );
     }
 }
 
@@ -660,7 +712,10 @@ mod condorcet_tests {
         let a = TauValue::new(0.5).unwrap();
         let b = TauValue::new(0.5).unwrap();
         let result = tau_alignment(a, b);
-        assert!((result - 1.0).abs() < 1e-10, "same τ → alignment 1.0, got {result}");
+        assert!(
+            (result - 1.0).abs() < 1e-10,
+            "same τ → alignment 1.0, got {result}"
+        );
     }
 
     #[test]
@@ -669,7 +724,10 @@ mod condorcet_tests {
         let b = TauValue::new(1.0).unwrap();
         let result = tau_alignment(a, b);
         // exp(-3 * 1.0) ≈ 0.0498
-        assert!(result < 0.06, "τ distance 1.0 → small alignment, got {result}");
+        assert!(
+            result < 0.06,
+            "τ distance 1.0 → small alignment, got {result}"
+        );
         assert!(result > 0.04, "τ distance 1.0 → ~0.05, got {result}");
     }
 
@@ -735,7 +793,11 @@ mod condorcet_tests {
     fn ensemble_calibration_n_optimal_greater_than_1_for_typical_cg() {
         // For typical CG values (rho < 1), ensemble of >1 agent is cost-optimal
         let ec = EnsembleCalibration::from_cg_mean(0.7, 9);
-        assert!(ec.n_optimal > 1, "n_optimal should be >1 for cg=0.7, got {}", ec.n_optimal);
+        assert!(
+            ec.n_optimal > 1,
+            "n_optimal should be >1 for cg=0.7, got {}",
+            ec.n_optimal
+        );
     }
 
     #[test]
@@ -743,15 +805,27 @@ mod condorcet_tests {
         // Even at very high correlation (low CG_mean), any rho < 1 gives a tiny positive
         // Condorcet gain, so n_optimal is still > 1 (but small — N=3 typically).
         let ec = EnsembleCalibration::from_cg_mean(0.001, 9);
-        assert!(ec.n_optimal >= 1, "n_optimal must be >= 1, got {}", ec.n_optimal);
-        assert!(ec.n_optimal <= 5, "very high correlation should give small n_optimal, got {}", ec.n_optimal);
+        assert!(
+            ec.n_optimal >= 1,
+            "n_optimal must be >= 1, got {}",
+            ec.n_optimal
+        );
+        assert!(
+            ec.n_optimal <= 5,
+            "very high correlation should give small n_optimal, got {}",
+            ec.n_optimal
+        );
     }
 
     #[test]
     fn ensemble_calibration_quality_at_n1_equals_p() {
         let ec = EnsembleCalibration::from_cg_mean(0.7, 9);
         let q = ec.quality_at_n(1);
-        assert!((q - ec.p_mean).abs() < 1e-10, "quality_at_n(1) == p_mean, got {q} vs {}", ec.p_mean);
+        assert!(
+            (q - ec.p_mean).abs() < 1e-10,
+            "quality_at_n(1) == p_mean, got {q} vs {}",
+            ec.p_mean
+        );
     }
 
     #[test]
@@ -766,16 +840,24 @@ mod condorcet_tests {
     #[test]
     fn ensemble_calibration_from_measured_p_uses_given_p() {
         let ec = EnsembleCalibration::from_measured_p(0.9, 0.7, 9);
-        assert!((ec.p_mean - 0.9).abs() < 1e-10, "p_mean should be 0.9, got {}", ec.p_mean);
+        assert!(
+            (ec.p_mean - 0.9).abs() < 1e-10,
+            "p_mean should be 0.9, got {}",
+            ec.p_mean
+        );
     }
 
     #[test]
     fn beta_eff_temporal_fresh_sample_equals_beta_eff() {
         let now = 1_000_000u64;
-        let cc = CoherencyCoefficients::new_with_timestamps(0.1, 0.02, vec![0.6], vec![now]).unwrap();
+        let cc =
+            CoherencyCoefficients::new_with_timestamps(0.1, 0.02, vec![0.6], vec![now]).unwrap();
         let result = cc.beta_eff_temporal(now);
         let expected = cc.beta_eff();
-        assert!((result - expected).abs() < 1e-9, "fresh sample: {result} vs {expected}");
+        assert!(
+            (result - expected).abs() < 1e-9,
+            "fresh sample: {result} vs {expected}"
+        );
     }
 
     #[test]
@@ -785,7 +867,8 @@ mod condorcet_tests {
         let result = cc.beta_eff_temporal(now);
         assert!(
             (result - cc.beta_base).abs() < 0.001,
-            "stale sample must approach beta_base={}, got {result}", cc.beta_base
+            "stale sample must approach beta_base={}, got {result}",
+            cc.beta_base
         );
     }
 
@@ -808,11 +891,12 @@ mod condorcet_tests {
     #[test]
     fn beta_eff_temporal_recent_low_cg_dominates_old_high_cg() {
         let now = CG_HALFLIFE_SECS * 10;
-        let cc = CoherencyCoefficients::new_with_timestamps(
-            0.1, 0.05, vec![0.9, 0.2], vec![0u64, now],
-        ).unwrap();
+        let cc =
+            CoherencyCoefficients::new_with_timestamps(0.1, 0.05, vec![0.9, 0.2], vec![0u64, now])
+                .unwrap();
         let result = cc.beta_eff_temporal(now);
-        let fresh_only_beta = cc.beta_base * (1.0 - 0.2);
+        // Proportional formula: β₀×(1−CG). Recent CG=0.2 dominates → β_eff ≈ 0.05×0.8 = 0.04
+        let fresh_only_beta = cc.beta_base * (1.0 - 0.2_f64);
         assert!(
             (result - fresh_only_beta).abs() < 0.005,
             "recent low-CG sample must dominate: expected ≈{fresh_only_beta:.4}, got {result:.4}"

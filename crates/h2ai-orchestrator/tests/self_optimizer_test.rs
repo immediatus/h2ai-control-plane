@@ -193,6 +193,7 @@ fn quality_is_monotone_in_suggested_direction() {
             break;
         }
         use h2ai_orchestrator::attribution::{AttributionInput, HarnessAttribution};
+        use h2ai_types::physics::PredictionBasis;
         let q = HarnessAttribution::compute(&AttributionInput {
             p_mean: P_MEAN,
             rho_mean: RHO_MEAN,
@@ -200,6 +201,9 @@ fn quality_is_monotone_in_suggested_direction() {
             verification_filter_ratio: FR,
             tao_turns_mean: next.max_turns as f64,
             tao_per_turn_factor: 0.6,
+            prediction_basis: PredictionBasis::Heuristic,
+            talagrand_state: None,
+            eigen_calibration: None,
         })
         .total_quality;
         assert!(

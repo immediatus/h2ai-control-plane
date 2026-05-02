@@ -4,15 +4,26 @@ use serde_json::json;
 
 #[derive(Debug)]
 pub enum ApiError {
-    ContextUnderflow { j_eff: f64, threshold: f64 },
+    ContextUnderflow {
+        j_eff: f64,
+        threshold: f64,
+    },
     CalibrationRequired,
     TaskNotFound(String),
     TaskAlreadyResolved(String),
     InvalidRequest(String),
     Internal(String),
     NatsUnavailable(String),
-    ExplorerBudgetExceeded { requested: usize, n_max: f64 },
+    ExplorerBudgetExceeded {
+        requested: usize,
+        n_max: f64,
+    },
     ServiceUnavailable(String),
+    /// All non-Mock adapters belong to the same family; BFT correlated hallucination protection
+    /// is degraded. Set `allow_single_family = true` in config to proceed with a warning.
+    SingleFamilyPool {
+        family: String,
+    },
 }
 
 impl IntoResponse for ApiError {
@@ -66,6 +77,18 @@ impl IntoResponse for ApiError {
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "ServiceUnavailable", "message": msg }),
+            ),
+            ApiError::SingleFamilyPool { family } => (
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "SingleFamilyPool",
+                    "family": family,
+                    "message": format!(
+                        "All non-Mock adapters are from the '{family}' family. \
+                         Weiszfeld BFT correlated hallucination protection is degraded. \
+                         Add adapters from a different family or set allow_single_family=true."
+                    )
+                }),
             ),
         };
         (status, Json(body)).into_response()

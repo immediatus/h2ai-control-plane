@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = { workspace = true }
-regex = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+regex       = { workspace = true }
+jsonschema  = { version = "0.26", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

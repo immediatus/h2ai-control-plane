@@ -1,7 +1,7 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_context::adr::parse_adr;
+use h2ai_constraints::loader::parse_constraint_doc;
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
@@ -46,7 +46,7 @@ async fn engine_runs_ensemble_to_semilattice() {
     let cal = calibration().await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )];
@@ -95,6 +95,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -139,7 +140,7 @@ async fn engine_rejects_insufficient_context() {
     };
 
     // Corpus keywords that won't overlap with "do stuff" — forces J_eff below gate
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nmicroservice stateless distributed consensus byzantine\n",
     )];
@@ -167,6 +168,7 @@ async fn engine_rejects_insufficient_context() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -187,7 +189,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
     let cal = calibration().await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )];
@@ -230,6 +232,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -251,7 +254,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         max_autonomic_retries: 0,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )];
@@ -294,6 +297,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -315,7 +319,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         max_autonomic_retries: 0,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )];
@@ -358,12 +362,74 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
     assert!(
         matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted),
         "expected MaxRetriesExhausted"
+    );
+}
+
+#[tokio::test]
+async fn engine_output_contains_talagrand_diagnostic() {
+    let adapter = mock_adapter();
+    let adapter2 = mock_adapter2();
+    let scorer = verifier();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let cal = calibration().await;
+    let store = TaskStore::new();
+    let cfg = H2AIConfig::default();
+    let corpus = vec![parse_constraint_doc(
+        "ADR-001",
+        "## Constraints\nstateless auth\n",
+    )];
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
+
+    let manifest = TaskManifest {
+        description: "Propose stateless auth with ADR-001 compliance".into(),
+        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 2,
+            tau_min: Some(0.5),
+            tau_max: Some(0.8),
+            roles: vec![],
+            review_gates: vec![],
+        },
+        constraints: vec!["ADR-001".into()],
+        context: None,
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![
+            &adapter as &dyn IComputeAdapter,
+            &adapter2 as &dyn IComputeAdapter,
+        ],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig::default(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        cfg: &cfg,
+        store,
+        nats_dispatch: None,
+        registry: &registry,
+        embedding_model: None,
+    };
+
+    let output = ExecutionEngine::run_offline(input).await.unwrap();
+    assert!(
+        output.talagrand.is_some(),
+        "talagrand must be populated when verification events exist"
     );
 }
 
@@ -381,7 +447,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         krum_threshold: 0.5,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_adr(
+    let corpus = vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )];
@@ -447,6 +513,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -454,5 +521,71 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
     assert!(
         matches!(result.unwrap_err(), EngineError::InsufficientQuorum { .. }),
         "expected InsufficientQuorum when n=3 < 5 required for f=1"
+    );
+}
+
+#[tokio::test]
+async fn engine_output_contains_suggested_next_params() {
+    let adapter = mock_adapter();
+    let scorer = verifier();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let cal = calibration().await;
+    let store = TaskStore::new();
+    let cfg = H2AIConfig::default();
+    let corpus = vec![parse_constraint_doc(
+        "ADR-001",
+        "## Constraints\nstateless auth\n",
+    )];
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
+
+    let manifest = TaskManifest {
+        description: "Propose stateless auth with ADR-001 compliance".into(),
+        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 1,
+            tau_min: Some(0.5),
+            tau_max: Some(0.5),
+            roles: vec![],
+            review_gates: vec![],
+        },
+        constraints: vec!["ADR-001".into()],
+        context: None,
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&adapter as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig::default(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        cfg: &cfg,
+        store,
+        nats_dispatch: None,
+        registry: &registry,
+        embedding_model: None,
+    };
+
+    let output = ExecutionEngine::run_offline(input).await.unwrap();
+    assert!(
+        output.suggested_next_params.is_some(),
+        "suggested_next_params must be populated on success"
+    );
+    let params = output.suggested_next_params.unwrap();
+    assert!(
+        params.n_agents >= 1,
+        "suggested n_agents must be at least 1"
+    );
+    assert!(
+        params.verify_threshold > 0.0,
+        "verify_threshold must be positive"
     );
 }

@@ -107,6 +107,7 @@ impl IComputeAdapter for OpenAIAdapter {
             output,
             token_cost: chat.usage.total_tokens,
             adapter_kind: self.kind.clone(),
+            tokens_used: Some(chat.usage.total_tokens),
         })
     }
 

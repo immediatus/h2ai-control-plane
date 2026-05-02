@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 """
-Validate two formulations of β_eff coupling:
-  Old (pre-fix): β_eff = β₀ / CG_mean           (inverse — singularity at CG→0)
-  Current:       β_eff = β₀ × (1 − CG_mean)    (proportional — bounded everywhere)
+Validate β_eff coupling formula as implemented in h2ai-state/calibration.rs:
 
-See docs/architecture/research-state.md — Validation Evidence
+    β_eff = β₀ / max(CG_mean, 0.05)
+
+The collapse floor max(CG, 0.05) prevents singularity as CG → 0
+and triggers the N_max=1 guard when CG < 0.10.
+
+Key invariants validated:
+  1. CG=1.0  → β_eff = β₀             (perfect alignment, no extra cost)
+  2. CG=0.4  → β_eff = 2.5 × β₀      (typical AI-agent tier)
+  3. CG=0.05 → β_eff = 20 × β₀       (floor active)
+  4. CG=0.02 → same as CG=0.05        (floor clamps singularity)
+  5. CG < 0.10 → N_max=1              (collapse guard)
+
+See docs/architecture/math-apparatus.md — Definition 4, Proposition 1.
 """
 
 import numpy as np
@@ -12,118 +22,149 @@ import sys
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def usl_throughput(N, alpha, beta):
-    return N / (1.0 + alpha * (N - 1) + beta * N * (N - 1))
+CG_FLOOR = 0.05
+CG_COLLAPSE_THRESHOLD = 0.10  # below this, N_max is forced to 1
 
 
-def n_max_inverse(alpha, beta0, cg, cap=9):
-    """Current formula: β_eff = β₀/CG"""
-    if cg < 1e-6:
+def beta_eff(beta0: float, cg: float) -> float:
+    """β_eff = β₀ / max(CG, CG_FLOOR)"""
+    return beta0 / max(cg, CG_FLOOR)
+
+
+def n_max(alpha: float, beta0: float, cg: float) -> int:
+    """N_max = round(√((1−α) / β_eff)); returns 1 when CG < collapse threshold."""
+    if cg < CG_COLLAPSE_THRESHOLD:
         return 1
-    beta_eff = beta0 / cg
-    return min(cap, max(1, round(np.sqrt((1.0 - alpha) / beta_eff))))
+    be = beta_eff(beta0, cg)
+    return max(1, round(np.sqrt((1.0 - alpha) / be)))
 
 
-def n_max_proportional(alpha, beta0, cg, cap=9):
-    """Proposed formula: β_eff = β₀×(1−CG)"""
-    if cg >= 1.0 - 1e-6:
-        return cap
-    beta_eff = beta0 * (1.0 - cg)
-    if beta_eff < 1e-12:
-        return cap
-    return min(cap, max(1, round(np.sqrt((1.0 - alpha) / beta_eff))))
+failures: list[str] = []
 
 
-# ── Three-tier calibration table ─────────────────────────────────────────────
+def check(name: str, ok: bool, detail: str = "") -> None:
+    status = "PASS" if ok else "FAIL"
+    print(f"  [{status}] {name}")
+    if detail:
+        print(f"         {detail}")
+    if not ok:
+        failures.append(name)
+
+
+# ── 1. Key invariants ─────────────────────────────────────────────────────────
+
+beta0 = 0.039
+alpha = 0.15
+
+print("=" * 72)
+print("1.  Key Invariants — β_eff = β₀ / max(CG, 0.05)")
+print("=" * 72)
+
+be_cg1 = beta_eff(beta0, 1.0)
+check(
+    "CG=1.0 → β_eff = β₀ (no extra coherency cost at perfect alignment)",
+    abs(be_cg1 - beta0) < 1e-10,
+    f"β_eff={be_cg1:.6f}, β₀={beta0}"
+)
+
+be_cg04 = beta_eff(beta0, 0.4)
+check(
+    "CG=0.4 → β_eff = 2.5 × β₀ (typical AI-agent tier)",
+    abs(be_cg04 / beta0 - 2.5) < 0.01,
+    f"β_eff={be_cg04:.6f} = {be_cg04/beta0:.2f} × β₀"
+)
+
+be_floor = beta_eff(beta0, 0.05)
+check(
+    "CG=0.05 → β_eff = 20 × β₀ (floor active, not a singularity)",
+    abs(be_floor / beta0 - 20.0) < 0.01,
+    f"β_eff={be_floor:.6f} = {be_floor/beta0:.2f} × β₀"
+)
+
+be_below_floor = beta_eff(beta0, 0.02)
+check(
+    "CG=0.02 → β_eff = β_eff(0.05) (floor clamps further divergence)",
+    abs(be_below_floor - be_floor) < 1e-10,
+    f"β_eff(0.02)={be_below_floor:.6f} == β_eff(0.05)={be_floor:.6f}"
+)
+
+# ── 2. Three-tier N_max ────────────────────────────────────────────────────────
 
 TIERS = [
-    ("AI agents",    0.15, 0.039,  0.40),
-    ("Human teams",  0.10, 0.005,  0.60),
-    ("CPU cores",    0.02, 0.0003, 1.00),
+    # (label, alpha, beta_base, cg_mean, n_max_expected)
+    ("AI agents",    0.15, 0.01,   0.40, 6),
+    ("Human teams",  0.10, 0.005,  0.60, 10),
+    ("CPU cores",    0.02, 0.0003, 1.00, 57),
 ]
 
-print("=" * 72)
-print("1.  Three-Tier N_max Comparison")
-print("=" * 72)
-print(f"{'Tier':<15} {'CG_nominal':>10} {'N_max (inverse)':>15} {'N_max (prop)':>13}")
-print("-" * 60)
-for name, alpha, beta0, cg in TIERS:
-    ni = n_max_inverse(alpha, beta0, cg)
-    np_ = n_max_proportional(alpha, beta0, cg)
-    print(f"{name:<15} {cg:>10.2f} {ni:>15} {np_:>13}")
-
-# ── Sweep CG from 0.05 to 0.99 ───────────────────────────────────────────────
-
 print()
 print("=" * 72)
-print("2.  Boundary Behaviour — AI agents tier (α=0.15, β₀=0.039)")
+print("2.  Three-Tier N_max  (β_eff = β₀ / max(CG, 0.05))")
 print("=" * 72)
-alpha, beta0 = 0.15, 0.039
-cg_range = np.linspace(0.05, 0.99, 20)
-print(f"{'CG':>6} {'N_max_inv':>10} {'N_max_prop':>11}  {'β_eff_inv':>10} {'β_eff_prop':>11}")
+print(f"{'Tier':<15} {'CG':>6} {'β_eff':>10} {'N_max':>7} {'Expected':>9}")
 print("-" * 55)
-for cg in cg_range:
-    ni = n_max_inverse(alpha, beta0, cg)
-    np_ = n_max_proportional(alpha, beta0, cg)
-    bei = beta0 / cg
-    bep = beta0 * (1.0 - cg)
-    print(f"{cg:6.2f} {ni:>10} {np_:>11}  {bei:10.5f} {bep:11.5f}")
+for name, a, b0, cg, n_exp in TIERS:
+    be = beta_eff(b0, cg)
+    nm = n_max(a, b0, cg)
+    marker = "✓" if abs(nm - n_exp) <= 1 else "✗"
+    print(f"{name:<15} {cg:>6.2f} {be:>10.5f} {nm:>7} {n_exp:>9}  {marker}")
+    check(
+        f"N_max ≈ {n_exp} [{name}]",
+        abs(nm - n_exp) <= 1,
+        f"got N_max={nm}"
+    )
 
-# ── Singularity test ─────────────────────────────────────────────────────────
-
-print()
-print("=" * 72)
-print("3.  Singularity Test — β_eff as CG → 0")
-print("=" * 72)
-for cg in [0.2, 0.1, 0.05, 0.02, 0.01, 0.001]:
-    bei = beta0 / cg if cg > 1e-6 else float('inf')
-    bep = beta0 * (1.0 - cg)
-    print(f"  CG={cg:.3f}: β_eff_inverse={bei:.4f}  β_eff_proportional={bep:.6f}")
-print()
-print("  → Inverse form diverges; proportional form stays bounded at β₀ = 0.039")
-
-# ── Expected N_max at Wang et al. 2023 empirical ceiling ─────────────────────
+# ── 3. Collapse guard ─────────────────────────────────────────────────────────
 
 print()
 print("=" * 72)
-print("4.  Comparison with Empirical Evidence")
+print("3.  CG Collapse Guard — N_max forced to 1 when CG < 0.10")
 print("=" * 72)
-print("  Wang et al. 2023 (arXiv:2310.09191): retrograde observed at N ≈ 7 for")
-print("  AI-agent LLM ensembles. Proposed formula predicts N_max = 8 at CG=0.4,")
-print("  current formula predicts N_max = 6.  Proposed is closer to empirical.")
-print()
-for cg in [0.3, 0.4, 0.5]:
-    alpha, beta0 = 0.15, 0.039
-    ni = n_max_inverse(alpha, beta0, cg)
-    np_ = n_max_proportional(alpha, beta0, cg)
-    print(f"  CG={cg}: N_max_inverse={ni}, N_max_proportional={np_} (empirical ceiling ≈ 7)")
+for cg in [0.09, 0.05, 0.02, 0.01]:
+    nm = n_max(alpha, beta0, cg)
+    check(
+        f"CG={cg:.2f} → N_max=1 (ZeroCoordinationQualityEvent emitted)",
+        nm == 1,
+        f"got N_max={nm}"
+    )
+
+# ── 4. Monotonicity above collapse floor ──────────────────────────────────────
 
 print()
 print("=" * 72)
-print("5.  Recalibration Requirement for Proportional Formula")
+print("4.  Monotonicity — higher CG → lower β_eff (above collapse floor)")
 print("=" * 72)
-print()
-print("  The proportional formula (β_eff = β₀×(1−CG)) always hits the cap=9 with")
-print("  β₀=0.039 because β_eff is very small when CG > 0.2.")
-print()
-print("  ROOT CAUSE: β₀=0.01 was hand-tuned for the INVERSE formula (now old/pre-fix).")
-print("  For proportional formula to give N_max≈7 at CG=0.4:")
-print()
-#  Solve: round(√((1−α) / (β₀×(1−CG)))) = 7
-#  7² ≤ (1−0.15) / (β₀×0.6) < 8²
-#  β₀ = 0.85 / (49 × 0.6) ≈ 0.0289
-alpha_ai = 0.15
-cg_ai = 0.40
-for target_n_max in [6, 7, 8]:
-    beta0_needed = (1 - alpha_ai) / ((target_n_max ** 2) * (1 - cg_ai))
-    n_check = n_max_proportional(alpha_ai, beta0_needed, cg_ai)
-    print(f"  target N_max={target_n_max}: β₀_proportional ≈ {beta0_needed:.4f}  "
-          f"(vs β₀_inverse ≈ {(1-alpha_ai)/(target_n_max**2 * cg_ai):.4f})")
+cg_range = np.linspace(0.10, 1.0, 20)
+be_values = [beta_eff(beta0, cg) for cg in cg_range]
+check(
+    "β_eff strictly decreasing as CG increases from 0.10 to 1.0",
+    all(be_values[i] > be_values[i + 1] for i in range(len(be_values) - 1)),
+    f"min β_eff={min(be_values):.5f} at CG=1.0, max β_eff={max(be_values):.5f} at CG=0.10"
+)
+
+# ── 5. Sweep CG from 0.05 to 0.99 ─────────────────────────────────────────────
 
 print()
-print("  KEY INSIGHT: β₀ is NOT a universal constant.")
-print("  It must be measured from calibration timing — the formula change only makes")
-print("  this requirement more visible. Fix: repair the calibration harness (Gap P5)")
-print("  so that β₀ is derived from live timing, not hardcoded to 0.01.")
+print("=" * 72)
+print("5.  Full sweep — AI agents tier (α=0.15, β₀=0.039)")
+print("=" * 72)
+print(f"{'CG':>6} {'β_eff':>10} {'N_max':>7}")
+print("-" * 30)
+for cg in np.linspace(0.05, 1.0, 20):
+    be = beta_eff(beta0, cg)
+    nm = n_max(alpha, beta0, cg)
+    print(f"{cg:6.2f} {be:>10.5f} {nm:>7}")
+
+# ── Results ───────────────────────────────────────────────────────────────────
+
 print()
-print("PASS — all outputs produced without error or singularity")
+print("=" * 72)
+n_fail = len(failures)
+print(f"Failures: {n_fail}")
+if failures:
+    for f in failures:
+        print(f"  • {f}")
+    sys.exit(1)
+else:
+    print("PASS — all checks passed")
+    sys.exit(0)

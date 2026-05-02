@@ -1,4 +1,6 @@
 use crate::jaccard::{jaccard, tokenize};
+#[cfg(feature = "fastembed-embed")]
+use std::sync::Mutex;
 
 /// A text embedding model that maps strings to dense float vectors.
 ///
@@ -68,6 +70,85 @@ pub fn semantic_jaccard(a: &str, b: &str, model: Option<&dyn EmbeddingModel>) ->
     }
 }
 
+/// Concrete `EmbeddingModel` backed by fastembed-rs.
+///
+/// Model weights are downloaded on first construction and cached to `~/.cache/fastembed/`.
+/// Construction embeds a single warmup string to force ONNX model loading before the first
+/// calibration request — callers pay zero cold-start latency at task time.
+/// All returned vectors are L2-normalised (cosine similarity = dot product).
+///
+/// Requires the `fastembed-embed` Cargo feature and ONNX Runtime on the host.
+/// Build with: `cargo build -p h2ai-context --features fastembed-embed`
+#[cfg(feature = "fastembed-embed")]
+pub struct FastEmbedModel {
+    inner: Mutex<fastembed::TextEmbedding>,
+}
+
+#[cfg(feature = "fastembed-embed")]
+impl FastEmbedModel {
+    /// Construct with the default model (`all-MiniLM-L6-v2`, 22 MB).
+    /// Prefer `new_with` when the operator has configured a model in `H2AIConfig`.
+    pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::new_with_fastembed_model(fastembed::EmbeddingModel::AllMiniLML6V2)
+    }
+
+    /// Construct with the model specified in `H2AIConfig::embedding_model_name`.
+    pub fn new_with(
+        name: &h2ai_config::EmbeddingModelName,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use h2ai_config::EmbeddingModelName;
+        let fastembed_model = match name {
+            EmbeddingModelName::AllMiniLmL6V2 => fastembed::EmbeddingModel::AllMiniLML6V2,
+            EmbeddingModelName::BgeSmallEnV1_5 => fastembed::EmbeddingModel::BGESmallENV15,
+        };
+        Self::new_with_fastembed_model(fastembed_model)
+    }
+
+    fn new_with_fastembed_model(
+        model: fastembed::EmbeddingModel,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let opts = fastembed::InitOptions {
+            model_name: model,
+            show_download_progress: true,
+            ..Default::default()
+        };
+        let inner = fastembed::TextEmbedding::try_new(opts)?;
+        let instance = Self {
+            inner: Mutex::new(inner),
+        };
+        // Warmup: force ONNX model load now so the first calibration request pays no cold-start cost.
+        let _ = instance.embed("warmup");
+        Ok(instance)
+    }
+}
+
+#[cfg(feature = "fastembed-embed")]
+impl EmbeddingModel for FastEmbedModel {
+    fn embed(&self, text: &str) -> Vec<f32> {
+        let model = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match model.embed(vec![text], None) {
+            Ok(mut embeddings) => {
+                if embeddings.is_empty() {
+                    return vec![];
+                }
+                l2_normalize(embeddings.remove(0))
+            }
+            Err(_) => vec![],
+        }
+    }
+}
+
+#[cfg(feature = "fastembed-embed")]
+fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-9 {
+        for x in &mut v {
+            *x /= norm;
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,7 +165,8 @@ mod tests {
             // Cross-cluster texts get orthogonal vectors → cosine = 0.0.
             if text.contains("jwt") || text.contains("auth") || text.contains("token") {
                 vec![1.0, 0.0] // auth cluster
-            } else if text.contains("redis") || text.contains("cache") || text.contains("key-value") {
+            } else if text.contains("redis") || text.contains("cache") || text.contains("key-value")
+            {
                 vec![0.0, 1.0] // redis cluster
             } else {
                 vec![0.0, 0.0] // unknown → triggers fallback path (zero norm)
@@ -162,7 +244,10 @@ mod tests {
         let a = "jwt stateless token authentication";
         let b = "jwt bearer authentication mechanism";
         let j = semantic_jaccard(a, b, None);
-        assert!(j > 0.0 && j < 1.0, "partial overlap must be in (0,1), got {j}");
+        assert!(
+            j > 0.0 && j < 1.0,
+            "partial overlap must be in (0,1), got {j}"
+        );
     }
 
     // ── semantic_jaccard — with model ─────────────────────────────────────────
@@ -172,7 +257,10 @@ mod tests {
         // "jwt" and "auth token" are both in the auth cluster → cosine = 1.0
         let model = StubEmbeddingModel;
         let sim = semantic_jaccard("jwt access token", "auth bearer token", Some(&model));
-        assert!((sim - 1.0).abs() < 1e-6, "same semantic cluster must score 1.0, got {sim}");
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "same semantic cluster must score 1.0, got {sim}"
+        );
     }
 
     #[test]
@@ -180,7 +268,10 @@ mod tests {
         // auth cluster vs redis cluster → cosine = 0.0
         let model = StubEmbeddingModel;
         let sim = semantic_jaccard("jwt auth token", "redis cache key-value", Some(&model));
-        assert!(sim.abs() < 1e-6, "different clusters must score 0.0, got {sim}");
+        assert!(
+            sim.abs() < 1e-6,
+            "different clusters must score 0.0, got {sim}"
+        );
     }
 
     #[test]
@@ -215,11 +306,34 @@ mod tests {
         struct AntiModel;
         impl EmbeddingModel for AntiModel {
             fn embed(&self, text: &str) -> Vec<f32> {
-                if text.starts_with('a') { vec![1.0, 0.0] } else { vec![-1.0, 0.0] }
+                if text.starts_with('a') {
+                    vec![1.0, 0.0]
+                } else {
+                    vec![-1.0, 0.0]
+                }
             }
         }
         let model = AntiModel;
         let sim = semantic_jaccard("alpha", "beta", Some(&model));
-        assert!(sim >= 0.0, "semantic_jaccard must be non-negative, got {sim}");
+        assert!(
+            sim >= 0.0,
+            "semantic_jaccard must be non-negative, got {sim}"
+        );
+    }
+
+    // ── FastEmbedModel integration test (requires model download) ─────────────
+    // Run with: cargo test -p h2ai-context --features fastembed-embed -- embedding_model_cosine_paraphrases --ignored
+    #[cfg(feature = "fastembed-embed")]
+    #[test]
+    #[ignore = "requires fastembed model download (~90MB) and ORT"]
+    fn embedding_model_cosine_paraphrases() {
+        let model = super::FastEmbedModel::new().expect("FastEmbedModel::new");
+        let a = model.embed("the payment budget is exhausted");
+        let b = model.embed("the spending limit has been reached");
+        let c = model.embed("the weather is sunny today");
+        let sim_ab: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        let sim_ac: f32 = a.iter().zip(&c).map(|(x, y)| x * y).sum();
+        assert!(sim_ab > 0.80, "paraphrases should score high: {sim_ab}");
+        assert!(sim_ac < 0.30, "off-topic should score low: {sim_ac}");
     }
 }

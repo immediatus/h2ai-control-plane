@@ -7,7 +7,8 @@ use h2ai_constraints::types::{
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{ConstraintViolation, ProposalEvent};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub struct VerificationInput<'a> {
     pub proposals: Vec<ProposalEvent>,
@@ -20,7 +21,11 @@ pub struct VerificationOutput {
     /// (proposal, per_constraint_results)
     pub passed: Vec<(ProposalEvent, Vec<ComplianceResult>)>,
     /// (proposal, per_constraint_results, violations)
-    pub failed: Vec<(ProposalEvent, Vec<ComplianceResult>, Vec<ConstraintViolation>)>,
+    pub failed: Vec<(
+        ProposalEvent,
+        Vec<ComplianceResult>,
+        Vec<ConstraintViolation>,
+    )>,
 }
 
 #[derive(Deserialize)]
@@ -46,9 +51,16 @@ impl VerificationPhase {
             let rubric = rubric.clone();
             let sp = sp.clone();
             async move {
-                let results =
-                    Self::eval_all(corpus, &proposal.raw_output, evaluator, &rubric, &sp, tau, max_tokens)
-                        .await;
+                let results = Self::eval_all(
+                    corpus,
+                    &proposal.raw_output,
+                    evaluator,
+                    &rubric,
+                    &sp,
+                    tau,
+                    max_tokens,
+                )
+                .await;
                 (proposal, results)
             }
         });
@@ -91,9 +103,18 @@ impl VerificationPhase {
         tau: h2ai_types::physics::TauValue,
         max_tokens: u64,
     ) -> Vec<ComplianceResult> {
-        // If corpus is empty, fall back to a single LLM-scored result using the rubric.
+        // If corpus is empty, fall back to the CoT rubric (G-Eval, arxiv 2303.16634).
+        // The default rubric (h2ai_config::prompts::COT_RUBRIC) is criteria-first to reduce
+        // verbosity bias. Operators may override via VerificationConfig::rubric.
+        // llm_score_raw appends "\n\nProposal:\n{output}", so we pass only the criteria here.
         if corpus.is_empty() {
-            let score = Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens).await;
+            let effective_rubric: &str = if rubric.is_empty() {
+                h2ai_config::prompts::COT_RUBRIC
+            } else {
+                &rubric
+            };
+            let score =
+                Self::llm_score_raw(effective_rubric, output, evaluator, sp, tau, max_tokens).await;
             return vec![ComplianceResult {
                 constraint_id: "__rubric__".into(),
                 score,
@@ -103,14 +124,16 @@ impl VerificationPhase {
         }
 
         let futs = corpus.iter().map(|doc| async move {
-            let score = if matches!(doc.predicate, ConstraintPredicate::LlmJudge { .. }) {
-                let judge_rubric = match &doc.predicate {
-                    ConstraintPredicate::LlmJudge { rubric: r } => r.clone(),
-                    _ => unreachable!(),
-                };
-                Self::llm_score_raw(&judge_rubric, output, evaluator, sp, tau, max_tokens).await
-            } else {
-                eval_sync(&doc.predicate, output)
+            let score = match &doc.predicate {
+                ConstraintPredicate::LlmJudge { rubric: r } => {
+                    Self::llm_score_raw(r, output, evaluator, sp, tau, max_tokens).await
+                }
+                ConstraintPredicate::OracleExecution {
+                    test_runner_uri,
+                    test_suite,
+                    timeout_secs,
+                } => Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
+                other => eval_sync(other, output),
             };
             ComplianceResult {
                 constraint_id: doc.id.clone(),
@@ -120,6 +143,82 @@ impl VerificationPhase {
             }
         });
         join_all(futs).await
+    }
+
+    async fn eval_oracle(
+        test_runner_uri: &str,
+        test_suite: &str,
+        timeout_secs: u64,
+        output: &str,
+    ) -> f64 {
+        #[derive(Serialize)]
+        struct OracleRequest<'a> {
+            output: &'a str,
+            test_suite: &'a str,
+        }
+
+        #[derive(Deserialize)]
+        struct OracleResponse {
+            passed: bool,
+            #[allow(dead_code)]
+            failure_count: u32,
+            #[allow(dead_code)]
+            output_text: String,
+            #[allow(dead_code)]
+            duration_ms: u64,
+        }
+
+        let client = reqwest::Client::new();
+        let body = OracleRequest { output, test_suite };
+        match client
+            .post(test_runner_uri)
+            .json(&body)
+            .timeout(Duration::from_secs(timeout_secs))
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<OracleResponse>().await {
+                Ok(or) => {
+                    if !or.passed {
+                        tracing::debug!(
+                            target: "h2ai.verification.oracle",
+                            failure_count = or.failure_count,
+                            "oracle execution failed"
+                        );
+                    }
+                    if or.passed {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "h2ai.verification.oracle",
+                        error = %e,
+                        "oracle response parse error"
+                    );
+                    0.0
+                }
+            },
+            Err(e) => {
+                if e.is_timeout() {
+                    tracing::warn!(
+                        target: "h2ai.verification.oracle",
+                        uri = test_runner_uri,
+                        "oracle_timeout"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "h2ai.verification.oracle",
+                        error = %e,
+                        uri = test_runner_uri,
+                        "oracle request failed"
+                    );
+                }
+                0.0
+            }
+        }
     }
 
     async fn llm_score_raw(

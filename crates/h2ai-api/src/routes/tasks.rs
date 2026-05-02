@@ -5,10 +5,10 @@ use axum::{
     response::sse::Event,
     response::{IntoResponse, Json, Sse},
 };
-use h2ai_context::adr::load_corpus;
+use h2ai_constraints::loader::load_corpus;
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_types::config::{TaoConfig, VerificationConfig};
-use h2ai_types::events::H2AIEvent;
+use h2ai_types::events::{H2AIEvent, TaskAttributionEvent};
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use serde_json::{json, Value};
@@ -35,10 +35,9 @@ pub async fn submit_task(
         cal.clone().ok_or(ApiError::CalibrationRequired)?
     };
 
-    let adr_path = std::env::var("H2AI_CONSTRAINT_CORPUS_PATH")
-        .or_else(|_| std::env::var("H2AI_ADR_CORPUS_PATH"))
-        .unwrap_or_else(|_| "/adr".into());
-    let corpus = load_corpus(&adr_path)
+    let corpus_path =
+        std::env::var("H2AI_CONSTRAINT_CORPUS_PATH").unwrap_or_else(|_| "/constraints".into());
+    let corpus = load_corpus(&corpus_path)
         .map_err(|e| ApiError::Internal(format!("constraint corpus load failed: {e}")))?;
 
     use h2ai_context::jaccard::{jaccard, tokenize};
@@ -124,19 +123,66 @@ pub async fn submit_task(
             store: store_clone,
             nats_dispatch: None,
             registry: &registry,
+            embedding_model: state_clone.embedding_model.as_deref(),
         };
 
         match ExecutionEngine::run_offline(input).await {
             Ok(output) => {
                 for event in output.verification_events {
                     let h2ai_ev = H2AIEvent::VerificationScored(event);
-                    if let Err(e) = state_clone
+                    match state_clone
                         .nats
-                        .publish_event(&output.task_id, &h2ai_ev)
+                        .publish_event_seq(&output.task_id, &h2ai_ev)
                         .await
                     {
-                        tracing::warn!("failed to publish VerificationScoredEvent: {e}");
+                        Ok(seq) => {
+                            if let Some(ts) = state_clone.store.get(&output.task_id) {
+                                state_clone.journal.note_event(&output.task_id, seq, &ts);
+                            }
+                        }
+                        Err(e) => tracing::warn!("failed to publish VerificationScoredEvent: {e}"),
                     }
+                }
+
+                // Apply τ-spread EMA update when the engine detected waste.
+                if !output.applied_optimizations.is_empty() {
+                    use h2ai_types::events::OptimizationKind;
+                    for opt in &output.applied_optimizations {
+                        if opt.kind == OptimizationKind::TauSpreadAdjusted {
+                            if let (Ok(before), Ok(after)) =
+                                (opt.before.parse::<f64>(), opt.after.parse::<f64>())
+                            {
+                                let mut est = state_clone.tau_spread_estimator.write().await;
+                                // Use the verify_threshold change as a proxy for τ spread shift.
+                                // before/after are verify_threshold values scaled to [0,1].
+                                est.update(before.min(after), before.max(after));
+                            }
+                        }
+                    }
+                }
+
+                let attr_ev = H2AIEvent::TaskAttribution(TaskAttributionEvent {
+                    task_id: output.task_id.clone(),
+                    q_predicted: output.attribution.total_quality,
+                    q_measured: output.attribution.q_measured,
+                    q_interval_lo: output.attribution_interval.as_ref().map(|iv| iv.q_total_lo),
+                    q_interval_hi: output.attribution_interval.as_ref().map(|iv| iv.q_total_hi),
+                    prediction_basis: output.attribution.prediction_basis,
+                    waste_ratio: output.waste_ratio,
+                    applied_optimizations: output.applied_optimizations,
+                    timestamp: chrono::Utc::now(),
+                });
+                match state_clone
+                    .nats
+                    .publish_event_seq(&output.task_id, &attr_ev)
+                    .await
+                {
+                    Ok(seq) => {
+                        if let Some(ts) = state_clone.store.get(&output.task_id) {
+                            state_clone.journal.note_event(&output.task_id, seq, &ts);
+                        }
+                    }
+                    Err(e) => tracing::warn!("failed to publish TaskAttributionEvent: {e}"),
                 }
                 state_clone.store.mark_resolved(&output.task_id);
             }

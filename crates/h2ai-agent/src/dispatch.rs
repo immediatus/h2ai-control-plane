@@ -2,7 +2,7 @@ use async_nats::Client;
 use futures::StreamExt;
 use h2ai_nats::subjects::task_result_subject;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
-use h2ai_types::agent::{TaskPayload, TaskResult};
+use h2ai_types::agent::{ContextPayload, TaskPayload, TaskResult};
 use h2ai_types::identity::AgentId;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -69,8 +69,21 @@ impl DispatchLoop {
     }
 
     async fn execute_task(&self, payload: TaskPayload) -> TaskResult {
+        let system_context = match payload.context {
+            ContextPayload::Inline(s) => s,
+            ContextPayload::Ref { hash, byte_len } => {
+                // Object store backend not yet available on the agent side.
+                // Large contexts (Ref payloads) are unsupported until NatsObjectStoreBackend ships.
+                tracing::warn!(
+                    hash = %hash,
+                    byte_len = byte_len,
+                    "Ref context payload received; NatsObjectStoreBackend not yet implemented — using empty context"
+                );
+                String::new()
+            }
+        };
         let request = ComputeRequest {
-            system_context: payload.context.clone(),
+            system_context,
             task: payload.instructions.clone(),
             tau: payload.tau,
             max_tokens: payload.max_tokens,

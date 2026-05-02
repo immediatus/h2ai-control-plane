@@ -351,7 +351,34 @@ Prometheus metrics endpoint. See [Configuration Reference — Metrics](configura
 
 ## Event Vocabulary
 
-All 17 events published to `h2ai.tasks.{task_id}`. Internally-tagged JSON: `"event_type"` + `"payload"`.
+All 24 events published to `h2ai.tasks.{task_id}`. Internally-tagged JSON: `"event_type"` + `"payload"`.
+
+| Event | Phase | Description |
+|---|---|---|
+| `CalibrationCompleted` | 0 | α, β₀, CG samples locked |
+| `TaskBootstrapped` | 1 | J_eff gate passed, system_context locked |
+| `TopologyProvisioned` | 2 | DAG shape, τ values, merge strategy |
+| `MultiplicationConditionFailed` | 2.5 | Which of 3 conditions failed |
+| `Proposal` | 3 | Explorer output appended |
+| `ProposalFailed` | 3 | Explorer crashed/timed out |
+| `GenerationPhaseCompleted` | 3 | JoinSet drained |
+| `TaoIteration` | 3 | Per-explorer per-turn TAO loop result |
+| `VerificationScored` | 3.5 | LLM-judge or oracle score per proposal |
+| `ReviewGateTriggered` | 3b | Evaluator reviewing Executor proposal (TeamSwarmHybrid) |
+| `ReviewGateBlocked` | 3b | Evaluator rejected proposal |
+| `Validation` | 4 | Auditor: proposal passed |
+| `BranchPruned` | 4 | Auditor: proposal rejected |
+| `ZeroSurvival` | 4 | All proposals pruned — MAPE-K retry |
+| `InterfaceSaturationWarning` | any | Active subtasks approaching N_max^interface |
+| `ConsensusRequired` | 5 | max(c_i) > 0.85, switching to BFT |
+| `SemilatticeCompiled` | 5 | Merge ready |
+| `MergeResolved` | 5 | Human resolution, task closed |
+| `TaskFailed` | any | Retries exhausted |
+| `TaskAttribution` | 5 | Q_total decomposition with CI |
+| `SubtaskPlanCreated` | compound | Task decomposed into SubtaskPlan |
+| `SubtaskPlanReviewed` | compound | PlanReviewer approved/rejected SubtaskPlan |
+| `SubtaskStarted` | compound | Subtask dispatched in topo-sort wave |
+| `SubtaskCompleted` | compound | Subtask output ready for dependents |
 
 ---
 
@@ -364,16 +391,26 @@ Published by `crates/h2ai-autonomic` at Phase 0 completion. Cached in NATS KV.
   "event_type": "CalibrationCompleted",
   "payload": {
     "calibration_id": "cal_01HXYZ...",
-    "alpha": 0.12,
-    "kappa_base": 0.021,
-    "kappa_eff": 0.019,
-    "n_max": 6.3,
-    "theta_coord": 0.28,
-    "cg_mean": 0.71,
-    "cg_std_dev": 0.09,
-    "cg_samples": [0.68, 0.74, 0.71, 0.69, 0.73],
-    "adapter_count": 5,
-    "calibration_task_count": 3
+    "coefficients": {
+      "alpha": 0.12,
+      "beta_base": 0.021,
+      "cg_samples": [0.68, 0.74, 0.71, 0.69, 0.73],
+      "sample_timestamps": [1746000000, 1746000060, 1746000120, 1746000180, 1746000240]
+    },
+    "coordination_threshold": 0.28,
+    "ensemble": {
+      "n_optimal": 5,
+      "p_mean": 0.855,
+      "rho_mean": 0.145
+    },
+    "eigen": {
+      "n_effective": 3.8,
+      "n_pruned": 4,
+      "lambda_values": [2.1, 1.4, 0.8, 0.3]
+    },
+    "pairwise_beta": 0.019,
+    "cg_mode": "EmbeddingCosine",
+    "timestamp": "2026-05-01T14:23:01Z"
   }
 }
 ```
@@ -555,11 +592,17 @@ Published by `crates/h2ai-adapters` (Auditor) when a proposal fails validation. 
   "payload": {
     "task_id": "task_01HYYZ...",
     "explorer_id": "exp_C",
-    "tau": 0.7,
     "reason": "Proposes storing refresh tokens in Redis — violates ADR-001 stateless auth requirement",
-    "violated_adr": "ADR-001",
     "constraint_error_cost": 0.72,
-    "pruned_at": "2026-04-19T14:23:14Z"
+    "violated_constraints": [
+      {
+        "constraint_id": "ADR-001",
+        "score": 0.0,
+        "severity_label": "Hard",
+        "remediation_hint": "Use stateless JWT tokens; do not store session data in Redis"
+      }
+    ],
+    "timestamp": "2026-05-01T14:23:14Z"
   }
 }
 ```
@@ -736,6 +779,151 @@ Published by `crates/h2ai-autonomic` when the number of concurrent active sub-ta
 ```
 
 `saturation_ratio = active_subtasks / interface_n_max`. The warning fires when this ratio exceeds 0.75 (configurable). The `h2ai_interface_n_max` Prometheus gauge tracks this continuously.
+
+---
+
+### TaoIterationEvent
+
+Published by `crates/h2ai-orchestrator` for each TAO loop turn per Explorer. Only emitted when TAO is active (`max_turns > 1`).
+
+```json
+{
+  "event_type": "TaoIteration",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "explorer_id": "exp_A",
+    "turn": 1,
+    "observation": "verification passed",
+    "passed": true,
+    "timestamp": "2026-05-01T14:23:10Z"
+  }
+}
+```
+
+`turn` is 1-indexed. `passed: false` means the output did not satisfy verification on this turn and the Explorer will retry.
+
+---
+
+### VerificationScoredEvent
+
+Published by `crates/h2ai-orchestrator` after LLM-judge or oracle verification (Phase 3.5). One event per proposal per verification run.
+
+```json
+{
+  "event_type": "VerificationScored",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "explorer_id": "exp_B",
+    "score": 0.87,
+    "reason": "Proposal correctly handles idempotency via the Lua atomic check-and-set pattern. Minor: TTL not explicitly reset on duplicate request.",
+    "passed": true,
+    "timestamp": "2026-05-01T14:23:12Z"
+  }
+}
+```
+
+`score` is in [0, 1]. `passed` is `score ≥ verify_threshold` (default 0.3 after MAPE-K reduction). For Tier 1 oracle, `score` is 1.0 (all tests pass) or 0.0 (any test fails).
+
+---
+
+### TaskAttributionEvent
+
+Published alongside `SemilatticeCompiled` on the success path. Contains quality decomposition and confidence interval.
+
+```json
+{
+  "event_type": "TaskAttribution",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "q_predicted": 0.847,
+    "q_measured": 1.0,
+    "q_interval_lo": 0.791,
+    "q_interval_hi": 0.903,
+    "prediction_basis": "Empirical",
+    "timestamp": "2026-05-01T14:23:17Z"
+  }
+}
+```
+
+`q_measured` is non-null only when a Tier 1 oracle ran. `q_interval_lo`/`q_interval_hi` are `null` when fewer than 2 CG calibration samples are available. `prediction_basis`: `"Heuristic"` (CG-proxy chain) or `"Empirical"` (measured from oracle tasks).
+
+---
+
+### SubtaskPlanCreatedEvent
+
+Published by `crates/h2ai-planner` when a compound task is decomposed into a DAG of subtasks.
+
+```json
+{
+  "event_type": "SubtaskPlanCreated",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "plan_id": "plan_01HZZZ...",
+    "subtask_count": 4,
+    "timestamp": "2026-05-01T14:23:02Z"
+  }
+}
+```
+
+---
+
+### SubtaskPlanReviewedEvent
+
+Published by `crates/h2ai-planner` after the LLM plan reviewer approves or rejects the SubtaskPlan. Covers both outcomes — use `approved` field to distinguish.
+
+```json
+{
+  "event_type": "SubtaskPlanReviewed",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "plan_id": "plan_01HZZZ...",
+    "approved": true,
+    "reason": "Plan correctly sequences database migration before service deployment. Dependencies are acyclic.",
+    "timestamp": "2026-05-01T14:23:04Z"
+  }
+}
+```
+
+---
+
+### SubtaskStartedEvent
+
+Published by `crates/h2ai-orchestrator` when a subtask is dispatched in a topo-sort wave.
+
+```json
+{
+  "event_type": "SubtaskStarted",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "plan_id": "plan_01HZZZ...",
+    "subtask_id": "sub_01H111...",
+    "description": "Write and test the Redis Lua script for atomic budget check-and-decrement",
+    "wave": 1,
+    "timestamp": "2026-05-01T14:23:05Z"
+  }
+}
+```
+
+`wave` is the topo-sort level (0-indexed). All subtasks in the same wave have no inter-dependencies and are dispatched in parallel.
+
+---
+
+### SubtaskCompletedEvent
+
+Published by `crates/h2ai-orchestrator` when a subtask finishes. Its output is injected as context for dependent subtasks.
+
+```json
+{
+  "event_type": "SubtaskCompleted",
+  "payload": {
+    "task_id": "task_01HYYZ...",
+    "plan_id": "plan_01HZZZ...",
+    "subtask_id": "sub_01H111...",
+    "token_cost": 1243,
+    "timestamp": "2026-05-01T14:23:15Z"
+  }
+}
+```
 
 ---
 

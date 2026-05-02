@@ -132,7 +132,10 @@ async fn decomposer_empty_subtasks_array_produces_empty_plan() {
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
         .await
         .unwrap();
-    assert!(plan.subtasks.is_empty(), "empty subtasks array should yield empty plan");
+    assert!(
+        plan.subtasks.is_empty(),
+        "empty subtasks array should yield empty plan"
+    );
 }
 
 #[tokio::test]

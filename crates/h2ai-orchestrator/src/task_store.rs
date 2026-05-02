@@ -60,7 +60,7 @@ impl TaskPhase {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskState {
     pub task_id: TaskId,
     pub status: String,

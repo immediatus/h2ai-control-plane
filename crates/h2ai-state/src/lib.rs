@@ -12,11 +12,13 @@
 //! - [`krum`] — Krum and Multi-Krum Byzantine-fault-tolerant selection (n ≥ 2f+3 required).
 //! - [`journal`] — append-only `EventJournal` + `InMemoryBackend` for tests
 //! - [`nats`] — `NatsClient` connection + stream bootstrap
+//! - [`weiszfeld`] — Weiszfeld geometric median BFT selection (breakdown point 50%)
 
 pub mod bft;
 pub mod journal;
 pub mod krum;
 pub mod nats;
 pub mod semilattice;
+pub mod weiszfeld;
 
 pub use nats::NatsClient;

@@ -8,6 +8,7 @@ license.workspace    = true
 
 [dependencies]
 h2ai-types   = { path = "../h2ai-types" }
+h2ai-config  = { path = "../h2ai-config" }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 thiserror    = { workspace = true }

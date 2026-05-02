@@ -2,18 +2,20 @@ use async_trait::async_trait;
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
+use h2ai_constraints::loader::parse_constraint_doc;
 use h2ai_constraints::types::ConstraintDoc;
-use h2ai_context::adr::parse_adr;
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::{TaskPhase, TaskStore};
-use h2ai_types::adapter::{AdapterError, AdapterRegistry, ComputeRequest, ComputeResponse, IComputeAdapter};
-use std::sync::Arc;
+use h2ai_types::adapter::{
+    AdapterError, AdapterRegistry, ComputeRequest, ComputeResponse, IComputeAdapter,
+};
 use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, RoleSpec, TaoConfig, VerificationConfig,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use h2ai_types::physics::MergeStrategy;
+use std::sync::Arc;
 
 // ── Helper adapters ──────────────────────────────────────────────────────────
 
@@ -70,6 +72,7 @@ impl IComputeAdapter for TokenCostAdapter {
             output: self.output.clone(),
             token_cost: self.cost,
             adapter_kind: self.kind.clone(),
+            tokens_used: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -80,7 +83,7 @@ impl IComputeAdapter for TokenCostAdapter {
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
 fn constraint_corpus() -> Vec<ConstraintDoc> {
-    vec![parse_adr(
+    vec![parse_constraint_doc(
         "ADR-001",
         "## Constraints\nstateless auth\n",
     )]
@@ -150,7 +153,9 @@ async fn system_solves_well_formed_problem() {
     let cfg = H2AIConfig::default();
     let task_id = TaskId::new();
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new("stateless JWT auth solution — ADR-001 compliant".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "stateless JWT auth solution — ADR-001 compliant".into(),
+    )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
         manifest: default_manifest(3),
@@ -170,6 +175,7 @@ async fn system_solves_well_formed_problem() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -216,7 +222,9 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
     };
     let task_id = TaskId::new();
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new("stateless JWT auth implementation ADR-001".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "stateless JWT auth implementation ADR-001".into(),
+    )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
         manifest: default_manifest(2),
@@ -232,6 +240,7 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -263,7 +272,9 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
     let cfg = H2AIConfig::default();
     let task_id = TaskId::new();
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new("stateless JWT auth — ADR-001 compliant".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "stateless JWT auth — ADR-001 compliant".into(),
+    )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
         manifest: default_manifest(3),
@@ -283,6 +294,7 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -345,7 +357,9 @@ async fn system_resolves_conflict_via_bft_consensus() {
         context: None,
     };
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new("low-cost auth solution — stateless ADR-001".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "low-cost auth solution — stateless ADR-001".into(),
+    )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
         manifest,
@@ -364,6 +378,7 @@ async fn system_resolves_conflict_via_bft_consensus() {
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
+        embedding_model: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;

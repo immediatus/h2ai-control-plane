@@ -1,6 +1,7 @@
 use chrono::Utc;
 use h2ai_types::agent::{
-    AgentDescriptor, AgentState, AgentTelemetryEvent, AgentTool, CostTier, TaskPayload, TaskResult,
+    AgentDescriptor, AgentState, AgentTelemetryEvent, AgentTool, ContextPayload, CostTier,
+    TaskPayload, TaskResult,
 };
 use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::physics::TauValue;
@@ -82,7 +83,7 @@ fn task_payload_serde_roundtrip() {
             cost_tier: CostTier::Mid,
         },
         instructions: "summarise the doc".into(),
-        context: "system: you are a helpful assistant".into(),
+        context: ContextPayload::Inline("system: you are a helpful assistant".into()),
         tau: TauValue::new(0.4).unwrap(),
         max_tokens: 512,
     };

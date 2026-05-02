@@ -1,6 +1,6 @@
 use async_nats::jetstream::{self, kv, stream};
 use async_nats::Client;
-use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent};
+use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::TaskId;
 use thiserror::Error;
 
@@ -89,6 +89,17 @@ impl NatsClient {
         })
         .await?;
 
+        // KV bucket: task state snapshots for crash-recovery replay optimization
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_SNAPSHOTS".to_owned(),
+            description: "Task state snapshots — latest-only, accelerates replay after crash"
+                .to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
         Ok(())
     }
 
@@ -110,6 +121,61 @@ impl NatsClient {
             .await
             .map_err(|e| NatsError::PublishError(e.to_string()))?;
         Ok(())
+    }
+
+    /// Like `publish_event` but awaits the `PubAck` and returns the JetStream sequence number.
+    /// Use when the caller needs the sequence for snapshot tracking.
+    pub async fn publish_event_seq(
+        &self,
+        task_id: &TaskId,
+        event: &H2AIEvent,
+    ) -> Result<u64, NatsError> {
+        let subject = format!("h2ai.tasks.{task_id}");
+        let payload = serde_json::to_vec(event).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let ack_future = self
+            .jetstream
+            .publish(subject, payload.into())
+            .await
+            .map_err(|e| NatsError::PublishError(e.to_string()))?;
+        let ack = ack_future
+            .await
+            .map_err(|e| NatsError::PublishError(e.to_string()))?;
+        Ok(ack.sequence)
+    }
+
+    /// Write a task state snapshot to NATS KV. Key: `snapshots/{task_id}/latest`.
+    pub async fn put_snapshot(&self, snapshot: &TaskSnapshot) -> Result<(), NatsError> {
+        let key = format!("snapshots/{}/latest", snapshot.task_id);
+        let payload =
+            serde_json::to_vec(snapshot).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_SNAPSHOTS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put(&key, payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load the latest task state snapshot, or `None` if no snapshot exists yet.
+    pub async fn get_snapshot(&self, task_id: &TaskId) -> Result<Option<TaskSnapshot>, NatsError> {
+        let key = format!("snapshots/{task_id}/latest");
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_SNAPSHOTS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(&key).await {
+            Ok(Some(entry)) => {
+                let snapshot = serde_json::from_slice::<TaskSnapshot>(&entry)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(snapshot))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
     }
 
     /// Persist the latest calibration result in the KV cache.
@@ -293,7 +359,7 @@ mod wire_protocol_tests {
     // These tests require a running NATS server.
     // Run with: H2AI_INTEGRATION_TEST=1 cargo test -p h2ai-state -- --ignored
     use super::*;
-    use h2ai_types::agent::{AgentDescriptor, TaskPayload, TaskResult};
+    use h2ai_types::agent::{AgentDescriptor, ContextPayload, TaskPayload, TaskResult};
     use h2ai_types::identity::{AgentId, TaskId};
     use h2ai_types::physics::TauValue;
     use std::time::Duration;
@@ -301,8 +367,15 @@ mod wire_protocol_tests {
     #[tokio::test]
     #[ignore]
     async fn publish_and_receive_task_payload() {
-        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
-        let nats = NatsClient::connect(&nats_url).await.expect("connect");
+        let nats_url = std::env::var("NATS_URL")
+            .unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+        let nats = match NatsClient::connect(&nats_url).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+                return;
+            }
+        };
         nats.ensure_infrastructure().await.expect("infra");
 
         let task_id = TaskId::new();
@@ -321,7 +394,7 @@ mod wire_protocol_tests {
                 cost_tier: h2ai_types::agent::CostTier::Mid,
             },
             instructions: "test".into(),
-            context: "ctx".into(),
+            context: ContextPayload::Inline("ctx".into()),
             tau: TauValue::new(0.5).unwrap(),
             max_tokens: 256,
         };
@@ -340,8 +413,15 @@ mod wire_protocol_tests {
     #[tokio::test]
     #[ignore]
     async fn await_task_result_round_trip() {
-        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
-        let nats = NatsClient::connect(&nats_url).await.expect("connect");
+        let nats_url = std::env::var("NATS_URL")
+            .unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+        let nats = match NatsClient::connect(&nats_url).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
+                return;
+            }
+        };
         nats.ensure_infrastructure().await.expect("infra");
 
         let task_id = TaskId::new();

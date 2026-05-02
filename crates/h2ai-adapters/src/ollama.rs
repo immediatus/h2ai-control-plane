@@ -82,6 +82,7 @@ impl IComputeAdapter for OllamaAdapter {
             output: parsed.message.content,
             token_cost: parsed.prompt_eval_count + parsed.eval_count,
             adapter_kind: self.kind.clone(),
+            tokens_used: Some(parsed.prompt_eval_count + parsed.eval_count),
         })
     }
 

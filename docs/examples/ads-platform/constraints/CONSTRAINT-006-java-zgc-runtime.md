@@ -1,4 +1,4 @@
-# ADR-006: Java 21 + Generational ZGC for Request-Path Services
+# CONSTRAINT-006: Java 21 + Generational ZGC for Request-Path Services
 
 ## Status
 

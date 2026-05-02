@@ -1,6 +1,8 @@
 use h2ai_provisioner::nats_provider::NatsAgentProvider;
 use h2ai_provisioner::provider::AgentProvider;
-use h2ai_provisioner::scheduling::{AgentCandidate, LeastLoadedPolicy, RoundRobinPolicy, SchedulingPolicy};
+use h2ai_provisioner::scheduling::{
+    AgentCandidate, LeastLoadedPolicy, RoundRobinPolicy, SchedulingPolicy,
+};
 use h2ai_types::agent::{AgentDescriptor, AgentTool, CostTier, TaskRequirements};
 use h2ai_types::identity::AgentId;
 

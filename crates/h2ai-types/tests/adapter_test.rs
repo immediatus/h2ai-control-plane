@@ -27,6 +27,7 @@ fn compute_response_serde_round_trip() {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
         },
+        tokens_used: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let back: ComputeResponse = serde_json::from_str(&json).unwrap();
@@ -68,6 +69,7 @@ impl h2ai_types::adapter::IComputeAdapter for LabelAdapter {
             output: self.0.clone(),
             token_cost: 0,
             adapter_kind: self.1.clone(),
+            tokens_used: None,
         })
     }
     fn kind(&self) -> &h2ai_types::config::AdapterKind {
@@ -93,19 +95,25 @@ fn registry_scoring_falls_back_to_reasoning_when_not_set() {
     let expected = reasoning.as_ref() as *const _;
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
-    assert_eq!(resolved, expected, "scoring must fall back to reasoning when not configured");
+    assert_eq!(
+        resolved, expected,
+        "scoring must fall back to reasoning when not configured"
+    );
 }
 
 #[test]
 fn registry_scoring_uses_dedicated_adapter_when_set() {
     let scoring = label("scoring");
-    let reg = h2ai_types::adapter::AdapterRegistry::new(label("reasoning"))
-        .with_scoring(scoring.clone());
+    let reg =
+        h2ai_types::adapter::AdapterRegistry::new(label("reasoning")).with_scoring(scoring.clone());
     let resolved = reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring) as *const _;
     let expected = scoring.as_ref() as *const _;
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
-    assert_eq!(resolved, expected, "scoring must return the dedicated adapter");
+    assert_eq!(
+        resolved, expected,
+        "scoring must return the dedicated adapter"
+    );
 }
 
 #[test]
@@ -116,7 +124,10 @@ fn registry_structural_falls_back_to_reasoning_when_not_set() {
     let expected = reasoning.as_ref() as *const _;
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
-    assert_eq!(resolved, expected, "structural must fall back to reasoning when not configured");
+    assert_eq!(
+        resolved, expected,
+        "structural must fall back to reasoning when not configured"
+    );
 }
 
 #[test]
@@ -128,7 +139,10 @@ fn registry_structural_uses_dedicated_adapter_when_set() {
     let expected = structural.as_ref() as *const _;
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
-    assert_eq!(resolved, expected, "structural must return the dedicated adapter");
+    assert_eq!(
+        resolved, expected,
+        "structural must return the dedicated adapter"
+    );
 }
 
 #[test]

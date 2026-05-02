@@ -14,6 +14,7 @@ testing = []
 
 [dependencies]
 h2ai-types  = { path = "../h2ai-types" }
+h2ai-config = { path = "../h2ai-config" }
 h2ai-nats   = { path = "../h2ai-nats" }
 async-trait = { workspace = true }
 thiserror   = { workspace = true }

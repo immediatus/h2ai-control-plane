@@ -1,0 +1,248 @@
+# H2AI Control Plane — Reference Configuration
+#
+# This file is the single source of truth for all default values.
+# Copy only the fields you need to change into your override file (h2ai.toml).
+# Field-level overrides are also accepted via environment variables:
+#   H2AI__<FIELD_NAME>=value  (double underscore separator, upper-case field name)
+#   Example: H2AI__J_EFF_GATE=0.5
+
+# ── Context compiler ──────────────────────────────────────────────────────────
+
+# Minimum Jaccard overlap between task description and constraint vocabulary
+# before the task is accepted. Range [0, 1]. Lower = more permissive.
+j_eff_gate = 0.4
+
+# ── Physics thresholds ────────────────────────────────────────────────────────
+
+# Byzantine fault tolerance threshold for BFT consensus operations.
+# Range [0, 1].
+bft_threshold = 0.85
+
+# Byzantine fault tolerance bound for Krum/Multi-Krum merge strategy.
+# 0 = disabled (ConsensusMedian used at high error costs instead).
+# n = tolerate up to n Byzantine explorers; requires at least 2n+3 agents.
+krum_fault_tolerance = 0
+
+# Role error cost threshold above which Krum is preferred over ConsensusMedian.
+# Only applies when krum_fault_tolerance > 0.
+krum_threshold = 0.95
+
+# Maximum allowed coordination threshold θ derived from calibration.
+# Range [0, 1].
+coordination_threshold_max = 0.3
+
+# Minimum baseline competence p₀ required to pass the multiplication condition.
+# Range [0, 1].
+min_baseline_competence = 0.3
+
+# Maximum error correlation ρ tolerated before the multiplication condition fails.
+# Range [0, 1].
+max_error_correlation = 0.9
+
+# ── Agent role default τ values ───────────────────────────────────────────────
+# τ (temperature) controls output diversity per role. Range [0, 1].
+# Higher = more exploratory output.
+
+tau_coordinator = 0.05
+tau_executor    = 0.40
+tau_evaluator   = 0.10
+tau_synthesizer = 0.80
+
+# ── Agent role default error-cost weights ────────────────────────────────────
+# Weight of each role's errors in the semilattice merge. Range [0, 1].
+# Higher cost = role errors are penalised more heavily.
+
+cost_coordinator = 0.1
+cost_executor    = 0.5
+cost_evaluator   = 0.9
+cost_synthesizer = 0.1
+
+# ── Token budgets ─────────────────────────────────────────────────────────────
+
+# Maximum tokens per explorer generation call.
+explorer_max_tokens = 1024
+
+# Maximum tokens per calibration probe call.
+calibration_max_tokens = 256
+
+# Maximum tokens kept after context compaction.
+# Comment out or omit to disable the limit.
+# max_context_tokens = 8192
+
+# ── Calibration ───────────────────────────────────────────────────────────────
+
+# Temperature used for all calibration adapter probes. Range [0, 1].
+calibration_tau = 0.5
+
+# Number of adapter instances spawned during calibration.
+# Minimum 3 for the USL two-point fit to produce real measurements.
+# Fewer than 3 falls back to alpha_contention and beta_base_default.
+calibration_adapter_count = 3
+
+# τ spread [min, max] for calibration instances.
+# Instances are spaced linearly across this range when clone_with_tau is available.
+calibration_tau_spread = [0.3, 0.7]
+
+# CG (coordination gain) fallback used when fewer than 3 adapters run calibration.
+calibration_cg_fallback = 0.7
+
+# CG collapse threshold. When CG_embed drops below this value the planner forces
+# N_max = 1 (no ensemble overhead when coordination quality has collapsed).
+# Default 0.10: below 10% agreement pairwise reconciliation is undefined.
+cg_collapse_threshold = 0.10
+
+# Cosine similarity threshold for counting two adapter outputs as "in agreement".
+# Used to compute CG_embed as an agreement rate per calibration prompt.
+cg_agreement_threshold = 0.85
+
+# Embedding model for CG cosine agreement measurement.
+# Requires the fastembed-embed Cargo feature.
+# Options:
+#   "AllMiniLmL6V2"  — 22 MB, ~8 ms/sentence CPU (default, smallest footprint)
+#   "BgeSmallEnV1_5" — 109 MB, ~5 ms/sentence CPU (better MTEB STS scores)
+embedding_model_name = "AllMiniLmL6V2"
+
+# ── USL physics ───────────────────────────────────────────────────────────────
+
+# α contention constant: fraction of work that must serialise regardless of
+# parallelism. Deployment-specific calibration heuristic.
+# 0.12 = typical LLM workloads. Also accepts alias: calibration_alpha_single_adapter.
+alpha_contention = 0.12
+
+# β₀ base coherency cost per agent pair.
+# 0.039 = AI-agents tier (default).
+# 0.0225 = human-team tier.
+# 0.0003 = CPU-core tier.
+# Also accepts alias: kappa_eff_factor.
+beta_base_default = 0.039
+
+# Quality factor gained per TAO loop turn. Heuristic prior; converges after
+# 20 Tier 1 oracle tasks via TaoMultiplierEstimator.
+tao_per_turn_factor = 0.6
+
+# Context pressure sensitivity γ. Scales how much a full context window raises β.
+# 0 = disabled (β unchanged). 0.5 = β doubles when context is completely full.
+# Range [0, 1].
+context_pressure_gamma = 0.5
+
+# Directly measured per-adapter baseline accuracy proxy.
+# 0.0 = use CG-mean proxy (0.5 + CG_mean / 2).
+# Set via scripts/baseline_eval.py output for empirically measured accuracy.
+baseline_accuracy_proxy = 0.0
+
+# ── Self-optimizer ────────────────────────────────────────────────────────────
+
+# Step size for verify_threshold reduction suggestions. Range (0, 1).
+optimizer_threshold_step = 0.1
+
+# Floor for verify_threshold reductions. Threshold never goes below this value.
+optimizer_threshold_floor = 0.3
+
+# Fraction of proposals that must survive verification for the run to be
+# considered "not wasteful". Below this threshold, SelfOptimizer suggestions
+# are applied on the success path to reduce future waste.
+optimizer_waste_threshold = 0.5
+
+# ── MAPE-K retry ──────────────────────────────────────────────────────────────
+
+# Maximum autonomic retry iterations before a task is declared failed.
+max_autonomic_retries = 2
+
+# Maximum concurrent task executions. Requests beyond this limit receive 503.
+max_concurrent_tasks = 8
+
+# Hard deadline in seconds for a single task end-to-end.
+# Comment out or omit to disable the deadline.
+# task_deadline_secs = 300
+
+# ── Diversity ─────────────────────────────────────────────────────────────────
+
+# Jaccard similarity threshold above which all pairwise proposals are treated as
+# uniformly hallucinated → ZeroSurvival → MAPE-K retry. Range [0, 1].
+diversity_threshold = 0.85
+
+# Maximum τ-spread expansion factor when Talagrand detects over-confidence.
+# 2.0 = τ spread can at most double from its manifest value.
+tau_spread_max_factor = 2.0
+
+# ── Thompson Sampling bandit ──────────────────────────────────────────────────
+
+# Tasks completed before activating the bandit (Phase 0 — pure exploration).
+# During Phase 0, N = N_max_USL unconditionally.
+bandit_phase0_k = 10
+
+# Tasks completed before switching from ε-greedy to pure Thompson Sampling.
+bandit_phase1_k = 30
+
+# ε for Phase 1 ε-greedy: probability of selecting a random arm each task.
+# Range [0, 1].
+bandit_epsilon = 0.3
+
+# Soft-reset decay factor when adapter version hash changes.
+# 0.3 = blend 30% toward initial prior, preserving 70% of learned posterior.
+bandit_soft_reset_decay = 0.3
+
+# ── Empirical baseline automation ─────────────────────────────────────────────
+
+# When true, automatically switches to Empirical prediction basis after
+# auto_baseline_eval_min_tasks Tier 1 oracle tasks complete.
+auto_baseline_eval = false
+
+# Minimum Tier 1 oracle task count before auto baseline evaluation triggers.
+auto_baseline_eval_min_tasks = 50
+
+# ── Multi-family enforcement ──────────────────────────────────────────────────
+
+# When false (default), calibration aborts if all non-Mock adapters belong to
+# the same provider family. Weiszfeld BFT correlated hallucination protection
+# requires diverse families. Set true to allow single-family pools with a warning.
+allow_single_family = false
+
+# ── Self-optimizer waste threshold ────────────────────────────────────────────
+# (defined above under Self-optimizer section)
+
+# ── NATS payload offloading ───────────────────────────────────────────────────
+
+# Byte length above which system_context is offloaded to a content-addressed store
+# and replaced with a hash reference in the NATS message (ContextPayload::Ref).
+# Default 524288 (512 KB) — half of the NATS JetStream 1 MB default message size limit.
+# Prevents publish failures when constraint corpora grow large.
+payload_offload_threshold_bytes = 524288
+
+# ── Event snapshots ───────────────────────────────────────────────────────────
+
+# Events published per task before a state snapshot is written to NATS KV.
+# Reduces crash-recovery replay time: recovery loads the latest snapshot and only
+# replays events published after that snapshot's sequence number.
+# Default 50. Set to 0 to disable snapshotting.
+snapshot_interval_events = 50
+
+# ── NATS ──────────────────────────────────────────────────────────────────────
+
+# NATS server URL for the API server, edge agents, and integration tests.
+# Override via H2AI__NATS_URL env var or the nats_url field in your override TOML.
+nats_url = "nats://localhost:4222"
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+# Scheduling policy for agent dispatch.
+# "CostAwareSpillover" — route to lowest cost tier with headroom (default).
+# "LeastLoaded"        — always route to globally least-loaded agent.
+scheduler_policy = "CostAwareSpillover"
+
+# Queue depth per cost tier at which CostAwareSpillover routes to the next tier.
+# Only used when scheduler_policy = "CostAwareSpillover".
+scheduler_spillover_threshold = 10
+
+# ── Adapter profiles ──────────────────────────────────────────────────────────
+# Named adapter configurations for TaskProfile routing.
+# Add entries to configure model backends without scattering AdapterKind
+# values through application startup code.
+#
+# Example entry:
+# [[adapter_profiles]]
+# name = "claude-sonnet"
+# [adapter_profiles.kind.Anthropic]
+# api_key_env = "ANTHROPIC_API_KEY"
+# model = "claude-sonnet-4-5"
+adapter_profiles = []

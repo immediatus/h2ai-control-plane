@@ -50,6 +50,30 @@ pub enum AgentState {
     Failed(String),
 }
 
+/// System context carried in a NATS task message — either inlined (small payloads) or
+/// referenced by SHA-256 hex hash in a content-addressed object store (large payloads).
+///
+/// Inline is used when `len(context_bytes) ≤ payload_offload_threshold_bytes`.
+/// Ref is used when the context exceeds the threshold, preventing NATS size-limit failures.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value")]
+pub enum ContextPayload {
+    /// Full context string inline.
+    Inline(String),
+    /// Content-addressed reference: SHA-256 hash (hex) + original byte length.
+    Ref { hash: String, byte_len: usize },
+}
+
+impl ContextPayload {
+    pub fn as_inline(&self) -> Option<&str> {
+        match self {
+            ContextPayload::Inline(s) => Some(s.as_str()),
+            ContextPayload::Ref { .. } => None,
+        }
+    }
+}
+
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskPayload {
@@ -58,7 +82,7 @@ pub struct TaskPayload {
     pub agent_id: AgentId,
     pub agent: AgentDescriptor,
     pub instructions: String,
-    pub context: String,
+    pub context: ContextPayload,
     pub tau: TauValue,
     pub max_tokens: u64,
 }

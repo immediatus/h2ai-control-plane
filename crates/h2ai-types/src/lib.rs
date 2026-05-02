@@ -27,3 +27,4 @@ pub mod manifest;
 pub mod memory;
 pub mod physics;
 pub mod plan;
+pub mod prompts;

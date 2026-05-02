@@ -1,4 +1,4 @@
-# ADR-007: Tiered Data Consistency — Different Consistency Models per Data Type
+# CONSTRAINT-007: Tiered Data Consistency — Different Consistency Models per Data Type
 
 ## Status
 

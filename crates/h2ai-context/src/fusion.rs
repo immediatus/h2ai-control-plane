@@ -87,7 +87,10 @@ mod tests {
         let fused = rrf_fuse(&[list_a, list_b], RRF_K);
         let score_0 = fused.iter().find(|(i, _)| *i == 0).unwrap().1;
         let score_1 = fused.iter().find(|(i, _)| *i == 1).unwrap().1;
-        assert!((score_0 - score_1).abs() < 1e-9, "mirrored ranks → equal RRF score");
+        assert!(
+            (score_0 - score_1).abs() < 1e-9,
+            "mirrored ranks → equal RRF score"
+        );
     }
 
     #[test]
@@ -111,7 +114,11 @@ mod tests {
 
     #[test]
     fn hybrid_search_relevant_doc_ranks_first_without_model() {
-        let docs = ["jwt auth token stateless", "redis cache store", "tcp socket"];
+        let docs = [
+            "jwt auth token stateless",
+            "redis cache store",
+            "tcp socket",
+        ];
         let result = hybrid_search("jwt authentication", &docs, None, RRF_K);
         assert_eq!(result[0].0, 0, "jwt doc must rank first for jwt query");
     }
@@ -131,6 +138,9 @@ mod tests {
         }
         let docs = ["bearer token mechanism", "redis cache store"];
         let result = hybrid_search("jwt authentication", &docs, Some(&AuthModel), RRF_K);
-        assert_eq!(result[0].0, 0, "semantic auth match must rank above unrelated doc");
+        assert_eq!(
+            result[0].0, 0,
+            "semantic auth match must rank above unrelated doc"
+        );
     }
 }

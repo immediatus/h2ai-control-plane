@@ -44,7 +44,8 @@ async fn merge_engine_resolves_crdt_when_valid_proposals_exist() {
     set.insert(proposal(&task_id, ExplorerId::new(), "answer A", 10));
     set.insert(proposal(&task_id, ExplorerId::new(), "answer B", 20));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None, None).await;
+    let outcome =
+        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
     assert!(matches!(outcome, MergeOutcome::Resolved { .. }));
 }
 
@@ -56,7 +57,15 @@ async fn merge_engine_emits_zero_survival_when_all_pruned() {
     set.insert(proposal(&task_id, explorer_id.clone(), "output", 5));
     let pruned_events = vec![pruned(&task_id, &explorer_id)];
 
-    let outcome = MergeEngine::resolve(task_id, set, pruned_events, MergeStrategy::ScoreOrdered, 0, None, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        pruned_events,
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+    )
+    .await;
     assert!(matches!(outcome, MergeOutcome::ZeroSurvival(_)));
 }
 
@@ -69,7 +78,6 @@ async fn merge_engine_zero_survival_when_proposal_set_empty() {
         vec![],
         MergeStrategy::ScoreOrdered,
         0,
-        None,
         None,
     )
     .await;
@@ -85,7 +93,15 @@ async fn merge_engine_consensus_median_selects_a_proposal() {
     set.insert(proposal(&task_id, ExplorerId::new(), a, 100));
     set.insert(proposal(&task_id, ExplorerId::new(), b, 10));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ConsensusMedian, 0, None, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::ConsensusMedian,
+        0,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
         assert!(
             !resolved.resolved_output.is_empty(),
@@ -102,7 +118,8 @@ async fn merge_engine_resolved_outcome_carries_semilattice_compiled_event() {
     let mut set = ProposalSet::new();
     set.insert(proposal(&task_id, ExplorerId::new(), "output", 5));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None, None).await;
+    let outcome =
+        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
     if let MergeOutcome::Resolved { compiled, .. } = outcome {
         assert!(!compiled.valid_proposals.is_empty());
     } else {
@@ -146,7 +163,15 @@ async fn merge_engine_krum_selects_honest_proposal() {
         10,
     ));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::Krum { f: 1 }, 0, None, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::OutlierResistant { f: 1 },
+        0,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
         assert_ne!(
             resolved.resolved_output, "blockchain hash rainbow table wrong",
@@ -192,9 +217,8 @@ async fn merge_engine_multi_krum_returns_honest_output() {
         task_id,
         set,
         vec![],
-        MergeStrategy::MultiKrum { f: 2, m: 3 },
+        MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
         0,
-        None,
         None,
     )
     .await;
@@ -220,12 +244,40 @@ async fn merge_engine_krum_quorum_violated_falls_back_to_consensus_median() {
     // n=4, f=1: quorum not satisfied (need 5). Falls back to ConsensusMedian.
     let task_id = TaskId::new();
     let mut set = ProposalSet::new();
-    set.insert(proposal(&task_id, ExplorerId::new(), "jwt auth stateless token", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "jwt stateless bearer auth", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "stateless jwt token auth", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "blockchain wrong hash", 10));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "jwt auth stateless token",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "jwt stateless bearer auth",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "stateless jwt token auth",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "blockchain wrong hash",
+        10,
+    ));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::Krum { f: 1 }, 0, None, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::OutlierResistant { f: 1 },
+        0,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
         assert!(
             !resolved.resolved_output.is_empty(),
@@ -242,13 +294,46 @@ async fn merge_engine_krum_incoherent_cluster_falls_back_to_consensus_median() {
     // cluster_coherent() must return false, triggering ConsensusMedian fallback.
     let task_id = TaskId::new();
     let mut set = ProposalSet::new();
-    set.insert(proposal(&task_id, ExplorerId::new(), "alpha bravo charlie delta", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "echo foxtrot golf hotel", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "india juliet kilo lima", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "mike november oscar papa", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "quebec romeo sierra tango", 10));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "alpha bravo charlie delta",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "echo foxtrot golf hotel",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "india juliet kilo lima",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "mike november oscar papa",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "quebec romeo sierra tango",
+        10,
+    ));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::Krum { f: 1 }, 0, None, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::OutlierResistant { f: 1 },
+        0,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
         assert!(
             !resolved.resolved_output.is_empty(),
@@ -282,9 +367,8 @@ async fn merge_engine_multi_krum_incoherent_cluster_falls_back_to_consensus_medi
         task_id,
         set,
         vec![],
-        MergeStrategy::MultiKrum { f: 2, m: 3 },
+        MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
         0,
-        None,
         None,
     )
     .await;
@@ -308,7 +392,6 @@ async fn merge_engine_zero_survival_carries_retry_count() {
         MergeStrategy::ScoreOrdered,
         7,
         None,
-        None,
     )
     .await;
     if let MergeOutcome::ZeroSurvival(event) = outcome {
@@ -323,20 +406,49 @@ async fn merge_engine_multi_krum_quorum_violated_falls_back_to_consensus_median(
     // n=6, f=2: quorum not satisfied (need 7). Falls back to ConsensusMedian.
     let task_id = TaskId::new();
     let mut set = ProposalSet::new();
-    set.insert(proposal(&task_id, ExplorerId::new(), "jwt auth stateless token", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "jwt stateless bearer auth", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "stateless jwt token auth", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "auth jwt token stateless bearer", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "token stateless jwt authentication", 10));
-    set.insert(proposal(&task_id, ExplorerId::new(), "blockchain wrong hash table", 10));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "jwt auth stateless token",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "jwt stateless bearer auth",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "stateless jwt token auth",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "auth jwt token stateless bearer",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "token stateless jwt authentication",
+        10,
+    ));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "blockchain wrong hash table",
+        10,
+    ));
 
     let outcome = MergeEngine::resolve(
         task_id,
         set,
         vec![],
-        MergeStrategy::MultiKrum { f: 2, m: 3 },
+        MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
         0,
-        None,
         None,
     )
     .await;
@@ -358,9 +470,13 @@ async fn merge_resolved_event_contains_timing_fields() {
     set.insert(proposal(&task_id, ExplorerId::new(), "answer B", 20));
     set.insert(proposal(&task_id, ExplorerId::new(), "answer C", 15));
 
-    let outcome = MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None, None).await;
+    let outcome =
+        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
     if let MergeOutcome::Resolved { compiled, .. } = outcome {
-        assert!(compiled.merge_elapsed_secs.is_some(), "merge_elapsed_secs must be populated");
+        assert!(
+            compiled.merge_elapsed_secs.is_some(),
+            "merge_elapsed_secs must be populated"
+        );
         assert_eq!(compiled.n_input_proposals, 3);
     } else {
         panic!("expected Resolved");
@@ -372,14 +488,30 @@ async fn merge_n_input_proposals_includes_pruned_count() {
     let task_id = TaskId::new();
     let explorer_id = ExplorerId::new();
     let mut set = ProposalSet::new();
-    set.insert(proposal(&task_id, ExplorerId::new(), "surviving answer", 10));
+    set.insert(proposal(
+        &task_id,
+        ExplorerId::new(),
+        "surviving answer",
+        10,
+    ));
     set.insert(proposal(&task_id, explorer_id.clone(), "pruned answer", 10));
     let pruned_events = vec![pruned(&task_id, &explorer_id)];
 
     // 2 proposals in set + 1 pruned event → n_input_proposals = proposals.len() + pruned.len() = 3
-    let outcome = MergeEngine::resolve(task_id, set, pruned_events, MergeStrategy::ScoreOrdered, 0, None, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        pruned_events,
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved { compiled, .. } = outcome {
-        assert_eq!(compiled.n_input_proposals, 3, "must count proposals in set plus pruned events");
+        assert_eq!(
+            compiled.n_input_proposals, 3,
+            "must count proposals in set plus pruned events"
+        );
     } else {
         panic!("expected Resolved");
     }

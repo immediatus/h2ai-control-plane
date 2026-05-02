@@ -1,6 +1,6 @@
 use h2ai_constraints::types::{
-    ComplianceResult, ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
-    aggregate_compliance_score,
+    aggregate_compliance_score, ComplianceResult, ConstraintDoc, ConstraintPredicate,
+    ConstraintSeverity, VocabularyMode,
 };
 
 #[test]
@@ -104,13 +104,25 @@ fn positive_vocabulary_excludes_negative_keyword_terms() {
 
     assert!(pos.contains("zgc"), "zgc must be in positive_vocabulary");
     assert!(pos.contains("java"), "java must be in positive_vocabulary");
-    assert!(!pos.contains("g1gc"), "g1gc must NOT be in positive_vocabulary");
+    assert!(
+        !pos.contains("g1gc"),
+        "g1gc must NOT be in positive_vocabulary"
+    );
 
     assert!(neg.contains("g1gc"), "g1gc must be in negative_vocabulary");
-    assert!(!neg.contains("zgc"), "zgc must NOT be in negative_vocabulary");
+    assert!(
+        !neg.contains("zgc"),
+        "zgc must NOT be in negative_vocabulary"
+    );
 
-    assert!(all.contains("zgc"), "vocabulary() must include positive terms");
-    assert!(all.contains("g1gc"), "vocabulary() must include negative terms");
+    assert!(
+        all.contains("zgc"),
+        "vocabulary() must include positive terms"
+    );
+    assert!(
+        all.contains("g1gc"),
+        "vocabulary() must include negative terms"
+    );
 }
 
 #[test]
@@ -127,9 +139,18 @@ fn negative_vocabulary_from_none_of_mode() {
         remediation_hint: None,
     };
     let neg = doc.negative_vocabulary();
-    assert!(neg.contains("rest"), "NoneOf terms must appear in negative_vocabulary");
-    assert!(neg.contains("http"), "NoneOf terms must appear in negative_vocabulary");
-    assert!(doc.positive_vocabulary().is_empty(), "NoneOf must not contribute to positive_vocabulary");
+    assert!(
+        neg.contains("rest"),
+        "NoneOf terms must appear in negative_vocabulary"
+    );
+    assert!(
+        neg.contains("http"),
+        "NoneOf terms must appear in negative_vocabulary"
+    );
+    assert!(
+        doc.positive_vocabulary().is_empty(),
+        "NoneOf must not contribute to positive_vocabulary"
+    );
 }
 
 #[test]

@@ -1,7 +1,5 @@
 use h2ai_constraints::eval::eval_sync;
-use h2ai_constraints::types::{
-    CompositeOp, ConstraintPredicate, VocabularyMode,
-};
+use h2ai_constraints::types::{CompositeOp, ConstraintPredicate, VocabularyMode};
 
 #[test]
 fn vocabulary_presence_all_of_full_match() {
@@ -10,7 +8,10 @@ fn vocabulary_presence_all_of_full_match() {
         terms: vec!["data".into(), "minimization".into()],
     };
     let score = eval_sync(&pred, "we apply data minimization principles");
-    assert!((score - 1.0).abs() < 1e-9, "full AllOf match must be 1.0, got {score}");
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "full AllOf match must be 1.0, got {score}"
+    );
 }
 
 #[test]
@@ -21,7 +22,10 @@ fn vocabulary_presence_all_of_partial_match() {
     };
     // only "data" and "minimization" present — 2/3
     let score = eval_sync(&pred, "we apply data minimization principles");
-    assert!((score - 2.0 / 3.0).abs() < 1e-9, "partial AllOf: 2/3, got {score}");
+    assert!(
+        (score - 2.0 / 3.0).abs() < 1e-9,
+        "partial AllOf: 2/3, got {score}"
+    );
 }
 
 #[test]
@@ -31,7 +35,10 @@ fn vocabulary_presence_any_of_single_hit() {
         terms: vec!["gdpr".into(), "privacy".into(), "ccpa".into()],
     };
     let score = eval_sync(&pred, "this complies with gdpr requirements");
-    assert!((score - 1.0).abs() < 1e-9, "AnyOf with one hit must be 1.0, got {score}");
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "AnyOf with one hit must be 1.0, got {score}"
+    );
 }
 
 #[test]
@@ -41,7 +48,10 @@ fn vocabulary_presence_any_of_no_hit() {
         terms: vec!["gdpr".into(), "privacy".into(), "ccpa".into()],
     };
     let score = eval_sync(&pred, "the system uses local caching");
-    assert!((score - 0.0).abs() < 1e-9, "AnyOf with no hit must be 0.0, got {score}");
+    assert!(
+        (score - 0.0).abs() < 1e-9,
+        "AnyOf with no hit must be 0.0, got {score}"
+    );
 }
 
 #[test]
@@ -51,7 +61,10 @@ fn vocabulary_presence_none_of_no_forbidden_terms() {
         terms: vec!["pii".into(), "password".into()],
     };
     let score = eval_sync(&pred, "the system stores aggregate statistics only");
-    assert!((score - 1.0).abs() < 1e-9, "NoneOf with no forbidden terms must be 1.0, got {score}");
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "NoneOf with no forbidden terms must be 1.0, got {score}"
+    );
 }
 
 #[test]
@@ -61,7 +74,10 @@ fn vocabulary_presence_none_of_forbidden_term_present() {
         terms: vec!["password".into(), "secret".into()],
     };
     let score = eval_sync(&pred, "do not log the password field");
-    assert!((score - 0.0).abs() < 1e-9, "NoneOf with forbidden term present must be 0.0, got {score}");
+    assert!(
+        (score - 0.0).abs() < 1e-9,
+        "NoneOf with forbidden term present must be 0.0, got {score}"
+    );
 }
 
 #[test]
@@ -91,9 +107,15 @@ fn composite_and_is_min_of_children() {
         ],
     };
     let score = eval_sync(&pred, "we store data in encrypted form");
-    assert!((score - 1.0).abs() < 1e-9, "And of two 1.0 should be 1.0, got {score}");
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "And of two 1.0 should be 1.0, got {score}"
+    );
     let score2 = eval_sync(&pred, "we store data and password");
-    assert!((score2 - 0.0).abs() < 1e-9, "And with one 0.0 child should be 0.0, got {score2}");
+    assert!(
+        (score2 - 0.0).abs() < 1e-9,
+        "And with one 0.0 child should be 0.0, got {score2}"
+    );
 }
 
 #[test]
@@ -112,9 +134,15 @@ fn composite_or_is_max_of_children() {
         ],
     };
     let score = eval_sync(&pred, "we comply with ccpa requirements");
-    assert!((score - 1.0).abs() < 1e-9, "Or with one hit must be 1.0, got {score}");
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "Or with one hit must be 1.0, got {score}"
+    );
     let score_none = eval_sync(&pred, "we use local storage");
-    assert!((score_none - 0.0).abs() < 1e-9, "Or with no hits must be 0.0, got {score_none}");
+    assert!(
+        (score_none - 0.0).abs() < 1e-9,
+        "Or with no hits must be 0.0, got {score_none}"
+    );
 }
 
 #[test]
@@ -128,8 +156,14 @@ fn composite_not_inverts_score() {
     };
     let score_with = eval_sync(&pred, "log the password field");
     let score_without = eval_sync(&pred, "log the username field");
-    assert!((score_with - 0.0).abs() < 1e-9, "Not of 1.0 must be 0.0, got {score_with}");
-    assert!((score_without - 1.0).abs() < 1e-9, "Not of 0.0 must be 1.0, got {score_without}");
+    assert!(
+        (score_with - 0.0).abs() < 1e-9,
+        "Not of 1.0 must be 0.0, got {score_with}"
+    );
+    assert!(
+        (score_without - 1.0).abs() < 1e-9,
+        "Not of 0.0 must be 1.0, got {score_without}"
+    );
 }
 
 #[test]
@@ -183,4 +217,84 @@ fn llm_judge_sync_path_passes_through() {
         rubric: "Does the response correctly cite the source?".into(),
     };
     assert!((eval_sync(&pred, "anything") - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn oracle_execution_sync_path_degrades_to_zero() {
+    let pred = ConstraintPredicate::OracleExecution {
+        test_runner_uri: "http://localhost:9999/run".into(),
+        test_suite: "suite.py".into(),
+        timeout_secs: 30,
+    };
+    assert!(
+        (eval_sync(&pred, "any output") - 0.0).abs() < 1e-9,
+        "OracleExecution sync path must return 0.0 (safe degradation)"
+    );
+}
+
+#[test]
+fn json_schema_valid_output_passes() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" }
+        },
+        "required": ["name"]
+    });
+    let pred = ConstraintPredicate::JsonSchema { schema };
+    assert!((eval_sync(&pred, r#"{"name":"Alice"}"#) - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn json_schema_missing_required_field_fails() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["name"]
+    });
+    let pred = ConstraintPredicate::JsonSchema { schema };
+    assert!((eval_sync(&pred, r#"{"age":30}"#) - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn json_schema_invalid_json_fails() {
+    let schema = serde_json::json!({ "type": "object" });
+    let pred = ConstraintPredicate::JsonSchema { schema };
+    assert!((eval_sync(&pred, "not json at all") - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn length_range_within_bounds_passes() {
+    let pred = ConstraintPredicate::LengthRange {
+        min_chars: Some(5),
+        max_chars: Some(50),
+    };
+    assert!((eval_sync(&pred, "hello world") - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn length_range_below_min_fails() {
+    let pred = ConstraintPredicate::LengthRange {
+        min_chars: Some(20),
+        max_chars: None,
+    };
+    assert!((eval_sync(&pred, "short") - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn length_range_above_max_fails() {
+    let pred = ConstraintPredicate::LengthRange {
+        min_chars: None,
+        max_chars: Some(5),
+    };
+    assert!((eval_sync(&pred, "this is longer than five chars") - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn length_range_no_bounds_always_passes() {
+    let pred = ConstraintPredicate::LengthRange {
+        min_chars: None,
+        max_chars: None,
+    };
+    assert!((eval_sync(&pred, "") - 1.0).abs() < 1e-9);
+    assert!((eval_sync(&pred, "any text at all") - 1.0).abs() < 1e-9);
 }
