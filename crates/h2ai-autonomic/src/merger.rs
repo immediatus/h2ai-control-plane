@@ -13,17 +13,40 @@ use h2ai_types::identity::TaskId;
 use h2ai_types::physics::MergeStrategy;
 use tokio::time::Instant;
 
+/// Result of a single `MergeEngine::resolve` call.
+///
+/// `Resolved` carries both the structural semilattice audit event and the
+/// final merged output; `ZeroSurvival` is returned when every proposal was
+/// pruned before merge could begin, signalling the orchestrator to retry.
 pub enum MergeOutcome {
+    /// All proposals were validated and at least one survived the semilattice compile step.
     Resolved {
         compiled: SemilatticeCompiledEvent,
         resolved: MergeResolvedEvent,
     },
+    /// No proposals survived the semilattice compile step; the task should be retried.
     ZeroSurvival(ZeroSurvivalEvent),
 }
 
+/// Stateless merge coordinator that selects a consensus output from a `ProposalSet`.
+///
+/// Strategy dispatch, BFT quorum checks, and Weiszfeld fallback are all encapsulated
+/// here so callers only need to supply a `MergeStrategy` and an optional embedding model.
 pub struct MergeEngine;
 
 impl MergeEngine {
+    /// Merge a set of explorer proposals into a single consensus output.
+    ///
+    /// The strategy selection chain is:
+    /// 1. Semilattice compile — prunes proposals that violate structural invariants.
+    ///    Returns `ZeroSurvival` immediately if no proposals survive.
+    /// 2. Strategy dispatch — `ConsensusMedian` and `ScoreOrdered` are applied directly.
+    ///    `OutlierResistant`/`MultiOutlierResistant` first check BFT quorum and cluster
+    ///    coherence; when both hold, Krum selection is used.
+    /// 3. Weiszfeld fallback — when quorum or coherence fails and `embedding_model` is
+    ///    present, the geometric median in embedding space is selected (breakdown point 50%).
+    /// 4. `ConsensusMedian` fallback — used when quorum/coherence fails and no embedding
+    ///    model is available, handling honest stochastic divergence without a cluster assumption.
     pub async fn resolve(
         task_id: TaskId,
         proposals: ProposalSet,

@@ -2,13 +2,16 @@ use h2ai_types::events::{BranchPrunedEvent, ProposalEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use std::collections::{HashMap, HashSet};
 
-/// A set of proposals keyed by explorer. Stores a generation counter and verification
-/// score alongside each proposal. LUB rule: higher generation wins; ties broken by
-/// higher score. This makes `ProposalSet` correct under TAO retry loops where a later
-/// attempt may produce a lower verification score than an earlier one.
+/// A CRDT proposal map keyed by explorer, ordered by generation then verification score.
+///
+/// Implements a join-semilattice whose least-upper-bound (LUB) rule is generation-first:
+/// a newer generation always supersedes an older one even if it carries a lower score,
+/// because a TAO retry represents an authoritative replacement, not a concurrent alternative.
+/// Ties within the same generation are resolved by preferring the higher score.
 pub struct ProposalSet(HashMap<ExplorerId, (ProposalEvent, u64, f64)>);
 
 impl ProposalSet {
+    /// Create an empty proposal set.
     pub fn new() -> Self {
         Self(HashMap::new())
     }
@@ -40,9 +43,12 @@ impl ProposalSet {
             .or_insert((proposal, incoming_gen, score));
     }
 
-    /// Join two proposal sets (CRDT merge).
+    /// Merge two proposal sets, applying generation-first LUB resolution for each explorer.
     ///
-    /// join(S₁, S₂) = S₁ ∪ S₂ with generation-first conflict resolution per explorer.
+    /// Prefer `join` when combining independently-accumulated sets (e.g. after a network
+    /// partition or a fan-out collection step), because it satisfies the CRDT commutativity,
+    /// associativity, and idempotency axioms.  Use `insert_scored` in a loop instead when
+    /// appending proposals one at a time to a single accumulator.
     pub fn join(mut lhs: Self, rhs: Self) -> Self {
         for (_, (proposal, _gen, score)) in rhs.0 {
             lhs.insert_scored(proposal, score);
@@ -55,15 +61,18 @@ impl ProposalSet {
         self.insert_scored(proposal, 0.0);
     }
 
+    /// Number of distinct explorers with a recorded proposal.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Return `true` when no explorer has submitted a proposal yet.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Return a reference to the stored `ProposalEvent` for `explorer_id`, if present.
+    /// Return the current winning `ProposalEvent` for `explorer_id`, or `None` if the
+    /// explorer has not yet submitted a proposal.
     pub fn get(&self, explorer_id: &ExplorerId) -> Option<&ProposalEvent> {
         self.0.get(explorer_id).map(|(p, _gen, _score)| p)
     }
@@ -75,11 +84,20 @@ impl Default for ProposalSet {
     }
 }
 
+/// Output of compiling a `ProposalSet` into ranked valid and pruned partitions.
+///
+/// Produced by `SemilatticeResult::compile`; consumed by the merger to feed
+/// the consensus selection step (Krum, ConsensusMedian, or Weiszfeld).
 pub struct SemilatticeResult {
+    /// Task this result belongs to.
     pub task_id: TaskId,
-    /// Valid proposals sorted by verification score descending.
-    /// First element = highest score = preferred by ScoreOrdered merge.
+    /// Non-pruned proposals sorted by verification score descending.
+    ///
+    /// Index 0 holds the highest-scored proposal, so ScoreOrdered merge needs
+    /// only take `valid_proposals[0]`.
     pub valid_proposals: Vec<ProposalEvent>,
+    /// Proposals whose explorer branch was pruned before consensus; excluded
+    /// from `valid_proposals` so pruned outputs never influence selection.
     pub pruned_proposals: Vec<BranchPrunedEvent>,
 }
 

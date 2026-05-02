@@ -120,6 +120,11 @@ beta_base_default = 0.039
 # 20 Tier 1 oracle tasks via TaoMultiplierEstimator.
 tao_per_turn_factor = 0.6
 
+# EMA smoothing factor for TaoMultiplierEstimator drift tracking.
+# Smaller values weight historical data more; larger values react faster to drift.
+# Half-life in samples ≈ ln(2) / alpha. Default 0.05 → ~14-sample half-life.
+tao_estimator_ema_alpha = 0.05
+
 # Context pressure sensitivity γ. Scales how much a full context window raises β.
 # 0 = disabled (β unchanged). 0.5 = β doubles when context is completely full.
 # Range [0, 1].

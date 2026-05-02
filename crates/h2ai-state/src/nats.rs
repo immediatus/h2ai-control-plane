@@ -100,6 +100,16 @@ impl NatsClient {
         })
         .await?;
 
+        // KV bucket: TaoMultiplierEstimator EMA state for drift tracking
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_ESTIMATOR".to_owned(),
+            description: "TaoMultiplierEstimator EMA state — survives restarts".to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
         Ok(())
     }
 
@@ -207,6 +217,49 @@ impl NatsClient {
                 let event = serde_json::from_slice::<CalibrationCompletedEvent>(&entry)
                     .map_err(|e| NatsError::Serialize(e.to_string()))?;
                 Ok(Some(event))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Persist the TaoMultiplierEstimator EMA state so it survives process restarts.
+    pub async fn put_tao_estimator_state(&self, ema: f64, count: usize) -> Result<(), NatsError> {
+        #[derive(serde::Serialize)]
+        struct State {
+            ema: f64,
+            count: usize,
+        }
+        let payload = serde_json::to_vec(&State { ema, count })
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ESTIMATOR")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put("tao_multiplier/state", payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve the persisted TaoMultiplierEstimator EMA state, or `None` if absent.
+    pub async fn get_tao_estimator_state(&self) -> Result<Option<(f64, usize)>, NatsError> {
+        #[derive(serde::Deserialize)]
+        struct State {
+            ema: f64,
+            count: usize,
+        }
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ESTIMATOR")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get("tao_multiplier/state").await {
+            Ok(Some(entry)) => {
+                let s: State = serde_json::from_slice(&entry)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some((s.ema, s.count)))
             }
             Ok(None) => Ok(None),
             Err(e) => Err(NatsError::KvError(e.to_string())),

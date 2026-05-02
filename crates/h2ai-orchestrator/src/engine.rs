@@ -30,38 +30,64 @@ use h2ai_types::physics::{
 };
 use thiserror::Error;
 
+/// Errors that can abort an `ExecutionEngine::run_offline` call.
 #[derive(Debug, Error)]
 pub enum EngineError {
+    /// The compiled system context carries too little relevant signal (J_eff below threshold).
+    /// Retrying with a richer constraint corpus or broader keyword set may help.
     #[error("context underflow: J_eff={j_eff:.3} < {threshold:.1}")]
     ContextUnderflow { j_eff: f64, threshold: f64 },
+    /// The multiplication condition gate rejected all topologies across all retries.
+    /// Recalibrating with higher-quality or more diverse adapters may resolve this.
     #[error("multiplication condition failed: {0}")]
     MultiplicationConditionFailed(String),
+    /// The MAPE-K autonomic retry loop hit `max_autonomic_retries` without resolving.
+    /// Increasing the retry budget or investigating calibration data is recommended.
     #[error("max retries exhausted")]
     MaxRetriesExhausted,
+    /// An adapter call failed or timed out; the message contains the error detail.
+    /// May be transient — retrying at the caller level is reasonable.
     #[error("adapter error: {0}")]
     Adapter(String),
+    /// Output from a step could not be parsed (e.g. invalid JSON, bad regex pattern).
+    /// Indicates a configuration or adapter output format error; retrying is unlikely to help.
     #[error("parse error: {0}")]
     Parse(String),
+    /// The wall-clock task deadline was exceeded before the engine resolved.
+    /// Increase `task_deadline_secs` or reduce ensemble size to fit the budget.
     #[error("task deadline exceeded (budget {budget_secs}s)")]
     DeadlineExceeded { budget_secs: u64 },
+    /// The provisioned ensemble is too small for the requested OutlierResistant fault bound.
+    /// Either reduce `f` or provision at least `2f + 3` explorers.
     #[error("insufficient quorum for OutlierResistant f={f}: need n ≥ {required}, got n={n}")]
     InsufficientQuorum { n: usize, f: usize, required: usize },
 }
 
+/// All inputs required to run the multi-phase execution pipeline for a single task.
 pub struct EngineInput<'a> {
+    /// Unique identifier for the task being executed.
     pub task_id: TaskId,
+    /// Task manifest containing description, constraints, Pareto weights, and explorer spec.
     pub manifest: TaskManifest,
+    /// Calibration event carrying α, β₀, CG samples, and optional ensemble/eigen calibration.
     pub calibration: CalibrationCompletedEvent,
+    /// Pool of compute adapters shared across explorer slots (round-robin indexed by position).
     pub explorer_adapters: Vec<&'a dyn IComputeAdapter>,
     /// Scores proposals in Phase 3.5. Must return `{"score": float, "reason": "..."}`.
     pub verification_adapter: &'a dyn IComputeAdapter,
     /// Approves/rejects proposals in Phase 4. Must return `{"approved": bool, "reason": "..."}`.
     pub auditor_adapter: &'a dyn IComputeAdapter,
+    /// Configuration for the auditor adapter (prompt template, τ, token budget).
     pub auditor_config: AuditorConfig,
+    /// TAO loop configuration applied to every explorer (turns, patterns, repetition threshold).
     pub tao_config: TaoConfig,
+    /// Verification phase configuration (LLM-as-Judge threshold and prompt settings).
     pub verification_config: VerificationConfig,
+    /// Constraint corpus loaded from the ADR/design-doc index; used for context compilation and scoring.
     pub constraint_corpus: Vec<ConstraintDoc>,
+    /// Runtime configuration (retries, deadlines, context token budget, thresholds).
     pub cfg: &'a H2AIConfig,
+    /// In-memory task state store for phase and validation tracking.
     pub store: TaskStore,
     /// When Some, each explorer slot gets a NatsDispatchAdapter instead of
     /// drawing from explorer_adapters. explorer_adapters may be empty.
@@ -71,16 +97,29 @@ pub struct EngineInput<'a> {
     /// Optional embedding model for Weiszfeld geometric median and cosine similarity.
     /// When `Some`, enables the Weiszfeld path in incoherent merge clusters.
     pub embedding_model: Option<&'a dyn EmbeddingModel>,
+    /// Pre-task snapshot of TaoMultiplierEstimator::multiplier().
+    /// Used for tao_per_turn_factor in AttributionInput so attribution reflects
+    /// what was known at dispatch time, not the mid-task update.
+    pub tao_multiplier: f64,
+    /// Shared estimator updated with (turn-1 score, final score) pairs after
+    /// each iteration's verification. Persisted by tasks.rs after engine returns.
+    pub tao_estimator: std::sync::Arc<tokio::sync::RwLock<crate::tao_loop::TaoMultiplierEstimator>>,
 }
 
+/// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
 #[derive(Debug)]
 pub struct EngineOutput {
+    /// Identifier of the task that was resolved.
     pub task_id: TaskId,
+    /// Final merged output string produced by the merge engine.
     pub resolved_output: String,
+    /// Semilattice compilation event describing which proposals survived and the merge strategy used.
     pub semilattice: SemilatticeCompiledEvent,
+    /// Quality attribution snapshot (Q_total, components) computed at resolve time.
     pub attribution: crate::attribution::HarnessAttribution,
     /// Bootstrap CI over Q_total from CG sample variance. `None` when < 2 CG samples.
     pub attribution_interval: Option<crate::attribution::AttributionInterval>,
+    /// All verification scored events collected across every MAPE-K retry iteration.
     pub verification_events: Vec<VerificationScoredEvent>,
     /// Rank-histogram calibration diagnostic built from this task's verification scores.
     /// `None` when no verification events were produced.
@@ -106,10 +145,22 @@ struct AuditResponse {
     reason: String,
 }
 
+/// Stateless coordinator for the five-phase task execution pipeline.
+///
+/// Orchestrates context compilation (Phase 1), topology provisioning (Phase 2),
+/// the multiplication condition gate (Phase 2.5), parallel generation (Phase 3),
+/// verification (Phase 3.5), auditor gate (Phase 4), and merge (Phase 5).
+/// Wraps all phases in a MAPE-K autonomic retry loop that adjusts topology,
+/// τ spread, and optimizer parameters on each failure before giving up.
 pub struct ExecutionEngine;
 
 impl ExecutionEngine {
-    /// Run all phases with MAPE-K autonomic retry loop (unit-testable, no NATS publishing).
+    /// Run all five phases with the MAPE-K autonomic retry loop; no NATS publishing.
+    ///
+    /// Suitable for unit tests and offline evaluation because it does not require a
+    /// live NATS connection — all events remain in-process via `TaskStore`.
+    /// Returns `EngineOutput` on the first successful merge, or an `EngineError` when
+    /// all retries are exhausted or a non-retryable condition is encountered.
     pub async fn run_offline(input: EngineInput<'_>) -> Result<EngineOutput, EngineError> {
         let task_id = input.task_id.clone();
         input
@@ -410,8 +461,12 @@ impl ExecutionEngine {
             use std::sync::Arc;
             type ExplorerFuture<'f> = Pin<
                 Box<
-                    dyn Future<Output = Result<(ProposalEvent, u8), ProposalFailedEvent>>
-                        + Send
+                    dyn Future<
+                            Output = Result<
+                                (ProposalEvent, u8, Option<String>),
+                                ProposalFailedEvent,
+                            >,
+                        > + Send
                         + 'f,
                 >,
             >;
@@ -453,9 +508,11 @@ impl ExecutionEngine {
                             })
                             .await
                             {
-                                Ok(tao_proposal) => {
-                                    Ok((tao_proposal.event, tao_proposal.tao_turns))
-                                }
+                                Ok(tao_proposal) => Ok((
+                                    tao_proposal.event,
+                                    tao_proposal.tao_turns,
+                                    tao_proposal.turn1_output,
+                                )),
                                 Err(e) => Err(ProposalFailedEvent {
                                     task_id: task_id_clone,
                                     explorer_id,
@@ -482,9 +539,11 @@ impl ExecutionEngine {
                             })
                             .await
                             {
-                                Ok(tao_proposal) => {
-                                    Ok((tao_proposal.event, tao_proposal.tao_turns))
-                                }
+                                Ok(tao_proposal) => Ok((
+                                    tao_proposal.event,
+                                    tao_proposal.tao_turns,
+                                    tao_proposal.turn1_output,
+                                )),
                                 Err(e) => Err(ProposalFailedEvent {
                                     task_id: task_id_clone,
                                     explorer_id,
@@ -503,12 +562,17 @@ impl ExecutionEngine {
             let mut proposals: Vec<ProposalEvent> = Vec::new();
             let mut tao_turns_collected: Vec<u8> = Vec::new();
             let mut failed_proposals: Vec<ProposalFailedEvent> = Vec::new();
+            let mut turn1_map: std::collections::HashMap<h2ai_types::identity::ExplorerId, String> =
+                std::collections::HashMap::new();
 
             for result in results {
                 match result {
-                    Ok((proposal, turns)) => {
+                    Ok((proposal, turns, turn1_output)) => {
                         input.store.increment_completed(&task_id);
                         tao_turns_collected.push(turns);
+                        if let Some(t1) = turn1_output {
+                            turn1_map.insert(proposal.explorer_id.clone(), t1);
+                        }
                         proposals.push(proposal);
                     }
                     Err(failed) => {
@@ -673,6 +737,20 @@ impl ExecutionEngine {
                 input.store.record_validation(&task_id, false);
             }
 
+            // Build turn-1 proposals for Option B estimator feed.
+            // Only accepted (passed) proposals that ran multiple TAO turns.
+            let turn1_proposals_for_scoring: Vec<ProposalEvent> = proposals
+                .iter()
+                .filter_map(|prop| {
+                    turn1_map
+                        .get(&prop.explorer_id)
+                        .map(|t1_output| ProposalEvent {
+                            raw_output: t1_output.clone(),
+                            ..prop.clone()
+                        })
+                })
+                .collect();
+
             // ── Phase 4: Auditor Gate ──────────────────────────────────────
             input.store.set_phase(
                 &task_id,
@@ -774,7 +852,7 @@ impl ExecutionEngine {
                     n_agents: explorer_count,
                     verification_filter_ratio: filter_ratio,
                     tao_turns_mean,
-                    tao_per_turn_factor: input.cfg.tao_per_turn_factor,
+                    tao_per_turn_factor: input.tao_multiplier,
                     prediction_basis: attribution_basis,
                     talagrand_state: iter_talagrand_state,
                     eigen_calibration: input.calibration.eigen.clone(),
@@ -790,6 +868,29 @@ impl ExecutionEngine {
                 };
                 (attr, interval)
             };
+
+            // ── Option B: feed TaoMultiplierEstimator with turn-1 vs final scores ──────
+            if !turn1_proposals_for_scoring.is_empty() {
+                use crate::verification::VerificationPhase;
+                let turn1_scores = VerificationPhase::score_proposals(
+                    turn1_proposals_for_scoring,
+                    input.verification_adapter,
+                    &verification_config,
+                    &input.constraint_corpus,
+                )
+                .await;
+
+                let mut est = input.tao_estimator.write().await;
+                for (t1_prop, t1_score) in &turn1_scores {
+                    if let Some(final_ev) = iteration_verification_events
+                        .iter()
+                        .find(|e| e.explorer_id == t1_prop.explorer_id && e.passed)
+                    {
+                        est.update(*t1_score, final_ev.score);
+                    }
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────────────
 
             // Accumulate all_pruned before moving pruned into resolve
             all_pruned.extend(pruned.iter().cloned());

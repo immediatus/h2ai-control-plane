@@ -28,16 +28,24 @@ use h2ai_context::similarity::semantic_jaccard;
 use h2ai_types::events::ProposalEvent;
 use std::cmp::Ordering;
 
+/// BFT-resistant consensus via the Fréchet median in Jaccard metric space.
+///
+/// Provides a breakdown point of 1/2: up to ⌊n/2⌋ − 1 outlier proposals
+/// cannot shift the selected result outside the honest majority, without
+/// requiring Krum's cluster assumption (Vardi & Zhang 2000).
+/// Prefer this over `krum_select_semantic` when honest proposals are
+/// lexically diverse (different phrasings of the same correct answer).
 pub struct ConsensusMedian;
 
 impl ConsensusMedian {
-    /// Fréchet median: returns the proposal with minimum sum of distances to all others.
+    /// Select the proposal closest to the Fréchet median of all proposals.
     ///
-    /// Equivalently, maximises sum of pairwise semantic similarities.
-    /// Ties broken by position (later index wins) — `Iterator::max_by` semantics.
-    ///
-    /// When `adapter` is `Some`, uses `semantic_jaccard` (paraphrase-aware).
-    /// When `adapter` is `None`, uses token Jaccard (offline/test mode).
+    /// `proposals` is the full set of candidate `ProposalEvent`s; `embedding_model`
+    /// is an optional semantic adapter — when `Some`, pairwise distances use
+    /// `semantic_jaccard` (paraphrase-aware); when `None`, token Jaccard is used
+    /// (deterministic, no I/O, suitable for tests).  The breakdown point of 1/2
+    /// means that so long as the majority of proposals are honest, the selected
+    /// proposal is drawn from that majority regardless of where the outliers lie.
     pub async fn resolve<'a>(
         proposals: &'a [ProposalEvent],
         embedding_model: Option<&'a dyn EmbeddingModel>,

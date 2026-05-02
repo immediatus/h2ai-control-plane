@@ -21,7 +21,7 @@ impl EventCounter {
     /// Increments the counter and returns `true` when a snapshot should be taken.
     fn tick(&mut self) -> bool {
         self.count += 1;
-        self.interval > 0 && self.count % self.interval == 0
+        self.interval > 0 && self.count.is_multiple_of(self.interval)
     }
 }
 

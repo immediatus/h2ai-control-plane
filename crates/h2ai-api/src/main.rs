@@ -175,6 +175,8 @@ async fn main() {
         );
     }
 
+    app_state.load_tao_estimator().await;
+
     let app = Router::new()
         .merge(routes::task_router())
         .merge(routes::calibrate_router())

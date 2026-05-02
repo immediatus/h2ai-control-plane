@@ -1,11 +1,10 @@
-/// Canonical prompt string constants shared across the workspace.
-///
-/// These constants are the authoritative source for all LLM-facing prompt text.
-/// Crates that depend on `h2ai-config` access them via `h2ai_config::prompts`,
-/// which re-exports everything here and adds the `PromptTemplate` engine.
-///
-/// # Variable convention
-/// Templates use `{key}` placeholders. Render via `h2ai_config::prompts::PromptTemplate`.
+//! Canonical prompt string constants shared across the workspace.
+//!
+//! These constants are the authoritative source for all LLM-facing prompt text.
+//! Crates that depend on `h2ai-config` access them via `h2ai_config::prompts`,
+//! which re-exports everything here and adds the `PromptTemplate` engine.
+//!
+//! Templates use `{key}` placeholders. Render via `h2ai_config::prompts::PromptTemplate`.
 
 // ── Verification / evaluation ─────────────────────────────────────────────────
 

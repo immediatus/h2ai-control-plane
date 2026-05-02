@@ -26,6 +26,41 @@ pub async fn start_calibration(
             "calibration_adapter_count < 3; USL fit will use config fallback values"
         );
     }
+
+    // ── Multi-family enforcement (before spawn so we can return an HTTP error) ─
+    use h2ai_types::adapter::AdapterFamily;
+    use std::collections::HashSet;
+    let pre_families: HashSet<AdapterFamily> = [
+        state.explorer_adapter.family(),
+        state.explorer2_adapter.family(),
+        state.verification_adapter.family(),
+    ]
+    .into_iter()
+    .filter(|f| *f != AdapterFamily::Mock)
+    .collect();
+    let single_family_warning = pre_families.len() == 1;
+    if single_family_warning && !state.cfg.allow_single_family {
+        let family = pre_families
+            .iter()
+            .next()
+            .map(|f| f.to_string())
+            .unwrap_or_default();
+        return Err(ApiError::SingleFamilyPool { family });
+    }
+    if single_family_warning {
+        tracing::warn!(
+            target: "h2ai.calibration",
+            "single-family adapter pool: Weiszfeld BFT correlated hallucination protection \
+             degraded. Set allow_single_family=true to acknowledge."
+        );
+    }
+    let mut adapter_families: Vec<String> = pre_families.iter().map(|f| f.to_string()).collect();
+    adapter_families.sort();
+    let explorer_verification_family_match = state.explorer_adapter.family()
+        == state.verification_adapter.family()
+        && state.explorer_adapter.family() != AdapterFamily::Mock;
+    // ──────────────────────────────────────────────────────────────────────────
+
     let state_clone = state.clone();
     let cal_id_clone = cal_id.clone();
     tokio::spawn(async move {
@@ -62,48 +97,6 @@ pub async fn start_calibration(
                 "fewer than 3 distinct adapters configured; USL fit will use config fallback values"
             );
         }
-
-        // ── Multi-family enforcement ──────────────────────────────────────────
-        use h2ai_types::adapter::AdapterFamily;
-        use std::collections::HashSet;
-
-        let families: HashSet<AdapterFamily> = adapter_refs
-            .iter()
-            .map(|a| a.family())
-            .filter(|f| *f != AdapterFamily::Mock)
-            .collect();
-
-        let single_family_warning = families.len() == 1;
-
-        if single_family_warning && !state_clone.cfg.allow_single_family {
-            let family = families
-                .iter()
-                .next()
-                .map(|f| f.to_string())
-                .unwrap_or_default();
-            tracing::error!(
-                target: "h2ai.calibration",
-                family,
-                "single-family adapter pool: calibration aborted. \
-                 Add adapters from a different family or set allow_single_family=true."
-            );
-            return;
-        }
-        if single_family_warning {
-            tracing::warn!(
-                target: "h2ai.calibration",
-                "single-family adapter pool: Weiszfeld BFT correlated hallucination protection \
-                 degraded. Set allow_single_family=true to acknowledge."
-            );
-        }
-
-        let mut adapter_families: Vec<String> = families.iter().map(|f| f.to_string()).collect();
-        adapter_families.sort();
-
-        let explorer_verification_family_match = state_clone.explorer_adapter.family()
-            == state_clone.verification_adapter.family()
-            && state_clone.explorer_adapter.family() != AdapterFamily::Mock;
-        // ─────────────────────────────────────────────────────────────────────
 
         let result = CalibrationHarness::run(CalibrationInput {
             calibration_id: cal_id_clone.clone(),

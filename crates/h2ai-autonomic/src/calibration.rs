@@ -23,19 +23,45 @@ pub enum CalibrationError {
     NoAdapters,
 }
 
+/// Inputs required to run a single calibration pass over an adapter ensemble.
+///
+/// All fields are borrowed for the lifetime of the pass; the harness does not
+/// own the adapters or configuration, so callers can reuse them across retries.
 pub struct CalibrationInput<'a> {
+    /// Stable identifier that links this calibration to downstream events (e.g. `CalibrationCompletedEvent`).
     pub calibration_id: TaskId,
+    /// Representative prompts sent to every adapter during both Phase A and Phase B runs.
+    ///
+    /// Diversity here improves CG measurement quality; a single prompt can produce
+    /// artificially high agreement through topic correlation alone.
     pub task_prompts: Vec<String>,
+    /// Ensemble of adapters under calibration; must be non-empty.
     pub adapters: Vec<&'a dyn IComputeAdapter>,
+    /// Runtime configuration supplying USL fallback parameters, τ spread, and CG thresholds.
     pub cfg: &'a H2AIConfig,
     /// Optional embedding model for semantic CG measurement.
+    ///
+    /// When `Some`, CG is measured as the fraction of prompts where the cosine similarity
+    /// of output embeddings exceeds `cfg.cg_agreement_threshold`.
     /// When `None`, falls back to token-level Jaccard (zero extra cost).
     pub embedding_model: Option<&'a dyn EmbeddingModel>,
 }
 
+/// Stateless entry-point for running USL-based adapter calibration.
+///
+/// A single `run` call exercises all adapters in two parallel phases, derives
+/// α and β₀ from wall-clock timings, computes pairwise CG scores, and packages
+/// the result into a `CalibrationCompletedEvent` ready for NATS publication.
 pub struct CalibrationHarness;
 
 impl CalibrationHarness {
+    /// Run a full USL calibration pass and return a `CalibrationCompletedEvent`.
+    ///
+    /// Phase A runs the first two adapters in parallel to obtain T₂ and a T₁ proxy.
+    /// Phase B runs all M adapters in parallel to obtain T_M and per-adapter outputs
+    /// for pairwise CG computation.  α and β₀ are derived from `usl_fit`; when the
+    /// fit is degenerate (M < 3 or non-positive timings), `cfg.alpha_contention` and
+    /// `cfg.beta_base_default` are used as fallback values.
     pub async fn run(
         input: CalibrationInput<'_>,
     ) -> Result<CalibrationCompletedEvent, CalibrationError> {

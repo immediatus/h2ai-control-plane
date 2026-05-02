@@ -63,7 +63,7 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
             max_chars,
         } => {
             let len = output.chars().count();
-            let ok = min_chars.map_or(true, |m| len >= m) && max_chars.map_or(true, |m| len <= m);
+            let ok = min_chars.is_none_or(|m| len >= m) && max_chars.is_none_or(|m| len <= m);
             if ok {
                 1.0
             } else {

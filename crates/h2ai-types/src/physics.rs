@@ -2,18 +2,25 @@ use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Errors produced when physics domain values are constructed with out-of-range inputs.
 #[derive(Debug, Error)]
 pub enum PhysicsError {
+    /// α must be in [0, 1); value at or above 1.0 makes N_max undefined.
     #[error("alpha must be in [0, 1), got {0}")]
     InvalidAlpha(f64),
+    /// Role error cost c_i must be in [0, 1]; values outside this range have no physical meaning.
     #[error("c_i must be in [0, 1], got {0}")]
     InvalidErrorCost(f64),
+    /// J_eff (context fill fraction) must be in [0, 1].
     #[error("J_eff must be in [0, 1], got {0}")]
     InvalidJeff(f64),
+    /// τ (creativity temperature) must be in [0, 1].
     #[error("tau must be in [0, 1], got {0}")]
     InvalidTau(f64),
+    /// At least one CG sample is required to compute β_eff and N_max.
     #[error("cg_samples must not be empty")]
     EmptyCgSamples,
+    /// β₀ (base coherency cost) must be non-negative; negative costs are unphysical.
     #[error("beta_base must be ≥ 0, got {0}")]
     InvalidBetaBase(f64),
 }
@@ -199,6 +206,11 @@ impl CoherencyCoefficients {
     }
 }
 
+/// Minimum CG_mean threshold below which ensemble coherency is insufficient to proceed.
+///
+/// Derived from calibration as `cg_mean − cg_std_dev`, clamped to `[0, max]`.
+/// Ensures the multiplication condition gate rejects topologies whose coordination
+/// quality falls below the calibrated floor, preventing low-signal ensemble runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoordinationThreshold(f64);
 
@@ -208,11 +220,17 @@ impl CoordinationThreshold {
         Self(spread.clamp(0.0, max))
     }
 
+    /// Raw threshold value in `[0, 1]`.
     pub fn value(&self) -> f64 {
         self.0
     }
 }
 
+/// Per-role error cost c_i ∈ [0, 1] driving merge-strategy selection.
+///
+/// Higher c_i indicates a less trustworthy explorer role; the merge engine escalates
+/// from `ScoreOrdered` → `ConsensusMedian` → `OutlierResistant` as the maximum c_i
+/// across the ensemble crosses the configured BFT and Krum thresholds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleErrorCost(f64);
 
@@ -224,6 +242,7 @@ impl RoleErrorCost {
         Ok(Self(value))
     }
 
+    /// Raw error cost in `[0, 1]`.
     pub fn value(&self) -> f64 {
         self.0
     }
@@ -279,10 +298,16 @@ impl MergeStrategy {
     }
 }
 
+/// Effective context-fill fraction J_eff ∈ [0, 1] for a compiled task context.
+///
+/// J_eff measures how much of the constraint corpus was successfully embedded into the
+/// system context after compaction. Values below the configured threshold cause
+/// `ContextUnderflow` — the context lacks enough relevant signal to run the ensemble.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JeffectiveGap(f64);
 
 impl JeffectiveGap {
+    /// Construct a `JeffectiveGap`; returns `InvalidJeff` if `value` is outside `[0, 1]`.
     pub fn new(value: f64) -> Result<Self, PhysicsError> {
         if !(0.0..=1.0).contains(&value) {
             return Err(PhysicsError::InvalidJeff(value));
@@ -290,15 +315,21 @@ impl JeffectiveGap {
         Ok(Self(value))
     }
 
+    /// Raw J_eff value in `[0, 1]`.
     pub fn value(&self) -> f64 {
         self.0
     }
 
+    /// Returns `true` when J_eff is strictly below `threshold`, indicating underflow.
     pub fn is_below_threshold(&self, threshold: f64) -> bool {
         self.0 < threshold
     }
 }
 
+/// Gate that enforces the three conditions required for ensemble quality multiplication.
+///
+/// All three must hold for the planner to proceed: sufficient baseline competence (p > min_competence),
+/// sufficient decorrelation (ρ < max_correlation), and sufficient common ground (CG_mean ≥ θ_coord).
 pub struct MultiplicationCondition;
 
 /// Exponential decay alignment between two τ (creativity temperature) values.
@@ -607,6 +638,10 @@ pub enum MultiplicationConditionFailure {
 }
 
 impl MultiplicationCondition {
+    /// Check the three multiplication conditions; returns the first failure encountered.
+    ///
+    /// Checks in order: competence, decorrelation, common ground.
+    /// Returns `Ok(())` when all three pass and ensemble quality multiplication is expected.
     pub fn evaluate(
         baseline_competence: f64,
         error_correlation: f64,

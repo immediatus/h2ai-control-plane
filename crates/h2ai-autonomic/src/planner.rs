@@ -10,29 +10,61 @@ use h2ai_types::physics::{
     TauValue,
 };
 
+/// All parameters required to provision a topology for a single task execution.
+///
+/// `ProvisionInput` bundles calibration state (`cc`, `eigen`), task identity, and
+/// operator policy (`pareto_weights`, `role_specs`, `review_gates`) so that
+/// `TopologyPlanner::provision` remains a pure function with no hidden state.
 #[derive(Debug)]
 pub struct ProvisionInput<'a> {
+    /// Identifier that propagates into the emitted `TopologyProvisionedEvent`.
     pub task_id: TaskId,
+    /// Coherency coefficients (α, β_eff, CG mean) from the most recent calibration run.
     pub cc: &'a CoherencyCoefficients,
+    /// Operator-supplied (T, E, D) weights used to score Pareto-frontier topology candidates.
     pub pareto_weights: &'a ParetoWeights,
+    /// Per-role specifications that drive explorer τ assignment and merge strategy selection.
     pub role_specs: &'a [RoleSpec],
+    /// Review gates that, when non-empty, unconditionally force `TeamSwarmHybrid` topology.
     pub review_gates: Vec<ReviewGate>,
+    /// Auditor configuration forwarded verbatim into the provisioned topology event.
     pub auditor_config: AuditorConfig,
+    /// Adapter kind assigned to every explorer in the provisioned ensemble.
     pub explorer_adapter: AdapterKind,
     /// When set by the retry loop, overrides Pareto-based topology selection.
     pub force_topology: Option<TopologyKind>,
+    /// Retry generation counter forwarded to the topology event for observability.
     pub retry_count: u32,
+    /// Runtime configuration supplying CG collapse threshold, token budgets, and USL bounds.
     pub cfg: &'a H2AIConfig,
     /// When present, caps n_max at the eigenvalue-derived optimal adapter count.
+    ///
+    /// Pruning adapters beyond the spectral optimum avoids coherency overhead without
+    /// sacrificing ensemble quality.
     pub eigen: Option<&'a EigenCalibration>,
 }
 
+/// Stateless planner that converts calibration state and operator policy into a
+/// ready-to-use `TopologyProvisionedEvent`.
+///
+/// Topology selection follows a strict priority order: CG collapse guard → review-gate
+/// override → Pareto-frontier scoring — ensuring safety constraints are never bypassed
+/// by misconfigured weights.
 pub struct TopologyPlanner;
 
 impl TopologyPlanner {
-    /// Returns the provisioned topology event and, when CG has collapsed below
-    /// `cfg.cg_collapse_threshold`, an accompanying `ZeroCoordinationQualityEvent`.
-    /// The caller (engine) must publish the coordination quality event to NATS when `Some`.
+    /// Provision a topology from calibration state and operator policy.
+    ///
+    /// Returns a `(TopologyProvisionedEvent, Option<ZeroCoordinationQualityEvent>)` pair.
+    /// The first element is always present and carries the selected topology kind, explorer
+    /// configs, merge strategy, and n_max (USL-derived, optionally capped by eigenvalue
+    /// pruning via `input.eigen`).
+    /// The second element is `Some` when CG mean falls below `cfg.cg_collapse_threshold`;
+    /// in that case n_max is forced to 1 and the caller must publish the collapse event so
+    /// the orchestrator can take corrective action.
+    /// Topology selection order: CG collapse forces `n_max=1` → review gates force
+    /// `TeamSwarmHybrid` → Pareto-frontier scoring over `(T, E, D)` weights picks the
+    /// highest-weighted candidate from `{HierarchicalTree, TeamSwarmHybrid, Ensemble}`.
     pub fn provision(
         input: ProvisionInput<'_>,
     ) -> (

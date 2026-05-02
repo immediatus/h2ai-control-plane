@@ -25,11 +25,11 @@ pub trait EmbeddingModel: Send + Sync {
 
 /// Compute cosine similarity between two embedding vectors.
 ///
-/// Returns 0.0 for empty or zero-norm vectors. Both vectors must have the
-/// same dimension; mismatched dimensions return 0.0.
-///
-/// Cosine similarity ∈ [-1, 1]. For sentence embeddings from standard
-/// models (all-MiniLM, sentence-BERT) the range is effectively [0, 1].
+/// Uses the dot-product formula `Σ aᵢbᵢ / (‖a‖ · ‖b‖)`.  For L2-normalised
+/// unit vectors (as returned by [`EmbeddingModel::embed`]) this reduces to the
+/// plain dot product `Σ aᵢbᵢ`.  Returns 0.0 for empty, zero-norm, or
+/// mismatched-dimension inputs.  Result is clamped to [-1, 1] to guard against
+/// floating-point rounding; [`semantic_jaccard`] further clamps to [0, 1].
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -70,15 +70,16 @@ pub fn semantic_jaccard(a: &str, b: &str, model: Option<&dyn EmbeddingModel>) ->
     }
 }
 
-/// Concrete `EmbeddingModel` backed by fastembed-rs.
+/// Concrete [`EmbeddingModel`] backed by fastembed-rs and ONNX Runtime.
 ///
+/// Wraps `fastembed::TextEmbedding` behind a `Mutex` so it can be shared across async tasks.
 /// Model weights are downloaded on first construction and cached to `~/.cache/fastembed/`.
-/// Construction embeds a single warmup string to force ONNX model loading before the first
-/// calibration request — callers pay zero cold-start latency at task time.
-/// All returned vectors are L2-normalised (cosine similarity = dot product).
+/// A single warmup embed is performed at construction time so that the first calibration
+/// request pays no ONNX cold-start cost.  All returned vectors are L2-normalised, meaning
+/// cosine similarity equals the plain dot product.
 ///
-/// Requires the `fastembed-embed` Cargo feature and ONNX Runtime on the host.
-/// Build with: `cargo build -p h2ai-context --features fastembed-embed`
+/// Requires the `fastembed-embed` Cargo feature and a compatible ONNX Runtime on the host.
+/// Build with: `cargo build -p h2ai-context --features fastembed-embed`.
 #[cfg(feature = "fastembed-embed")]
 pub struct FastEmbedModel {
     inner: Mutex<fastembed::TextEmbedding>,
@@ -86,13 +87,21 @@ pub struct FastEmbedModel {
 
 #[cfg(feature = "fastembed-embed")]
 impl FastEmbedModel {
-    /// Construct with the default model (`all-MiniLM-L6-v2`, 22 MB).
-    /// Prefer `new_with` when the operator has configured a model in `H2AIConfig`.
+    /// Construct using the default model (`all-MiniLM-L6-v2`, 22 MB download).
+    ///
+    /// Suitable for development and deployments that do not specify an embedding model
+    /// in `H2AIConfig`.  Prefer [`new_with`][Self::new_with] in production so the
+    /// operator-configured model name is honoured.
     pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::new_with_fastembed_model(fastembed::EmbeddingModel::AllMiniLML6V2)
     }
 
-    /// Construct with the model specified in `H2AIConfig::embedding_model_name`.
+    /// Construct using the model name from `H2AIConfig::embedding_model_name`.
+    ///
+    /// Translates the config-level [`EmbeddingModelName`][h2ai_config::EmbeddingModelName]
+    /// variant to the corresponding `fastembed::EmbeddingModel`, then delegates to the
+    /// same initialisation path as [`new`][Self::new].  Use this constructor in `main.rs`
+    /// so operators can switch models without recompiling.
     pub fn new_with(
         name: &h2ai_config::EmbeddingModelName,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {

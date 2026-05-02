@@ -96,6 +96,10 @@ async fn engine_runs_ensemble_to_semilattice() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -169,6 +173,10 @@ async fn engine_rejects_insufficient_context() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -233,6 +241,10 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -298,6 +310,10 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -363,6 +379,10 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -424,6 +444,10 @@ async fn engine_output_contains_talagrand_diagnostic() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -514,6 +538,10 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -572,6 +600,10 @@ async fn engine_output_contains_suggested_next_params() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

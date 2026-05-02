@@ -48,7 +48,7 @@ pub struct BanditState {
 impl BanditState {
     /// Create a new BanditState with a warm prior centered on `n_max_usl`.
     pub fn new(n_max_usl: u32, adapter_version_hash: u64) -> Self {
-        let arm_keys: Vec<u32> = (1..=n_max_usl.max(1).min(6)).collect();
+        let arm_keys: Vec<u32> = (1..=n_max_usl.clamp(1, 6)).collect();
         let arms = warm_prior(n_max_usl, &arm_keys);
         let initial_prior = warm_prior(n_max_usl, &arm_keys);
         Self {
@@ -71,11 +71,9 @@ impl BanditState {
         let mut rng = rand::thread_rng();
 
         // Phase 1: ε-greedy
-        if self.k_tasks < cfg.bandit_phase1_k {
-            if rng.gen::<f64>() < cfg.bandit_epsilon {
-                let idx = rng.gen_range(0..self.arms.len());
-                return *self.arms.keys().nth(idx).unwrap_or(&n_max_arm);
-            }
+        if self.k_tasks < cfg.bandit_phase1_k && rng.gen::<f64>() < cfg.bandit_epsilon {
+            let idx = rng.gen_range(0..self.arms.len());
+            return *self.arms.keys().nth(idx).unwrap_or(&n_max_arm);
         }
 
         // Phase 2 (and TS part of Phase 1): pure Thompson Sampling

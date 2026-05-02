@@ -14,6 +14,25 @@ use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use serde_json::{json, Value};
 use std::convert::Infallible;
 
+/// Accept a [`TaskManifest`] and begin async execution, returning `202 Accepted` immediately.
+///
+/// Performs the following validation before spawning:
+/// - Pareto weights (`diversity + containment + throughput`) must sum to 1.0 (±1e-4).
+/// - A completed [`CalibrationCompletedEvent`] must be present; returns
+///   `ApiError::CalibrationRequired` otherwise.
+/// - Manifest description must pass the J_eff gate (`j_eff >= cfg.j_eff_gate`);
+///   returns `ApiError::ContextUnderflow` when the token-level Jaccard score is too low.
+/// - `manifest.explorers.count` must not exceed `calibration.coefficients.n_max()`;
+///   returns `ApiError::ExplorerBudgetExceeded` otherwise.
+/// - A semaphore permit must be available (`cfg.max_concurrent_tasks`); returns
+///   `ApiError::ServiceUnavailable` when the server is at capacity.
+///
+/// On success the handler inserts the task into the store, spawns a Tokio task that runs
+/// [`ExecutionEngine::run_offline`], and returns `202 Accepted` with a [`TaskAccepted`]
+/// body containing the task ID, status URL, J_eff score, and topology kind.
+/// When the engine finishes it publishes `H2AIEvent::VerificationScored` events to NATS
+/// for each scored proposal, followed by a single `H2AIEvent::TaskAttribution` event
+/// with quality metrics and waste analysis, then marks the task resolved in the store.
 pub async fn submit_task(
     State(state): State<AppState>,
     Json(manifest): Json<TaskManifest>,
@@ -105,6 +124,12 @@ pub async fn submit_task(
 
     tokio::spawn(async move {
         let _permit = permit; // dropped when this task completes, freeing semaphore slot
+        let tao_multiplier = state_clone
+            .tao_multiplier_estimator
+            .read()
+            .await
+            .multiplier();
+        let tao_multiplier_estimator = std::sync::Arc::clone(&state_clone.tao_multiplier_estimator);
         let input = EngineInput {
             task_id: task_id_clone,
             manifest: manifest_clone,
@@ -124,6 +149,8 @@ pub async fn submit_task(
             nats_dispatch: None,
             registry: &registry,
             embedding_model: state_clone.embedding_model.as_deref(),
+            tao_multiplier,
+            tao_estimator: tao_multiplier_estimator,
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -188,6 +215,18 @@ pub async fn submit_task(
             }
             Err(e) => {
                 tracing::error!("engine error: {e}");
+            }
+        }
+
+        // Persist estimator state to NATS — fire-and-forget.
+        if let Some((ema, count)) = state_clone
+            .tao_multiplier_estimator
+            .read()
+            .await
+            .persist_state()
+        {
+            if let Err(e) = state_clone.nats.put_tao_estimator_state(ema, count).await {
+                tracing::warn!("failed to persist tao_estimator: {e}");
             }
         }
     });

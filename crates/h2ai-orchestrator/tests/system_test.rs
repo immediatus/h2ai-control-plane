@@ -176,6 +176,10 @@ async fn system_solves_well_formed_problem() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -241,6 +245,10 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -295,6 +303,10 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -379,6 +391,10 @@ async fn system_resolves_conflict_via_bft_consensus() {
         nats_dispatch: None,
         registry: &registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     };
 
     let result = ExecutionEngine::run_offline(input).await;

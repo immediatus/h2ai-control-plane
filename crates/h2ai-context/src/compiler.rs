@@ -5,15 +5,24 @@ use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
 use thiserror::Error;
 
+/// Errors produced by the context compiler.
 #[derive(Debug, Error)]
 pub enum ContextError {
+    /// The compiled context does not cover enough of the required vocabulary.
+    ///
+    /// Triggered when `J_eff` (signed Jaccard between the task manifest and the
+    /// required-keyword set, penalised for negative-vocabulary contamination) falls
+    /// below `cfg.j_eff_gate`.  Resolve by enriching the constraint corpus or
+    /// broadening the task description.
     #[error(
         "J_eff={j_eff:.3} < {threshold:.1} — context underflow; add more constraint documents"
     )]
     ContextUnderflow { j_eff: f64, threshold: f64 },
 }
 
+/// Output produced by a successful [`compile`] call.
 pub struct CompilerResult {
+    /// Assembled system-context string ready to be injected into LLM prompts.
     pub system_context: String,
     /// Signed J_eff = jaccard(manifest, positive_vocab) × (1 − contamination).
     ///
@@ -30,6 +39,20 @@ pub struct CompilerResult {
     pub contamination: f64,
 }
 
+/// Compile a task manifest against a constraint corpus into a system context.
+///
+/// The algorithm proceeds in four steps:
+/// 1. Tokenise `manifest` into a bag of lower-case words.
+/// 2. Collect the corpus's negative vocabulary (NoneOf / NegativeKeyword predicates) and
+///    compute `contamination` — the fraction of manifest tokens that are prohibited terms.
+/// 3. Compute `j_positive` via semantic Jaccard between `manifest` and
+///    `task_required_keywords`; uses `embedding_model` when provided, otherwise falls back
+///    to token-level Jaccard at zero extra cost.
+/// 4. Combine as `J_eff = j_positive × (1 − contamination)` and gate against
+///    `cfg.j_eff_gate`; returns [`ContextError::ContextUnderflow`] when the gate fails.
+///
+/// Precondition: `corpus` must be non-empty for the negative-vocabulary check to be
+/// meaningful, though the function will succeed with an empty corpus (no constraints).
 pub async fn compile(
     manifest: &str,
     corpus: &[ConstraintDoc],
@@ -79,6 +102,11 @@ pub async fn compile(
     })
 }
 
+/// Build the system-context string injected into LLM prompts.
+///
+/// Concatenates the task manifest and all non-empty constraint vocabularies from
+/// the corpus under labelled Markdown headings, so the model understands both
+/// the task goal and the active compliance rules in a single context block.
 fn build_system_context(manifest: &str, corpus: &[ConstraintDoc]) -> String {
     let mut parts = vec![format!("## Task Manifest\n{manifest}")];
     for doc in corpus {

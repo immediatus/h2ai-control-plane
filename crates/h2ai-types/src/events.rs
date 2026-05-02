@@ -26,6 +26,7 @@ pub enum CgMode {
     TokenJaccard,
 }
 
+/// Emitted when the calibration harness finishes measuring α, β₀, and CG for the adapter pool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibrationCompletedEvent {
     pub calibration_id: TaskId,
@@ -73,6 +74,7 @@ pub struct TaskSnapshot {
     pub taken_at: DateTime<Utc>,
 }
 
+/// Emitted when a task is initialised: system context compiled and J_eff computed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskBootstrappedEvent {
     pub task_id: TaskId,
@@ -82,6 +84,7 @@ pub struct TaskBootstrappedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the planner selects topology, explorer roles, and merge strategy for a retry iteration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopologyProvisionedEvent {
     pub task_id: TaskId,
@@ -100,6 +103,7 @@ pub struct TopologyProvisionedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the multiplication condition gate rejects the current topology on a given retry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiplicationConditionFailedEvent {
     pub task_id: TaskId,
@@ -108,13 +112,18 @@ pub struct MultiplicationConditionFailedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Why an explorer failed to produce a proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProposalFailureReason {
+    /// The adapter did not respond within the per-turn deadline.
     Timeout,
+    /// The adapter process was killed by the OOM killer; the message is the signal detail.
     OomPanic(String),
+    /// The adapter returned an error; the message contains the error description.
     AdapterError(String),
 }
 
+/// Emitted when an explorer completes a TAO loop and produces a raw output proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalEvent {
     pub task_id: TaskId,
@@ -130,6 +139,7 @@ pub struct ProposalEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when an explorer's TAO loop terminates without producing a usable proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalFailedEvent {
     pub task_id: TaskId,
@@ -138,6 +148,7 @@ pub struct ProposalFailedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when all explorers in Phase 3 have finished (or timed out), summarising success/failure counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationPhaseCompletedEvent {
     pub task_id: TaskId,
@@ -147,6 +158,7 @@ pub struct GenerationPhaseCompletedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the verification phase starts evaluating a specific explorer's proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationEvent {
     pub task_id: TaskId,
@@ -154,6 +166,7 @@ pub struct ValidationEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// A single constraint that a proposal violated during the verification phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstraintViolation {
     pub constraint_id: String,
@@ -164,6 +177,7 @@ pub struct ConstraintViolation {
     pub remediation_hint: Option<String>,
 }
 
+/// Emitted when an explorer's proposal is eliminated by the verification or auditor gate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchPrunedEvent {
     pub task_id: TaskId,
@@ -174,6 +188,7 @@ pub struct BranchPrunedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when all proposals for a retry iteration were pruned, triggering MAPE-K retry logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZeroSurvivalEvent {
     pub task_id: TaskId,
@@ -191,6 +206,7 @@ pub struct ZeroCoordinationQualityEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the maximum role error cost exceeds the BFT threshold, signalling consensus-mode merging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsensusRequiredEvent {
     pub task_id: TaskId,
@@ -198,6 +214,7 @@ pub struct ConsensusRequiredEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the merge engine selects surviving proposals and computes the semilattice join.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemilatticeCompiledEvent {
     pub task_id: TaskId,
@@ -214,6 +231,7 @@ pub struct SemilatticeCompiledEvent {
     pub n_input_proposals: usize,
 }
 
+/// Emitted when the merge engine produces the final resolved output string for a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeResolvedEvent {
     pub task_id: TaskId,
@@ -221,6 +239,7 @@ pub struct MergeResolvedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the MAPE-K loop exhausts all retries without producing a resolved output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskFailedEvent {
     pub task_id: TaskId,
@@ -231,6 +250,7 @@ pub struct TaskFailedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when a review gate fires and routes a proposal to a reviewer explorer for approval.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewGateTriggeredEvent {
     pub task_id: TaskId,
@@ -240,6 +260,7 @@ pub struct ReviewGateTriggeredEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when a reviewer explorer rejects the proposal at a review gate, blocking it from merging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewGateBlockedEvent {
     pub task_id: TaskId,
@@ -250,6 +271,7 @@ pub struct ReviewGateBlockedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when active subtask count approaches `interface_n_max`, warning of interface saturation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterfaceSaturationWarningEvent {
     pub task_id: TaskId,
@@ -259,6 +281,7 @@ pub struct InterfaceSaturationWarningEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted after each TAO loop turn, recording the observation and whether the turn passed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaoIterationEvent {
     pub task_id: TaskId,
@@ -269,6 +292,7 @@ pub struct TaoIterationEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the LLM-as-Judge verifier assigns a compliance score to a proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationScoredEvent {
     pub task_id: TaskId,
@@ -279,6 +303,7 @@ pub struct VerificationScoredEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the orchestrator creates a decomposition plan for a multi-step task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtaskPlanCreatedEvent {
     pub task_id: TaskId,
@@ -297,6 +322,7 @@ pub struct SubtaskPlanReviewedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when an individual subtask begins execution within a wave.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtaskStartedEvent {
     pub task_id: TaskId,
@@ -307,6 +333,7 @@ pub struct SubtaskStartedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when an individual subtask finishes successfully, recording token cost.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtaskCompletedEvent {
     pub task_id: TaskId,
@@ -316,6 +343,7 @@ pub struct SubtaskCompletedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Category of self-optimizer suggestion applied on a wasteful-but-successful run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum OptimizationKind {
     /// SelfOptimizer suggested adjusting the verify_threshold to reduce wasted proposals.
@@ -324,6 +352,7 @@ pub enum OptimizationKind {
     TopologyHintSet,
 }
 
+/// One self-optimizer suggestion that was applied on a completed task run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedOptimization {
     pub kind: OptimizationKind,
@@ -371,32 +400,59 @@ fn default_waste_ratio() -> f64 {
     1.0
 }
 
+/// Discriminated union of all events published to the NATS event stream by the orchestrator.
+///
+/// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", content = "payload")]
 pub enum H2AIEvent {
+    /// Wraps [`CalibrationCompletedEvent`]: calibration harness finished.
     CalibrationCompleted(CalibrationCompletedEvent),
+    /// Wraps [`TaskBootstrappedEvent`]: task context compiled and J_eff gate passed.
     TaskBootstrapped(TaskBootstrappedEvent),
+    /// Wraps [`TopologyProvisionedEvent`]: planner selected topology and explorer roles.
     TopologyProvisioned(TopologyProvisionedEvent),
+    /// Wraps [`MultiplicationConditionFailedEvent`]: multiplication condition gate rejected the topology.
     MultiplicationConditionFailed(MultiplicationConditionFailedEvent),
+    /// Wraps [`ProposalEvent`]: an explorer completed its TAO loop and produced output.
     Proposal(ProposalEvent),
+    /// Wraps [`ProposalFailedEvent`]: an explorer's TAO loop terminated without usable output.
     ProposalFailed(ProposalFailedEvent),
+    /// Wraps [`GenerationPhaseCompletedEvent`]: all explorers in Phase 3 finished.
     GenerationPhaseCompleted(GenerationPhaseCompletedEvent),
+    /// Wraps [`ReviewGateTriggeredEvent`]: a review gate routed a proposal to a reviewer.
     ReviewGateTriggered(ReviewGateTriggeredEvent),
+    /// Wraps [`ReviewGateBlockedEvent`]: a reviewer rejected a proposal at a review gate.
     ReviewGateBlocked(ReviewGateBlockedEvent),
+    /// Wraps [`ValidationEvent`]: verifier started scoring an explorer's proposal.
     Validation(ValidationEvent),
+    /// Wraps [`BranchPrunedEvent`]: an explorer's proposal was eliminated by verification or the auditor.
     BranchPruned(BranchPrunedEvent),
+    /// Wraps [`ZeroSurvivalEvent`]: all proposals were pruned, triggering MAPE-K retry.
     ZeroSurvival(ZeroSurvivalEvent),
+    /// Wraps [`InterfaceSaturationWarningEvent`]: active subtask count is approaching `interface_n_max`.
     InterfaceSaturationWarning(InterfaceSaturationWarningEvent),
+    /// Wraps [`ConsensusRequiredEvent`]: error costs exceed the BFT threshold, switching to consensus merge.
     ConsensusRequired(ConsensusRequiredEvent),
+    /// Wraps [`SemilatticeCompiledEvent`]: merge engine finished selecting and joining proposals.
     SemilatticeCompiled(SemilatticeCompiledEvent),
+    /// Wraps [`MergeResolvedEvent`]: final resolved output string produced for the task.
     MergeResolved(MergeResolvedEvent),
+    /// Wraps [`TaskFailedEvent`]: MAPE-K loop exhausted retries without resolving.
     TaskFailed(TaskFailedEvent),
+    /// Wraps [`TaoIterationEvent`]: one TAO loop turn completed with its observation and pass/fail status.
     TaoIteration(TaoIterationEvent),
+    /// Wraps [`VerificationScoredEvent`]: LLM-as-Judge assigned a compliance score to a proposal.
     VerificationScored(VerificationScoredEvent),
+    /// Wraps [`SubtaskPlanCreatedEvent`]: orchestrator created a decomposition plan.
     SubtaskPlanCreated(SubtaskPlanCreatedEvent),
+    /// Wraps [`SubtaskPlanReviewedEvent`]: reviewer approved or rejected a decomposition plan.
     SubtaskPlanReviewed(SubtaskPlanReviewedEvent),
+    /// Wraps [`SubtaskStartedEvent`]: an individual subtask began execution.
     SubtaskStarted(SubtaskStartedEvent),
+    /// Wraps [`SubtaskCompletedEvent`]: an individual subtask finished successfully.
     SubtaskCompleted(SubtaskCompletedEvent),
+    /// Wraps [`TaskAttributionEvent`]: quality attribution snapshot for a completed task.
     TaskAttribution(TaskAttributionEvent),
 }
 

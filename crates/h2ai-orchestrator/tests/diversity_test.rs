@@ -166,6 +166,10 @@ async fn make_engine_input<'a>(
         nats_dispatch: None,
         registry,
         embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
     }
 }
 

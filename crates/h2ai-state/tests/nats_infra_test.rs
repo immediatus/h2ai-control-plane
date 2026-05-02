@@ -63,3 +63,25 @@ async fn put_and_get_calibration_roundtrip() {
     assert!(back.is_some());
     assert_eq!(back.unwrap().coefficients.alpha, 0.12);
 }
+
+#[tokio::test]
+#[ignore]
+async fn put_and_get_tao_estimator_roundtrip() {
+    let url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let client = match NatsClient::connect(&url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {url} — skipping: {e}");
+            return;
+        }
+    };
+    client.ensure_infrastructure().await.expect("infra");
+
+    client.put_tao_estimator_state(0.75, 25).await.expect("put");
+    let back = client.get_tao_estimator_state().await.expect("get");
+    assert!(back.is_some());
+    let (ema, count) = back.unwrap();
+    assert_eq!(ema, 0.75);
+    assert_eq!(count, 25);
+}

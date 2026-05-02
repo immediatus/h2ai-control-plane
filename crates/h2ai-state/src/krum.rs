@@ -63,7 +63,11 @@ pub const fn min_quorum(f: usize) -> usize {
     2 * f + 3
 }
 
-/// Returns `true` if `n` proposals satisfy the Krum quorum for fault bound `f`.
+/// Return `true` when `n` proposals satisfy the Krum quorum for `f` Byzantine faults.
+///
+/// Requires `n ≥ 2f + 3` (equivalently `n ≥ min_quorum(f)`), which is the minimum
+/// needed for Krum's score function to have enough neighbours to distinguish an
+/// honest cluster from up to `f` outliers (Blanchard et al. 2017, Theorem 2).
 pub fn quorum_satisfied(n: usize, f: usize) -> bool {
     n >= min_quorum(f)
 }
@@ -111,8 +115,11 @@ pub async fn cluster_coherent(
 
 // ── Private helpers (shared by sync and async Krum) ─────────────────────────
 
-/// Krum score for proposal at global index `idx`, considering only proposals
-/// whose global indices are in `subset`. Uses the `k` nearest neighbours.
+/// Sum of Jaccard distances from proposal `idx` to its `k` nearest neighbours in `subset`.
+///
+/// `k` is typically `n − f − 2`: each proposal is scored against enough neighbours
+/// to expose an outlier while excluding the `f` worst-case Byzantine peers.
+/// A lower score means the proposal is more deeply embedded in the densest cluster.
 pub fn krum_score_subset(idx: usize, subset: &[usize], distances: &[Vec<f64>], k: usize) -> f64 {
     let mut dists: Vec<f64> = subset
         .iter()
@@ -123,7 +130,10 @@ pub fn krum_score_subset(idx: usize, subset: &[usize], distances: &[Vec<f64>], k
     dists.iter().take(k).sum()
 }
 
-/// Find the index (in `0..n`) with minimum Krum score using `k` neighbours.
+/// Return the global index of the proposal with the minimum Krum score.
+///
+/// Scans all `n` proposals in `distances`, scoring each with `krum_score_subset`
+/// over the full set.  Returns `None` only when `distances` is empty.
 pub fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
     let n = distances.len();
     let all: Vec<usize> = (0..n).collect();
@@ -139,9 +149,11 @@ pub fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
 
 // ── Async semantic Krum ───────────────────────────────────────────────────────
 
-/// Build the n×n semantic distance matrix via `semantic_jaccard`.
-/// All pairs computed concurrently via `join_all`.
-/// Falls back to token Jaccard when `adapter` is `None`.
+/// Build the n×n pairwise distance matrix from cosine-based semantic similarity.
+///
+/// Each entry `d[i][j] = 1 − semantic_jaccard(i, j)` converts a similarity in [0, 1]
+/// to a distance in [0, 1] suitable for the Jaccard-metric Krum proof.
+/// Falls back to token Jaccard when `embedding_model` is `None`.
 async fn semantic_distance_matrix(
     proposals: &[ProposalEvent],
     embedding_model: Option<&dyn EmbeddingModel>,
@@ -164,15 +176,13 @@ async fn semantic_distance_matrix(
     d
 }
 
-/// **Semantic Krum** — selects the proposal with minimum sum of distances to its
-/// `n − f − 2` nearest neighbours, using semantic (not token) distance.
+/// Select the single most-central proposal using semantic Krum.
 ///
-/// Uses `semantic_jaccard` for pairwise similarity so that lexically-distinct
-/// but semantically-equivalent proposals (synonyms, paraphrases) score as close.
-/// Falls back to token Jaccard when `adapter` is `None`.
-///
-/// Returns `None` when the quorum condition `n ≥ 2f + 3` is not met,
-/// or when `proposals` is empty.
+/// Uses `semantic_distance_matrix` (cosine-to-distance conversion) rather than
+/// raw token Jaccard, so that paraphrased but semantically-equivalent proposals
+/// are treated as close neighbours — the same BFT guarantee as the text path but
+/// robust to lexical variation.  Returns `None` if the quorum `n ≥ 2f + 3` is
+/// not satisfied or `proposals` is empty.
 pub async fn krum_select_semantic<'a>(
     proposals: &'a [ProposalEvent],
     f: usize,
@@ -192,7 +202,12 @@ pub async fn krum_select_semantic<'a>(
     krum_index(&distances, k).map(|i| &proposals[i])
 }
 
-/// **Semantic Multi-Krum** — iteratively selects `m` proposals via semantic Krum.
+/// Select up to `m` proposals by iteratively applying semantic Krum.
+///
+/// Each iteration picks the remaining proposal with the minimum Krum score and
+/// removes it from the candidate pool, repeating until `m` proposals are collected
+/// or fewer than `f + 3` candidates remain.  Uses the same semantic distance matrix
+/// as `krum_select_semantic`, giving consistent BFT behaviour across both functions.
 pub async fn multi_krum_select_semantic<'a>(
     proposals: &'a [ProposalEvent],
     f: usize,

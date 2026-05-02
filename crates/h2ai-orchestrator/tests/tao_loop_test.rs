@@ -228,58 +228,98 @@ async fn tao_max_turns_one_with_no_pattern_passes_immediately() {
 
 #[test]
 fn tao_multiplier_estimator_prior_before_20_samples() {
-    let estimator = TaoMultiplierEstimator::new();
+    let estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
     assert!(
         (estimator.multiplier() - 0.6).abs() < 1e-9,
-        "prior must be 0.6 before any samples, got {}",
+        "prior should be 0.6, got {}",
         estimator.multiplier()
     );
 }
 
 #[test]
 fn tao_multiplier_estimator_converges_after_20_samples() {
-    let mut estimator = TaoMultiplierEstimator::new();
-    // All turns improve quality by factor 0.8 (q_after / q_before = 0.8)
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
     for _ in 0..20 {
         estimator.update(0.5, 0.4); // ratio = 0.8
     }
     let m = estimator.multiplier();
     assert!(
-        (m - 0.8).abs() < 1e-9,
-        "with 20 samples of ratio 0.8, multiplier must be 0.8, got {m:.6}"
+        (m - 0.8).abs() < 1e-6,
+        "after 20 identical samples of 0.8, multiplier should be 0.8, got {m}"
     );
 }
 
 #[test]
 fn tao_multiplier_estimator_uses_prior_at_exactly_19_samples() {
-    let mut estimator = TaoMultiplierEstimator::new();
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
     for _ in 0..19 {
         estimator.update(0.5, 0.4);
     }
     assert!(
         (estimator.multiplier() - 0.6).abs() < 1e-9,
-        "19 samples is still below threshold — prior must hold, got {}",
+        "at 19 samples prior should still hold, got {}",
         estimator.multiplier()
     );
 }
 
 #[test]
 fn tao_multiplier_estimator_ignores_zero_q_before() {
-    let mut estimator = TaoMultiplierEstimator::new();
-    estimator.update(0.0, 0.5); // q_before = 0 → division by zero guard
-    assert_eq!(
-        estimator.sample_count(),
-        0,
-        "zero q_before must not add a sample"
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
+    estimator.update(0.0, 0.5);
+    assert_eq!(estimator.sample_count(), 0);
+    assert!(
+        (estimator.multiplier() - 0.6).abs() < 1e-9,
+        "zero q_before should be ignored"
     );
 }
 
 #[test]
 fn tao_multiplier_estimator_sample_count_increments() {
-    let mut estimator = TaoMultiplierEstimator::new();
-    assert_eq!(estimator.sample_count(), 0);
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
     estimator.update(0.5, 0.6);
     assert_eq!(estimator.sample_count(), 1);
-    estimator.update(0.6, 0.7);
+    estimator.update(0.5, 0.6);
     assert_eq!(estimator.sample_count(), 2);
+}
+
+#[test]
+fn tao_multiplier_estimator_ema_tracks_drift() {
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.1);
+    for _ in 0..20 {
+        estimator.update(1.0, 0.6);
+    }
+    assert!((estimator.multiplier() - 0.6).abs() < 1e-6);
+    for _ in 0..50 {
+        estimator.update(1.0, 0.9);
+    }
+    let m = estimator.multiplier();
+    assert!(
+        m > 0.88,
+        "EMA should drift toward 0.9 after 50 samples, got {m}"
+    );
+}
+
+#[test]
+fn tao_multiplier_estimator_serde_roundtrip() {
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
+    for i in 0..25 {
+        estimator.update(0.5, 0.3 + i as f64 * 0.01);
+    }
+    let json = serde_json::to_string(&estimator).unwrap();
+    assert!(!json.contains("alpha"), "alpha should not be serialized");
+    assert!(
+        !json.contains("warmup_sum"),
+        "warmup_sum should not be serialized"
+    );
+    let restored: TaoMultiplierEstimator = serde_json::from_str(&json).unwrap();
+    let restored = restored.with_alpha(0.05);
+    assert_eq!(restored.sample_count(), estimator.sample_count());
+    assert!((restored.multiplier() - estimator.multiplier()).abs() < 1e-9);
+}
+
+#[test]
+fn tao_multiplier_estimator_negative_q_before_skipped() {
+    let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
+    estimator.update(-0.1, 0.5);
+    assert_eq!(estimator.sample_count(), 0);
 }

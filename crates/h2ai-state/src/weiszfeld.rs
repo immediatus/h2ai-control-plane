@@ -2,9 +2,13 @@
 //!
 //! ## Algorithm
 //!
-//! The geometric median minimises the sum of Euclidean distances to all input
-//! vectors. Weiszfeld's iterative re-weighted least squares algorithm converges
-//! to it in O(1/t) per iteration (Weiszfeld 1937, Pillutla et al. 2019).
+//! The geometric median minimises the sum of **Euclidean** distances to all input
+//! vectors in the embedding space.  Weiszfeld's iterative re-weighted least-squares
+//! algorithm converges to it in O(1/t) per iteration (Weiszfeld 1937;
+//! Pillutla et al. 2019, arXiv:1912.13445).  After convergence, the proposal
+//! returned is the one whose embedding has the smallest **cosine** distance to the
+//! computed median — Euclidean for the median computation, cosine for the final
+//! nearest-proposal selection.
 //!
 //! ## Byzantine resilience
 //!
@@ -30,15 +34,14 @@
 //! Pillutla, V., Kakade, S. M., & Harchaoui, Z. (2019). Robust aggregation for
 //! federated learning. arXiv:1912.13445.
 
-/// Selects the proposal closest to the geometric median of the embedding vectors.
+/// Return the index of the proposal whose embedding is closest to the geometric median.
 ///
-/// Byzantine resilience: tolerates ⌊n/2⌋−1 corrupted vectors (breakdown point 1/2).
-/// Convergence: O(1/t) in T iterations; T=20 is sufficient for n≤9.
-///
-/// Returns the index into `embeddings` of the proposal closest (cosine distance)
-/// to the geometric median. Returns 0 if `embeddings` is empty.
-///
-/// Reference: Pillutla et al. (2019), arXiv:1912.13445.
+/// Runs `max_iter` Weiszfeld steps using Euclidean distances in embedding space, then
+/// identifies the winner as the proposal with minimum cosine distance to the converged
+/// median.  Returns 0 on empty input as a degenerate sentinel — callers must guard
+/// against the empty case before interpreting the result as a valid proposal index.
+/// Tolerates up to ⌊n/2⌋ − 1 Byzantine (arbitrarily corrupted) embeddings without
+/// the selected proposal leaving the convex hull of the honest majority.
 pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
     if embeddings.is_empty() {
         return 0;

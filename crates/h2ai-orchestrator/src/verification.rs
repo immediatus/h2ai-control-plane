@@ -94,6 +94,41 @@ impl VerificationPhase {
         VerificationOutput { passed, failed }
     }
 
+    /// Score proposals numerically without pass/fail gating.
+    /// Returns `(proposal, aggregate_compliance_score)` for each input, in order.
+    /// Used by the engine to score turn-1 outputs and feed `TaoMultiplierEstimator`.
+    pub async fn score_proposals(
+        proposals: Vec<ProposalEvent>,
+        evaluator: &dyn IComputeAdapter,
+        config: &VerificationConfig,
+        corpus: &[ConstraintDoc],
+    ) -> Vec<(ProposalEvent, f64)> {
+        let rubric = config.rubric.clone();
+        let sp = config.evaluator_system_prompt.clone();
+        let tau = config.evaluator_tau;
+        let max_tokens = config.evaluator_max_tokens;
+
+        let futures = proposals.into_iter().map(|proposal| {
+            let rubric = rubric.clone();
+            let sp = sp.clone();
+            async move {
+                let results = Self::eval_all(
+                    corpus,
+                    &proposal.raw_output,
+                    evaluator,
+                    &rubric,
+                    &sp,
+                    tau,
+                    max_tokens,
+                )
+                .await;
+                let score = aggregate_compliance_score(&results);
+                (proposal, score)
+            }
+        });
+        join_all(futures).await
+    }
+
     async fn eval_all(
         corpus: &[ConstraintDoc],
         output: &str,
@@ -111,7 +146,7 @@ impl VerificationPhase {
             let effective_rubric: &str = if rubric.is_empty() {
                 h2ai_config::prompts::COT_RUBRIC
             } else {
-                &rubric
+                rubric
             };
             let score =
                 Self::llm_score_raw(effective_rubric, output, evaluator, sp, tau, max_tokens).await;
