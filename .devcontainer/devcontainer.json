@@ -12,7 +12,9 @@
 
   "remoteEnv": {
     "H2AI_NATS_URL": "nats://nats:4222",
-    "H2AI_PROFILE": "a",
+    "LLAMACPP_BASE_URL": "http://host.docker.internal:8080/v1",
+    "LLAMACPP_API_KEY": "local",
+    "LLAMACPP_MODEL": "local",
     "RUST_LOG": "h2ai=debug,info",
     "RUST_BACKTRACE": "1"
   },
@@ -20,7 +22,6 @@
   "forwardPorts": [
     8080,
     9090,
-    4222,
     8222
   ],
 
@@ -31,7 +32,7 @@
     "8222": { "label": "NATS monitoring" }
   },
 
-  "postCreateCommand": "cargo fetch 2>/dev/null || true",
+  "postCreateCommand": "cargo fetch 2>/dev/null || true && pip3 install --no-cache-dir --break-system-packages openai requests datasets 2>/dev/null || true",
   
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {

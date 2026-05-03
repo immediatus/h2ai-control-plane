@@ -36,11 +36,9 @@ pub enum ConfigLoadError {
 ///
 /// All fields are populated by `load_layered()`, which merges the embedded
 /// `reference.toml` defaults, an optional operator override file, and
-/// `H2AI__<FIELD>` environment variables (highest priority wins).
+/// `H2AI_<FIELD>` environment variables (highest priority wins).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct H2AIConfig {
-    /// Minimum Jaccard overlap between task description and constraint vocabulary before a task is accepted. Range [0, 1]; lower values are more permissive.
-    pub j_eff_gate: f64,
     /// BFT consensus threshold — fraction of agents that must agree for a result to be accepted. Range [0, 1].
     pub bft_threshold: f64,
     /// Number of Byzantine explorers Krum/Multi-Krum will tolerate; `0` disables Krum and falls back to `ConsensusMedian`. Requires at least `2n+3` agents when nonzero.
@@ -96,7 +94,7 @@ pub struct H2AIConfig {
     pub tao_per_turn_factor: f64,
     /// EMA smoothing factor α for `TaoMultiplierEstimator` drift tracking. Smaller values weight history more; half-life ≈ ln(2) / α samples.
     pub tao_estimator_ema_alpha: f64,
-    /// Jaccard similarity threshold above which all pairwise proposals are treated as uniformly hallucinated, triggering a MAPE-K retry. Range [0, 1].
+    /// Minimum mean pairwise Hamming distance (on constraint-satisfaction fingerprints) required for the swarm to be considered diverse. Below this threshold the swarm is flagged as collectively hallucinated and a MAPE-K retry is triggered. Range [0, 1]. 0.0 disables the gate; recommended production value 0.15.
     pub diversity_threshold: f64,
     /// Hard deadline in seconds for a single task end-to-end. `None` means no deadline; omit from the override file to leave unlimited.
     #[serde(default)]
@@ -115,10 +113,21 @@ pub struct H2AIConfig {
     pub calibration_tau_spread: [f64; 2],
     /// CG collapse threshold: when CG_embed drops below this value the planner forces N_max = 1. Default `0.10` — below 10 % pairwise reconciliation is undefined.
     pub cg_collapse_threshold: f64,
-    /// Cosine similarity threshold for counting two adapter outputs as "in agreement" when computing CG_embed.
+    /// Cosine similarity threshold for counting two adapter outputs as "in agreement" when computing CG via embedding cosine (future; currently CG uses constraint-profile Hamming).
     pub cg_agreement_threshold: f64,
     /// Embedding model used for CG cosine agreement measurement; requires the `fastembed-embed` Cargo feature.
     pub embedding_model_name: EmbeddingModelName,
+    /// Minimum N_eff increment required to include the next adapter in `EigenCalibration::n_pruned`.
+    /// Adapter k is kept when adding it raises N_eff by ≥ this delta. Default 0.05.
+    /// Increase toward 0.1–0.2 for calibrations with few adapters (N ≤ 4).
+    pub eigen_n_eff_delta: f64,
+    /// Minimum number of TAO loop samples before `TaoMultiplierEstimator` state is persisted
+    /// to NATS. The EMA estimate is unreliable below this count. Default 20.
+    /// Raise to 50–100 for high-variance task distributions.
+    pub tao_estimator_warmup: usize,
+    /// Initial N_max used to seed the Thompson Sampling bandit warm prior at first startup
+    /// before any calibration result is available. Clamped to [1, 6] by the bandit. Default 4.
+    pub bandit_n_max_initial: u32,
     /// Tasks completed before activating the bandit (Phase 0 — pure exploration); during Phase 0 N = N_max_USL unconditionally.
     pub bandit_phase0_k: u32,
     /// Tasks completed before switching from ε-greedy to pure Thompson Sampling (Phase 1).
@@ -147,6 +156,34 @@ pub struct H2AIConfig {
     pub snapshot_interval_events: usize,
     /// NATS server URL used by the API server, agent binary, and integration tests.
     pub nats_url: String,
+    /// Enable the synthesis phase. When false, the engine uses the selection chain exclusively.
+    /// Default: true. Set false to reproduce pre-synthesis behavior for benchmarking.
+    pub synthesis_enabled: bool,
+    /// Minimum number of verified proposals required to attempt synthesis.
+    /// Default: 2. Raising to 3+ reserves synthesis for richer ensembles.
+    pub synthesis_min_proposals: usize,
+    /// τ (temperature) for critique and synthesis calls. Lower than explorer τ
+    /// encourages deterministic, structured critique output. Default: 0.2.
+    pub synthesis_tau: f64,
+    /// Max tokens for the critique call. Default: 1024.
+    pub synthesis_critique_max_tokens: u64,
+    /// Max tokens for the synthesis call. Default: 2048.
+    pub synthesis_max_tokens: u64,
+}
+
+#[cfg(test)]
+mod synthesis_config_tests {
+    use super::*;
+
+    #[test]
+    fn synthesis_defaults_load_from_reference_toml() {
+        let cfg = H2AIConfig::default();
+        assert!(cfg.synthesis_enabled);
+        assert_eq!(cfg.synthesis_min_proposals, 2);
+        assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
+        assert_eq!(cfg.synthesis_critique_max_tokens, 1024);
+        assert_eq!(cfg.synthesis_max_tokens, 2048);
+    }
 }
 
 /// Agent scheduling policy.
@@ -187,7 +224,7 @@ impl H2AIConfig {
     ///
     /// 1. Embedded `reference.toml` — all defaults, always present
     /// 2. `override_path` file — operator-provided TOML with only changed fields
-    /// 3. `H2AI__<FIELD>` env vars — highest priority, per-field overrides
+    /// 3. `H2AI_<FIELD>` env vars — highest priority, per-field overrides
     ///
     /// Returns `Err` if `override_path` is `Some` but the file does not exist or
     /// contains invalid TOML, or if a field has a wrong type.
@@ -205,6 +242,7 @@ impl H2AIConfig {
 
         builder = builder.add_source(
             Environment::with_prefix("H2AI")
+                .prefix_separator("_")
                 .separator("__")
                 .try_parsing(true),
         );

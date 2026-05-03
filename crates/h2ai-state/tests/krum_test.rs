@@ -1,5 +1,4 @@
 use chrono::Utc;
-use h2ai_context::jaccard::{jaccard, tokenize};
 use h2ai_state::krum::{
     cluster_coherent, krum_index, krum_score_subset, mean_pairwise_distance, min_quorum,
     quorum_satisfied,
@@ -7,8 +6,25 @@ use h2ai_state::krum::{
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::collections::HashSet;
+
+fn tokenize(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .filter(|t| t.len() > 1)
+        .collect()
+}
+
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
+    let intersection = a.intersection(b).count() as f64;
+    let union = a.union(b).count() as f64;
+    intersection / union
+}
 
 fn build_token_sets(proposals: &[ProposalEvent]) -> Vec<HashSet<String>> {
     proposals.iter().map(|p| tokenize(&p.raw_output)).collect()

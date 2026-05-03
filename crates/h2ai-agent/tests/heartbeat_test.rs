@@ -9,8 +9,7 @@ use std::time::Duration;
 #[tokio::test]
 #[ignore]
 async fn heartbeat_publishes_to_correct_subject() {
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match async_nats::connect(&nats_url).await {
         Ok(c) => c,
         Err(e) => {

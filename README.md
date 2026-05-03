@@ -93,27 +93,13 @@ curl -X POST http://localhost:8080/tasks \
     "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.85}
   }'
 
-# Task 2 — code generation with tool-using executors
-# Executors (CodeExecution + FileSystem) write and run code.
-# c_i ≈ 0.7 → max(c_i) approaches BFT threshold.
-# Evaluator (pure LLM, tau=0.1) forms a Review Gate before the Auditor.
+# Task 2 — code generation (containment-weighted, tight τ band)
 curl -X POST http://localhost:8080/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Write and test a Redis Lua script for atomic budget check-and-decrement with 30s TTL idempotency",
     "pareto_weights": {"diversity": 0.3, "containment": 0.6, "throughput": 0.1},
-    "explorers": {
-      "roles": [
-        {"agent_id": "executor_A", "role": "Executor", "tau": 0.4},
-        {"agent_id": "executor_B", "role": "Executor", "tau": 0.5},
-        {"agent_id": "evaluator",  "role": "Evaluator", "tau": 0.1}
-      ],
-      "review_gates": [
-        {"reviewer": "evaluator", "blocks": "executor_A"},
-        {"reviewer": "evaluator", "blocks": "executor_B"}
-      ]
-    },
-    "constraints": ["CONSTRAINT-004", "CONSTRAINT-007"]
+    "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.5}
   }'
 
 # Stream events in real time
@@ -147,22 +133,18 @@ helm install h2ai h2ai/h2ai-control-plane \
 The calibration harness runs representative tasks through the adapter pool and measures the two parameters that bound ensemble size:
 
 - `α` — the **serial bottleneck fraction**: time spent in planning, context compilation, and final synthesis — phases that serialize regardless of how many agents run in parallel. Measured as the fraction of total wall time that scales with N=1 behavior.
-- `κ_base` — the **pairwise reconciliation cost**: how expensive it is to integrate each pair of agents' outputs into a coherent answer. Measured from merge phase timing and output divergence (CG_mean). Scales as N(N−1) in the USL model.
+- `β₀` — the **pairwise reconciliation cost**: how expensive it is to integrate each pair of agents' outputs into a coherent answer. Measured from merge phase timing and output divergence (CG_mean). Scales as N(N−1) in the USL model.
 - `CG(i,j)` — **Common Ground** between every Explorer pair: vocabulary overlap of their outputs × temperature alignment. High CG means agents reached compatible conclusions; low CG means they have split and reconciliation is costly.
 
-From these it derives `N_max = sqrt((1−α) / κ_eff)` — the agent count at which Condorcet quality gain and reconciliation cost intersect. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
+From these it derives `N_max = sqrt((1−α) / β_eff)` — the agent count at which Condorcet quality gain and reconciliation cost intersect. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
 
 ### 2. Bootstrap — compile Dark Knowledge into explicit constraints
 
-You submit a task manifest. The **Dark Knowledge Compiler** computes `J_eff = J(K_prompt, K_task_required)` — the Jaccard overlap between what you explicitly provided (manifest + constraint corpus) and what the task actually requires.
-
-If `J_eff` is below threshold → synchronous `400 ContextUnderflowError`. The human must add constraints before proceeding. Nothing touches NATS.
-
-If `J_eff` passes → an immutable `system_context` is compiled from your constraint corpus + manifest. Every agent — Explorer and Auditor alike — receives exactly this context and nothing else.
+You submit a task manifest. The **Dark Knowledge Compiler** assembles an immutable `system_context` from your constraint corpus and the task manifest. Every agent — Explorer and Auditor alike — receives exactly this context and nothing else.
 
 ### 3. Provisioning — topology selected by physics, not guesswork
 
-The autonomic loop reads `{α, κ_eff, ParetoWeights}` and selects one of three topologies:
+The autonomic loop reads `{α, β_eff, ParetoWeights}` and selects one of three topologies:
 - **Ensemble + CRDT** — when `N ≤ N_max` and diversity weight dominates. No coordinator. All Explorers are peers. `O(N²)` edges, but structurally fine for small N. Pareto: T=84%, E=84%, D=90%.
 - **Hierarchical Tree** — when `N > N_max` or containment weight dominates. One Swarm Coordinator + k sub-groups. Branching factor `k_opt = floor(N_max^flat)`. Coordination cost drops from `O(N²)` to `O(N)`. Pareto: T=96%, E=96%, D=60%.
 - **Team-Swarm Hybrid** — when the manifest provides `explorers.roles[]`. Role-differentiated Explorers (Coordinator, Executor, Evaluator, Synthesizer) with declared review gates between specified pairs. The Evaluator forms a pre-Auditor gate that blocks Executor output. Pareto: T=84%, E=91%, D=95%.
@@ -195,7 +177,7 @@ pub enum AgentTool {
 
 **`tools` are capability flags, not features.** They directly affect three USL quantities that the system measures and controls:
 
-| Tool set | Effect on α | Effect on κ_base | Default c_i | Typical role |
+| Tool set | Effect on α | Effect on β₀ | Default c_i | Typical role |
 |---|---|---|---|---|
 | `[]` (pure LLM) | near 0 | 0 (text only) | 0.1–0.3 | Coordinator / Synthesizer |
 | `[WebSearch]` | +0.01–0.02 | +0.005 (retrieval nondeterminism) | 0.2–0.4 | Evaluator |
@@ -206,9 +188,9 @@ pub enum AgentTool {
 A pure LLM agent is `f(context, τ) → text` — deterministic given its inputs, zero side effects, errors cost nothing to discard. A tool-using agent is `f(context, τ, external_state_t) → text + side_effects` — its output depends on the world at execution time, and wrong outputs may leave irreversible state.
 
 This distinction flows directly into topology selection:
-- High c_i from tool-using agents drives `max(c_i) > 0.85`, switching `MergeStrategy` from `ScoreOrdered` to `ConsensusMedian` (Condorcet voting) or `Krum` (provably BFT, for `max(c_i) > 0.95` with `krum_fault_tolerance > 0`).
+- High c_i from tool-using agents drives `max(c_i) > 0.85`, switching `MergeStrategy` from `ScoreOrdered` to `ConsensusMedian` (Condorcet voting) or `OutlierResistant` (for `max(c_i) > 0.95`).
 - Tool-induced α increase lowers `N_max`, reducing the explorer count.
-- WebSearch nondeterminism raises CG variance, lowering `CG_mean`, raising `κ_eff`.
+- WebSearch nondeterminism raises CG variance, lowering `CG_mean`, raising `β_eff`.
 - High-c_i Executor agents trigger Review Gates in TeamSwarmHybrid topology — the wrong output cannot reach the Auditor by graph construction.
 
 The full dispatch-and-await loop per Explorer:
@@ -232,12 +214,12 @@ If all proposals are pruned → `ZeroSurvivalEvent` → the MAPE-K loop adjusts 
 
 ### 6. Merge — O(1) human decision
 
-Surviving proposals are merged using the provisioned strategy (`ScoreOrdered` / `ConsensusMedian` / `Krum`). The **Merge Authority UI** presents:
+Surviving proposals are merged using the provisioned strategy (`ScoreOrdered` / `ConsensusMedian` / `OutlierResistant`). The **Merge Authority UI** presents:
 
 - **Valid proposals panel** — diff view grouped by target component, τ and adapter shown per proposal
 - **Tombstone panel** — every rejected proposal with Explorer ID, attempted output, rejection reason, and `c_i` weight of the violated constraint. Failures are epistemic data.
 - **Autonomic shift timeline** — every MAPE-K intervention rendered as a timeline node
-- **Physics panel** — live `θ_coord`, `J_eff`, `κ_eff`, `N_max`, current `MergeStrategy`
+- **Physics panel** — live `θ_coord`, `β_eff`, `N_max`, current `MergeStrategy`
 
 The human makes one decision. `MergeResolvedEvent` closes the task.
 
@@ -246,23 +228,23 @@ The human makes one decision. `MergeResolvedEvent` closes the task.
 ## The Scalability Ceiling
 
 ```
-X(N) = N / (1 + α(N−1) + κ_eff·N(N−1))
+X(N) = N / (1 + α(N−1) + β_eff·N(N−1))
 
-N_max = sqrt((1 − α) / κ_eff)
+N_max = sqrt((1 − α) / β_eff)
 ```
 
 The same law governs coordination-dependent systems at every scale. The parameters change; the structure does not.
 
-| System | α (serial bottleneck) | κ_base (pairwise sync cost) | N_max | What α and κ represent |
+| System | α (serial bottleneck) | β₀ (pairwise sync cost) | N_max | What α and β represent |
 |---|---|---|---|---|
-| CPU cache coherency | 0.02 | 0.0003 | ~57 | α = memory bus serialization; κ = cache-line exchange protocol |
-| Human engineering team | 0.10 | 0.0083 | ~10 | α = planning/review cycles; κ = pairwise communication overhead (Brook's Law) |
-| AI agents (same model) | 0.15 | 0.025 | ~4–5 | α = context compilation + synthesis; κ = pairwise output reconciliation at low CG |
-| AI agents (diverse backends) | 0.12 | 0.018 | ~6–7 | α = same; κ lower because diverse models share less vocabulary, but diverge less on facts |
+| CPU cache coherency | 0.02 | 0.0003 | ~57 | α = memory bus serialization; β = cache-line exchange protocol |
+| Human engineering team | 0.10 | 0.0083 | ~10 | α = planning/review cycles; β = pairwise communication overhead (Brook's Law) |
+| AI agents (same model) | 0.15 | 0.025 | ~4–5 | α = context compilation + synthesis; β = pairwise output reconciliation at low CG |
+| AI agents (diverse backends) | 0.12 | 0.018 | ~6–7 | α = same; β lower because diverse models share less vocabulary, but diverge less on facts |
 
-For AI agents, α captures the serial phases inherent to orchestration (you cannot parallelize task decomposition or final merge), and κ captures how expensive it is to find and resolve contradictions between N agents' partial answers. Higher κ = more divergence to reconcile = fewer agents before quality peaks.
+For AI agents, α captures the serial phases inherent to orchestration (you cannot parallelize task decomposition or final merge), and β captures how expensive it is to find and resolve contradictions between N agents' partial answers. Higher β = more divergence to reconcile = fewer agents before quality peaks.
 
-Reference values: **α ≈ 0.10–0.15, κ_base ≈ 0.015–0.025, N_max ≈ 4–7** for typical LLM ensembles.
+Reference values: **α ≈ 0.10–0.15, β₀ ≈ 0.015–0.025, N_max ≈ 4–7** for typical LLM ensembles.
 
 ---
 
@@ -272,8 +254,8 @@ All state is immutable event log entries on NATS JetStream. Crash recovery = rep
 
 **Core orchestration events** (subject `h2ai.tasks.{task_id}`):
 ```
-CalibrationCompletedEvent          → α, κ_base, CG samples, θ_coord locked
-TaskBootstrappedEvent              → J_eff gate passed, system_context locked
+CalibrationCompletedEvent          → α, β₀, CG samples, θ_coord locked
+TaskBootstrappedEvent              → system_context locked, constraint corpus compiled
 TopologyProvisionedEvent           → DAG shape, τ values, RoleErrorCosts, MergeStrategy
 MultiplicationConditionFailedEvent → which of 3 conditions failed, re-entering Phase 2
 ProposalEvent                      → Explorer output appended, agent terminates
@@ -346,7 +328,7 @@ h2ai-control-plane/
 │   │                               # SchedulingEngine (Kahn topo-sort wave execution)
 │   ├── h2ai-autonomic/             # MAPE-K loop + calibration harness + N_max calculator
 │   ├── h2ai-state/                 # CRDT semilattice + NATS JetStream I/O + task dispatch wire protocol
-│   ├── h2ai-context/               # Dark Knowledge Compiler + Jaccard + J_eff measurement
+│   ├── h2ai-context/               # Dark Knowledge Compiler + constraint corpus loader
 │   │                               # corpus_keywords from ConstraintDoc::vocabulary()
 │   ├── h2ai-adapters/              # IComputeAdapter: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + AdapterFactory
 │   ├── h2ai-api/                   # axum REST gateway + Merge Authority web UI
@@ -364,12 +346,12 @@ h2ai-control-plane/
 │   ├── ci.yml                      # fmt → clippy -D warnings → nextest → docker → helm lint
 │   └── release.yml                 # image → ghcr.io, Helm chart → GitHub Pages, binary release
 └── docs/
-    ├── architecture/               # All documentation: architecture, guides, reference, operations
-    │   ├── design-specification.md, design-rationale.md, differentiation.md
-    │   ├── math-apparatus.md, research-state.md, runtime-phases.md, crate-boundaries.md
-    │   ├── deployment.md, operations.md, troubleshooting.md
-    │   ├── api.md, configuration.md
-    │   └── getting-started.md, adapters.md, agent-descriptor.md, constraint-corpus.md, theory-to-implementation.md
+    ├── architecture/               # 5-file consolidated documentation
+    │   ├── architecture.md         # System overview, crate boundaries, event vocabulary
+    │   ├── math.md                 # USL/CJT foundations, formulas, calibration table
+    │   ├── reference.md            # API, configuration, metrics, adapters, constraint corpus
+    │   ├── operations.md           # Getting started, deployment, alerts, troubleshooting
+    │   └── research-state.md       # Thesis, implemented gaps, open questions, benchmarks
     └── examples/
         └── ads-platform/           # Reference constraint corpus + integration test task manifests
             ├── constraints/        # 7 constraint docs derived from "Architecting Real-Time Ads Platform"
@@ -382,31 +364,13 @@ h2ai-control-plane/
 
 ---
 
-## Research & Validation Scripts
+## Scripts
 
-`scripts/baseline_eval.py` is a **production tool**: measures real per-adapter accuracy (p)
-and correlation (ρ) against `eval_questions.jsonl`. Run before high-stakes deployments to
-override the CG_mean proxy with empirical values (`baseline_accuracy_proxy` config field).
-
-The remaining scripts are **research/validation tools** — not required for deployment, but
-run them to verify formula correctness after any change to calibration constants or physics
-formulas. Each is the formal proof for a specific mathematical claim in
-[`docs/architecture/research-state.md`](docs/architecture/research-state.md):
-
-| Script | Status | Validates |
-|---|---|---|
-| `validate_ensemble_theory.py` | ✅ Current | CJT formula vs 100k-trial Monte Carlo; J_eff gate; proxy sensibility |
-| `validate_conformal_vs_cjt.py` | ✅ Current | CJT over-prediction at ρ≥0.6 vs conformal coverage guarantee |
-| `validate_bft_methods.py` | ✅ Current | Weiszfeld breakdown point 50%; Token Krum fails on LLM paraphrases |
-| `validate_information_theory.py` | ✅ Current | I_marginal decay, N_it_optimal, Slepian-Wolf efficiency |
-| `validate_eigenvalue_calibration.py` | ✅ Current | N_eff participation ratio detects hidden adapter redundancy |
-| `validate_beta_coupling.py` | ✅ Current | β_eff = β₀×(1−CG) formula bounds; singularity test at CG→0 |
-| `validate_math.py` | ✅ Current | Numerically validates all definitions and propositions in `math-apparatus.md` |
-| `simulate_usl.py` | ✅ Current | USL throughput curves, CG effect, Pareto matrix (generates PNGs to `scripts/output/`) |
-| `benchmark/smoke_test.py` | ✅ New | 5-problem GSM8K end-to-end smoke test (< $0.50) |
-| `benchmark/run_gsm8k.py` | ✅ New | GSM8K 500-sample evaluation vs B0/B1/B2/B3/H2 baselines |
-| `benchmark/run_humaneval.py` | ✅ New | HumanEval pass@1 with code execution oracle |
-| `benchmark/compare.py` | ✅ New | Cost-normalized quality table + paired t-test across baselines |
+| Script | Purpose |
+|---|---|
+| `scripts/simulate.py` | Visualization: USL curves, β_eff vs CG coupling, N_max vs CG, CJT quality curves, N_eff eigenvalue vs scalar ρ, Talagrand rank histogram shapes |
+| `scripts/baseline_eval.py` | **Production tool** — measures real p and ρ from live adapters against `eval_questions.jsonl`; output overrides `baseline_accuracy_proxy` in config. Run before high-stakes deployments. |
+| `scripts/benchmark/` | Benchmark harness: GSM8K, HumanEval, TruthfulQA runners + B0/B1/B2/B3/H2AI baseline comparison. Runs not yet executed. |
 
 ---
 
@@ -414,7 +378,7 @@ formulas. Each is the formal proof for a specific mathematical claim in
 
 | Layer | Choice | Why |
 |---|---|---|
-| Language | Rust + Tokio | Compiler-verified CRDT state, zero-cost FFI to llama.cpp, no GC jitter in κ_base |
+| Language | Rust + Tokio | Compiler-verified CRDT state, zero-cost FFI to llama.cpp, no GC jitter in β₀ |
 | Event log | NATS JetStream | Single static binary (MB of RAM), Tokio-native `async-nats`, clusters natively |
 | State model | Event-sourced CRDT | α→0 during generation (no locks), full provenance chain, crash recovery = replay |
 | Local compute | llama.cpp FFI | Zero-cost, 128GB RAM dedicated to weights |
@@ -422,7 +386,7 @@ formulas. Each is the formal proof for a specific mathematical claim in
 | HTTP | axum | Tokio-native, same async runtime as orchestrator |
 | Type bindings | `typeshare` | Rust types → Go structs for edge agent contracts; no hand-maintained schemas |
 | Tracing | `tracing` + OpenTelemetry | task_id as root span, DAG execution visible in Jaeger/Grafana Tempo |
-| Metrics | Prometheus `/metrics` | 20 gauges: κ_eff, α, N_max, θ_coord, J_eff, VRAM, c_i per role, adapter latency |
+| Metrics | Prometheus `/metrics` | 20 gauges: β_eff, α, N_max, θ_coord, VRAM, c_i per role, adapter latency |
 
 ---
 
@@ -462,49 +426,19 @@ The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus f
 
 All documentation is under `docs/architecture/`.
 
-### Getting Started & Guides
-
 | Document | Contents |
 |---|---|
-| [Getting Started](docs/architecture/getting-started.md) | First task end-to-end — Local Plan, Server Plan team node, Cloud Plan Kubernetes |
-| [Agent Descriptor Guide](docs/architecture/agent-descriptor.md) | Pure LLM vs. tool-using agents — how tools affect α, β₀, c_i, topology selection, and NKey scoping |
-| [Constraint Corpus Guide](docs/architecture/constraint-corpus.md) | ConstraintDoc/ConstraintPredicate type system, Hard/Soft/Advisory severity, compliance formula, diagnosing low J_eff |
-| [Adapter Development](docs/architecture/adapters.md) | Implementing `IComputeAdapter` for custom compute backends, testing, registration |
-| [Theory to Implementation](docs/architecture/theory-to-implementation.md) | Topology selection protocol, 7-topology catalog with Pareto scores, team-swarm configuration, worked example |
-
-### Reference
-
-| Document | Contents |
-|---|---|
-| [API Reference](docs/architecture/api.md) | All REST endpoints, SSE event stream, complete JSON schemas for all 24 events, error codes |
-| [Configuration Reference](docs/architecture/configuration.md) | All environment variables, full H2AIConfig field reference, Prometheus metrics, Helm values |
-
-### Architecture
-
-| Document | Contents |
-|---|---|
-| [Design Specification](docs/architecture/design-specification.md) | System overview — positioning, tech stack, deployment plans, API contract, math summary |
-| [Design Rationale](docs/architecture/design-rationale.md) | *Why* each major decision was made: NATS, USL, NKeys, Rust, event sourcing, CJT+USL together; honest gaps |
-| [Differentiation](docs/architecture/differentiation.md) | How H2AI differs from LangGraph, AutoGen, CrewAI, Semantic Kernel — what it does better and worse |
-| [Runtime Phases](docs/architecture/runtime-phases.md) | 6-phase execution flow + compound task pipeline, 24-event vocabulary, structural guarantees |
-| [Crate Boundaries](docs/architecture/crate-boundaries.md) | Workspace layout, 16 crates, dependency rules, Tokio thread pool isolation |
-| [Deployment](docs/architecture/deployment.md) | Three deployment plans, NATS clustering, Kubernetes topology, observability |
-| [Math Apparatus](docs/architecture/math-apparatus.md) | USL/CJT theoretical foundations, 10 definitions + 5 propositions, calibration table |
-| [Research State](docs/architecture/research-state.md) | Project thesis, math with validation evidence, gap analysis, empirical benchmarking strategy |
-
-### Operations
-
-| Document | Contents |
-|---|---|
-| [Operations Guide](docs/architecture/operations.md) | Key metrics, alert rules, scaling, rolling upgrade procedure, NATS backup |
-| [Troubleshooting](docs/architecture/troubleshooting.md) | ContextUnderflowError, zero-survival, Multiplication Condition failures, high α/β |
+| [Architecture](docs/architecture/architecture.md) | System overview, positioning, tech stack, crate boundaries, deployment plans, event vocabulary |
+| [Math](docs/architecture/math.md) | USL/CJT foundations, 10 definitions + 5 propositions, β_eff formula, calibration table |
+| [Reference](docs/architecture/reference.md) | REST API, SSE event stream, configuration fields, Prometheus metrics, adapter guide, constraint corpus |
+| [Operations](docs/architecture/operations.md) | Getting started, deployment plans, key metrics, alert rules, scaling, troubleshooting |
+| [Research State](docs/architecture/research-state.md) | Project thesis, implemented gaps, open research questions, empirical benchmarking strategy |
 
 ### Examples
 
 | Document | Contents |
 |---|---|
-| [Examples Overview](docs/examples/README.md) | Constraint corpus format, J_eff effect, how to run integration tests |
-| [Ads Platform](docs/examples/ads-platform/README.md) | 7 constraint docs + 3 integration test tasks derived from "Architecting Real-Time Ads Platform" |
+| [Ads Platform](docs/examples/ads-platform/) | 7 constraint docs + 3 integration test tasks derived from "Architecting Real-Time Ads Platform" |
 
 ---
 

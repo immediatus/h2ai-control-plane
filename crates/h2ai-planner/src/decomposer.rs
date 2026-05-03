@@ -4,8 +4,8 @@ use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::AgentRole;
 use h2ai_types::identity::{SubtaskId, TaskId};
 use h2ai_types::manifest::TaskManifest;
-use h2ai_types::physics::TauValue;
 use h2ai_types::plan::{PlanStatus, Subtask, SubtaskPlan};
+use h2ai_types::sizing::TauValue;
 use serde::Deserialize;
 use thiserror::Error;
 

@@ -92,13 +92,17 @@ pub struct TaoMultiplierEstimator {
     /// via `with_alpha()` from config before use.
     #[serde(skip)]
     alpha: f64,
-    /// Accumulator for the arithmetic mean over the first 20 warm-up samples.
-    /// Not persisted — zeroed on deserialisation. When `count < 20` at restart
+    /// Accumulator for the arithmetic mean over the first `warmup` warm-up samples.
+    /// Not persisted — zeroed on deserialisation. When `count < warmup` at restart
     /// the warm-up mean is recomputed from only post-restart samples; the NATS put
     /// path avoids this by skipping persistence until warm-up completes (see `persist_state`).
     /// Zeroed automatically once warm-up finishes and `ema` is initialised.
     #[serde(skip)]
     warmup_sum: f64,
+    /// Minimum number of samples before EMA state is persisted. Default 20.
+    /// Configurable via `H2AIConfig::tao_estimator_warmup`.
+    #[serde(skip)]
+    warmup: usize,
 }
 
 impl TaoMultiplierEstimator {
@@ -108,12 +112,19 @@ impl TaoMultiplierEstimator {
             count: 0,
             alpha,
             warmup_sum: 0.0,
+            warmup: 20,
         }
     }
 
     /// Restore alpha after deserializing from NATS.
     pub fn with_alpha(mut self, alpha: f64) -> Self {
         self.alpha = alpha;
+        self
+    }
+
+    /// Override the default warm-up count (20). Returns self for chaining.
+    pub fn with_warmup(mut self, warmup: usize) -> Self {
+        self.warmup = warmup;
         self
     }
 
@@ -126,11 +137,11 @@ impl TaoMultiplierEstimator {
         }
         let ratio = (q_after / q_before).clamp(0.0, 2.0);
         self.count += 1;
-        if self.count < 20 {
+        if self.count < self.warmup {
             self.warmup_sum += ratio;
-        } else if self.count == 20 {
+        } else if self.count == self.warmup {
             self.warmup_sum += ratio;
-            self.ema = self.warmup_sum / 20.0;
+            self.ema = self.warmup_sum / self.warmup as f64;
         } else {
             self.ema += self.alpha * (ratio - self.ema);
         }
@@ -139,7 +150,7 @@ impl TaoMultiplierEstimator {
     /// Current estimate of the per-turn quality factor.
     /// Returns the heuristic prior (0.6) until 20 samples are available.
     pub fn multiplier(&self) -> f64 {
-        if self.count < 20 {
+        if self.count < self.warmup {
             0.6
         } else {
             self.ema
@@ -151,10 +162,10 @@ impl TaoMultiplierEstimator {
         self.count
     }
 
-    /// Returns `(ema, count)` for NATS persistence, or `None` when warm-up is incomplete
-    /// (count < 20). Callers must not persist partial warm-up state.
+    /// Returns `(ema, count)` for NATS persistence, or `None` when warm-up is incomplete.
+    /// Callers must not persist partial warm-up state.
     pub fn persist_state(&self) -> Option<(f64, usize)> {
-        if self.count >= 20 {
+        if self.count >= self.warmup {
             Some((self.ema, self.count))
         } else {
             None

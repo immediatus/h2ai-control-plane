@@ -1,7 +1,7 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 fn request() -> ComputeRequest {
     ComputeRequest {

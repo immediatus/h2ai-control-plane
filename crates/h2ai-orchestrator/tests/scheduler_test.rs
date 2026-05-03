@@ -35,6 +35,7 @@ fn base_manifest() -> TaskManifest {
             tau_max: None,
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec![],
         context: None,

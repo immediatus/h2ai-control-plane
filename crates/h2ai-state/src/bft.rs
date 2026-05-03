@@ -23,10 +23,34 @@
 //! When `adapter` is `Some(...)`, uses semantic Jaccard (synonyms score as close).
 //! When `adapter` is `None`, falls back to token Jaccard (deterministic, no I/O).
 
+use h2ai_context::embedding::semantic_jaccard;
 use h2ai_context::embedding::EmbeddingModel;
-use h2ai_context::similarity::semantic_jaccard;
 use h2ai_types::events::ProposalEvent;
 use std::cmp::Ordering;
+use std::collections::HashSet;
+
+// Token-Jaccard similarity fallback for BFT median — a valid metric for the
+// Fréchet median proof. Exact equality (the embedding.rs fallback) produces a
+// degenerate metric where all distinct proposals are equidistant, making the
+// Fréchet median selection non-deterministic for non-identical inputs.
+fn tokenize(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .filter(|t| t.len() > 1)
+        .collect()
+}
+
+fn token_jaccard(a: &str, b: &str) -> f64 {
+    let ta = tokenize(a);
+    let tb = tokenize(b);
+    if ta.is_empty() && tb.is_empty() {
+        return 0.0;
+    }
+    let intersection = ta.intersection(&tb).count() as f64;
+    let union = ta.union(&tb).count() as f64;
+    intersection / union
+}
 
 /// BFT-resistant consensus via the Fréchet median in Jaccard metric space.
 ///
@@ -68,7 +92,10 @@ impl ConsensusMedian {
 
         let pair_sims: Vec<f64> = pairs
             .iter()
-            .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], embedding_model))
+            .map(|&(i, j)| match embedding_model {
+                Some(m) => semantic_jaccard(outputs[i], outputs[j], Some(m)),
+                None => token_jaccard(outputs[i], outputs[j]),
+            })
             .collect();
 
         // Populate symmetric similarity matrix.
@@ -98,7 +125,7 @@ mod tests {
     use chrono::Utc;
     use h2ai_types::config::AdapterKind;
     use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::physics::TauValue;
+    use h2ai_types::sizing::TauValue;
 
     fn prop(text: &str) -> ProposalEvent {
         ProposalEvent {

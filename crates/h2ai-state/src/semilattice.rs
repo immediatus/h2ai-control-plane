@@ -133,7 +133,7 @@ mod tests {
     use chrono::Utc;
     use h2ai_types::config::AdapterKind;
     use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::physics::TauValue;
+    use h2ai_types::sizing::TauValue;
 
     fn prop(text: &str) -> ProposalEvent {
         ProposalEvent {

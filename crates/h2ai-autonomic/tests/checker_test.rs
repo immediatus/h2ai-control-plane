@@ -1,7 +1,7 @@
 use h2ai_autonomic::checker::MultiplicationChecker;
 use h2ai_config::H2AIConfig;
 use h2ai_types::identity::TaskId;
-use h2ai_types::physics::{CoherencyCoefficients, CoordinationThreshold};
+use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold};
 
 fn cc() -> CoherencyCoefficients {
     CoherencyCoefficients::new(0.1, 0.02, vec![0.8, 0.85, 0.9]).unwrap()
@@ -40,7 +40,7 @@ fn checker_fails_when_baseline_competence_too_low() {
     assert_eq!(err.retry_count, 0);
     assert!(matches!(
         err.failure,
-        h2ai_types::physics::MultiplicationConditionFailure::InsufficientCompetence { .. }
+        h2ai_types::sizing::MultiplicationConditionFailure::InsufficientCompetence { .. }
     ));
 }
 

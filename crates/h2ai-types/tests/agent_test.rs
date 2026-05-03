@@ -4,7 +4,7 @@ use h2ai_types::agent::{
     TaskPayload, TaskResult,
 };
 use h2ai_types::identity::{AgentId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 fn task_id() -> TaskId {
     TaskId::new()

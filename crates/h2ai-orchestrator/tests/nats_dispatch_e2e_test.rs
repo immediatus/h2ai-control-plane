@@ -13,7 +13,7 @@ use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComput
 use h2ai_types::agent::{AgentDescriptor, CostTier, TaskRequirements};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::AgentId;
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 
@@ -59,8 +59,7 @@ impl IComputeAdapter for FixedCostAdapter {
 #[tokio::test]
 #[ignore]
 async fn nats_dispatch_e2e_full_pipeline() {
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
 
     // Step 1: Connect and ensure JetStream infrastructure.
     let nats_orchestrator = Arc::new(match NatsClient::connect(&nats_url).await {

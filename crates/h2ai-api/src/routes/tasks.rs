@@ -8,7 +8,7 @@ use axum::{
 use h2ai_constraints::loader::load_corpus;
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_types::config::{TaoConfig, VerificationConfig};
-use h2ai_types::events::{H2AIEvent, TaskAttributionEvent};
+use h2ai_types::events::{H2AIEvent, TaskAttributionEvent, TaskFailedEvent};
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use serde_json::{json, Value};
@@ -20,8 +20,6 @@ use std::convert::Infallible;
 /// - Pareto weights (`diversity + containment + throughput`) must sum to 1.0 (±1e-4).
 /// - A completed [`CalibrationCompletedEvent`] must be present; returns
 ///   `ApiError::CalibrationRequired` otherwise.
-/// - Manifest description must pass the J_eff gate (`j_eff >= cfg.j_eff_gate`);
-///   returns `ApiError::ContextUnderflow` when the token-level Jaccard score is too low.
 /// - `manifest.explorers.count` must not exceed `calibration.coefficients.n_max()`;
 ///   returns `ApiError::ExplorerBudgetExceeded` otherwise.
 /// - A semaphore permit must be available (`cfg.max_concurrent_tasks`); returns
@@ -58,26 +56,6 @@ pub async fn submit_task(
         std::env::var("H2AI_CONSTRAINT_CORPUS_PATH").unwrap_or_else(|_| "/constraints".into());
     let corpus = load_corpus(&corpus_path)
         .map_err(|e| ApiError::Internal(format!("constraint corpus load failed: {e}")))?;
-
-    use h2ai_context::jaccard::{jaccard, tokenize};
-    let required_kw = corpus
-        .iter()
-        .flat_map(|d| d.vocabulary().into_iter())
-        .chain(manifest.constraints.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let required_kw = if required_kw.is_empty() {
-        manifest.description.clone()
-    } else {
-        required_kw
-    };
-    let j_eff = jaccard(&tokenize(&manifest.description), &tokenize(&required_kw));
-    if j_eff < state.cfg.j_eff_gate {
-        return Err(ApiError::ContextUnderflow {
-            j_eff,
-            threshold: state.cfg.j_eff_gate,
-        });
-    }
 
     let topology_kind_str = manifest.topology.kind.clone();
     let n_max = calibration.coefficients.n_max();
@@ -130,6 +108,8 @@ pub async fn submit_task(
             .await
             .multiplier();
         let tao_multiplier_estimator = std::sync::Arc::clone(&state_clone.tao_multiplier_estimator);
+        let bandit = std::sync::Arc::clone(&state_clone.bandit_state);
+        let task_id_for_failure = task_id_clone.clone();
         let input = EngineInput {
             task_id: task_id_clone,
             manifest: manifest_clone,
@@ -151,6 +131,8 @@ pub async fn submit_task(
             embedding_model: state_clone.embedding_model.as_deref(),
             tao_multiplier,
             tao_estimator: tao_multiplier_estimator,
+            synthesis_adapter: None,
+            bandit_state: Some(bandit),
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -214,7 +196,30 @@ pub async fn submit_task(
                 state_clone.store.mark_resolved(&output.task_id);
             }
             Err(e) => {
-                tracing::error!("engine error: {e}");
+                let msg = e.to_string();
+                let is_network = msg.contains("network error")
+                    || msg.contains("connection refused")
+                    || msg.contains("timed out");
+                if is_network {
+                    tracing::warn!("task engine stopped — LLM adapter unreachable: {msg}");
+                } else {
+                    tracing::error!("task engine error: {msg}");
+                }
+                let failed_ev = H2AIEvent::TaskFailed(TaskFailedEvent {
+                    task_id: task_id_for_failure.clone(),
+                    pruned_events: vec![],
+                    topologies_tried: vec![],
+                    tau_values_tried: vec![],
+                    multiplication_condition_failure: None,
+                    timestamp: chrono::Utc::now(),
+                });
+                if let Err(pub_err) = state_clone
+                    .nats
+                    .publish_event(&task_id_for_failure, &failed_ev)
+                    .await
+                {
+                    tracing::warn!("failed to publish TaskFailedEvent: {pub_err}");
+                }
             }
         }
 
@@ -229,6 +234,19 @@ pub async fn submit_task(
                 tracing::warn!("failed to persist tao_estimator: {e}");
             }
         }
+
+        // Persist updated bandit state.
+        {
+            let bandit = state_clone.bandit_state.read().await;
+            match serde_json::to_vec(&*bandit) {
+                Ok(bytes) => {
+                    if let Err(e) = state_clone.nats.put_bandit_state(bytes).await {
+                        tracing::warn!("failed to persist bandit state: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("failed to serialize bandit state: {e}"),
+            }
+        }
     });
     let events_url = format!("/tasks/{task_id_str}/events");
 
@@ -236,7 +254,6 @@ pub async fn submit_task(
         task_id: task_id_str,
         status: "accepted".into(),
         events_url,
-        j_eff,
         topology_kind: topology_kind_str,
         n_max,
         interface_n_max: None,

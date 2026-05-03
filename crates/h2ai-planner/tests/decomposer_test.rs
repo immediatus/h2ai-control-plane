@@ -2,8 +2,8 @@ use h2ai_adapters::MockAdapter;
 use h2ai_planner::decomposer::{PlannerError, PlanningEngine};
 use h2ai_types::config::{AgentRole, ParetoWeights};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
-use h2ai_types::physics::TauValue;
 use h2ai_types::plan::PlanStatus;
+use h2ai_types::sizing::TauValue;
 
 fn manifest() -> TaskManifest {
     TaskManifest {
@@ -19,6 +19,7 @@ fn manifest() -> TaskManifest {
             tau_max: None,
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,

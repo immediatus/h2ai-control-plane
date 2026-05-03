@@ -4,13 +4,55 @@ use h2ai_config::H2AIConfig;
 use h2ai_constraints::loader::parse_constraint_doc;
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
-use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
+use h2ai_types::adapter::{
+    AdapterError, AdapterRegistry, ComputeRequest, ComputeResponse, IComputeAdapter,
+};
 use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, RoleSpec, TaoConfig, VerificationConfig,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
+
+// An adapter that returns different outputs on successive calls (for synthesis tests)
+#[derive(Debug)]
+struct SequencedAdapter {
+    responses: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    kind: AdapterKind,
+}
+
+impl SequencedAdapter {
+    fn new(responses: Vec<String>) -> Self {
+        Self {
+            responses: std::sync::Arc::new(std::sync::Mutex::new(responses)),
+            kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://sequenced".into(),
+                api_key_env: "NONE".into(),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IComputeAdapter for SequencedAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        let mut responses = self.responses.lock().unwrap();
+        let output = if responses.is_empty() {
+            "fallback".to_string()
+        } else {
+            responses.remove(0)
+        };
+        Ok(ComputeResponse {
+            output,
+            token_cost: 100,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+        })
+    }
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
 
 fn mock_adapter() -> MockAdapter {
     MockAdapter::new("stateless JWT authentication token refresh ADR-001".into())
@@ -32,7 +74,7 @@ async fn calibration() -> h2ai_types::events::CalibrationCompletedEvent {
         task_prompts: vec!["Calibrate".into(), "Second task".into(), "Third".into()],
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     })
     .await
     .unwrap()
@@ -64,6 +106,7 @@ async fn engine_runs_ensemble_to_semilattice() {
             tau_max: Some(0.8),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -100,6 +143,8 @@ async fn engine_runs_ensemble_to_semilattice() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -115,77 +160,6 @@ async fn engine_runs_ensemble_to_semilattice() {
     assert!(outcome.attribution.baseline_quality > 0.0);
     assert!(outcome.attribution.total_quality >= outcome.attribution.baseline_quality);
     assert!(outcome.attribution.total_quality <= 1.0);
-}
-
-#[tokio::test]
-async fn engine_rejects_insufficient_context() {
-    let adapter = mock_adapter();
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
-    let cal = calibration().await;
-    let store = TaskStore::new();
-    let cfg = H2AIConfig::default();
-
-    let manifest = TaskManifest {
-        description: "do stuff".into(),
-        pareto_weights: ParetoWeights::new(0.33, 0.33, 0.34).unwrap(),
-        topology: TopologyRequest {
-            kind: "auto".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: None,
-            tau_max: None,
-            roles: vec![],
-            review_gates: vec![],
-        },
-        constraints: vec![],
-        context: None,
-    };
-
-    // Corpus keywords that won't overlap with "do stuff" — forces J_eff below gate
-    let corpus = vec![parse_constraint_doc(
-        "ADR-001",
-        "## Constraints\nmicroservice stateless distributed consensus byzantine\n",
-    )];
-
-    let scorer = verifier();
-    let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
-        verification_adapter: &scorer as &dyn h2ai_types::adapter::IComputeAdapter,
-        auditor_adapter: &auditor as &dyn h2ai_types::adapter::IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: corpus,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        embedding_model: None,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-    };
-
-    let result = ExecutionEngine::run_offline(input).await;
-    assert!(result.is_err());
-    let err_str = result.unwrap_err().to_string();
-    assert!(
-        err_str.contains("J_eff") || err_str.contains("context underflow"),
-        "{err_str}"
-    );
 }
 
 #[tokio::test]
@@ -214,6 +188,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
             tau_max: Some(0.5),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -245,6 +220,8 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -283,6 +260,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
             tau_max: Some(0.5),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -314,6 +292,8 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -352,6 +332,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
             tau_max: Some(0.5),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -383,6 +364,8 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -420,6 +403,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
             tau_max: Some(0.8),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -448,6 +432,8 @@ async fn engine_output_contains_talagrand_diagnostic() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -507,6 +493,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
                 },
             ],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -542,6 +529,8 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -579,6 +568,7 @@ async fn engine_output_contains_suggested_next_params() {
             tau_max: Some(0.5),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -604,6 +594,8 @@ async fn engine_output_contains_suggested_next_params() {
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -619,5 +611,98 @@ async fn engine_output_contains_suggested_next_params() {
     assert!(
         params.verify_threshold > 0.0,
         "verify_threshold must be positive"
+    );
+}
+
+#[tokio::test]
+async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
+    // Two explorer adapters with different outputs - both must contain "stateless" and "auth"
+    // so they pass the VocabularyPresence constraint from the corpus
+    let explorer1 =
+        MockAdapter::new("stateless auth JWT implementation ADR-001 approach one".into());
+    let explorer2 =
+        MockAdapter::new("stateless auth RSA signing credential ADR-001 approach two".into());
+    // Verifier returns compliant for all proposals (including synthesis re-verification)
+    let scorer = verifier();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let cal = calibration().await;
+    let store = TaskStore::new();
+    // Enable synthesis with min_proposals=2 so 2 auditor-passed proposals trigger it
+    let cfg = H2AIConfig {
+        synthesis_enabled: true,
+        synthesis_min_proposals: 2,
+        ..H2AIConfig::default()
+    };
+    let corpus = vec![parse_constraint_doc(
+        "ADR-001",
+        "## Constraints\nstateless auth\n",
+    )];
+    let manifest = TaskManifest {
+        description: "Propose stateless auth with ADR-001 compliance".into(),
+        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 2,
+            tau_min: Some(0.3),
+            tau_max: Some(0.8),
+            roles: vec![],
+            review_gates: vec![],
+            slot_configs: vec![],
+        },
+        constraints: vec!["ADR-001".into()],
+        context: None,
+    };
+
+    let valid_critique = r#"{"proposal_critiques":[{"proposal_id":"p1","strengths":["s1"],"weaknesses":[],"verdict":"partial"},{"proposal_id":"p2","strengths":["s2"],"weaknesses":[],"verdict":"strong"}],"contradictions":[],"synthesis_guidance":"Use p2."}"#;
+    // Must contain "stateless" and "auth" to pass the VocabularyPresence constraint from the corpus
+    let synthesis_text = "Synthesised stateless auth solution ADR-001 compliant unified output.";
+
+    // SequencedAdapter: first call returns critique JSON, second call returns synthesis text
+    let synth_adapter =
+        SequencedAdapter::new(vec![valid_critique.to_string(), synthesis_text.to_string()]);
+
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![
+            &explorer1 as &dyn IComputeAdapter,
+            &explorer2 as &dyn IComputeAdapter,
+        ],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig {
+            adapter: AdapterKind::CloudGeneric {
+                endpoint: "mock".into(),
+                api_key_env: "NONE".into(),
+            },
+            ..Default::default()
+        },
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        embedding_model: None,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: Some(&synth_adapter as &dyn IComputeAdapter),
+        bandit_state: None,
+    };
+
+    let result = ExecutionEngine::run_offline(input).await;
+    assert!(result.is_ok(), "engine returned error: {:?}", result.err());
+    assert_eq!(
+        result.unwrap().resolved_output,
+        synthesis_text,
+        "resolved_output must equal the synthesis text when synthesis succeeds"
     );
 }

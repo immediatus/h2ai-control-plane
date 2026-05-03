@@ -2,7 +2,7 @@ use chrono::Utc;
 use h2ai_config::H2AIConfig;
 use h2ai_types::events::MultiplicationConditionFailedEvent;
 use h2ai_types::identity::TaskId;
-use h2ai_types::physics::{CoherencyCoefficients, CoordinationThreshold, MultiplicationCondition};
+use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold, MultiplicationCondition};
 
 pub struct MultiplicationChecker;
 

@@ -8,14 +8,7 @@ from typing import Any
 
 import requests
 
-# Default model cost table (per 1M tokens, USD)
-MODEL_COSTS: dict[str, dict[str, float]] = {
-    "gpt-4o": {"input": 2.50, "output": 10.00},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4-turbo": {"input": 10.00, "output": 30.00},
-    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
-    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
-}
+from .provider import MODEL_COSTS
 
 
 @dataclass

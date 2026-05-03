@@ -1,7 +1,7 @@
 use chrono::Utc;
 use h2ai_types::config::TopologyKind;
 use h2ai_types::events::{BranchPrunedEvent, TaskFailedEvent, ZeroSurvivalEvent};
-use h2ai_types::physics::MultiplicationConditionFailure;
+use h2ai_types::sizing::MultiplicationConditionFailure;
 
 pub enum RetryAction {
     Retry(TopologyKind),
@@ -134,7 +134,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::physics::RoleErrorCost;
+    use h2ai_types::sizing::RoleErrorCost;
 
     fn pruned(reason: &str) -> BranchPrunedEvent {
         BranchPrunedEvent {

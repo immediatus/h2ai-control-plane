@@ -1,6 +1,9 @@
-use crate::embedding::{semantic_jaccard, EmbeddingModel};
-use crate::jaccard::{jaccard, tokenize};
 use std::collections::HashMap;
+use tantivy::collector::TopDocs;
+use tantivy::query::QueryParser;
+use tantivy::schema::Value;
+use tantivy::schema::{Schema, STORED, TEXT};
+use tantivy::{Index, TantivyDocument};
 
 /// RRF constant from Cormack et al. 2009. Lower k → top ranks matter more.
 pub const RRF_K: f64 = 60.0;
@@ -17,45 +20,63 @@ pub fn rrf_fuse(ranked_lists: &[Vec<(usize, f64)>], k: f64) -> Vec<(usize, f64)>
     fused
 }
 
-fn rank_by_jaccard(query: &str, docs: &[&str]) -> Vec<(usize, f64)> {
-    let q_tokens = tokenize(query);
-    let mut ranked: Vec<(usize, f64)> = docs
-        .iter()
-        .enumerate()
-        .map(|(i, doc)| (i, jaccard(&q_tokens, &tokenize(doc))))
-        .collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked
-}
-
-fn rank_by_embedding(
-    query: &str,
-    docs: &[&str],
-    model: Option<&dyn EmbeddingModel>,
-) -> Vec<(usize, f64)> {
-    let mut ranked: Vec<(usize, f64)> = docs
-        .iter()
-        .enumerate()
-        .map(|(i, doc)| (i, semantic_jaccard(query, doc, model)))
-        .collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked
-}
-
-/// When `model` is `None` both streams use token Jaccard — no penalty for
-/// deployments without an embedding model.
-pub fn hybrid_search(
-    query: &str,
-    docs: &[&str],
-    model: Option<&dyn EmbeddingModel>,
-    k: f64,
-) -> Vec<(usize, f64)> {
+/// Rank documents by BM25 score against `query` using a per-call RAM index.
+///
+/// Returns `(original_doc_index, bm25_score)` pairs sorted by score descending.
+/// Documents with no term overlap with the query receive score 0.0 and appear last.
+/// On query-parse failure or empty corpus, returns all docs unranked (score 0.0).
+pub fn bm25_search(query: &str, docs: &[&str]) -> Vec<(usize, f64)> {
     if docs.is_empty() {
         return vec![];
     }
-    let jaccard_ranks = rank_by_jaccard(query, docs);
-    let embedding_ranks = rank_by_embedding(query, docs, model);
-    rrf_fuse(&[jaccard_ranks, embedding_ranks], k)
+
+    let mut schema_builder = Schema::builder();
+    let body_field = schema_builder.add_text_field("body", TEXT);
+    let id_field = schema_builder.add_u64_field("id", STORED);
+    let schema = schema_builder.build();
+
+    let index = Index::create_in_ram(schema);
+    let mut writer = index.writer(15_000_000).expect("tantivy writer");
+
+    for (i, &doc_text) in docs.iter().enumerate() {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(body_field, doc_text);
+        doc.add_u64(id_field, i as u64);
+        writer.add_document(doc).expect("add document");
+    }
+    writer.commit().expect("commit");
+
+    let reader = index.reader().expect("reader");
+    let searcher = reader.searcher();
+    let query_parser = QueryParser::for_index(&index, vec![body_field]);
+
+    let ranked = match query_parser.parse_query(query) {
+        Ok(q) => searcher
+            .search(&q, &TopDocs::with_limit(docs.len()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(score, addr)| {
+                let doc: TantivyDocument = searcher.doc(addr).expect("doc retrieve");
+                let orig_id = doc
+                    .get_first(id_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                (orig_id, score as f64)
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => vec![],
+    };
+
+    // Append docs not returned by BM25 (zero score) so result always has docs.len() entries.
+    let mut seen: std::collections::HashSet<usize> = ranked.iter().map(|(i, _)| *i).collect();
+    let mut result = ranked;
+    for i in 0..docs.len() {
+        if !seen.contains(&i) {
+            result.push((i, 0.0));
+            seen.insert(i);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -100,47 +121,26 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_search_empty_docs_returns_empty() {
-        let result = hybrid_search("query", &[], None, RRF_K);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn hybrid_search_returns_all_docs() {
-        let docs = ["jwt auth token", "redis cache store", "stateless session"];
-        let result = hybrid_search("jwt authentication", &docs, None, RRF_K);
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn hybrid_search_relevant_doc_ranks_first_without_model() {
+    fn bm25_search_relevant_doc_ranks_first() {
         let docs = [
-            "jwt auth token stateless",
-            "redis cache store",
-            "tcp socket",
+            "jwt authentication stateless token bearer",
+            "redis cache store eviction",
+            "tcp socket connection timeout",
         ];
-        let result = hybrid_search("jwt authentication", &docs, None, RRF_K);
+        let result = bm25_search("jwt authentication", &docs);
         assert_eq!(result[0].0, 0, "jwt doc must rank first for jwt query");
     }
 
     #[test]
-    fn hybrid_search_with_model_semantic_doc_ranks_higher() {
-        use crate::embedding::EmbeddingModel;
-        struct AuthModel;
-        impl EmbeddingModel for AuthModel {
-            fn embed(&self, text: &str) -> Vec<f32> {
-                if text.contains("auth") || text.contains("jwt") || text.contains("bearer") {
-                    vec![1.0, 0.0]
-                } else {
-                    vec![0.0, 1.0]
-                }
-            }
-        }
-        let docs = ["bearer token mechanism", "redis cache store"];
-        let result = hybrid_search("jwt authentication", &docs, Some(&AuthModel), RRF_K);
-        assert_eq!(
-            result[0].0, 0,
-            "semantic auth match must rank above unrelated doc"
-        );
+    fn bm25_search_empty_docs_returns_empty() {
+        let result = bm25_search("query", &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn bm25_search_returns_all_docs() {
+        let docs = ["alpha", "beta", "gamma"];
+        let result = bm25_search("alpha beta", &docs);
+        assert_eq!(result.len(), 3);
     }
 }

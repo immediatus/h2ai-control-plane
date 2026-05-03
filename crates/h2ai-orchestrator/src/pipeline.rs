@@ -10,7 +10,7 @@ use h2ai_types::agent::{
     AgentDescriptor, AgentTelemetryEvent, ContextPayload, TaskPayload, TaskResult,
 };
 use h2ai_types::identity::{AgentId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::time::Duration;
 
 pub struct OrchestratorPipeline<M, P, A> {

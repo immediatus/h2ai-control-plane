@@ -14,15 +14,6 @@ from openai import OpenAI
 
 from ..h2ai_client import TokenUsage
 
-_client = OpenAI()
-
-DEFAULT_PROPOSERS = [
-    "gpt-4o-mini",
-    "gpt-4o-mini",
-    "gpt-4o-mini",
-]
-DEFAULT_AGGREGATOR = "gpt-4o-mini"
-
 _PROPOSER_SYSTEM = "You are a helpful expert. Answer the question concisely and accurately."
 _AGGREGATOR_SYSTEM = (
     "You are a meticulous expert synthesiser. You will be given several candidate answers "
@@ -39,8 +30,8 @@ class MoAResult:
     usage: TokenUsage
 
 
-def _propose(prompt: str, model: str) -> tuple[str, int, int]:
-    resp = _client.chat.completions.create(
+def _propose(prompt: str, model: str, client: OpenAI) -> tuple[str, int, int]:
+    resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": _PROPOSER_SYSTEM},
@@ -57,15 +48,24 @@ def _propose(prompt: str, model: str) -> tuple[str, int, int]:
 def moa(
     prompt: str,
     proposer_models: list[str] | None = None,
-    aggregator_model: str = DEFAULT_AGGREGATOR,
+    aggregator_model: str | None = None,
     extract_fn=None,
+    client: OpenAI | None = None,
 ) -> MoAResult:
     """Run MoA: parallel proposers → single aggregator.
 
+    `proposer_models` defaults to three copies of the aggregator model when not
+    supplied — matching the Self-MoA regime.  Pass explicit model names for
+    true diverse-model MoA.
     `extract_fn(raw_text) -> str` normalises the aggregator output.
+    `client` defaults to a plain OpenAI() when not supplied.
     """
+    if client is None:
+        client = OpenAI()
+    if aggregator_model is None:
+        aggregator_model = "gpt-4o-mini"
     if proposer_models is None:
-        proposer_models = DEFAULT_PROPOSERS
+        proposer_models = [aggregator_model, aggregator_model, aggregator_model]
     if extract_fn is None:
         extract_fn = str.strip
 
@@ -74,14 +74,13 @@ def moa(
     proposals: list[str] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(proposer_models)) as ex:
-        futures = {ex.submit(_propose, prompt, m): m for m in proposer_models}
+        futures = {ex.submit(_propose, prompt, m, client): m for m in proposer_models}
         for f in concurrent.futures.as_completed(futures):
             text, pt, ct = f.result()
             proposals.append(text)
             total_prompt += pt
             total_completion += ct
 
-    # Aggregation
     candidates_block = "\n\n".join(
         f"Proposer {i + 1} ({model}):\n{p}"
         for i, (p, model) in enumerate(zip(proposals, proposer_models))
@@ -90,7 +89,7 @@ def moa(
         f"Question: {prompt}\n\nCandidate answers from different models:\n"
         f"{candidates_block}\n\nSynthesize these into one definitive answer."
     )
-    agg_resp = _client.chat.completions.create(
+    agg_resp = client.chat.completions.create(
         model=aggregator_model,
         messages=[
             {"role": "system", "content": _AGGREGATOR_SYSTEM},

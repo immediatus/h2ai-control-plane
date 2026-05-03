@@ -4,11 +4,6 @@ use std::io::Write;
 // ── defaults ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn default_j_eff_gate_is_0_4() {
-    assert_eq!(H2AIConfig::default().j_eff_gate, 0.4);
-}
-
-#[test]
 fn default_bft_threshold_is_0_85() {
     assert_eq!(H2AIConfig::default().bft_threshold, 0.85);
 }
@@ -51,7 +46,6 @@ fn default_role_error_cost_values() {
 #[test]
 fn config_serializes_to_json_with_expected_field_names() {
     let json = serde_json::to_string(&H2AIConfig::default()).unwrap();
-    assert!(json.contains("j_eff_gate"));
     assert!(json.contains("bft_threshold"));
     assert!(json.contains("tau_coordinator"));
 }
@@ -61,7 +55,6 @@ fn config_round_trips_through_json() {
     let original = H2AIConfig::default();
     let json = serde_json::to_string(&original).unwrap();
     let restored: H2AIConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.j_eff_gate, original.j_eff_gate);
     assert_eq!(restored.bft_threshold, original.bft_threshold);
     assert_eq!(restored.tau_synthesizer, original.tau_synthesizer);
     assert_eq!(restored.cost_evaluator, original.cost_evaluator);
@@ -90,15 +83,15 @@ fn beta_base_default_loads_from_kappa_eff_factor_alias() {
 fn load_from_file_returns_config_with_overridden_values() {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
     let json = serde_json::to_string(&H2AIConfig {
-        j_eff_gate: 0.6,
+        bft_threshold: 0.99,
         ..H2AIConfig::default()
     })
     .unwrap();
     write!(tmp, "{json}").unwrap();
 
     let cfg = H2AIConfig::load_from_file(tmp.path()).unwrap();
-    assert_eq!(cfg.j_eff_gate, 0.6);
-    assert_eq!(cfg.bft_threshold, 0.85);
+    assert!((cfg.bft_threshold - 0.99).abs() < 1e-10);
+    assert_eq!(cfg.tau_synthesizer, 0.80);
 }
 
 #[test]
@@ -121,7 +114,6 @@ fn load_from_file_returns_error_for_invalid_json() {
 fn load_layered_no_override_matches_default() {
     let from_layered = H2AIConfig::load_layered(None).unwrap();
     let from_default = H2AIConfig::default();
-    assert_eq!(from_layered.j_eff_gate, from_default.j_eff_gate);
     assert_eq!(from_layered.bft_threshold, from_default.bft_threshold);
     assert_eq!(from_layered.tau_synthesizer, from_default.tau_synthesizer);
     assert_eq!(
@@ -134,17 +126,17 @@ fn load_layered_no_override_matches_default() {
 #[test]
 fn load_layered_override_changes_only_specified_field() {
     let mut tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
-    write!(tmp, "j_eff_gate = 0.7\n").unwrap();
+    write!(tmp, "bft_threshold = 0.77\n").unwrap();
 
     let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();
     assert!(
-        (cfg.j_eff_gate - 0.7).abs() < 1e-10,
+        (cfg.bft_threshold - 0.77).abs() < 1e-10,
         "override must apply, got {}",
-        cfg.j_eff_gate
+        cfg.bft_threshold
     );
     assert_eq!(
-        cfg.bft_threshold,
-        H2AIConfig::default().bft_threshold,
+        cfg.tau_synthesizer,
+        H2AIConfig::default().tau_synthesizer,
         "non-overridden field must fall through to reference"
     );
     assert_eq!(
@@ -174,7 +166,7 @@ fn load_layered_env_var_wins_over_file() {
     let mut tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
     write!(tmp, "max_autonomic_retries = 5\n").unwrap();
 
-    let _guard = EnvGuard::set("H2AI__MAX_AUTONOMIC_RETRIES", "99");
+    let _guard = EnvGuard::set("H2AI_MAX_AUTONOMIC_RETRIES", "99");
     let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();
 
     assert_eq!(

@@ -3,7 +3,7 @@ use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop, TaoMultiplierEstimator};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::{OutputSchemaConfig, TaoConfig};
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 #[allow(dead_code)]
 fn make_input<'a>(
@@ -322,4 +322,34 @@ fn tao_multiplier_estimator_negative_q_before_skipped() {
     let mut estimator = TaoMultiplierEstimator::new_with_alpha(0.05);
     estimator.update(-0.1, 0.5);
     assert_eq!(estimator.sample_count(), 0);
+}
+
+#[test]
+fn persist_state_respects_configured_warmup() {
+    let mut est = TaoMultiplierEstimator::new_with_alpha(0.1).with_warmup(3);
+    assert!(
+        est.persist_state().is_none(),
+        "below warmup: should be None"
+    );
+    est.update(1.0, 1.0);
+    est.update(1.0, 1.0);
+    est.update(1.0, 1.0);
+    assert!(
+        est.persist_state().is_some(),
+        "at warmup=3: should be Some after 3 samples"
+    );
+
+    let mut est2 = TaoMultiplierEstimator::new_with_alpha(0.1).with_warmup(5);
+    for _ in 0..4 {
+        est2.update(1.0, 1.0);
+    }
+    assert!(
+        est2.persist_state().is_none(),
+        "below warmup=5: should be None after 4 samples"
+    );
+    est2.update(1.0, 1.0);
+    assert!(
+        est2.persist_state().is_some(),
+        "at warmup=5: should be Some after 5 samples"
+    );
 }

@@ -105,7 +105,7 @@ impl SchedulingPolicy for RoundRobinPolicy {
             return None;
         }
         let mut sorted: Vec<&AgentCandidate> = candidates.iter().collect();
-        sorted.sort_by(|a, b| a.agent_id.to_string().cmp(&b.agent_id.to_string()));
+        sorted.sort_by_key(|a| a.agent_id.to_string());
         let idx = self.counter.fetch_add(1, Ordering::Relaxed) % sorted.len();
         Some(sorted[idx].agent_id.clone())
     }

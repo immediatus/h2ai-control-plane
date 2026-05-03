@@ -5,7 +5,7 @@ use h2ai_types::config::{
 };
 use h2ai_types::events::{TopologyProvisionedEvent, ZeroCoordinationQualityEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::{
+use h2ai_types::sizing::{
     CoherencyCoefficients, CoordinationThreshold, EigenCalibration, MergeStrategy, RoleErrorCost,
     TauValue,
 };

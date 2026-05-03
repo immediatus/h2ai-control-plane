@@ -6,8 +6,7 @@ use h2ai_state::nats::NatsClient;
 #[tokio::test]
 #[ignore]
 async fn ensure_infrastructure_is_idempotent() {
-    let url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match NatsClient::connect(&url).await {
         Ok(c) => c,
         Err(e) => {
@@ -28,10 +27,9 @@ async fn put_and_get_calibration_roundtrip() {
     use chrono::Utc;
     use h2ai_types::events::CalibrationCompletedEvent;
     use h2ai_types::identity::TaskId;
-    use h2ai_types::physics::{CoherencyCoefficients, CoordinationThreshold};
+    use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold};
 
-    let url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match NatsClient::connect(&url).await {
         Ok(c) => c,
         Err(e) => {
@@ -56,6 +54,8 @@ async fn put_and_get_calibration_roundtrip() {
         adapter_families: Vec::new(),
         explorer_verification_family_match: false,
         single_family_warning: false,
+        n_max_lo: 0.0,
+        n_max_hi: 0.0,
     };
 
     client.put_calibration(&event).await.expect("put");
@@ -67,8 +67,7 @@ async fn put_and_get_calibration_roundtrip() {
 #[tokio::test]
 #[ignore]
 async fn put_and_get_tao_estimator_roundtrip() {
-    let url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match NatsClient::connect(&url).await {
         Ok(c) => c,
         Err(e) => {

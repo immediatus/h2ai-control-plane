@@ -1,7 +1,7 @@
 use h2ai_adapters::openai::OpenAIAdapter;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

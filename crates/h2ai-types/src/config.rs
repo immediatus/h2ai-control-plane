@@ -1,5 +1,5 @@
 use crate::identity::ExplorerId;
-use crate::physics::TauValue;
+use crate::sizing::TauValue;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;

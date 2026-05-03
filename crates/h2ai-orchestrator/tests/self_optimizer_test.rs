@@ -193,7 +193,7 @@ fn quality_is_monotone_in_suggested_direction() {
             break;
         }
         use h2ai_orchestrator::attribution::{AttributionInput, HarnessAttribution};
-        use h2ai_types::physics::PredictionBasis;
+        use h2ai_types::sizing::PredictionBasis;
         let q = HarnessAttribution::compute(&AttributionInput {
             p_mean: P_MEAN,
             rho_mean: RHO_MEAN,

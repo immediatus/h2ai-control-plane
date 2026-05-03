@@ -6,7 +6,7 @@ use h2ai_state::NatsClient;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::agent::{AgentDescriptor, CostTier, TaskRequirements};
 use h2ai_types::identity::AgentId;
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,8 +43,7 @@ impl AgentProvider for FakeProvider {
 async fn nats_dispatch_adapter_round_trip() {
     use futures::StreamExt;
 
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
 
     // Connect two clients: one for the adapter, one for the mock edge agent
     let nats_adapter = Arc::new(match NatsClient::connect(&nats_url).await {

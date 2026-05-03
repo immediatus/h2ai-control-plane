@@ -7,11 +7,12 @@ authors.workspace    = true
 license.workspace    = true
 
 [dependencies]
-h2ai-types    = { path = "../h2ai-types" }
-h2ai-config   = { path = "../h2ai-config" }
-h2ai-state    = { path = "../h2ai-state" }
-h2ai-adapters = { path = "../h2ai-adapters" }
-h2ai-context  = { path = "../h2ai-context" }
+h2ai-types       = { path = "../h2ai-types" }
+h2ai-config      = { path = "../h2ai-config" }
+h2ai-state       = { path = "../h2ai-state" }
+h2ai-adapters    = { path = "../h2ai-adapters" }
+h2ai-context     = { path = "../h2ai-context" }
+h2ai-constraints = { path = "../h2ai-constraints" }
 chrono        = { workspace = true }
 futures       = { workspace = true }
 nalgebra      = { workspace = true }
@@ -21,4 +22,5 @@ tokio         = { workspace = true }
 [dev-dependencies]
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-config   = { path = "../h2ai-config" }
+serde_json    = { workspace = true }
 tokio         = { workspace = true }

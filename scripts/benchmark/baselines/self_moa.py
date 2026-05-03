@@ -9,7 +9,10 @@ from openai import OpenAI
 
 from ..h2ai_client import TokenUsage
 
-_client = OpenAI()
+_AGGREGATOR_SYSTEM = (
+    "You are an expert aggregator. Given several candidate answers to the same question, "
+    "synthesise the best single answer. Output ONLY the final answer, no explanation."
+)
 
 
 @dataclass
@@ -19,14 +22,8 @@ class SelfMoAResult:
     usage: TokenUsage
 
 
-_AGGREGATOR_SYSTEM = (
-    "You are an expert aggregator. Given several candidate answers to the same question, "
-    "synthesise the best single answer. Output ONLY the final answer, no explanation."
-)
-
-
-def _sample(prompt: str, model: str, system: str) -> tuple[str, int, int]:
-    resp = _client.chat.completions.create(
+def _sample(prompt: str, model: str, system: str, client: OpenAI) -> tuple[str, int, int]:
+    resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.8,
@@ -43,27 +40,30 @@ def self_moa(
     n: int = 5,
     system: str = "You are a helpful assistant. Answer concisely.",
     extract_fn=None,
+    client: OpenAI | None = None,
 ) -> SelfMoAResult:
     """Sample `n` proposals from `model`, then aggregate via a single aggregator call.
 
     `extract_fn(raw_text) -> str` normalises the aggregator output.
+    `client` defaults to a plain OpenAI() when not supplied.
     """
     if extract_fn is None:
         extract_fn = str.strip
+    if client is None:
+        client = OpenAI()
 
     total_prompt = 0
     total_completion = 0
     proposals: list[str] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
-        futures = [ex.submit(_sample, prompt, model, system) for _ in range(n)]
+        futures = [ex.submit(_sample, prompt, model, system, client) for _ in range(n)]
         for f in concurrent.futures.as_completed(futures):
             text, pt, ct = f.result()
             proposals.append(text)
             total_prompt += pt
             total_completion += ct
 
-    # Aggregation call
     candidates_block = "\n\n".join(
         f"Candidate {i + 1}:\n{p}" for i, p in enumerate(proposals)
     )
@@ -71,7 +71,7 @@ def self_moa(
         f"Question: {prompt}\n\nCandidate answers:\n{candidates_block}\n\n"
         "Synthesise these into one best answer."
     )
-    agg_resp = _client.chat.completions.create(
+    agg_resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": _AGGREGATOR_SYSTEM},

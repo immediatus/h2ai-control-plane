@@ -3,7 +3,7 @@ use h2ai_state::bft::ConsensusMedian;
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 fn cloud() -> AdapterKind {
     AdapterKind::CloudGeneric {

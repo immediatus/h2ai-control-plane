@@ -29,3 +29,5 @@ weights/
 
 # Other
 .claude/
+*.pyc
+__pycache__/

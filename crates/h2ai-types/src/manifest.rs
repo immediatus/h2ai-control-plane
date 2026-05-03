@@ -1,6 +1,96 @@
 use crate::config::{ParetoWeights, ReviewGate, RoleSpec};
 use serde::{Deserialize, Serialize};
 
+/// Chain-of-thought reasoning style injected as a per-slot instruction prefix.
+///
+/// Different styles impose structurally different reasoning paths, making
+/// simultaneous failures statistically less likely across slots even when the
+/// same underlying model is used. This is the primary structural mitigation for
+/// the correlated-hallucination failure mode: when N slots all receive the same
+/// prompt, correlated errors propagate to all proposals; style diversity breaks
+/// that correlation by forcing different cognitive paths through the same problem.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CotStyle {
+    /// No prefix — standard model behavior.
+    #[default]
+    None,
+    /// "Think step by step" — elicits sequential decomposition.
+    StepByStep,
+    /// Start from the desired outcome and work backward.
+    BackwardChaining,
+    /// Break to fundamental principles; avoid analogies and convention.
+    FirstPrinciples,
+    /// Identify the strongest objections and failure modes first, then resolve them.
+    DevilsAdvocate,
+}
+
+impl CotStyle {
+    pub fn instruction(&self) -> &'static str {
+        match self {
+            CotStyle::None => "",
+            CotStyle::StepByStep => {
+                "Think step by step before giving your final answer. Show your reasoning explicitly."
+            }
+            CotStyle::BackwardChaining => {
+                "Start from the desired outcome and work backward: what conditions, \
+                 steps, and preconditions are required to achieve it?"
+            }
+            CotStyle::FirstPrinciples => {
+                "Break this problem down to its fundamental principles. Do not rely on \
+                 analogies, conventions, or prior patterns. Reason from first principles."
+            }
+            CotStyle::DevilsAdvocate => {
+                "Before proposing a solution, identify the strongest objections and \
+                 most likely failure modes. Build your answer to address these directly."
+            }
+        }
+    }
+}
+
+/// Per-slot prompt strategy configuration.
+///
+/// When `slot_configs` is populated in `ExplorerRequest`, slot `i` uses
+/// `slot_configs[i % slot_configs.len()]`. Empty vec → all slots use the
+/// default `ComputeRequest` with no framing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExplorerSlotConfig {
+    /// Role framing injected at the start of the system context for this slot.
+    /// Example: `"You are a skeptical senior engineer reviewing a proposed solution."`
+    #[serde(default)]
+    pub role_frame: String,
+    /// CoT instruction style prepended to the task description.
+    #[serde(default)]
+    pub cot_style: CotStyle,
+}
+
+impl ExplorerSlotConfig {
+    /// Returns a set of four structurally diverse slot configs for N≤4 ensembles.
+    ///
+    /// Covers the four most decorrelated reasoning strategies. For N>4, configs
+    /// repeat modulo 4 — diversity saturates at 4 distinct strategies.
+    pub fn diverse_defaults() -> Vec<ExplorerSlotConfig> {
+        vec![
+            ExplorerSlotConfig {
+                role_frame: String::new(),
+                cot_style: CotStyle::StepByStep,
+            },
+            ExplorerSlotConfig {
+                role_frame: String::new(),
+                cot_style: CotStyle::DevilsAdvocate,
+            },
+            ExplorerSlotConfig {
+                role_frame: String::new(),
+                cot_style: CotStyle::FirstPrinciples,
+            },
+            ExplorerSlotConfig {
+                role_frame: String::new(),
+                cot_style: CotStyle::BackwardChaining,
+            },
+        ]
+    }
+}
+
 /// POST /tasks request body
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManifest {
@@ -34,6 +124,12 @@ pub struct ExplorerRequest {
     pub roles: Vec<RoleSpec>,
     #[serde(default)]
     pub review_gates: Vec<ReviewGate>,
+    /// Per-slot prompt strategy overrides. Slot `i` uses `slot_configs[i % len]`.
+    /// When empty, all slots use default framing (no role_frame, no CoT prefix).
+    /// Populate with `ExplorerSlotConfig::diverse_defaults()` to activate
+    /// structural prompt diversity for correlated-hallucination mitigation.
+    #[serde(default)]
+    pub slot_configs: Vec<ExplorerSlotConfig>,
 }
 
 /// POST /tasks 202 response
@@ -42,7 +138,6 @@ pub struct TaskAccepted {
     pub task_id: String,
     pub status: String,
     pub events_url: String,
-    pub j_eff: f64,
     pub topology_kind: String,
     pub n_max: f64,
     pub interface_n_max: Option<f64>,

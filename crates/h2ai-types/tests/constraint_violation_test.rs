@@ -23,7 +23,7 @@ fn branch_pruned_event_carries_violations() {
     use chrono::Utc;
     use h2ai_types::events::BranchPrunedEvent;
     use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::physics::RoleErrorCost;
+    use h2ai_types::sizing::RoleErrorCost;
 
     let e = BranchPrunedEvent {
         task_id: TaskId::new(),

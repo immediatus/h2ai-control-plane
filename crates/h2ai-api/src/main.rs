@@ -147,35 +147,8 @@ async fn main() {
         app_state.scoring_adapter = Some(sa);
     }
 
-    // Wire embedding model for semantic CG measurement (requires fastembed-embed feature + ORT).
-    // Falls back to token Jaccard silently when the feature is absent or model fails to load.
-    #[cfg(feature = "fastembed-embed")]
-    {
-        use h2ai_context::embedding::{EmbeddingModel, FastEmbedModel};
-        use tracing::info;
-        let model_name = app_state.cfg.embedding_model_name.clone();
-        match FastEmbedModel::new_with(&model_name) {
-            Ok(m) => {
-                info!(target: "h2ai.embedding", model = ?model_name,
-                      "embedding model loaded — CG uses cosine agreement rate");
-                app_state = app_state.with_embedding_model(Arc::new(m) as Arc<dyn EmbeddingModel>);
-            }
-            Err(e) => {
-                warn!(target: "h2ai.embedding", error = %e,
-                      "embedding model unavailable — CG falls back to token Jaccard; \
-                       configure ORT or disable fastembed-embed feature to suppress this warning");
-            }
-        }
-    }
-    #[cfg(not(feature = "fastembed-embed"))]
-    {
-        eprintln!(
-            "INFO: fastembed-embed feature disabled — CG uses token Jaccard fallback. \
-                   Rebuild with --features fastembed-embed for semantic CG."
-        );
-    }
-
     app_state.load_tao_estimator().await;
+    app_state.load_bandit_state().await;
 
     let app = Router::new()
         .merge(routes::task_router())

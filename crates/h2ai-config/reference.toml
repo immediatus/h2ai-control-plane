@@ -3,14 +3,8 @@
 # This file is the single source of truth for all default values.
 # Copy only the fields you need to change into your override file (h2ai.toml).
 # Field-level overrides are also accepted via environment variables:
-#   H2AI__<FIELD_NAME>=value  (double underscore separator, upper-case field name)
-#   Example: H2AI__J_EFF_GATE=0.5
-
-# ── Context compiler ──────────────────────────────────────────────────────────
-
-# Minimum Jaccard overlap between task description and constraint vocabulary
-# before the task is accepted. Range [0, 1]. Lower = more permissive.
-j_eff_gate = 0.4
+#   H2AI_<FIELD_NAME>=value  (upper-case field name)
+#   Example: H2AI_BFT_THRESHOLD=0.9
 
 # ── Physics thresholds ────────────────────────────────────────────────────────
 
@@ -91,8 +85,8 @@ calibration_cg_fallback = 0.7
 # Default 0.10: below 10% agreement pairwise reconciliation is undefined.
 cg_collapse_threshold = 0.10
 
-# Cosine similarity threshold for counting two adapter outputs as "in agreement".
-# Used to compute CG_embed as an agreement rate per calibration prompt.
+# Cosine similarity threshold for counting two adapter outputs as "in agreement"
+# when computing CG via embedding cosine (future path; currently CG uses constraint-profile Hamming).
 cg_agreement_threshold = 0.85
 
 # Embedding model for CG cosine agreement measurement.
@@ -101,6 +95,18 @@ cg_agreement_threshold = 0.85
 #   "AllMiniLmL6V2"  — 22 MB, ~8 ms/sentence CPU (default, smallest footprint)
 #   "BgeSmallEnV1_5" — 109 MB, ~5 ms/sentence CPU (better MTEB STS scores)
 embedding_model_name = "AllMiniLmL6V2"
+
+# Minimum N_eff increment to include an adapter in EigenCalibration::n_pruned.
+# Increase to 0.1–0.2 for small calibration pools (N ≤ 4).
+eigen_n_eff_delta = 0.05
+
+# Minimum TAO loop observations before TaoMultiplierEstimator state is persisted.
+# Raise to 50–100 for high-variance task distributions.
+tao_estimator_warmup = 20
+
+# Initial N_max used to seed the Thompson Sampling bandit warm prior at first startup.
+# Clamped to [1, 6] by the bandit. Default 4 — conservative mid-range prior.
+bandit_n_max_initial = 4
 
 # ── USL physics ───────────────────────────────────────────────────────────────
 
@@ -162,9 +168,11 @@ max_concurrent_tasks = 8
 
 # ── Diversity ─────────────────────────────────────────────────────────────────
 
-# Jaccard similarity threshold above which all pairwise proposals are treated as
-# uniformly hallucinated → ZeroSurvival → MAPE-K retry. Range [0, 1].
-diversity_threshold = 0.85
+# Mean pairwise Hamming distance (on constraint-satisfaction fingerprints) below
+# which the swarm is flagged as collectively hallucinated → ZeroSurvival → MAPE-K retry.
+# Range [0, 1]. 0.15 means proposals must differ on ≥15% of constraints on average.
+# 0.0 disables the gate; recommended production value is 0.15.
+diversity_threshold = 0.0
 
 # Maximum τ-spread expansion factor when Talagrand detects over-confidence.
 # 2.0 = τ spread can at most double from its manifest value.
@@ -225,7 +233,7 @@ snapshot_interval_events = 50
 # ── NATS ──────────────────────────────────────────────────────────────────────
 
 # NATS server URL for the API server, edge agents, and integration tests.
-# Override via H2AI__NATS_URL env var or the nats_url field in your override TOML.
+# Override via H2AI_NATS_URL env var or the nats_url field in your override TOML.
 nats_url = "nats://localhost:4222"
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -251,3 +259,23 @@ scheduler_spillover_threshold = 10
 # api_key_env = "ANTHROPIC_API_KEY"
 # model = "claude-sonnet-4-5"
 adapter_profiles = []
+
+# ── Synthesis ─────────────────────────────────────────────────────────────────
+
+# Enable the two-stage critique-then-write synthesis phase.
+# Set false to use the selection chain exclusively (pre-synthesis behaviour).
+synthesis_enabled = true
+
+# Minimum verified proposals needed before synthesis is attempted.
+# Critique of a single proposal is degenerate (no contradictions possible).
+synthesis_min_proposals = 2
+
+# Temperature τ for critique and synthesis LLM calls.
+# Lower than explorer τ encourages deterministic, structured JSON critique output.
+synthesis_tau = 0.2
+
+# Max tokens for the critique call (Stage 1).
+synthesis_critique_max_tokens = 1024
+
+# Max tokens for the synthesis call (Stage 2).
+synthesis_max_tokens = 2048

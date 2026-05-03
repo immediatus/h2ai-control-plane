@@ -125,6 +125,29 @@ impl CoherencyCoefficients {
         ((1.0 - self.alpha).max(0.0) / beta_eff).sqrt().round()
     }
 
+    /// One-σ confidence interval for N_max, derived by propagating CG uncertainty.
+    ///
+    /// Evaluates `n_max()` at `CG_mean ± cg_std_dev()`. The interval widens with
+    /// more CG sample variance. Returns `(n_max(), n_max())` when only one sample
+    /// exists (std_dev = 0).
+    ///
+    /// `n_max_lo` is the pessimistic bound (high CG → low β_eff → high N_max reversal);
+    /// `n_max_hi` is the optimistic bound. The pair bounds the true N_max under measurement
+    /// uncertainty.
+    pub fn n_max_ci(&self) -> (f64, f64) {
+        let sigma = self.cg_std_dev();
+        let cg_mean = self.cg_mean();
+        let n_at_cg = |cg: f64| -> f64 {
+            let b = (self.beta_base * (1.0 - cg.clamp(0.0, 1.0)))
+                .max(1e-6)
+                .max(f64::EPSILON);
+            ((1.0 - self.alpha).max(0.0) / b).sqrt().round().max(1.0)
+        };
+        let n_hi = n_at_cg(cg_mean + sigma);
+        let n_lo = n_at_cg(cg_mean - sigma);
+        (n_lo.min(n_hi), n_lo.max(n_hi))
+    }
+
     /// N_max adjusted for context-window pressure.
     ///
     /// As N agents each contribute `proposal_tokens` to a context of `max_tokens`,
@@ -230,7 +253,7 @@ impl CoordinationThreshold {
 ///
 /// Higher c_i indicates a less trustworthy explorer role; the merge engine escalates
 /// from `ScoreOrdered` → `ConsensusMedian` → `OutlierResistant` as the maximum c_i
-/// across the ensemble crosses the configured BFT and Krum thresholds.
+/// across the ensemble crosses the configured `bft_threshold` and `krum_threshold` values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleErrorCost(f64);
 
@@ -561,7 +584,10 @@ pub struct EigenCalibration {
 
 impl EigenCalibration {
     /// Compute from an N×N symmetric positive-semidefinite CG similarity matrix.
-    pub fn from_cg_matrix(sigma: &DMatrix<f64>) -> Self {
+    ///
+    /// `delta`: minimum N_eff increment to include the next adapter in `n_pruned`.
+    /// Use `H2AIConfig::eigen_n_eff_delta` (default 0.05) at production call sites.
+    pub fn from_cg_matrix(sigma: &DMatrix<f64>, delta: f64) -> Self {
         let eig = sigma.clone().symmetric_eigen();
         let mut evs: Vec<f64> = eig
             .eigenvalues
@@ -604,7 +630,7 @@ impl EigenCalibration {
                 } else {
                     1.0
                 };
-                if i > 0 && current - prev < 0.05 {
+                if i > 0 && current - prev < delta {
                     pruned = i;
                     break;
                 }

@@ -1,5 +1,5 @@
 use crate::diagnostics::CalibrationState;
-use h2ai_types::physics::{condorcet_quality, EigenCalibration, PredictionBasis};
+use h2ai_types::sizing::{condorcet_quality, EigenCalibration, PredictionBasis};
 use rand::Rng;
 
 /// Input parameters for computing harness attribution.
@@ -62,6 +62,9 @@ pub struct HarnessAttribution {
     /// True when at least one Case B signal fired (Talagrand UnderDispersed or N_eff/N < 0.4).
     /// Quality predictions are conservatively adjusted; N_max selection is unchanged.
     pub case_b_flag: bool,
+    /// Quality improvement from the synthesis phase: Q(synthesis) − max(Q(individual_proposals)).
+    /// Zero when synthesis was skipped, fell back to selection, or the engine did not run synthesis.
+    pub synthesis_gain: f64,
 }
 
 impl HarnessAttribution {
@@ -115,6 +118,7 @@ impl HarnessAttribution {
             q_measured: None,
             rho_adjusted,
             case_b_flag,
+            synthesis_gain: 0.0,
         }
     }
 }
@@ -510,8 +514,8 @@ mod tests {
 
     // ── S7: ρ correction (Case B) ─────────────────────────────────────────────
 
-    fn make_eigen(n_effective: f64, n_agents: usize) -> h2ai_types::physics::EigenCalibration {
-        h2ai_types::physics::EigenCalibration {
+    fn make_eigen(n_effective: f64, n_agents: usize) -> h2ai_types::sizing::EigenCalibration {
+        h2ai_types::sizing::EigenCalibration {
             n_effective,
             h_diversity: 0.5,
             eigenvalues: vec![n_effective],
@@ -698,5 +702,25 @@ mod tests {
             attr.baseline_quality
         );
         assert!(attr.total_quality <= 1.0);
+    }
+
+    #[test]
+    fn synthesis_gain_defaults_to_zero() {
+        let input = AttributionInput {
+            p_mean: 0.7,
+            rho_mean: 0.3,
+            n_agents: 3,
+            verification_filter_ratio: 1.0,
+            tao_turns_mean: 1.0,
+            tao_per_turn_factor: 0.6,
+            prediction_basis: PredictionBasis::Heuristic,
+            talagrand_state: None,
+            eigen_calibration: None,
+        };
+        let attr = HarnessAttribution::compute(&input);
+        assert_eq!(
+            attr.synthesis_gain, 0.0,
+            "synthesis_gain must default to 0.0"
+        );
     }
 }

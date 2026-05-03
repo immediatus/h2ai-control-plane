@@ -1,4 +1,4 @@
-use crate::physics::n_it_optimal;
+use crate::sizing::n_it_optimal;
 use serde::{Deserialize, Serialize};
 
 /// Consolidation tier of a context chunk in the Atkinson–Shiffrin memory hierarchy.

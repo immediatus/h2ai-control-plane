@@ -1,8 +1,19 @@
 """HumanEval evaluation runner (pass@1).
 
 Usage:
-    python -m scripts.benchmark.run_humaneval [--smoke] [--model gpt-4o-mini]
+    # OpenAI (default)
     python -m scripts.benchmark.run_humaneval --baselines b0 b1 h2
+
+    # Google Gemini
+    export GEMINI_API_KEY=...
+    python -m scripts.benchmark.run_humaneval --provider gemini --baselines b0 b1 b2 b3 h2
+
+    # Local llama.cpp
+    python -m scripts.benchmark.run_humaneval --provider llamacpp \\
+        --base-url http://localhost:8000/v1 --model <model-name> --baselines b0 b1
+
+    # Smoke test (5 problems)
+    python -m scripts.benchmark.run_humaneval --smoke --provider gemini
 
 All 164 HumanEval problems are evaluated with code execution (pass@1).
 Outputs JSON results to scripts/benchmark/results/humaneval_<run_id>.json.
@@ -11,14 +22,12 @@ Outputs JSON results to scripts/benchmark/results/humaneval_<run_id>.json.
 from __future__ import annotations
 
 import argparse
-import ast
 import contextlib
 import io
 import json
 import re
 import statistics
 import time
-import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,8 +39,7 @@ from .baselines.majority_vote import majority_vote
 from .baselines.moa import moa
 from .baselines.self_moa import self_moa
 from .h2ai_client import H2AIClient, TokenUsage
-
-_openai = OpenAI()
+from .provider import add_provider_args, default_model, make_client
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -44,7 +52,6 @@ CODEGEN_SYSTEM = (
 
 def _extract_code(text: str) -> str:
     """Extract Python code from model output, stripping markdown fences."""
-    # Strip ```python ... ``` fences
     match = re.search(r"```(?:python)?\n([\s\S]*?)```", text)
     if match:
         return match.group(1)
@@ -63,7 +70,6 @@ def _run_code_safely(code: str, test_code: str, entry_point: str) -> bool:
     if check_fn is None:
         return False
 
-    # HumanEval test_code is a function `check(candidate)` — exec and call it
     try:
         exec(compile(test_code, "<tests>", "exec"), namespace)  # noqa: S102
         check = namespace.get("check")
@@ -112,9 +118,9 @@ def _load_humaneval(smoke: bool) -> list[dict]:
     return data[:5] if smoke else data
 
 
-def _single_codegen(prompt: str, model: str) -> tuple[str, TokenUsage, float]:
+def _single_codegen(prompt: str, model: str, client: OpenAI) -> tuple[str, TokenUsage, float]:
     t0 = time.monotonic()
-    resp = _openai.chat.completions.create(
+    resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": CODEGEN_SYSTEM},
@@ -136,6 +142,7 @@ def _run_baseline(
     baseline: str,
     problems: list[dict],
     model: str,
+    client: OpenAI,
     h2ai_client: H2AIClient | None = None,
 ) -> RunResult:
     task_results: list[TaskResult] = []
@@ -149,26 +156,35 @@ def _run_baseline(
         t0 = time.monotonic()
 
         if baseline == "b0":
-            raw, usage, latency = _single_codegen(prompt_text, model)
+            raw, usage, latency = _single_codegen(prompt_text, model, client)
             code = _extract_code(raw)
         elif baseline == "b1":
             res = majority_vote(
                 prompt_text, model=model, n=6,
                 system=CODEGEN_SYSTEM,
                 extract_fn=_extract_code,
+                client=client,
             )
-            # For code: pick the most-voted candidate; execute each and take first passing
             code = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
         elif baseline == "b2":
-            res = moa(prompt_text, extract_fn=_extract_code)
+            res = moa(
+                prompt_text,
+                aggregator_model=model,
+                extract_fn=_extract_code,
+                client=client,
+            )
             code = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
         elif baseline == "b3":
-            res = self_moa(prompt_text, model=model, n=5,
-                           system=CODEGEN_SYSTEM, extract_fn=_extract_code)
+            res = self_moa(
+                prompt_text, model=model, n=5,
+                system=CODEGEN_SYSTEM,
+                extract_fn=_extract_code,
+                client=client,
+            )
             code = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
@@ -208,8 +224,10 @@ def _run_baseline(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run HumanEval benchmark")
+    add_provider_args(parser)
     parser.add_argument("--smoke", action="store_true", help="5-problem smoke test")
-    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument("--model", default=None,
+                        help="Model name (defaults to provider's default model)")
     parser.add_argument(
         "--baselines",
         nargs="+",
@@ -220,13 +238,16 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
 
+    model = args.model or default_model(args.provider)
+    client = make_client(args.provider, args.base_url)
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     problems = _load_humaneval(args.smoke)
-    print(f"Loaded {len(problems)} HumanEval problems")
+    print(f"Loaded {len(problems)} HumanEval problems  [provider={args.provider}  model={model}]")
 
     h2ai_client: H2AIClient | None = None
     if "h2" in args.baselines:
-        h2ai_client = H2AIClient(base_url=args.h2ai_url, default_model=args.model)
+        h2ai_client = H2AIClient(base_url=args.h2ai_url, default_model=model)
         if not h2ai_client.health():
             print(f"WARNING: H2AI runtime not reachable at {args.h2ai_url}")
 
@@ -235,14 +256,16 @@ def main() -> None:
         print(f"\n=== Run {run_idx + 1}/{args.runs} ===")
         for baseline in args.baselines:
             print(f"Running baseline '{baseline}'...")
-            result = _run_baseline(baseline, problems, args.model, h2ai_client)
+            result = _run_baseline(baseline, problems, model, client, h2ai_client)
             print(
                 f"  pass@1={result.pass_at_1:.3f}  "
                 f"cost=${result.total_cost_usd:.4f}"
             )
             all_results.append({
                 "run": run_idx,
+                "provider": args.provider,
                 "baseline": baseline,
+                "model": model,
                 "pass_at_1": result.pass_at_1,
                 "mean_cost_usd": result.mean_cost_usd,
                 "total_cost_usd": result.total_cost_usd,
@@ -253,7 +276,8 @@ def main() -> None:
     run_id = uuid.uuid4().hex[:8]
     out_path = RESULTS_DIR / f"humaneval_{run_id}.json"
     with open(out_path, "w") as f:
-        json.dump({"benchmark": "humaneval", "results": all_results}, f, indent=2)
+        json.dump({"benchmark": "humaneval", "provider": args.provider, "results": all_results},
+                  f, indent=2)
     print(f"\nResults saved to {out_path}")
 
 

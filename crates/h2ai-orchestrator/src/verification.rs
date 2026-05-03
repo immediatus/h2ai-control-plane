@@ -10,6 +10,10 @@ use h2ai_types::events::{ConstraintViolation, ProposalEvent};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// One `bool` per constraint in the corpus: `true` = hard gate passed.
+/// Derived from `Vec<ComplianceResult>` via `results.iter().map(|r| r.hard_passes()).collect()`.
+pub type SatisfactionFingerprint = Vec<bool>;
+
 pub struct VerificationInput<'a> {
     pub proposals: Vec<ProposalEvent>,
     pub constraint_corpus: &'a [ConstraintDoc],
@@ -135,7 +139,7 @@ impl VerificationPhase {
         evaluator: &dyn IComputeAdapter,
         rubric: &str,
         sp: &str,
-        tau: h2ai_types::physics::TauValue,
+        tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
     ) -> Vec<ComplianceResult> {
         // If corpus is empty, fall back to the CoT rubric (G-Eval, arxiv 2303.16634).
@@ -261,7 +265,7 @@ impl VerificationPhase {
         output: &str,
         evaluator: &dyn IComputeAdapter,
         sp: &str,
-        tau: h2ai_types::physics::TauValue,
+        tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
     ) -> f64 {
         let prompt = format!("{rubric}\n\nProposal:\n{output}");

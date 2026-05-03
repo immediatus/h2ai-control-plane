@@ -1,20 +1,22 @@
-//! Real LLM integration tests.
+//! Real LLM integration tests — all `#[ignore]` by default.
 //!
-//! These are `#[ignore]` by default. To run:
-//!
+//! Run all with devcontainer env (NATS + local llama.server):
 //! ```bash
-//! H2AI_INTEGRATION_TEST=true \
-//! ANTHROPIC_API_KEY=sk-ant-... \
-//! cargo test -p h2ai-adapters --test integration_test -- --ignored --nocapture
+//! cargo nextest run --workspace --run-ignored all --nocapture
 //! ```
 //!
-//! Each test skips gracefully if the required API key env var is not set.
+//! Run a specific provider:
+//! ```bash
+//! ANTHROPIC_API_KEY=sk-ant-... cargo nextest run -p h2ai-adapters --test integration_test \
+//!     --run-ignored all --nocapture
+//! ```
+//!
+//! Tests that cannot reach their endpoint skip gracefully with an eprintln.
 
 use h2ai_adapters::anthropic::AnthropicAdapter;
-use h2ai_adapters::ollama::OllamaAdapter;
 use h2ai_adapters::openai::OpenAIAdapter;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 fn task_request() -> ComputeRequest {
     ComputeRequest {
@@ -92,21 +94,29 @@ async fn openai_real_call_returns_non_empty_output() {
 
 #[tokio::test]
 #[ignore]
-async fn ollama_real_call_returns_non_empty_output() {
-    let endpoint =
-        std::env::var("H2AI_EXPLORER_ENDPOINT").unwrap_or_else(|_| "http://localhost:11434".into());
-    let model = std::env::var("H2AI_EXPLORER_MODEL").unwrap_or_else(|_| "llama3.2".into());
+async fn llamacpp_real_call_returns_non_empty_output() {
+    let endpoint = std::env::var("LLAMACPP_BASE_URL")
+        .unwrap_or_else(|_| "http://host.docker.internal:8080/v1".into());
+    let model = std::env::var("LLAMACPP_MODEL").unwrap_or_else(|_| "local".into());
 
-    let adapter = OllamaAdapter::new(endpoint.clone(), model.clone());
+    // llama.server accepts any bearer token — LLAMACPP_API_KEY defaults to "local"
+    if std::env::var("LLAMACPP_API_KEY").is_err() {
+        std::env::set_var("LLAMACPP_API_KEY", "local");
+    }
+
+    let adapter = OpenAIAdapter::new(endpoint.clone(), "LLAMACPP_API_KEY".into(), model.clone());
 
     match adapter.execute(task_request()).await {
         Ok(resp) => {
+            eprintln!("endpoint:    {endpoint}");
+            eprintln!("model:       {model}");
             eprintln!("output:      {}", resp.output);
             eprintln!("token_cost:  {}", resp.token_cost);
             assert!(!resp.output.is_empty(), "output must not be empty");
+            assert!(resp.token_cost > 0, "token_cost must be > 0");
         }
         Err(e) => {
-            eprintln!("SKIP: Ollama at {endpoint} with model {model} not reachable: {e}");
+            eprintln!("SKIP: llama.server at {endpoint} not reachable: {e}");
         }
     }
 }

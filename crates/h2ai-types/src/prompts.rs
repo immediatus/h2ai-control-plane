@@ -50,3 +50,34 @@ pub const TAO_RETRY_INSTRUCTION: &str = concat!(
     "[OBSERVATION turn {turn}]: output did not satisfy verification. ",
     "Revise your response."
 );
+
+// ── Synthesis phase ───────────────────────────────────────────────────────────
+
+/// Stage 1 prompt — asks the LLM to critique all proposals and return a `CritiqueDocument` JSON.
+/// Variables: `{task_description}`, `{constraint_list}`, `{proposals_block}`, `{critique_schema}`.
+pub const SYNTHESIS_CRITIQUE_PROMPT: &str = concat!(
+    "You are a critical reviewer. Analyse the proposals below for the given task and constraints.\n\n",
+    "Task:\n{task_description}\n\n",
+    "Constraints:\n{constraint_list}\n\n",
+    "Proposals:\n{proposals_block}\n\n",
+    "Produce a JSON critique document matching this schema exactly:\n{critique_schema}\n\n",
+    "Rules:\n",
+    "- List every proposal in proposal_critiques.\n",
+    "- Identify all contradictions between proposals in contradictions.\n",
+    "- End with synthesis_guidance: a single paragraph instructing the synthesiser ",
+    "which strengths to incorporate, which weaknesses to avoid, and how to resolve each contradiction.\n",
+    "Return ONLY the JSON object. No prose before or after."
+);
+
+/// Stage 2 prompt — asks the LLM to write the final synthesised output from the critique.
+/// Variables: `{task_description}`, `{constraint_list}`, `{proposals_block}`, `{critique_document}`.
+pub const SYNTHESIS_WRITE_PROMPT: &str = concat!(
+    "You are a synthesis writer. Using the critique document below, ",
+    "produce a single unified response to the task that incorporates identified strengths, ",
+    "avoids identified weaknesses, and resolves all contradictions as directed.\n\n",
+    "Task:\n{task_description}\n\n",
+    "Constraints:\n{constraint_list}\n\n",
+    "Original proposals:\n{proposals_block}\n\n",
+    "Critique document:\n{critique_document}\n\n",
+    "Write only the final synthesised response. No preamble, no meta-commentary."
+);

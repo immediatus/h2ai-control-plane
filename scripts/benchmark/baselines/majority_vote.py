@@ -8,9 +8,7 @@ from dataclasses import dataclass, field
 
 from openai import OpenAI
 
-from ..h2ai_client import MODEL_COSTS, TokenUsage
-
-_client = OpenAI()
+from ..h2ai_client import TokenUsage
 
 
 @dataclass
@@ -21,8 +19,10 @@ class MajorityVoteResult:
     all_answers: list[str] = field(default_factory=list)
 
 
-def _call_once(prompt: str, model: str, system: str) -> tuple[str, int, int]:
-    resp = _client.chat.completions.create(
+def _call_once(
+    prompt: str, model: str, system: str, client: OpenAI
+) -> tuple[str, int, int]:
+    resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.7,
@@ -41,21 +41,25 @@ def majority_vote(
     n: int = 6,
     system: str = "You are a helpful assistant. Answer concisely.",
     extract_fn=None,
+    client: OpenAI | None = None,
 ) -> MajorityVoteResult:
     """Run `n` parallel calls and pick the plurality answer.
 
     `extract_fn(raw_text) -> str` normalises each raw answer before voting
     (e.g. strip non-numeric characters for GSM8K).  Defaults to str.strip().
+    `client` defaults to a plain OpenAI() when not supplied.
     """
     if extract_fn is None:
         extract_fn = str.strip
+    if client is None:
+        client = OpenAI()
 
     total_prompt = 0
     total_completion = 0
     answers: list[str] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
-        futures = [ex.submit(_call_once, prompt, model, system) for _ in range(n)]
+        futures = [ex.submit(_call_once, prompt, model, system, client) for _ in range(n)]
         for f in concurrent.futures.as_completed(futures):
             text, pt, ct = f.result()
             answers.append(extract_fn(text))

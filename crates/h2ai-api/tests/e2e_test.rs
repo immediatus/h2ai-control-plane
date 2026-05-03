@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 /// Boots the full axum app on a random OS-assigned port.
 /// Returns the base URL, e.g. "http://127.0.0.1:54321".
 async fn boot_app() -> (String, tokio::task::JoinHandle<()>) {
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| H2AIConfig::default().nats_url);
+    let nats_url = H2AIConfig::default().nats_url;
     let nats = NatsClient::connect(&nats_url).await.expect("NATS connect");
     nats.ensure_infrastructure().await.expect("infra");
 
@@ -169,56 +169,6 @@ async fn submit_task_requires_calibration_first() {
 
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
-async fn submit_task_with_low_j_eff_returns_context_underflow() {
-    let (base, _handle) = boot_app().await;
-    let client = reqwest::Client::new();
-
-    // Calibrate first
-    client
-        .post(format!("{base}/calibrate"))
-        .send()
-        .await
-        .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
-
-    // Submit task with description that has zero overlap with explicit constraints
-    // constraints = ["quantum", "blockchain"] but description has none of those tokens
-    let manifest = serde_json::json!({
-        "description": "paint the fence",
-        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
-        "topology": {"kind": "ensemble"},
-        "explorers": {"count": 2},
-        "constraints": ["stateless", "JWT", "authentication", "microservices", "security"]
-    });
-
-    let resp = client
-        .post(format!("{base}/tasks"))
-        .json(&manifest)
-        .send()
-        .await
-        .expect("POST /tasks");
-    assert_eq!(resp.status(), 400, "must return 400 ContextUnderflowError");
-    let body: serde_json::Value = resp.json().await.expect("json");
-    assert_eq!(body["error"], "ContextUnderflowError");
-    assert!(
-        body["j_eff"].as_f64().is_some(),
-        "j_eff must be numeric in error body"
-    );
-    assert!(
-        body["threshold"].as_f64().is_some(),
-        "threshold must be present in error body"
-    );
-    // j_eff must be strictly less than the threshold the server reported
-    let j_eff = body["j_eff"].as_f64().unwrap();
-    let threshold = body["threshold"].as_f64().unwrap();
-    assert!(
-        j_eff < threshold,
-        "j_eff={j_eff} must be below reported threshold={threshold}"
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires live NATS at localhost:4222"]
 async fn full_task_lifecycle_accepted_and_status_queryable() {
     let (base, _handle) = boot_app().await;
     let client = reqwest::Client::new();
@@ -231,7 +181,7 @@ async fn full_task_lifecycle_accepted_and_status_queryable() {
         .expect("calibrate");
     poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
 
-    // Submit task — empty constraints means required_kw = description → j_eff = 1.0
+    // Submit task — empty constraints
     let manifest = serde_json::json!({
         "description": "Design a stateless authentication system for microservices using JWT",
         "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
@@ -248,7 +198,6 @@ async fn full_task_lifecycle_accepted_and_status_queryable() {
     assert_eq!(resp.status(), 202);
     let body: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(body["status"], "accepted");
-    assert!(body["j_eff"].as_f64().unwrap() > 0.0);
     let task_id = body["task_id"].as_str().expect("task_id").to_owned();
     let events_url = body["events_url"].as_str().expect("events_url").to_owned();
     assert_eq!(events_url, format!("/tasks/{task_id}/events"));
@@ -263,8 +212,15 @@ async fn full_task_lifecycle_accepted_and_status_queryable() {
     let status_body: serde_json::Value = status_resp.json().await.expect("status json");
     assert_eq!(status_body["task_id"], task_id);
     assert!(
-        ["pending", "generating", "verifying", "merging", "resolved"]
-            .contains(&status_body["status"].as_str().unwrap_or("")),
+        [
+            "pending",
+            "generating",
+            "verifying",
+            "merging",
+            "resolved",
+            "failed"
+        ]
+        .contains(&status_body["status"].as_str().unwrap_or("")),
         "status must be a known phase: got {}",
         status_body["status"]
     );

@@ -9,7 +9,7 @@ use h2ai_telemetry::provider::AuditProvider;
 use h2ai_types::agent::TaskRequirements;
 use h2ai_types::agent::{AgentDescriptor, AgentTelemetryEvent, AgentTool, CostTier, TaskResult};
 use h2ai_types::identity::{AgentId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::sync::{Arc, Mutex};
 
 // --- Mocks ---
@@ -91,8 +91,7 @@ impl AuditProvider for MockAuditor {
 
 async fn build_pipeline() -> Option<OrchestratorPipeline<MockMemory, MockProvisioner, MockAuditor>>
 {
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match async_nats::connect(&nats_url).await {
         Ok(c) => c,
         Err(e) => {
@@ -136,8 +135,7 @@ async fn pipeline_execute_dispatches_task() {
 #[ignore = "requires live NATS at localhost:4222"]
 async fn pipeline_finalize_commits_to_memory() {
     let memory = Arc::new(Mutex::new(vec![]));
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match async_nats::connect(&nats_url).await {
         Ok(c) => c,
         Err(e) => {

@@ -1,4 +1,4 @@
-use h2ai_types::physics::{CoherencyCoefficients, CoordinationThreshold};
+use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold};
 
 #[test]
 fn calibration_event_has_valid_n_max() {

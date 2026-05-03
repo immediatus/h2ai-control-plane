@@ -2,8 +2,8 @@ use crate::decomposer::PlannerError;
 use crate::parsing::extract_json;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::identity::SubtaskId;
-use h2ai_types::physics::TauValue;
 use h2ai_types::plan::SubtaskPlan;
+use h2ai_types::sizing::TauValue;
 use serde::Deserialize;
 use std::collections::HashMap;
 

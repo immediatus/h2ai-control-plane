@@ -4,8 +4,8 @@ use h2ai_planner::reviewer::{PlanReviewer, ReviewOutcome};
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::TaskManifest;
-use h2ai_types::physics::TauValue;
 use h2ai_types::plan::{PlanStatus, SubtaskPlan, SubtaskResult};
+use h2ai_types::sizing::TauValue;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

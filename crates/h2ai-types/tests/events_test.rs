@@ -2,7 +2,7 @@ use chrono::Utc;
 use h2ai_types::config::{AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, TopologyKind};
 use h2ai_types::events::*;
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::{
+use h2ai_types::sizing::{
     CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
     RoleErrorCost, TauValue,
 };
@@ -39,6 +39,8 @@ fn calibration_completed_event_serde_round_trip() {
         adapter_families: Vec::new(),
         explorer_verification_family_match: false,
         single_family_warning: false,
+        n_max_lo: 0.0,
+        n_max_hi: 0.0,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -46,18 +48,17 @@ fn calibration_completed_event_serde_round_trip() {
 }
 
 #[test]
-fn task_bootstrapped_event_includes_j_eff() {
+fn task_bootstrapped_event_round_trips() {
     let e = TaskBootstrappedEvent {
         task_id: task_id(),
         system_context: "You must follow ADR-004.".into(),
         pareto_weights: ParetoWeights::new(0.5, 0.3, 0.2).unwrap(),
-        j_eff: 0.72,
         timestamp: Utc::now(),
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: TaskBootstrappedEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(e.system_context, back.system_context);
-    assert_eq!(e.j_eff, back.j_eff);
+    assert_eq!(e.pareto_weights, back.pareto_weights);
 }
 
 #[test]
@@ -211,12 +212,13 @@ fn h2ai_event_enum_wraps_all_17_events() {
             adapter_families: Vec::new(),
             explorer_verification_family_match: false,
             single_family_warning: false,
+            n_max_lo: 0.0,
+            n_max_hi: 0.0,
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
             system_context: "ctx".into(),
             pareto_weights: ParetoWeights::new(0.5, 0.3, 0.2).unwrap(),
-            j_eff: 0.65,
             timestamp: Utc::now(),
         }),
         H2AIEvent::TopologyProvisioned(TopologyProvisionedEvent {

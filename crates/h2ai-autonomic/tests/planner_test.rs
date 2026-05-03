@@ -4,7 +4,7 @@ use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, ReviewGate, RoleSpec, TopologyKind,
 };
 use h2ai_types::identity::TaskId;
-use h2ai_types::physics::{CoherencyCoefficients, EigenCalibration, MergeStrategy, TauValue};
+use h2ai_types::sizing::{CoherencyCoefficients, EigenCalibration, MergeStrategy, TauValue};
 
 fn cc() -> CoherencyCoefficients {
     CoherencyCoefficients::new(0.1, 0.02, vec![0.8, 0.85, 0.9]).unwrap()

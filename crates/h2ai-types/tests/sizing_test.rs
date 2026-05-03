@@ -1,7 +1,7 @@
-use h2ai_types::physics::{
+use h2ai_types::sizing::{
     n_it_optimal, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
-    EnsembleCalibration, JeffectiveGap, MergeStrategy, MultiplicationCondition,
-    MultiplicationConditionFailure, RoleErrorCost, TauValue,
+    EnsembleCalibration, MergeStrategy, MultiplicationCondition, MultiplicationConditionFailure,
+    RoleErrorCost, TauValue,
 };
 
 #[test]
@@ -151,31 +151,6 @@ fn merge_strategy_serde_round_trip() {
         let back: MergeStrategy = serde_json::from_str(&json).unwrap();
         assert_eq!(strategy, back);
     }
-}
-
-#[test]
-fn j_effective_gap_valid_range() {
-    assert!(JeffectiveGap::new(0.0).is_ok());
-    assert!(JeffectiveGap::new(1.0).is_ok());
-    assert!(JeffectiveGap::new(0.42).is_ok());
-}
-
-#[test]
-fn j_effective_gap_invalid_out_of_range() {
-    assert!(JeffectiveGap::new(-0.1).is_err());
-    assert!(JeffectiveGap::new(1.1).is_err());
-}
-
-#[test]
-fn j_effective_gap_is_below_threshold_when_low() {
-    let j = JeffectiveGap::new(0.1).unwrap();
-    assert!(j.is_below_threshold(0.3));
-}
-
-#[test]
-fn j_effective_gap_is_not_below_threshold_when_sufficient() {
-    let j = JeffectiveGap::new(0.6).unwrap();
-    assert!(!j.is_below_threshold(0.3));
 }
 
 #[test]
@@ -373,7 +348,7 @@ fn eigen_calibration_full_independence_gives_n_eff_equal_n() {
     // Identity matrix (N=4 fully independent adapters): all eigenvalues = 1
     // N_eff = (4)² / 4 = 4
     let sigma = DMatrix::<f64>::identity(4, 4);
-    let ec = EigenCalibration::from_cg_matrix(&sigma);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
     assert!(
         (ec.n_effective - 4.0).abs() < 0.1,
         "identity Σ → N_eff = 4, got {}",
@@ -393,7 +368,7 @@ fn eigen_calibration_full_correlation_gives_n_eff_one() {
     // N_eff = N² / N² = 1
     let n = 4;
     let sigma = DMatrix::<f64>::from_element(n, n, 1.0);
-    let ec = EigenCalibration::from_cg_matrix(&sigma);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
     assert!(
         (ec.n_effective - 1.0).abs() < 0.5,
         "all-ones Σ → N_eff ≈ 1, got {}",
@@ -415,7 +390,7 @@ fn eigen_calibration_uniform_rho_matches_portfolio_formula() {
             }
         }
     }
-    let ec = EigenCalibration::from_cg_matrix(&sigma);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
     let expected = 2.5f64; // participation ratio for uniform rho=0.5, N=5
     assert!(
         (ec.n_effective - expected).abs() < 0.3,
@@ -455,7 +430,7 @@ fn ensemble_calibration_n_it_optimal_delegates_to_free_function() {
 
 #[test]
 fn ensemble_calibration_from_cg_mean_is_heuristic() {
-    use h2ai_types::physics::PredictionBasis;
+    use h2ai_types::sizing::PredictionBasis;
     let ec = EnsembleCalibration::from_cg_mean(0.7, 9);
     assert_eq!(
         ec.prediction_basis,
@@ -466,11 +441,51 @@ fn ensemble_calibration_from_cg_mean_is_heuristic() {
 
 #[test]
 fn ensemble_calibration_from_measured_p_is_empirical() {
-    use h2ai_types::physics::PredictionBasis;
+    use h2ai_types::sizing::PredictionBasis;
     let ec = EnsembleCalibration::from_measured_p(0.85, 0.7, 9);
     assert_eq!(
         ec.prediction_basis,
         PredictionBasis::Empirical,
         "from_measured_p must label prediction as Empirical"
     );
+}
+
+#[test]
+fn n_max_ci_range_contains_point_estimate() {
+    // Two samples with spread: mean=0.6, std≈0.1
+    let cc = h2ai_types::sizing::CoherencyCoefficients::new(0.1, 0.02, vec![0.5, 0.7]).unwrap();
+    let (lo, hi) = cc.n_max_ci();
+    let mid = cc.n_max();
+    assert!(
+        lo <= mid + 1.0,
+        "ci_low must be ≤ point estimate (±1 due to rounding): lo={lo}, mid={mid}"
+    );
+    assert!(
+        hi >= mid - 1.0,
+        "ci_high must be ≥ point estimate (±1 due to rounding): hi={hi}, mid={mid}"
+    );
+    assert!(hi >= lo, "ci must be ordered: lo={lo}, hi={hi}");
+}
+
+#[test]
+fn n_max_ci_equal_samples_returns_degenerate_interval() {
+    // One sample → std_dev = 0 → both bounds equal point estimate
+    let cc = h2ai_types::sizing::CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
+    let (lo, hi) = cc.n_max_ci();
+    let mid = cc.n_max();
+    assert_eq!(lo, mid, "single sample: lo must equal n_max");
+    assert_eq!(hi, mid, "single sample: hi must equal n_max");
+}
+
+#[test]
+fn eigen_calibration_delta_controls_n_pruned() {
+    use nalgebra::DMatrix;
+    // 4x4 identity: all eigenvalues=1, each increment=1.0
+    let sigma = DMatrix::identity(4, 4);
+    // With delta=0.05 (default), increment 1.0 >= 0.05 -> n_pruned=4
+    let ec_default = h2ai_types::sizing::EigenCalibration::from_cg_matrix(&sigma, 0.05);
+    assert_eq!(ec_default.n_pruned, 4, "delta=0.05: all 4 adapters needed");
+    // With delta=1.5 (very high), increment 1.0 < 1.5 -> n_pruned=1
+    let ec_high = h2ai_types::sizing::EigenCalibration::from_cg_matrix(&sigma, 1.5);
+    assert_eq!(ec_high.n_pruned, 1, "delta=1.5: only 1 adapter passes");
 }

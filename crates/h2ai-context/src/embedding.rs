@@ -1,4 +1,3 @@
-use crate::jaccard::{jaccard, tokenize};
 #[cfg(feature = "fastembed-embed")]
 use std::sync::Mutex;
 
@@ -9,17 +8,17 @@ use std::sync::Mutex;
 /// for `semantic_jaccard` to give cosine similarity correctly; if your model
 /// returns un-normalised vectors, normalise them in your `embed` implementation.
 ///
-/// # Zero-cost fallback
+/// # Fallback behaviour
 ///
 /// All functions that accept `Option<&dyn EmbeddingModel>` fall back to
-/// token-level Jaccard similarity when `None` is passed — existing deployments
-/// pay no extra cost until they supply a model.
+/// exact-string equality when `None` is passed — 1.0 for identical strings,
+/// 0.0 for all others.
 pub trait EmbeddingModel: Send + Sync {
     /// Embed `text` into a dense float vector.
     ///
     /// The vector dimension must be consistent across all calls on the same
     /// model instance. Returning an empty vec is treated as "no embedding
-    /// available" and triggers the token-Jaccard fallback.
+    /// available" and triggers the exact-equality fallback.
     fn embed(&self, text: &str) -> Vec<f32>;
 }
 
@@ -47,26 +46,36 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 ///
 /// - **With model**: cosine similarity between embedding vectors. Catches
 ///   semantic equivalents that token overlap misses ("redis" ≈ "key-value store").
-/// - **Without model** (`None`): token-level Jaccard similarity — zero extra
-///   cost, identical to the existing implementation.
+/// - **Without model** (`None`): exact-string equality — 1.0 for identical strings,
+///   0.0 for all others. Token Jaccard was removed because it is meaningless for
+///   LLM outputs; irrelevant tasks surface as verification failures downstream.
 ///
-/// The return value is in [0, 1] in both modes: it can be interpreted as
-/// the probability that two texts share the same semantic domain.
+/// The return value is in [0, 1] in both modes.
 pub fn semantic_jaccard(a: &str, b: &str, model: Option<&dyn EmbeddingModel>) -> f64 {
     match model {
         Some(m) => {
             let va = m.embed(a);
             let vb = m.embed(b);
             if va.is_empty() || vb.is_empty() {
-                // Model returned no vector — fall back gracefully
-                jaccard(&tokenize(a), &tokenize(b))
+                // Model returned no vector — fall back to exact equality.
+                if a == b {
+                    1.0
+                } else {
+                    0.0
+                }
             } else {
                 // Cosine similarity ∈ [-1, 1]; clamp to [0, 1] — negative cosine
                 // means opposite directions which we treat as zero similarity.
                 cosine_similarity(&va, &vb).max(0.0)
             }
         }
-        None => jaccard(&tokenize(a), &tokenize(b)),
+        None => {
+            if a == b {
+                1.0
+            } else {
+                0.0
+            }
+        }
     }
 }
 
@@ -249,14 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn semantic_jaccard_none_partial_overlap_between_zero_and_one() {
+    fn semantic_jaccard_none_different_text_is_zero() {
+        // Without embedding model, fallback is exact equality — partial overlap gives 0.0.
         let a = "jwt stateless token authentication";
         let b = "jwt bearer authentication mechanism";
         let j = semantic_jaccard(a, b, None);
-        assert!(
-            j > 0.0 && j < 1.0,
-            "partial overlap must be in (0,1), got {j}"
-        );
+        assert_eq!(j, 0.0, "non-identical strings without model must give 0.0");
     }
 
     // ── semantic_jaccard — with model ─────────────────────────────────────────
@@ -297,16 +304,17 @@ mod tests {
     }
 
     #[test]
-    fn semantic_jaccard_model_empty_embed_falls_back_to_token_jaccard() {
-        // Empty embedding model → falls back to token Jaccard
+    fn semantic_jaccard_model_empty_embed_falls_back_to_exact_equality() {
+        // Empty embedding model → falls back to exact equality
         let model = EmptyEmbeddingModel;
         let text = "stateless jwt auth token";
-        let sim_model = semantic_jaccard(text, text, Some(&model));
-        let sim_token = semantic_jaccard(text, text, None);
+        let sim = semantic_jaccard(text, text, Some(&model));
         assert!(
-            (sim_model - sim_token).abs() < 1e-9,
-            "empty embed must fall back to token Jaccard: model={sim_model} token={sim_token}"
+            (sim - 1.0).abs() < 1e-9,
+            "empty embed on identical text must give 1.0"
         );
+        let sim_diff = semantic_jaccard(text, "different text", Some(&model));
+        assert_eq!(sim_diff, 0.0, "empty embed on different text must give 0.0");
     }
 
     #[test]

@@ -3,7 +3,7 @@ use h2ai_state::semilattice::{ProposalSet, SemilatticeResult};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::{BranchPrunedEvent, ProposalEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::{RoleErrorCost, TauValue};
+use h2ai_types::sizing::{RoleErrorCost, TauValue};
 
 fn cloud() -> AdapterKind {
     AdapterKind::CloudGeneric {

@@ -4,7 +4,7 @@ use h2ai_state::semilattice::ProposalSet;
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::{BranchPrunedEvent, ProposalEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::{MergeStrategy, RoleErrorCost, TauValue};
+use h2ai_types::sizing::{MergeStrategy, RoleErrorCost, TauValue};
 
 fn adapter() -> AdapterKind {
     AdapterKind::CloudGeneric {

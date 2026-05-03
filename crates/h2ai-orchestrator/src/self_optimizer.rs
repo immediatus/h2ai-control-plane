@@ -1,6 +1,6 @@
 use crate::attribution::{AttributionInput, HarnessAttribution};
 use h2ai_config::H2AIConfig;
-use h2ai_types::physics::PredictionBasis;
+use h2ai_types::sizing::PredictionBasis;
 
 const TAU_EMA_ALPHA: f64 = 0.1;
 

@@ -10,7 +10,7 @@ fn attribution_single_agent_no_filter_one_turn_equals_baseline() {
         verification_filter_ratio: 1.0,
         tao_turns_mean: 1.0,
         tao_per_turn_factor: 0.6,
-        prediction_basis: h2ai_types::physics::PredictionBasis::Heuristic,
+        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
         talagrand_state: None,
         eigen_calibration: None,
     };
@@ -37,7 +37,7 @@ fn attribution_total_never_exceeds_one_under_high_gain_conditions() {
                         verification_filter_ratio: fr,
                         tao_turns_mean: turns,
                         tao_per_turn_factor: 0.6,
-                        prediction_basis: h2ai_types::physics::PredictionBasis::Heuristic,
+                        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
                         talagrand_state: None,
                         eigen_calibration: None,
                     };
@@ -68,7 +68,7 @@ fn attribution_baseline_quality_is_p_mean() {
         verification_filter_ratio: 1.0,
         tao_turns_mean: 1.0,
         tao_per_turn_factor: 0.6,
-        prediction_basis: h2ai_types::physics::PredictionBasis::Heuristic,
+        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
         talagrand_state: None,
         eigen_calibration: None,
     };
@@ -89,7 +89,7 @@ fn attribution_topology_gain_increases_with_more_agents() {
         verification_filter_ratio: 1.0,
         tao_turns_mean: 1.0,
         tao_per_turn_factor: 0.6,
-        prediction_basis: h2ai_types::physics::PredictionBasis::Heuristic,
+        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
         talagrand_state: None,
         eigen_calibration: None,
     };
@@ -115,7 +115,7 @@ fn attribution_tao_gain_increases_with_more_turns() {
         verification_filter_ratio: 1.0,
         tao_turns_mean: 1.0,
         tao_per_turn_factor: 0.6,
-        prediction_basis: h2ai_types::physics::PredictionBasis::Heuristic,
+        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
         talagrand_state: None,
         eigen_calibration: None,
     };
@@ -140,7 +140,7 @@ fn attribution_total_quality_clamped_to_one() {
         verification_filter_ratio: 1.0,
         tao_turns_mean: 5.0,
         tao_per_turn_factor: 0.6,
-        prediction_basis: h2ai_types::physics::PredictionBasis::Heuristic,
+        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
         talagrand_state: None,
         eigen_calibration: None,
     };

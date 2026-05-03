@@ -10,7 +10,7 @@ use h2ai_types::events::{
     BranchPrunedEvent, MergeResolvedEvent, SemilatticeCompiledEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::TaskId;
-use h2ai_types::physics::MergeStrategy;
+use h2ai_types::sizing::MergeStrategy;
 use tokio::time::Instant;
 
 /// Result of a single `MergeEngine::resolve` call.
@@ -30,8 +30,9 @@ pub enum MergeOutcome {
 
 /// Stateless merge coordinator that selects a consensus output from a `ProposalSet`.
 ///
-/// Strategy dispatch, BFT quorum checks, and Weiszfeld fallback are all encapsulated
-/// here so callers only need to supply a `MergeStrategy` and an optional embedding model.
+/// Strategy dispatch, outlier-resistance quorum checks, and Weiszfeld fallback are all
+/// encapsulated here so callers only need to supply a `MergeStrategy` and an optional
+/// embedding model.
 pub struct MergeEngine;
 
 impl MergeEngine {
@@ -41,10 +42,11 @@ impl MergeEngine {
     /// 1. Semilattice compile — prunes proposals that violate structural invariants.
     ///    Returns `ZeroSurvival` immediately if no proposals survive.
     /// 2. Strategy dispatch — `ConsensusMedian` and `ScoreOrdered` are applied directly.
-    ///    `OutlierResistant`/`MultiOutlierResistant` first check BFT quorum and cluster
-    ///    coherence; when both hold, Krum selection is used.
+    ///    `OutlierResistant`/`MultiOutlierResistant` first check the outlier-resistance quorum
+    ///    (`n ≥ 2f+3`) and cluster coherence; when both hold, outlier-resistant selection is used.
     /// 3. Weiszfeld fallback — when quorum or coherence fails and `embedding_model` is
-    ///    present, the geometric median in embedding space is selected (breakdown point 50%).
+    ///    present, the geometric median in embedding space is selected (breakdown point 50%
+    ///    against adversarial outliers; weaker against correlated hallucination clusters).
     /// 4. `ConsensusMedian` fallback — used when quorum/coherence fails and no embedding
     ///    model is available, handling honest stochastic divergence without a cluster assumption.
     pub async fn resolve(

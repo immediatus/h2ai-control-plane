@@ -25,7 +25,7 @@ use h2ai_types::events::{
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::TaskManifest;
-use h2ai_types::physics::{
+use h2ai_types::sizing::{
     MergeStrategy, MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue,
 };
 use thiserror::Error;
@@ -33,10 +33,6 @@ use thiserror::Error;
 /// Errors that can abort an `ExecutionEngine::run_offline` call.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    /// The compiled system context carries too little relevant signal (J_eff below threshold).
-    /// Retrying with a richer constraint corpus or broader keyword set may help.
-    #[error("context underflow: J_eff={j_eff:.3} < {threshold:.1}")]
-    ContextUnderflow { j_eff: f64, threshold: f64 },
     /// The multiplication condition gate rejected all topologies across all retries.
     /// Recalibrating with higher-quality or more diverse adapters may resolve this.
     #[error("multiplication condition failed: {0}")]
@@ -104,6 +100,14 @@ pub struct EngineInput<'a> {
     /// Shared estimator updated with (turn-1 score, final score) pairs after
     /// each iteration's verification. Persisted by tasks.rs after engine returns.
     pub tao_estimator: std::sync::Arc<tokio::sync::RwLock<crate::tao_loop::TaoMultiplierEstimator>>,
+    /// When `Some`, the synthesis phase runs after verification and auditor gate.
+    /// Used for both the Stage 1 critique call and the Stage 2 synthesis call.
+    /// When `None`, synthesis is skipped unconditionally and the selection chain runs directly.
+    pub synthesis_adapter: Option<&'a dyn IComputeAdapter>,
+    /// Optional Thompson Sampling bandit for adaptive N selection.
+    /// When `Some`, the bandit selects `n_agents` and its posterior is updated on task completion.
+    /// When `None`, N selection falls back to `n_optimal_hint` from EnsembleCalibration.
+    pub bandit_state: Option<std::sync::Arc<tokio::sync::RwLock<crate::bandit::BanditState>>>,
 }
 
 /// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
@@ -169,31 +173,7 @@ impl ExecutionEngine {
 
         // ── Phase 1: Bootstrap ──────────────────────────────────────────────
         let description = &input.manifest.description;
-        let required_kw = input
-            .constraint_corpus
-            .iter()
-            .flat_map(|d: &ConstraintDoc| d.vocabulary().into_iter())
-            .chain(input.manifest.constraints.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let required_kw = if required_kw.is_empty() {
-            description.clone()
-        } else {
-            required_kw
-        };
-
-        let compiled = compiler::compile(
-            description,
-            &input.constraint_corpus,
-            &required_kw,
-            input.cfg,
-            input.embedding_model,
-        )
-        .await
-        .map_err(|e| {
-            let h2ai_context::compiler::ContextError::ContextUnderflow { j_eff, threshold } = e;
-            EngineError::ContextUnderflow { j_eff, threshold }
-        })?;
+        let compiled = compiler::compile(description, &input.constraint_corpus);
 
         let adr_keywords: Vec<String> = input
             .constraint_corpus
@@ -213,7 +193,6 @@ impl ExecutionEngine {
             task_id: task_id.clone(),
             system_context: system_context.clone(),
             pareto_weights: input.manifest.pareto_weights.clone(),
-            j_eff: compiled.j_eff,
             timestamp: Utc::now(),
         };
 
@@ -236,7 +215,16 @@ impl ExecutionEngine {
             .as_ref()
             .map(|ec| ec.n_optimal as u32)
             .unwrap_or(input.manifest.explorers.count as u32);
-        let initial_n_agents = n_optimal_hint.max(1).min(n_max_ceiling.max(1));
+        let bandit_n = if let Some(ref bandit_arc) = input.bandit_state {
+            let bandit = bandit_arc.read().await;
+            Some(bandit.select(input.cfg))
+        } else {
+            None
+        };
+        let initial_n_agents = bandit_n
+            .unwrap_or(n_optimal_hint)
+            .max(1)
+            .min(n_max_ceiling.max(1));
         let mut current_params = OptimizerParams {
             n_agents: initial_n_agents,
             max_turns: input.tao_config.max_turns as u32,
@@ -475,9 +463,29 @@ impl ExecutionEngine {
                 .iter()
                 .enumerate()
                 .map(|(idx, explorer_cfg)| {
+                    let (slot_task, slot_system_ctx) = {
+                        let configs = &input.manifest.explorers.slot_configs;
+                        if configs.is_empty() {
+                            (input.manifest.description.clone(), system_context.clone())
+                        } else {
+                            let sc = &configs[idx % configs.len()];
+                            let cot = sc.cot_style.instruction();
+                            let task = if cot.is_empty() {
+                                input.manifest.description.clone()
+                            } else {
+                                format!("{}\n\n{}", cot, input.manifest.description)
+                            };
+                            let ctx = if sc.role_frame.is_empty() {
+                                system_context.clone()
+                            } else {
+                                format!("{}\n\n{}", sc.role_frame, system_context)
+                            };
+                            (task, ctx)
+                        }
+                    };
                     let req = ComputeRequest {
-                        system_context: system_context.clone(),
-                        task: input.manifest.description.clone(),
+                        system_context: slot_system_ctx,
+                        task: slot_task,
                         tau: explorer_cfg.tau,
                         max_tokens: input.cfg.explorer_max_tokens,
                     };
@@ -604,8 +612,27 @@ impl ExecutionEngine {
                 .map(|ec| ec.tau.value())
                 .collect();
 
-            // Diversity gate: all pairwise proposal outputs too similar → collective hallucination.
-            if crate::diversity::is_uniform(&proposals, input.cfg.diversity_threshold) {
+            // ── Phase 3.5: Verification Loop (LLM-as-Judge) ──────────────
+            use crate::verification::{VerificationInput, VerificationPhase};
+            let mut pruned: Vec<BranchPrunedEvent> = Vec::new();
+            let mut iteration_verification_events: Vec<VerificationScoredEvent> = Vec::new();
+            let ver_out = VerificationPhase::run(VerificationInput {
+                proposals,
+                constraint_corpus: &input.constraint_corpus,
+                evaluator: input.verification_adapter,
+                config: verification_config.clone(),
+            })
+            .await;
+
+            // Diversity gate: post-verification — check constraint-satisfaction profile entropy.
+            // Collapsed fingerprints signal collective hallucination; trigger MAPE-K retry.
+            if matches!(
+                crate::diversity::DiversityGuard::check(
+                    &ver_out.passed,
+                    input.cfg.diversity_threshold
+                ),
+                crate::diversity::DiversityResult::Collapsed
+            ) {
                 tau_values_tried.push(tau_values);
                 let zero_event = ZeroSurvivalEvent {
                     task_id: task_id.clone(),
@@ -674,18 +701,6 @@ impl ExecutionEngine {
                     }
                 }
             }
-
-            // ── Phase 3.5: Verification Loop (LLM-as-Judge) ──────────────
-            use crate::verification::{VerificationInput, VerificationPhase};
-            let mut pruned: Vec<BranchPrunedEvent> = Vec::new();
-            let mut iteration_verification_events: Vec<VerificationScoredEvent> = Vec::new();
-            let ver_out = VerificationPhase::run(VerificationInput {
-                proposals,
-                constraint_corpus: &input.constraint_corpus,
-                evaluator: input.verification_adapter,
-                config: verification_config.clone(),
-            })
-            .await;
 
             let mut proposals: Vec<ProposalEvent> = Vec::new();
             for (prop, results) in ver_out.passed {
@@ -760,6 +775,7 @@ impl ExecutionEngine {
             );
 
             let mut proposal_set = ProposalSet::new();
+            let mut synthesis_candidates: Vec<ProposalEvent> = Vec::new();
 
             for proposal in proposals {
                 let audit_prompt = input
@@ -817,6 +833,7 @@ impl ExecutionEngine {
                         .find(|e| e.explorer_id == proposal.explorer_id)
                         .map(|e| e.score)
                         .unwrap_or(0.0);
+                    synthesis_candidates.push(proposal.clone());
                     proposal_set.insert_scored(proposal, ver_score);
                 }
             }
@@ -833,7 +850,7 @@ impl ExecutionEngine {
                 1.0
             };
 
-            let (attribution, attribution_interval) = {
+            let (mut attribution, attribution_interval) = {
                 use crate::attribution::{
                     bootstrap_interval, AttributionInput, HarnessAttribution,
                 };
@@ -895,6 +912,167 @@ impl ExecutionEngine {
             // Accumulate all_pruned before moving pruned into resolve
             all_pruned.extend(pruned.iter().cloned());
             tau_values_tried.push(tau_values);
+
+            // ── Phase 5a: Synthesis (optional, replaces selection on success) ───────
+            let synthesis_output: Option<(String, f64)> = if input.cfg.synthesis_enabled
+                && synthesis_candidates.len() >= input.cfg.synthesis_min_proposals
+            {
+                if let Some(synth_adapter) = input.synthesis_adapter {
+                    use crate::synthesis::{SynthesisInput as SynthInput, SynthesisPhase};
+
+                    let constraint_list = input.manifest.constraints.join("\n");
+                    let synth_input = SynthInput {
+                        task_description: &input.manifest.description,
+                        constraint_list: &constraint_list,
+                        proposals: &synthesis_candidates,
+                        adapter: synth_adapter,
+                        cfg: input.cfg,
+                    };
+
+                    match SynthesisPhase::run(synth_input).await {
+                        Ok(synth_out) => {
+                            // Re-verify the synthesis output through the full VerificationPhase
+                            use crate::verification::{VerificationInput, VerificationPhase};
+                            let synth_proposal = ProposalEvent {
+                                task_id: task_id.clone(),
+                                explorer_id: h2ai_types::identity::ExplorerId::new(),
+                                tau: TauValue::new(input.cfg.synthesis_tau)
+                                    .unwrap_or_else(|_| TauValue::new(0.2).unwrap()),
+                                generation: 0,
+                                raw_output: synth_out.synthesis_text.clone(),
+                                token_cost: synth_out.synthesis_tokens,
+                                adapter_kind: h2ai_types::config::AdapterKind::CloudGeneric {
+                                    endpoint: "synthesis".into(),
+                                    api_key_env: "NONE".into(),
+                                },
+                                timestamp: Utc::now(),
+                            };
+
+                            let re_ver = VerificationPhase::run(VerificationInput {
+                                proposals: vec![synth_proposal],
+                                constraint_corpus: &input.constraint_corpus,
+                                evaluator: input.verification_adapter,
+                                config: verification_config.clone(),
+                            })
+                            .await;
+
+                            if !re_ver.passed.is_empty() {
+                                // Compute synthesis_gain: Q(synthesis) - max(Q(individuals))
+                                let indiv_scores = VerificationPhase::score_proposals(
+                                    synthesis_candidates.clone(),
+                                    input.verification_adapter,
+                                    &verification_config,
+                                    &input.constraint_corpus,
+                                )
+                                .await;
+                                let max_indiv = indiv_scores
+                                    .iter()
+                                    .map(|(_, s)| *s)
+                                    .fold(f64::NEG_INFINITY, f64::max)
+                                    .max(0.0);
+                                let synth_score = re_ver
+                                    .passed
+                                    .first()
+                                    .map(|(_, results)| {
+                                        h2ai_constraints::types::aggregate_compliance_score(results)
+                                    })
+                                    .unwrap_or(0.0);
+                                let synthesis_gain = synth_score - max_indiv;
+
+                                tracing::debug!(
+                                    task_id = %task_id,
+                                    synthesis_gain,
+                                    "synthesis re-verification passed"
+                                );
+
+                                Some((synth_out.synthesis_text, synthesis_gain))
+                            } else {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    "synthesis re-verification failed; falling back to selection chain"
+                                );
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %task_id,
+                                error = %e,
+                                "synthesis phase error; falling back to selection chain"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            // ── End Phase 5a ─────────────────────────────────────────────────────────
+
+            // When synthesis produced a valid re-verified output, bypass selection chain
+            // and return directly without calling MergeEngine::resolve.
+            if let Some((synthesis_text, synthesis_gain)) = synthesis_output {
+                attribution.synthesis_gain = synthesis_gain;
+                quality_history.push(QualityMeasurement {
+                    params: current_params.clone(),
+                    q_total: attribution.total_quality + synthesis_gain,
+                });
+                let suggested_next = SelfOptimizer::suggest(SuggestInput {
+                    current: &current_params,
+                    history: &quality_history,
+                    n_max_ceiling,
+                    n_optimal: input
+                        .calibration
+                        .ensemble
+                        .as_ref()
+                        .map(|ec| ec.n_optimal as u32),
+                    p_mean,
+                    rho_mean,
+                    filter_ratio,
+                    cfg: input.cfg,
+                });
+                let waste_ratio = filter_ratio;
+                let semilattice = SemilatticeCompiledEvent {
+                    task_id: task_id.clone(),
+                    valid_proposals: synthesis_candidates
+                        .iter()
+                        .map(|p| p.explorer_id.clone())
+                        .collect(),
+                    pruned_proposals: pruned
+                        .iter()
+                        .map(|p| (p.explorer_id.clone(), p.reason.clone()))
+                        .collect(),
+                    merge_strategy: provisioned.merge_strategy.clone(),
+                    timestamp: Utc::now(),
+                    merge_elapsed_secs: None,
+                    n_input_proposals: synthesis_candidates.len(),
+                };
+                input.store.mark_resolved(&task_id);
+                if let Some(ref bandit_arc) = input.bandit_state {
+                    let n_used = current_params.n_agents;
+                    let tier3_score = Some(attribution.total_quality.clamp(0.0, 1.0));
+                    let mut bandit = bandit_arc.write().await;
+                    bandit.update(n_used, None, tier3_score);
+                    bandit.apply_optimizer_hint(n_used, suggested_next.n_agents);
+                }
+                let run_scores: Vec<f64> =
+                    all_verification_events.iter().map(|e| e.score).collect();
+                let talagrand = TalagrandDiagnostic::from_verification_scores(&[run_scores]);
+                return Ok(EngineOutput {
+                    task_id,
+                    resolved_output: synthesis_text,
+                    semilattice,
+                    attribution,
+                    attribution_interval,
+                    verification_events: all_verification_events,
+                    talagrand,
+                    suggested_next_params: Some(suggested_next),
+                    waste_ratio,
+                    applied_optimizations: vec![],
+                });
+            }
 
             let outcome = MergeEngine::resolve(
                 task_id.clone(),
@@ -971,6 +1149,13 @@ impl ExecutionEngine {
                     };
 
                     input.store.mark_resolved(&task_id);
+                    if let Some(ref bandit_arc) = input.bandit_state {
+                        let n_used = current_params.n_agents;
+                        let tier3_score = Some(attribution.total_quality.clamp(0.0, 1.0));
+                        let mut bandit = bandit_arc.write().await;
+                        bandit.update(n_used, None, tier3_score);
+                        bandit.apply_optimizer_hint(n_used, suggested_next.n_agents);
+                    }
                     let run_scores: Vec<f64> =
                         all_verification_events.iter().map(|e| e.score).collect();
                     let talagrand = TalagrandDiagnostic::from_verification_scores(&[run_scores]);
@@ -1063,7 +1248,7 @@ impl ExecutionEngine {
         n_max_ceiling: u32,
         cg_mean: f64,
         filter_ratio: f64,
-        ensemble: Option<&h2ai_types::physics::EnsembleCalibration>,
+        ensemble: Option<&h2ai_types::sizing::EnsembleCalibration>,
         cfg: &H2AIConfig,
     ) {
         let (p_mean, rho_mean) = match ensemble {

@@ -3,8 +3,19 @@
 Uses the MC1 (single correct answer) split for oracle evaluation.
 
 Usage:
-    python -m scripts.benchmark.run_truthfulqa [--smoke] [--model gpt-4o-mini]
+    # OpenAI (default)
     python -m scripts.benchmark.run_truthfulqa --baselines b0 b1 h2
+
+    # Google Gemini
+    export GEMINI_API_KEY=...
+    python -m scripts.benchmark.run_truthfulqa --provider gemini --baselines b0 b1 b2 b3 h2
+
+    # Local llama.cpp
+    python -m scripts.benchmark.run_truthfulqa --provider llamacpp \\
+        --base-url http://localhost:8000/v1 --model <model-name> --baselines b0 b1
+
+    # Smoke test (5 questions)
+    python -m scripts.benchmark.run_truthfulqa --smoke --provider gemini
 
 Outputs JSON results to scripts/benchmark/results/truthfulqa_<run_id>.json.
 """
@@ -27,8 +38,7 @@ from .baselines.majority_vote import majority_vote
 from .baselines.moa import moa
 from .baselines.self_moa import self_moa
 from .h2ai_client import H2AIClient, TokenUsage
-
-_openai = OpenAI()
+from .provider import add_provider_args, default_model, make_client
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -96,13 +106,12 @@ def _item_to_mc(item: dict) -> tuple[str, list[str], str]:
     labels_int = mc["labels"]
     labels = "ABCDEFGHIJ"
     gold_idx = labels_int.index(1)
-    gold_letter = labels[gold_idx]
-    return question, choices, gold_letter
+    return question, choices, labels[gold_idx]
 
 
-def _single_call(prompt: str, model: str) -> tuple[str, TokenUsage, float]:
+def _single_call(prompt: str, model: str, client: OpenAI) -> tuple[str, TokenUsage, float]:
     t0 = time.monotonic()
-    resp = _openai.chat.completions.create(
+    resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": MC_SYSTEM},
@@ -124,6 +133,7 @@ def _run_baseline(
     baseline: str,
     problems: list[dict],
     model: str,
+    client: OpenAI,
     h2ai_client: H2AIClient | None = None,
 ) -> RunResult:
     task_results: list[TaskResult] = []
@@ -134,25 +144,35 @@ def _run_baseline(
         t0 = time.monotonic()
 
         if baseline == "b0":
-            raw, usage, latency = _single_call(prompt, model)
+            raw, usage, latency = _single_call(prompt, model, client)
             predicted = _extract_letter(raw)
         elif baseline == "b1":
             res = majority_vote(
                 prompt, model=model, n=6,
                 system=MC_SYSTEM,
                 extract_fn=_extract_letter,
+                client=client,
             )
             predicted = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
         elif baseline == "b2":
-            res = moa(prompt, extract_fn=_extract_letter)
+            res = moa(
+                prompt,
+                aggregator_model=model,
+                extract_fn=_extract_letter,
+                client=client,
+            )
             predicted = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
         elif baseline == "b3":
-            res = self_moa(prompt, model=model, n=5,
-                           system=MC_SYSTEM, extract_fn=_extract_letter)
+            res = self_moa(
+                prompt, model=model, n=5,
+                system=MC_SYSTEM,
+                extract_fn=_extract_letter,
+                client=client,
+            )
             predicted = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
@@ -167,10 +187,9 @@ def _run_baseline(
         else:
             raise ValueError(f"Unknown baseline: {baseline}")
 
-        correct = predicted == gold
         task_results.append(TaskResult(
             problem_id=str(i),
-            correct=correct,
+            correct=(predicted == gold),
             predicted=predicted,
             gold=gold,
             usage=asdict(usage),
@@ -193,8 +212,10 @@ def _run_baseline(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run TruthfulQA benchmark")
+    add_provider_args(parser)
     parser.add_argument("--smoke", action="store_true")
-    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument("--model", default=None,
+                        help="Model name (defaults to provider's default model)")
     parser.add_argument(
         "--baselines",
         nargs="+",
@@ -205,13 +226,16 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
 
+    model = args.model or default_model(args.provider)
+    client = make_client(args.provider, args.base_url)
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     problems = _load_truthfulqa(args.smoke)
-    print(f"Loaded {len(problems)} TruthfulQA problems")
+    print(f"Loaded {len(problems)} TruthfulQA problems  [provider={args.provider}  model={model}]")
 
     h2ai_client: H2AIClient | None = None
     if "h2" in args.baselines:
-        h2ai_client = H2AIClient(base_url=args.h2ai_url, default_model=args.model)
+        h2ai_client = H2AIClient(base_url=args.h2ai_url, default_model=model)
         if not h2ai_client.health():
             print(f"WARNING: H2AI runtime not reachable at {args.h2ai_url}")
 
@@ -220,14 +244,16 @@ def main() -> None:
         print(f"\n=== Run {run_idx + 1}/{args.runs} ===")
         for baseline in args.baselines:
             print(f"Running baseline '{baseline}'...")
-            result = _run_baseline(baseline, problems, args.model, h2ai_client)
+            result = _run_baseline(baseline, problems, model, client, h2ai_client)
             print(
                 f"  accuracy={result.accuracy:.3f}  "
                 f"cost=${result.total_cost_usd:.4f}"
             )
             all_results.append({
                 "run": run_idx,
+                "provider": args.provider,
                 "baseline": baseline,
+                "model": model,
                 "accuracy": result.accuracy,
                 "mean_cost_usd": result.mean_cost_usd,
                 "total_cost_usd": result.total_cost_usd,
@@ -238,7 +264,8 @@ def main() -> None:
     run_id = uuid.uuid4().hex[:8]
     out_path = RESULTS_DIR / f"truthfulqa_{run_id}.json"
     with open(out_path, "w") as f:
-        json.dump({"benchmark": "truthfulqa", "results": all_results}, f, indent=2)
+        json.dump({"benchmark": "truthfulqa", "provider": args.provider, "results": all_results},
+                  f, indent=2)
     print(f"\nResults saved to {out_path}")
 
 

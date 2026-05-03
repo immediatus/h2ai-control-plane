@@ -103,7 +103,7 @@ pub async fn start_calibration(
             task_prompts: prompts,
             adapters: adapter_refs,
             cfg: &state_clone.cfg,
-            embedding_model: state_clone.embedding_model.as_deref(),
+            constraint_corpus: &[],
         })
         .await;
 
@@ -124,7 +124,28 @@ pub async fn start_calibration(
                     tracing::error!("failed to publish calibration event: {e}");
                 }
             }
-            Err(e) => tracing::error!("calibration failed: {e}"),
+            Err(e) => {
+                let is_network = e.to_string().contains("network error")
+                    || e.to_string().contains("connection refused")
+                    || e.to_string().contains("timed out");
+                if is_network {
+                    tracing::warn!("calibration skipped — LLM adapter unreachable: {e}");
+                } else {
+                    tracing::error!("calibration failed: {e}");
+                }
+                // Publish a sentinel event so SSE subscribers know calibration did not complete.
+                let subject = format!("h2ai.calibration.{cal_id_clone}");
+                let _ = state_clone
+                    .nats
+                    .publish_to(
+                        &subject,
+                        &H2AIEvent::CalibrationFailed {
+                            calibration_id: cal_id_clone.to_string(),
+                            reason: e.to_string(),
+                        },
+                    )
+                    .await;
+            }
         }
     });
 

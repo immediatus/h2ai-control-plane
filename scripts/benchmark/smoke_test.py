@@ -4,12 +4,22 @@ Validates end-to-end pipeline: dataset load → B0 single call → oracle check 
 token count → (optional) H2AI call.
 
 Usage:
+    # OpenAI (default)
     python -m scripts.benchmark.smoke_test
-    python -m scripts.benchmark.smoke_test --h2ai-url http://localhost:8080
+
+    # Google Gemini
+    export GEMINI_API_KEY=...
+    python -m scripts.benchmark.smoke_test --provider gemini
+
+    # Local llama.cpp
+    python -m scripts.benchmark.smoke_test --provider llamacpp \\
+        --base-url http://localhost:8000/v1 --model <model-name>
+
+    # Skip H2AI runtime check
     python -m scripts.benchmark.smoke_test --skip-h2ai
 
 Expected: all 5 problems complete without exception; oracle check returns bool;
-          token counts > 0; total cost reported < $0.50.
+          token counts > 0 for cloud providers; total cost reported < $0.50.
 """
 
 from __future__ import annotations
@@ -17,13 +27,9 @@ from __future__ import annotations
 import argparse
 import re
 import time
-from pathlib import Path
-
-from openai import OpenAI
 
 from .h2ai_client import H2AIClient, TokenUsage
-
-_openai = OpenAI()
+from .provider import add_provider_args, default_model, make_client
 
 _SYSTEM = (
     "Solve the math problem step by step. "
@@ -48,25 +54,32 @@ def _load_5() -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    add_provider_args(parser)
+    parser.add_argument("--model", default=None)
     parser.add_argument("--h2ai-url", default="http://localhost:8080")
     parser.add_argument("--skip-h2ai", action="store_true")
-    parser.add_argument("--model", default="gpt-4o-mini")
     args = parser.parse_args()
 
+    model = args.model or default_model(args.provider)
+    client = make_client(args.provider, args.base_url)
+
+    print(f"Provider: {args.provider}  model: {model}")
     print("Loading 5 GSM8K problems...")
     problems = _load_5()
     assert len(problems) == 5, f"Expected 5 problems, got {len(problems)}"
 
     total_cost = 0.0
     correct_b0 = 0
+    is_local = args.provider == "llamacpp"
+
     print("\n--- B0 (N=1 single call) ---")
     for i, item in enumerate(problems):
         question = item["question"]
         gold = _extract_answer(item["answer"])
 
         t0 = time.monotonic()
-        resp = _openai.chat.completions.create(
-            model=args.model,
+        resp = client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": question},
@@ -79,26 +92,31 @@ def main() -> None:
         usage = TokenUsage(
             prompt_tokens=resp.usage.prompt_tokens if resp.usage else 0,
             completion_tokens=resp.usage.completion_tokens if resp.usage else 0,
-            model=args.model,
+            model=model,
         )
-        assert usage.prompt_tokens > 0, f"Problem {i}: prompt_tokens == 0"
-        assert usage.completion_tokens > 0, f"Problem {i}: completion_tokens == 0"
+
+        # llama.cpp local servers may not report token counts reliably
+        if not is_local:
+            assert usage.prompt_tokens > 0, f"Problem {i}: prompt_tokens == 0"
+            assert usage.completion_tokens > 0, f"Problem {i}: completion_tokens == 0"
 
         correct = predicted == gold
         cost = usage.cost_usd()
         total_cost += cost
         correct_b0 += int(correct)
         marker = "PASS" if correct else "FAIL"
+        cost_str = f"${cost:.5f}" if not is_local else "local"
         print(
             f"  [{marker}] Q{i + 1}: gold={gold!r}  predicted={predicted!r}  "
-            f"tokens={usage.total_tokens}  cost=${cost:.5f}  {latency:.1f}s"
+            f"tokens={usage.total_tokens}  cost={cost_str}  {latency:.1f}s"
         )
 
     print(f"\nB0 accuracy: {correct_b0}/5   total_cost: ${total_cost:.4f}")
-    assert total_cost < 0.50, f"Smoke test cost ${total_cost:.4f} exceeded $0.50 budget"
+    if not is_local:
+        assert total_cost < 0.50, f"Smoke test cost ${total_cost:.4f} exceeded $0.50 budget"
 
     if not args.skip_h2ai:
-        h2 = H2AIClient(base_url=args.h2ai_url, default_model=args.model)
+        h2 = H2AIClient(base_url=args.h2ai_url, default_model=model)
         if not h2.health():
             print(f"\nH2AI runtime not reachable at {args.h2ai_url} — skipping H2 check")
         else:
@@ -109,7 +127,7 @@ def main() -> None:
                 gold = _extract_answer(item["answer"])
                 prompt = f"{_SYSTEM}\n\n{question}"
                 try:
-                    resp = h2.submit_task(prompt, model=args.model)
+                    resp = h2.submit_task(prompt, model=model)
                     predicted = _extract_answer(resp.answer)
                     correct = predicted == gold
                     correct_h2 += int(correct)

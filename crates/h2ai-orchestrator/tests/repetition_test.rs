@@ -52,7 +52,7 @@ use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::TaoConfig;
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 #[tokio::test]
 async fn tao_loop_detects_repetition_and_returns_err() {

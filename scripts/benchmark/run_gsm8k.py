@@ -1,8 +1,19 @@
 """GSM8K evaluation runner.
 
 Usage:
-    python -m scripts.benchmark.run_gsm8k [--smoke] [--n-samples 500] [--model gpt-4o-mini]
+    # OpenAI (default)
     python -m scripts.benchmark.run_gsm8k --baselines b0 b1 b2 b3 h2
+
+    # Google Gemini
+    export GEMINI_API_KEY=...
+    python -m scripts.benchmark.run_gsm8k --provider gemini --baselines b0 b1 b2 b3 h2
+
+    # Local llama.cpp  (start with: llama-server -m model.gguf --port 8000)
+    python -m scripts.benchmark.run_gsm8k --provider llamacpp --base-url http://localhost:8000/v1 \\
+        --model <model-name-reported-by-server> --baselines b0 b1 b2 b3
+
+    # Smoke test (5 problems, any provider)
+    python -m scripts.benchmark.run_gsm8k --smoke --provider gemini
 
 Outputs JSON results to scripts/benchmark/results/gsm8k_<run_id>.json.
 """
@@ -11,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import statistics
 import time
@@ -26,8 +36,7 @@ from .baselines.majority_vote import majority_vote
 from .baselines.moa import moa
 from .baselines.self_moa import self_moa
 from .h2ai_client import H2AIClient, TokenUsage
-
-_openai = OpenAI()
+from .provider import add_provider_args, default_model, make_client
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -39,11 +48,9 @@ GSM8K_SYSTEM = (
 
 def _extract_gsm8k_answer(text: str) -> str:
     """Extract the final numeric answer from GSM8K-style output."""
-    # GSM8K answers follow '####'
     match = re.search(r"####\s*([\d,\-\.]+)", text)
     if match:
         return match.group(1).replace(",", "").strip()
-    # Fallback: last number in the text
     nums = re.findall(r"[\d,]+(?:\.\d+)?", text)
     return nums[-1].replace(",", "") if nums else text.strip()
 
@@ -91,9 +98,9 @@ def _load_gsm8k(n_samples: int, smoke: bool) -> list[dict]:
     return data[::step][:n_samples]
 
 
-def _single_call(prompt: str, model: str) -> tuple[str, TokenUsage, float]:
+def _single_call(prompt: str, model: str, client: OpenAI) -> tuple[str, TokenUsage, float]:
     t0 = time.monotonic()
-    resp = _openai.chat.completions.create(
+    resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": GSM8K_SYSTEM},
@@ -115,31 +122,37 @@ def _run_baseline(
     baseline: str,
     problems: list[dict],
     model: str,
+    client: OpenAI,
     h2ai_client: H2AIClient | None = None,
 ) -> RunResult:
     task_results: list[TaskResult] = []
 
     for item in problems:
         question = item["question"]
-        correct_raw = item["answer"]
-        correct_answer = _extract_gsm8k_answer(correct_raw)
+        correct_answer = _extract_gsm8k_answer(item["answer"])
 
         t0 = time.monotonic()
 
         if baseline == "b0":
-            raw, usage, latency = _single_call(question, model)
+            raw, usage, latency = _single_call(question, model, client)
             predicted = _extract_gsm8k_answer(raw)
         elif baseline == "b1":
             res = majority_vote(
                 question, model=model, n=6,
                 system=GSM8K_SYSTEM,
                 extract_fn=_extract_gsm8k_answer,
+                client=client,
             )
             predicted = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
         elif baseline == "b2":
-            res = moa(question, extract_fn=_extract_gsm8k_answer)
+            res = moa(
+                question,
+                aggregator_model=model,
+                extract_fn=_extract_gsm8k_answer,
+                client=client,
+            )
             predicted = res.answer
             usage = res.usage
             latency = time.monotonic() - t0
@@ -148,6 +161,7 @@ def _run_baseline(
                 question, model=model, n=5,
                 system=GSM8K_SYSTEM,
                 extract_fn=_extract_gsm8k_answer,
+                client=client,
             )
             predicted = res.answer
             usage = res.usage
@@ -163,28 +177,21 @@ def _run_baseline(
         else:
             raise ValueError(f"Unknown baseline: {baseline}")
 
-        correct = predicted == correct_answer
         task_results.append(TaskResult(
             problem_id=item.get("id", str(len(task_results))),
             correct_answer=correct_answer,
             predicted_answer=predicted,
-            correct=correct,
+            correct=(predicted == correct_answer),
             usage=asdict(usage),
             latency_s=latency,
         ))
 
     accuracy = statistics.mean(r.correct for r in task_results)
-    costs = [
+    costs_usd = [
         TokenUsage(**r.usage).cost_usd() if isinstance(r.usage, dict)
         else r.usage.cost_usd()
         for r in task_results
     ]
-    # Recalculate cost from stored dict
-    costs_usd = []
-    for r in task_results:
-        u = r.usage if isinstance(r.usage, TokenUsage) else TokenUsage(**r.usage)
-        costs_usd.append(u.cost_usd())
-
     return RunResult(
         baseline=baseline,
         model=model,
@@ -199,9 +206,11 @@ def _run_baseline(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run GSM8K benchmark")
+    add_provider_args(parser)
     parser.add_argument("--smoke", action="store_true", help="5-problem smoke test")
     parser.add_argument("--n-samples", type=int, default=500)
-    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument("--model", default=None,
+                        help="Model name (defaults to provider's default model)")
     parser.add_argument(
         "--baselines",
         nargs="+",
@@ -212,13 +221,16 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=1, help="Repeat runs for σ estimation")
     args = parser.parse_args()
 
+    model = args.model or default_model(args.provider)
+    client = make_client(args.provider, args.base_url)
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     problems = _load_gsm8k(args.n_samples, args.smoke)
-    print(f"Loaded {len(problems)} GSM8K problems")
+    print(f"Loaded {len(problems)} GSM8K problems  [provider={args.provider}  model={model}]")
 
     h2ai_client: H2AIClient | None = None
     if "h2" in args.baselines:
-        h2ai_client = H2AIClient(base_url=args.h2ai_url, default_model=args.model)
+        h2ai_client = H2AIClient(base_url=args.h2ai_url, default_model=model)
         if not h2ai_client.health():
             print(f"WARNING: H2AI runtime not reachable at {args.h2ai_url}")
 
@@ -227,7 +239,7 @@ def main() -> None:
         print(f"\n=== Run {run_idx + 1}/{args.runs} ===")
         for baseline in args.baselines:
             print(f"Running baseline '{baseline}'...")
-            result = _run_baseline(baseline, problems, args.model, h2ai_client)
+            result = _run_baseline(baseline, problems, model, client, h2ai_client)
             print(
                 f"  accuracy={result.accuracy:.3f}  "
                 f"cost=${result.total_cost_usd:.4f}  "
@@ -235,7 +247,9 @@ def main() -> None:
             )
             all_results.append({
                 "run": run_idx,
+                "provider": args.provider,
                 "baseline": baseline,
+                "model": model,
                 "accuracy": result.accuracy,
                 "mean_cost_usd": result.mean_cost_usd,
                 "total_cost_usd": result.total_cost_usd,
@@ -247,7 +261,8 @@ def main() -> None:
     run_id = uuid.uuid4().hex[:8]
     out_path = RESULTS_DIR / f"gsm8k_{run_id}.json"
     with open(out_path, "w") as f:
-        json.dump({"benchmark": "gsm8k", "results": all_results}, f, indent=2)
+        json.dump({"benchmark": "gsm8k", "provider": args.provider, "results": all_results},
+                  f, indent=2)
     print(f"\nResults saved to {out_path}")
 
 

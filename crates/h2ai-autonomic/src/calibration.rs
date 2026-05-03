@@ -1,11 +1,12 @@
 use chrono::Utc;
 use futures::future::join_all;
 use h2ai_config::H2AIConfig;
-use h2ai_context::embedding::{cosine_similarity, semantic_jaccard, EmbeddingModel};
+use h2ai_constraints::eval::eval_sync;
+use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::events::CalibrationCompletedEvent;
 use h2ai_types::identity::TaskId;
-use h2ai_types::physics::{
+use h2ai_types::sizing::{
     tau_alignment, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
     EnsembleCalibration, PhysicsError, TauValue,
 };
@@ -39,12 +40,9 @@ pub struct CalibrationInput<'a> {
     pub adapters: Vec<&'a dyn IComputeAdapter>,
     /// Runtime configuration supplying USL fallback parameters, τ spread, and CG thresholds.
     pub cfg: &'a H2AIConfig,
-    /// Optional embedding model for semantic CG measurement.
-    ///
-    /// When `Some`, CG is measured as the fraction of prompts where the cosine similarity
-    /// of output embeddings exceeds `cfg.cg_agreement_threshold`.
-    /// When `None`, falls back to token-level Jaccard (zero extra cost).
-    pub embedding_model: Option<&'a dyn EmbeddingModel>,
+    /// Constraint corpus for Hamming-distance CG measurement.
+    /// Empty slice → CG falls back to `cfg.calibration_cg_fallback`.
+    pub constraint_corpus: &'a [ConstraintDoc],
 }
 
 /// Stateless entry-point for running USL-based adapter calibration.
@@ -118,7 +116,7 @@ impl CalibrationHarness {
             input.cfg.beta_base_default,
         );
 
-        // CG_mean from pairwise Jaccard across all adapter output pairs.
+        // CG_mean from pairwise Hamming distance on constraint satisfaction fingerprints.
         // Record one timestamp for the entire calibration run — all pairs are computed
         // simultaneously so a single timestamp per run is the right granularity.
         let calibration_ts = Utc::now().timestamp() as u64;
@@ -141,9 +139,9 @@ impl CalibrationHarness {
                     pairs.push(Self::adapter_pair_cg(
                         &adapter_outputs[i],
                         &adapter_outputs[j],
-                        input.embedding_model,
+                        input.constraint_corpus,
+                        input.cfg,
                         align,
-                        input.cfg.cg_agreement_threshold,
                     ));
                 }
             }
@@ -184,15 +182,18 @@ impl CalibrationHarness {
                     let cg_ij = Self::adapter_pair_cg(
                         &adapter_outputs[i],
                         &adapter_outputs[j],
-                        input.embedding_model,
+                        input.constraint_corpus,
+                        input.cfg,
                         align,
-                        input.cfg.cg_agreement_threshold,
                     );
                     sigma[(i, j)] = cg_ij;
                     sigma[(j, i)] = cg_ij;
                 }
             }
-            Some(EigenCalibration::from_cg_matrix(&sigma))
+            Some(EigenCalibration::from_cg_matrix(
+                &sigma,
+                input.cfg.eigen_n_eff_delta,
+            ))
         } else {
             None
         };
@@ -205,6 +206,7 @@ impl CalibrationHarness {
         )?;
         let coordination_threshold =
             CoordinationThreshold::from_calibration(&cc, input.cfg.coordination_threshold_max);
+        let (n_max_lo, n_max_hi) = cc.n_max_ci();
 
         Ok(CalibrationCompletedEvent {
             calibration_id: input.calibration_id,
@@ -214,14 +216,12 @@ impl CalibrationHarness {
             eigen,
             timestamp: Utc::now(),
             pairwise_beta,
-            cg_mode: if input.embedding_model.is_some() {
-                h2ai_types::events::CgMode::EmbeddingCosine
-            } else {
-                h2ai_types::events::CgMode::TokenJaccard
-            },
+            cg_mode: h2ai_types::events::CgMode::ConstraintProfile,
             adapter_families: Vec::new(),
             explorer_verification_family_match: false,
             single_family_warning: false,
+            n_max_lo,
+            n_max_hi,
         })
     }
 
@@ -265,49 +265,27 @@ impl CalibrationHarness {
         (alpha.clamp(0.05, 0.5), beta0.clamp(1e-6, 0.1))
     }
 
-    /// Compute CG(i,j) as the embedding cosine agreement rate between two adapters.
-    ///
-    /// **With embedding model** (blog measurement): fraction of calibration prompts where
-    /// `cosine(embed_i[k], embed_j[k]) > agreement_threshold`. This matches the blog's
-    /// "agreement rate on calibration set" definition.
-    ///
-    /// **Without model** (fallback): mean per-prompt token Jaccard similarity, preserving
-    /// existing behavior when no embedding model is configured.
     fn adapter_pair_cg(
         outputs_i: &[String],
         outputs_j: &[String],
-        model: Option<&dyn EmbeddingModel>,
+        corpus: &[ConstraintDoc],
+        cfg: &H2AIConfig,
         align: f64,
-        agreement_threshold: f64,
     ) -> f64 {
-        if outputs_i.is_empty() || outputs_i.len() != outputs_j.len() {
-            let oi = outputs_i.join(" ");
-            let oj = outputs_j.join(" ");
-            return semantic_jaccard(&oi, &oj, model) * align;
+        if corpus.is_empty() || outputs_i.is_empty() || outputs_i.len() != outputs_j.len() {
+            return cfg.calibration_cg_fallback * align;
         }
-        let cg = match model {
-            Some(m) => {
-                let agree = outputs_i
-                    .iter()
-                    .zip(outputs_j.iter())
-                    .filter(|(oi, oj)| {
-                        let vi = m.embed(oi);
-                        let vj = m.embed(oj);
-                        cosine_similarity(&vi, &vj) > agreement_threshold
-                    })
-                    .count();
-                agree as f64 / outputs_i.len() as f64
-            }
-            None => {
-                outputs_i
-                    .iter()
-                    .zip(outputs_j.iter())
-                    .map(|(oi, oj)| semantic_jaccard(oi, oj, None))
-                    .sum::<f64>()
-                    / outputs_i.len() as f64
-            }
-        };
-        cg * align
+        let distances: Vec<f64> = outputs_i
+            .iter()
+            .zip(outputs_j.iter())
+            .map(|(oi, oj)| {
+                let fp_i = constraint_fingerprint(oi, corpus);
+                let fp_j = constraint_fingerprint(oj, corpus);
+                hamming_distance(&fp_i, &fp_j)
+            })
+            .collect();
+        let mean = distances.iter().sum::<f64>() / distances.len() as f64;
+        mean * align
     }
 
     /// Compute linear τ spacing across M calibration adapters.
@@ -380,6 +358,28 @@ impl CalibrationHarness {
     }
 }
 
+fn constraint_fingerprint(output: &str, corpus: &[ConstraintDoc]) -> Vec<bool> {
+    corpus
+        .iter()
+        .map(|doc| {
+            let score = eval_sync(&doc.predicate, output);
+            match &doc.severity {
+                ConstraintSeverity::Hard { threshold } => score >= *threshold,
+                _ => true,
+            }
+        })
+        .collect()
+}
+
+fn hamming_distance(a: &[bool], b: &[bool]) -> f64 {
+    // 1.0 on degenerate input: fail open toward diversity rather than collapsing CG.
+    // Callers guard corpus consistency; this branch only fires on bugs, not normal operation.
+    if a.is_empty() || a.len() != b.len() {
+        return 1.0;
+    }
+    a.iter().zip(b.iter()).filter(|(x, y)| x != y).count() as f64 / a.len() as f64
+}
+
 /// Derive β₀ from a set of merge phase timings.
 ///
 /// `spans`: each tuple is `(merge_elapsed_secs, n_proposals)` from a
@@ -442,88 +442,6 @@ pub fn beta_from_token_spans(spans: &[(u64, usize)], t1_tokens: u64) -> Option<f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use h2ai_context::embedding::EmbeddingModel;
-
-    // ── StubEmbeddingModel for CG agreement rate tests ──────────────────────
-
-    /// Returns a fixed L2-normalised vector per text cluster.
-    /// Texts starting with 'A' → auth cluster, 'B' → redis cluster.
-    struct StubEmbeddingModel;
-    impl EmbeddingModel for StubEmbeddingModel {
-        fn embed(&self, text: &str) -> Vec<f32> {
-            if text.starts_with('A') {
-                vec![1.0, 0.0]
-            } else {
-                vec![0.0, 1.0]
-            }
-        }
-    }
-
-    #[test]
-    fn cg_embed_paraphrase_agreement_is_high() {
-        // Two adapters producing semantically identical outputs (same cluster) on every prompt
-        // → each prompt passes the agreement threshold → CG ≈ 1.0
-        let outputs_i = vec![
-            "A auth stateless jwt".into(),
-            "A token rotation".into(),
-            "A bearer ADR-001".into(),
-        ];
-        let outputs_j = vec![
-            "A jwt auth bearer".into(),
-            "A stateless token".into(),
-            "A ADR-001 auth".into(),
-        ];
-        let model = StubEmbeddingModel;
-        let cg =
-            CalibrationHarness::adapter_pair_cg(&outputs_i, &outputs_j, Some(&model), 1.0, 0.85);
-        assert!(
-            cg > 0.9,
-            "paraphrase adapters must score CG_embed ≈ 1.0, got {cg:.3}"
-        );
-    }
-
-    #[test]
-    fn cg_embed_divergent_adapters_is_low() {
-        // Two adapters systematically producing outputs in different clusters
-        // → cosine=0 on every prompt → CG = 0
-        let outputs_i = vec!["A auth stateless jwt".into(), "A token rotation".into()];
-        let outputs_j = vec!["B redis cache store".into(), "B key-value expiry".into()];
-        let model = StubEmbeddingModel;
-        let cg =
-            CalibrationHarness::adapter_pair_cg(&outputs_i, &outputs_j, Some(&model), 1.0, 0.85);
-        assert!(
-            cg < 0.2,
-            "divergent adapters must score CG_embed ≈ 0, got {cg:.3}"
-        );
-    }
-
-    #[test]
-    fn cg_embed_no_model_falls_back_to_jaccard() {
-        // Without model, CG is mean per-prompt Jaccard; identical outputs → CG = 1.0
-        let text = "stateless jwt auth token ADR-001";
-        let outputs = vec![text.to_string(); 3];
-        let cg = CalibrationHarness::adapter_pair_cg(&outputs, &outputs, None, 1.0, 0.85);
-        assert!(
-            (cg - 1.0).abs() < 1e-9,
-            "identical outputs with no model must score CG=1.0, got {cg:.6}"
-        );
-    }
-
-    #[test]
-    fn cg_embed_align_scales_result() {
-        // CG_embed × align: with align=0.5, output is half of raw CG
-        let outputs_i = vec!["A auth stateless jwt".into()];
-        let outputs_j = vec!["A jwt auth bearer".into()];
-        let model = StubEmbeddingModel;
-        let cg_full =
-            CalibrationHarness::adapter_pair_cg(&outputs_i, &outputs_j, Some(&model), 1.0, 0.85);
-        let cg_half =
-            CalibrationHarness::adapter_pair_cg(&outputs_i, &outputs_j, Some(&model), 0.5, 0.85);
-        assert!(
-            (cg_half - cg_full * 0.5).abs() < 1e-9,
-            "align=0.5 must halve CG: {cg_half:.3} vs {cg_full:.3}/2"
-        );
-    }
 
     fn usl_throughput(n: f64, alpha: f64, beta: f64) -> f64 {
         n / (1.0 + alpha * (n - 1.0) + beta * n * (n - 1.0))

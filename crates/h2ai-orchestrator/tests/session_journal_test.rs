@@ -7,7 +7,7 @@ use h2ai_types::events::{
     TaskFailedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::{RoleErrorCost, TauValue};
+use h2ai_types::sizing::{RoleErrorCost, TauValue};
 
 fn task_id() -> TaskId {
     TaskId::new()
@@ -33,7 +33,6 @@ fn apply_bootstrapped_sets_pending() {
             task_id: tid.clone(),
             system_context: "ctx".into(),
             pareto_weights: pareto_weights(),
-            j_eff: 1.0,
             timestamp: Utc::now(),
         }),
     );
@@ -236,8 +235,7 @@ async fn replay_reconstructs_resolved_task_state() {
     use h2ai_state::nats::NatsClient;
     use std::sync::Arc;
 
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = Arc::new(match NatsClient::connect(&nats_url).await {
         Ok(c) => c,
         Err(e) => {
@@ -257,7 +255,6 @@ async fn replay_reconstructs_resolved_task_state() {
             task_id: tid.clone(),
             system_context: "ctx".into(),
             pareto_weights: pareto_weights(),
-            j_eff: 1.0,
             timestamp: Utc::now(),
         }),
     )
@@ -299,8 +296,7 @@ async fn snapshot_written_and_recovered_via_replay() {
     use h2ai_state::nats::NatsClient;
     use std::sync::Arc;
 
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = Arc::new(match NatsClient::connect(&nats_url).await {
         Ok(c) => c,
         Err(e) => {
@@ -322,7 +318,6 @@ async fn snapshot_written_and_recovered_via_replay() {
                 task_id: tid.clone(),
                 system_context: "ctx".into(),
                 pareto_weights: pareto_weights(),
-                j_eff: 1.0,
                 timestamp: Utc::now(),
             }),
         )

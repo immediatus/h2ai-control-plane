@@ -266,6 +266,35 @@ impl NatsClient {
         }
     }
 
+    /// Persist raw JSON bytes to the `H2AI_ESTIMATOR` bucket under key `bandit_state`.
+    /// Callers are responsible for serialization (avoids a circular crate dependency).
+    pub async fn put_bandit_state(&self, json_bytes: Vec<u8>) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ESTIMATOR")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put("bandit_state", json_bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve raw JSON bytes for `BanditState` from the `H2AI_ESTIMATOR` bucket.
+    /// Returns `None` when no entry exists (first run). Callers deserialize the bytes.
+    pub async fn get_bandit_state(&self) -> Result<Option<Vec<u8>>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ESTIMATOR")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get("bandit_state").await {
+            Ok(Some(entry)) => Ok(Some(entry.to_vec())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
     /// Open an ordered pull consumer on `h2ai.tasks.{task_id}` and return a stream of events.
     ///
     /// `from_seq = 0` delivers from the beginning; non-zero starts after that sequence.
@@ -343,12 +372,14 @@ impl NatsClient {
     ) -> Result<h2ai_types::agent::TaskResult, NatsError> {
         use futures::StreamExt;
         use h2ai_nats::subjects::task_result_subject;
-        use jetstream::consumer::DeliverPolicy;
+        use jetstream::consumer::{AckPolicy, DeliverPolicy};
 
         let subject = task_result_subject(task_id);
-        let consumer_cfg = jetstream::consumer::pull::OrderedConfig {
+        // WorkQueue retention requires AckPolicy::Explicit — OrderedConfig defaults to None.
+        let consumer_cfg = jetstream::consumer::pull::Config {
             filter_subject: subject,
             deliver_policy: DeliverPolicy::All,
+            ack_policy: AckPolicy::Explicit,
             ..Default::default()
         };
         let js_stream = self
@@ -414,14 +445,13 @@ mod wire_protocol_tests {
     use super::*;
     use h2ai_types::agent::{AgentDescriptor, ContextPayload, TaskPayload, TaskResult};
     use h2ai_types::identity::{AgentId, TaskId};
-    use h2ai_types::physics::TauValue;
+    use h2ai_types::sizing::TauValue;
     use std::time::Duration;
 
     #[tokio::test]
     #[ignore]
     async fn publish_and_receive_task_payload() {
-        let nats_url = std::env::var("NATS_URL")
-            .unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+        let nats_url = h2ai_config::H2AIConfig::default().nats_url;
         let nats = match NatsClient::connect(&nats_url).await {
             Ok(c) => c,
             Err(e) => {
@@ -466,8 +496,7 @@ mod wire_protocol_tests {
     #[tokio::test]
     #[ignore]
     async fn await_task_result_round_trip() {
-        let nats_url = std::env::var("NATS_URL")
-            .unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+        let nats_url = h2ai_config::H2AIConfig::default().nats_url;
         let nats = match NatsClient::connect(&nats_url).await {
             Ok(c) => c,
             Err(e) => {

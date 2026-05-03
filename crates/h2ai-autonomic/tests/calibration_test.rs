@@ -1,7 +1,6 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{beta_from_merge_spans, CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::identity::TaskId;
 
 fn mock_adapter() -> MockAdapter {
@@ -21,7 +20,7 @@ async fn calibration_produces_valid_coefficients() {
         ],
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     assert!(event.coefficients.alpha >= 0.0 && event.coefficients.alpha < 1.0);
@@ -39,15 +38,15 @@ async fn calibration_single_adapter_uses_default_cg() {
         task_prompts: vec!["Single prompt".into()],
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     assert_eq!(event.coefficients.cg_samples, vec![0.7]);
 }
 
 #[tokio::test]
-async fn calibration_two_identical_adapters_produces_cg_one() {
-    // Both adapters return identical output → Jaccard = 1.0 → CG = 1.0.
+async fn calibration_two_adapters_empty_corpus_uses_fallback_cg() {
+    // Two adapters with empty corpus → single pair → fallback CG = cfg.calibration_cg_fallback
     let a = mock_adapter();
     let b = mock_adapter(); // same output
     let cfg = H2AIConfig::default();
@@ -59,22 +58,22 @@ async fn calibration_two_identical_adapters_produces_cg_one() {
             &b as &dyn h2ai_types::adapter::IComputeAdapter,
         ],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     let event = CalibrationHarness::run(input).await.unwrap();
-    // Two adapters with identical outputs → single pair → Jaccard = 1.0
+    // Two adapters with empty corpus → single pair → fallback CG = cfg.calibration_cg_fallback
     assert_eq!(event.coefficients.cg_samples.len(), 1);
+    let expected_fallback = cfg.calibration_cg_fallback; // default: 0.7
     assert!(
-        (event.coefficients.cg_samples[0] - 1.0).abs() < 1e-9,
-        "identical adapters must produce CG=1.0, got: {}",
+        (event.coefficients.cg_samples[0] - expected_fallback).abs() < 1e-9,
+        "empty-corpus calibration must fall back to cg_fallback={expected_fallback}, got: {}",
         event.coefficients.cg_samples[0]
     );
 }
 
 #[tokio::test]
 async fn calibration_empty_task_prompts_with_two_adapters_produces_cg_zero() {
-    // No prompts → outputs are empty strings for all adapters →
-    // tokenize("") = {} for both → jaccard({}, {}) = 0.0.
+    // No prompts → outputs_i.is_empty() → triggers fallback path.
     let a = mock_adapter();
     let b = mock_adapter();
     let cfg = H2AIConfig::default();
@@ -86,9 +85,9 @@ async fn calibration_empty_task_prompts_with_two_adapters_produces_cg_zero() {
             &b as &dyn h2ai_types::adapter::IComputeAdapter,
         ],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
-    // Should not panic — produces CG=0.0 from empty token sets.
+    // Should not panic — produces CG from fallback path.
     let event = CalibrationHarness::run(input).await.unwrap();
     assert_eq!(event.coefficients.cg_samples.len(), 1);
     assert!(
@@ -106,7 +105,7 @@ async fn calibration_zero_adapters_returns_no_adapters_error() {
         task_prompts: vec!["any prompt".into()],
         adapters: vec![],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     let result = CalibrationHarness::run(input).await;
     assert!(
@@ -129,7 +128,7 @@ async fn calibration_two_adapters_populates_ensemble() {
             &a2 as &dyn h2ai_types::adapter::IComputeAdapter,
         ],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     let ec = event
@@ -227,7 +226,7 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
             &a3 as &dyn h2ai_types::adapter::IComputeAdapter,
         ],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     let event = CalibrationHarness::run(input).await.unwrap();
 
@@ -245,21 +244,8 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
     );
 }
 
-struct IdentityEmbeddingModel;
-impl EmbeddingModel for IdentityEmbeddingModel {
-    fn embed(&self, text: &str) -> Vec<f32> {
-        // Cluster by content, not position: both "stateless" and "session-less"
-        // belong to the same auth-synonyms cluster → cosine similarity = 1.0.
-        if text.contains("stateless") || text.contains("session-less") {
-            vec![1.0, 0.0]
-        } else {
-            vec![0.0, 1.0]
-        }
-    }
-}
-
 #[tokio::test]
-async fn calibration_accepts_embedding_model_none() {
+async fn calibration_accepts_empty_corpus() {
     let a = mock_adapter();
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
@@ -267,45 +253,59 @@ async fn calibration_accepts_embedding_model_none() {
         task_prompts: vec!["Prompt".into()],
         adapters: vec![&a as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     };
     assert!(CalibrationHarness::run(input).await.is_ok());
 }
 
 #[tokio::test]
-async fn calibration_with_semantic_model_gives_higher_cg_for_synonyms() {
-    let a = MockAdapter::new("stateless authentication approach".into());
-    let b = MockAdapter::new("session-less auth method".into());
+async fn calibration_non_empty_corpus_computes_hamming() {
+    // Adapter A always returns "jwt auth" → VocabularyPresence("jwt") → true (score=1.0 >= 0.5)
+    // Adapter B always returns "session cookie" → VocabularyPresence("jwt") → false (score=0.0 < 0.5)
+    // One Hard constraint → Hamming distance = 1.0 → CG = 1.0 * align
+    use h2ai_constraints::types::{
+        ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
+    };
+    let corpus = vec![ConstraintDoc {
+        id: "auth-jwt".into(),
+        source_file: "test".into(),
+        description: "must use jwt".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::VocabularyPresence {
+            mode: VocabularyMode::AnyOf,
+            terms: vec!["jwt".into()],
+        },
+        remediation_hint: None,
+    }];
+    let a = MockAdapter::new("jwt authentication token".into());
+    let b = MockAdapter::new("session cookie storage".into());
     let cfg = H2AIConfig::default();
-    let model = IdentityEmbeddingModel;
-
-    let input_sem = CalibrationInput {
+    let input = CalibrationInput {
         calibration_id: TaskId::new(),
-        task_prompts: vec!["auth".into()],
+        task_prompts: vec!["auth strategy".into()],
         adapters: vec![
             &a as &dyn h2ai_types::adapter::IComputeAdapter,
             &b as &dyn h2ai_types::adapter::IComputeAdapter,
         ],
         cfg: &cfg,
-        embedding_model: Some(&model as &dyn EmbeddingModel),
+        constraint_corpus: &corpus,
     };
-    let input_tok = CalibrationInput {
-        calibration_id: TaskId::new(),
-        task_prompts: vec!["auth".into()],
-        adapters: vec![
-            &a as &dyn h2ai_types::adapter::IComputeAdapter,
-            &b as &dyn h2ai_types::adapter::IComputeAdapter,
-        ],
-        cfg: &cfg,
-        embedding_model: None,
-    };
-
-    let sem_event = CalibrationHarness::run(input_sem).await.unwrap();
-    let tok_event = CalibrationHarness::run(input_tok).await.unwrap();
-    let sem_cg = sem_event.coefficients.cg_mean();
-    let tok_cg = tok_event.coefficients.cg_mean();
+    let event = CalibrationHarness::run(input).await.unwrap();
+    assert_eq!(event.coefficients.cg_samples.len(), 1);
+    // Opposite fingerprints → Hamming = 1.0 → CG ≈ 1.0 (tau_alignment at equal taus = 1.0)
     assert!(
-        sem_cg >= tok_cg,
-        "semantic CG ({sem_cg:.3}) must be >= token Jaccard CG ({tok_cg:.3}) for synonymous outputs"
+        (event.coefficients.cg_samples[0] - 1.0).abs() < 1e-9,
+        "opposite constraint profiles must produce CG=1.0, got: {}",
+        event.coefficients.cg_samples[0]
     );
+}
+
+#[tokio::test]
+async fn cg_mode_is_constraint_profile() {
+    use h2ai_types::events::CgMode;
+    let mode = CgMode::default();
+    assert!(matches!(mode, CgMode::ConstraintProfile));
+    let json = serde_json::to_string(&mode).unwrap();
+    let back: CgMode = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, CgMode::ConstraintProfile));
 }

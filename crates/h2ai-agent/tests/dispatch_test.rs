@@ -2,7 +2,7 @@ use futures::StreamExt;
 use h2ai_agent::dispatch::DispatchLoop;
 use h2ai_types::agent::{AgentDescriptor, ContextPayload, CostTier, TaskPayload};
 use h2ai_types::identity::{AgentId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,8 +10,7 @@ use std::time::Duration;
 #[tokio::test]
 #[ignore]
 async fn dispatch_executes_addressed_task_and_publishes_result() {
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match h2ai_state::NatsClient::connect(&nats_url).await {
         Ok(c) => Arc::new(c),
         Err(e) => {
@@ -37,8 +36,9 @@ async fn dispatch_executes_addressed_task_and_publishes_result() {
     let js = async_nats::jetstream::new(nats.client.clone());
     let stream = js.get_stream("H2AI_RESULTS").await.unwrap();
     let consumer = stream
-        .create_consumer(async_nats::jetstream::consumer::pull::OrderedConfig {
+        .create_consumer(async_nats::jetstream::consumer::pull::Config {
             filter_subject: result_subject.clone(),
+            ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
             ..Default::default()
         })
         .await

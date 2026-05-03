@@ -4,7 +4,7 @@ use rand_distr::{Beta, Distribution};
 use std::collections::BTreeMap;
 
 /// Per-arm Beta distribution state for Thompson Sampling.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BanditArm {
     /// Beta distribution α (successes + prior).
     pub alpha: f64,
@@ -33,7 +33,7 @@ impl BanditArm {
 /// - Phase 0 (k_tasks < cfg.bandit_phase0_k): return max arm (N_max_USL); no update.
 /// - Phase 1 (phase0_k ≤ k_tasks < phase1_k): ε-greedy TS.
 /// - Phase 2 (k_tasks ≥ phase1_k): pure Thompson Sampling.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BanditState {
     pub arms: BTreeMap<u32, BanditArm>,
     /// Total tasks completed (includes Phase 0 observations that weren't used for updates).
@@ -396,5 +396,32 @@ mod tests {
                 "no-op hint must not change beta for N={n}"
             );
         }
+    }
+
+    #[test]
+    fn bandit_state_serde_roundtrip() {
+        let state = BanditState::new(4, 42);
+        let json = serde_json::to_string(&state).expect("serialize");
+        let restored: BanditState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(state.k_tasks, restored.k_tasks);
+        assert_eq!(state.adapter_version_hash, restored.adapter_version_hash);
+        assert_eq!(state.arms.len(), restored.arms.len());
+    }
+
+    #[test]
+    fn bandit_update_after_task_raises_k_tasks() {
+        let mut state = BanditState::new(4, 0);
+        assert_eq!(state.k_tasks, 0);
+        state.update(3, None, Some(0.85));
+        assert_eq!(state.k_tasks, 1);
+        let alpha_arm2_before = state.arms[&2].alpha;
+        for _ in 0..200 {
+            state.update(3, Some(true), None);
+        }
+        state.apply_optimizer_hint(3, 2);
+        assert!(
+            state.arms[&2].alpha > alpha_arm2_before,
+            "optimizer hint must nudge arm 2 alpha when arm 3 is near-optimal"
+        );
     }
 }

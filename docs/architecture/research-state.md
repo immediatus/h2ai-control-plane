@@ -3,7 +3,7 @@
 **Last revised:** 2026-05-01  
 **Status:** Authoritative single source of truth for project theory, implementation state, gap analysis, and critical assessment.
 
-This document supersedes and consolidates all prior gap analysis, critical review, and implementation planning documents. `math-apparatus.md` remains as a technical formula quick-reference.
+This document is the authoritative critical assessment of project theory and implementation state. See also: `math.md` (mathematical formulas), `reference.md` (API and configuration), `operations.md` (deployment and operations).
 
 ---
 
@@ -33,7 +33,7 @@ The system's differentiating claim: **Harness Attribution** — every successful
 | Phase | What happens | Key formula |
 |---|---|---|
 | 0. Calibration | Measure α, β₀, CG_mean from M≥3 adapters | USL two-point linearization |
-| 1. Bootstrap | Dark Knowledge Compiler computes J_eff; gate at 0.4 | J_eff = j_positive × (1 − contamination) |
+| 1. Bootstrap | Dark Knowledge Compiler compiles `system_context`; proceeds unconditionally | Constraint fingerprints: `fp[k] = Hard constraint k passes` |
 | 2. Topology | Pareto-frontier selection across 3 topology candidates bounded by N_max | N_max = √((1−α)/β_eff) |
 | 3. Multiplication gate | Competence ∧ decorrelation ∧ CG ≥ θ; failure → MAPE-K retry | EigenCalibration N_eff ≥ 2 |
 | 4. Parallel TAO loop | ≤3 turns, `c_i × 0.6^(t-1)` error decay | Temporal error discount |
@@ -49,9 +49,9 @@ The system's differentiating claim: **Harness Attribution** — every successful
 
 ### 3.1 The Overclaim to Fix First
 
-The codebase names its core module `physics.rs`. This is a framing error that will invite dismissal from anyone with a physics background. USL, CJT, and Krum are **phenomenological heuristics and engineering tools**, not physical laws. They are useful precisely because they are pragmatic — but calling them physics suggests first-principles derivation that does not exist.
+The codebase names its core module `sizing.rs`. This is a framing error that will invite dismissal from anyone with a physics background. USL, CJT, and Krum are **phenomenological heuristics and engineering tools**, not physical laws. They are useful precisely because they are pragmatic — but calling them physics suggests first-principles derivation that does not exist.
 
-**Action required:** Rename `physics.rs` to `sizing.rs` and audit all documentation for "physical law" language. The math is valuable. The overclaim is not.
+**Done:** `physics.rs` renamed to `sizing.rs`; doc language updated throughout to "phenomenological heuristics and engineering tools."
 
 ### 3.2 Universal Scalability Law
 
@@ -62,7 +62,7 @@ N_max = round(√((1−α) / β_eff))
 β_eff = β₀ × (1 − CG_mean)
 ```
 
-**Implemented in:** `crates/h2ai-types/src/physics.rs` — `CoherencyCoefficients::n_max()`, `beta_eff()`
+**Implemented in:** `crates/h2ai-types/src/sizing.rs` — `CoherencyCoefficients::n_max()`, `beta_eff()`
 
 **β_eff formula:** `β₀ × (1 − CG_mean)`. At CG=1 (full agreement): β_eff ≈ 0 — coordination-free. At CG=0: β_eff = β₀ — maximum coordination overhead. Bounded everywhere. The alternative `β₀/CG_mean` was rejected because it diverges as CG→0, making N_max undefined in low-CG calibration runs.
 
@@ -86,15 +86,16 @@ Fallback to config defaults when M < 3 or degenerate.
 - There is no published paper applying USL to LLM agents. The calibration produces curve-fitting parameters, not measured physical constants.
 - **Critical:** β₀ is currently measured from wall-clock timing of parallel adapter API calls — a proxy for true semantic reconciliation cost. Complex reasoning tasks (agents diverge more) have higher true β₀ than timing suggests. Template tasks have lower. This bias is known and partially mitigated by the CG coupling, but not eliminated.
 
-**Three-tier calibration table** (blog values, proportional formula):
+**Two-tier calibration table** (β_eff = β₀ × (1 − CG_embed)):
 
 | Tier | α | β₀ | CG_embed | β_eff | N_max |
 |---|---|---|---|---|---|
-| AI agents | 0.15 | 0.039 | 0.40 | 0.0975 | ~6 |
-| Human teams | 0.10 | 0.0225 | 0.60 | 0.0375 | ~10 |
-| CPU cores | 0.02 | 0.0003 | 1.00 | 0.0003 | ~57 |
+| AI agents | 0.15 | 0.039 | 0.40 | 0.0234 | ~6 |
+| Human teams | 0.10 | 0.0225 | 0.60 | 0.009 | ~10 |
 
-**Validated by:** `scripts/validate_beta_coupling.py` (formula behavior), `scripts/simulate_usl.py` (curve shapes), `scripts/validate_math.py` (cross-reference check — **currently stale, requires update after β_eff fix propagates to all scripts**).
+CPU cores omitted: at CG=1.0 the new formula gives β_eff≈0 → N_max→∞, which is meaningless for the LLM domain.
+
+**See:** `scripts/simulate.py` — USL curve shapes and β_eff coupling visualization.
 
 ---
 
@@ -108,11 +109,12 @@ where θ_agree = 0.85
 ```
 This is the agreement rate between adapter i and j on a calibration set — semantically robust, paraphrase-insensitive, matches the blog specification exactly.
 
-**Current fallback (token Jaccard — active in production):**
+**Current implementation (constraint-profile Hamming — active in production):**
 ```
-CG(i, j) = jaccard(K_i, K_j) × exp(−3 × |τ_i − τ_j|)
+fp[k] = Hard constraint k passes against output_i   (Vec<bool>, one entry per constraint)
+CG(i, j) = hamming_distance(fp_i, fp_j) × tau_alignment(τ_i, τ_j)
 ```
-This measures vocabulary overlap, not semantic agreement. Two adapters producing identical-meaning outputs with different word choices score low (false negative). Two adapters producing similar-sounding wrong answers score high (false positive). **This is the most impactful active deficiency in the math stack.** Every downstream N_max, N_eff, and quality prediction inherits this noise.
+This measures how differently two adapters satisfy the constraint corpus — a domain-grounded diversity signal rather than vocabulary overlap. The signal quality is bounded by corpus quality: a sparse or homogeneous constraint corpus produces nearly-identical fingerprints and CG near zero even when adapters diverge semantically.
 
 **CG_mean / CG_embed** = mean of all pairwise CG values across calibration adapters.
 
@@ -156,7 +158,7 @@ rho_mean = 1 − CG_mean          ∈ [0, 1]
 **What CJT is NOT used for in H2AI:**
 - Topology provisioning ceiling — that is USL N_max × EigenCalibration N_eff (correct separation)
 
-**Validated by:** `scripts/validate_ensemble_theory.py` (Monte Carlo, Δ < 2%), `scripts/validate_conformal_vs_cjt.py` (over-prediction at high ρ).
+**See:** `scripts/simulate.py` — Monte Carlo CJT verification and conformal vs CJT over-prediction at high ρ.
 
 ---
 
@@ -174,17 +176,17 @@ H_norm    = (−Σ(λᵢ/Σλ)log(λᵢ/Σλ)) / log(N)
 ρ_eff     = 1 − N_eff/N
 ```
 
-**Implemented in:** `crates/h2ai-types/src/physics.rs` — `EigenCalibration::from_cg_matrix()`
+**Implemented in:** `crates/h2ai-types/src/sizing.rs` — `EigenCalibration::from_cg_matrix()`
 
 **Wired to planner:** `n_max = n_max_usl.min(eigen.n_pruned)` — the eigenvalue ceiling is active.
 
 **Why this is the strongest contribution:** Unlike USL and CJT, the participation ratio requires no contested domain transfer. It directly measures how many independent perspectives the adapter pool contains. Scalar ρ_mean overstates N_eff by 55% on heterogeneous pools (2 independent + 3 clustered → N_eff=2.5, scalar gives 3.9). The pruning rule (add adapter N+1 only if N_eff increases by ≥ 0.05) is a principled stopping criterion with no hidden assumptions.
 
-**Current limitation:** N_eff is computed from token Jaccard CG (vocabulary overlap), not embedding cosine agreement rate. Improves to semantic N_eff after Gap E1 (EmbeddingModel).
+**Current limitation:** N_eff is computed from constraint-profile Hamming CG (constraint satisfaction divergence), which is domain-grounded but bounded by corpus quality. Improves to semantic N_eff after Gap E1 (EmbeddingModel) enables embedding cosine agreement rate.
 
 **Stopping rule threshold `Δ<0.05` is hardcoded.** Should be config-tunable for operator adjustment.
 
-**Validated by:** `scripts/validate_eigenvalue_calibration.py` (N_eff formula, stopping rule, comparison to scalar).
+**See:** `scripts/simulate.py` — N_eff formula verification, stopping rule, comparison to scalar ρ estimate.
 
 ---
 
@@ -215,22 +217,26 @@ insert_scored(proposal):
 ```
 Satisfies CRDT axioms (commutativity, associativity, idempotency). Generation-first LUB handles TAO retry correctly (later generation with lower score supersedes earlier generation with higher score). Architecturally correct. **Important limitation:** strong eventual consistency ≠ semantic correctness. The CRDT ensures all replicas converge to the same proposal set; it says nothing about whether those proposals are good. CRDT is a bookkeeping mechanism, not a quality filter (CodeCRDT, arxiv 2510.18893).
 
-**Validated by:** `scripts/validate_bft_methods.py` (Token Krum fails; Weiszfeld breakdown point), semilattice unit tests.
+**See:** `scripts/simulate.py` (Weiszfeld breakdown point visualization); semilattice unit tests in `crates/h2ai-state/tests/`.
 
 ---
 
-### 3.7 J_eff Context Adequacy Gate
+### 3.7 Constraint Fingerprint and Diversity Gate
 
+**Phase 1 — Unconditional compilation:**  
+`POST /tasks` compiles `system_context` from the constraint corpus and task manifest and proceeds unconditionally. There is no pre-generation adequacy gate; tasks are always accepted (or return `503 CalibrationRequiredError` if calibration has never run).
+
+**Constraint satisfaction fingerprint:**
 ```
-j_positive    = semantic_jaccard(task_manifest, required_keywords, adapter)
-contamination = |prohibited_terms ∩ tokenize(task_manifest)| / max(1, |tokenize(task_manifest)|)
-J_eff         = j_positive × (1 − contamination)
-Gate:         J_eff < 0.4 → ContextUnderflowError
+fp_i[k] = Hard constraint k passes against output_i    (Vec<bool>, one entry per constraint)
 ```
+Used in two places:
+1. **Calibration CG** — `CG(i, j) = hamming_distance(fp_i, fp_j) × tau_alignment(τ_i, τ_j)`
+2. **Phase 2.5 diversity gate** — mean pairwise Hamming distance across surviving proposals must exceed `diversity_threshold` (default 0.0; recommended production value 0.15)
 
-**Current issue — Gap E3:** `semantic_jaccard` dispatches an LLM call at near-zero temperature (`SIMILARITY_TAU = 0.05`) to score similarity. This creates: (a) added latency, (b) circular dependency (judge = same pool as defendants), (c) pollution of T_merge measurement for online β₀. Fix: replace with embedding cosine after Gap E1.
+**Auditor is the generation gate.** Proposals that violate Hard constraints are rejected via `BranchPrunedEvent` before reaching the Merge Authority. The constraint corpus quality determines gate selectivity — a sparse corpus passes everything; a rich corpus enforces the team's architectural rules.
 
-**Fallback:** When adapter is `None`, falls back to token Jaccard immediately. False negatives on domain synonyms ("payment throttling" vs "budget pacing" → ~0.2 token Jaccard, ~0.8 semantic).
+**What replaced the J_eff gate:** The old `semantic_jaccard` LLM-call-based adequacy gate (`J_eff < 0.4 → ContextUnderflowError`) was removed. The gate created a circular dependency (judge = same pool as defendants), added latency, and polluted `T_merge` measurement. The Auditor's Hard-constraint rejection mechanism provides a structurally cleaner gate at the proposal level rather than at the submission level.
 
 ---
 
@@ -272,8 +278,8 @@ Calibrated iff χ² < 3.84
 ```
 Phase 0 (K=0):    N=3, τ_spread=1.5×steady_state, no adaptive mechanisms
 Phase 1 (K≥5):    β₀_ema activates (blend starts)
-Phase 2 (K≥10):   Bandit over N activates with USL-warm prior [NOT IMPLEMENTED]
-Phase 3 (K≥50):   Conformal buffer activates (Tier 1/2 tasks only) [NOT IMPLEMENTED]
+Phase 2 (K≥10):   Bandit over N activates with USL-warm prior (Thompson Sampling, implemented in `bandit.rs`)
+Phase 3 (K≥50):   Conformal buffer activates (Tier 1/2 tasks only) [NOT IMPLEMENTED — deferred]
 Phase 4 (K≥20×C(|adapters|,2)): CG_history pair weighting activates
 ```
 
@@ -302,8 +308,8 @@ These block the entire quality improvement chain. They are sequentially dependen
 **Gap E2 — semantic_jaccard uses LLM calls (circular dependency)** ✅ **DONE (S1)**  
 `semantic_jaccard` replaced with embedding cosine `dot_product(model.embed(a), model.embed(b))`. Circular dependency eliminated; T_merge measurement clean.
 
-**Gap E3 — CG measurement uses token Jaccard, not embedding cosine agreement rate** ✅ **DONE (S1)**  
-CG now measures `fraction of calibration prompts where cosine(embed_i, embed_j) > 0.85`. Downstream N_max, N_eff, p_mean, rho_mean all receive the improved semantic signal.
+**Gap E3 — CG measurement uses token Jaccard, not a domain-grounded signal** ✅ **DONE (constraint-profile Hamming)**  
+CG now uses `CgMode::ConstraintProfile`: `fp[k] = Hard constraint k passes against output_i`; `CG(i, j) = hamming_distance(fp_i, fp_j)`. This is a domain-grounded diversity signal (constraint satisfaction divergence) rather than vocabulary overlap. Downstream N_max, N_eff, and diversity gate all use the improved signal. Embedding cosine agreement rate (the originally planned approach) remains a future improvement for when EmbeddingModel is wired.
 
 **Gap E4 — Weiszfeld path disabled in engine.rs** ✅ **DONE (S1)**  
 Both `MergeEngine::resolve` call sites now pass `state.embedding_model.as_deref()`. Weiszfeld activates when `cluster_coherent()` precondition holds.
@@ -355,14 +361,15 @@ Talagrand diagnostic now feeds back to the autonomic loop: `UnderDispersed` → 
 
 ### 4.6 Open Gaps — Documentation and Framing
 
-**Gap D1 — `physics.rs` name and "physics" language throughout docs**  
-USL, CJT, and Krum are engineering heuristics. Calling the module `physics.rs` and using "physical law" language invites dismissal from domain reviewers. This is a framing error, not an implementation error, but it materially affects how the project is perceived.
+**Gap D1 — `sizing.rs` name and "physics" language throughout docs** ✅ **DONE**  
+`physics.rs` renamed to `sizing.rs`; all import sites updated (`crate::physics`, `h2ai_types::physics`, `super::physics`). Module-level doc comment updated to remove "physical law" framing. `RoleErrorCost` doc updated to reference config field names instead of "BFT and Krum thresholds".
 
-**Gap D2 — MergeStrategy::Krum should be renamed OutlierResistant**  
-Krum's actual function is outlier-resistant selection. The BFT framing implies adversarial fault tolerance that does not hold for stochastic LLM errors. No algorithm change; name and comments only.
+**Gap D2 — MergeStrategy::Krum should be renamed OutlierResistant** ✅ **DONE**  
+`MergeStrategy::OutlierResistant` (and `MultiOutlierResistant`) replace the prior `Krum` variant.
+Doc comments in `merger.rs` updated to use "outlier-resistance quorum" and "outlier-resistant selection".
 
-**Gap D3 — validate_beta_coupling.py and validate_math.py are stale**  
-These scripts still reference the old `β₀×(1−CG)` formula. After the β_eff fix, they should be updated: add new formula curve, verify CG=1.0 → β=β₀ (was failing with old formula), update N_max table.
+**Gap D3 — validate_beta_coupling.py and validate_math.py are stale** ✅ **DONE**  
+Both scripts updated to `β_eff = β₀×(1−CG)`. `validate_beta_coupling.py` rewritten with 5 invariant checks and updated tier table. `validate_math.py` updated `kappa_eff()`, dropped CPU cores row (wrong domain), fixed assertion direction for the new formula, replaced stale algebraic-equivalence check with monotonicity check.
 
 **Gap D4 — No adapter cost accounting**  
 `c_i` cost weights are operator-supplied and never updated from actual token spend. Cost efficiency claims in Pareto topology selection depend on accurate costs.
@@ -381,9 +388,9 @@ The most significant structural problem: USL, CJT, Krum, and CRDT semantics all 
 - **Krum Byzantine assumption:** arxiv 2512.20184 — "Traditional consensus is designed for deterministic state machines and is incompatible with stochastic multi-agent reasoning."
 - **USL coherency assumption:** arxiv 2602.03794 — homogeneous agents saturate fast due to correlated outputs; USL's single-N parameter cannot distinguish homogeneous from heterogeneous pools.
 
-H2AI's correlation correction to CJT and the `cluster_coherent()` precondition for Krum are the correct engineering responses. But the assumptions stack: each formula inherits the error of the CG proxy, and the CG proxy inherits the error of token Jaccard. When the base signal is noisy, compounding four formulas over it does not increase precision.
+H2AI's correlation correction to CJT and the `cluster_coherent()` precondition for Krum are the correct engineering responses. But the assumptions stack: each formula inherits the error of the CG proxy, and the CG proxy (constraint-profile Hamming) is bounded by corpus quality — a sparse corpus produces near-zero CG regardless of adapter output diversity. When the base signal is noisy, compounding four formulas over it does not increase precision.
 
-**Mitigation path:** Close Gap E3 (embedding CG) to improve the base signal. Run `baseline_eval.py` on a representative task set to measure actual p and ρ directly. Use those measurements to validate or correct the proxy chain.
+**Mitigation path:** Ensure the constraint corpus is rich enough that `CG_mean` captures real adapter divergence. Run `baseline_eval.py` on a representative task set to measure actual p and ρ directly. Use those measurements to validate or correct the proxy chain. Embedding cosine CG (Gap E1) would further improve the base signal.
 
 ### 5.2 β_eff Double-Duty Problem
 
@@ -398,9 +405,32 @@ Both effects point the same direction: high agent agreement → system recommend
 
 ### 5.3 No Empirical Benchmarks
 
-This is the single most important gap for external credibility. The MoA paper (arxiv 2406.04692) achieves 65.1% on AlpacaEval 2.0 vs GPT-4o's 57.5% using simple generative aggregation. "More Agents Is All You Need" (arxiv 2402.05120) shows majority voting scales log-linearly with N. Self-MoA (arxiv 2502.00674) finds N samples from one strong model beats N diverse models by 6.6% on AlpacaEval 2.0.
+**Harness status: complete, never executed.** The MoA paper (arxiv 2406.04692) achieves 65.1% on AlpacaEval 2.0 vs GPT-4o's 57.5% using simple generative aggregation. "More Agents Is All You Need" (arxiv 2402.05120) shows majority voting scales log-linearly with N. Self-MoA (arxiv 2502.00674) finds N samples from one strong model beats N diverse models by 6.6% on AlpacaEval 2.0.
 
-H2AI claims USL-bounded N provides better quality/cost tradeoff than naive scaling. This may be correct. Without benchmark results, it cannot be known. **Running MoA as a baseline on GSM8K, HumanEval, and MT-Bench is the highest-ROI action to validate or refute the project's core thesis.**
+H2AI claims USL-bounded N provides better quality/cost tradeoff than naive scaling. This may be correct. Without benchmark results, it cannot be known. **This is the highest-ROI open action.**
+
+**To run the harness:**
+```bash
+# Prerequisites: Python deps, API key, running H2AI server
+pip install -r scripts/benchmark/requirements.txt
+export OPENAI_API_KEY=sk-...
+# Start the H2AI server on localhost:8080
+
+# Smoke test (5 problems, validates pipeline end-to-end):
+python -m scripts.benchmark.smoke_test --model gpt-4o-mini
+
+# Full GSM8K run (all 5 baselines: B0=single, B1=majority-vote, B2=MoA, B3=self-MoA, H2=H2AI):
+python -m scripts.benchmark.run_gsm8k --baselines b0 b1 b2 b3 h2 --model gpt-4o-mini
+
+# Compare results:
+python -m scripts.benchmark.compare scripts/benchmark/results/gsm8k_*.json
+```
+
+**What to look for:**
+- H2 accuracy vs B2 (MoA): if H2 ≤ B2 at equal cost, the calibration overhead is net-negative
+- H2 cost/accuracy Pareto front vs B1 (majority vote): if H2 buys no quality improvement at lower N, USL bounding is not adding value
+- H2 synthesis_gain distribution: if mean synthesis_gain < 0, synthesis is regressing on this task distribution
+- Self-MoA (B3) vs H2: Li et al. 2025 claims single-model beats diverse ensemble by 6.6% — measure whether this holds for H2AI's task mix
 
 ### 5.4 Harness Attribution Without Confidence Intervals
 
@@ -416,13 +446,17 @@ The Weiszfeld breakdown-point proof (1/2 breakdown) assumes Byzantine faults are
 
 This is not a corner case. Models from the same provider share training data, RLHF feedback, and safety filtering — all of which introduce correlation. The `cluster_coherent()` gate (Krum path → pairwise distance < 0.7; Weiszfeld path → cluster incoherent) does not distinguish honest divergence from shared hallucination. Two agents both stating a false fact identically appear "coherent" to the cluster test.
 
-**Mitigation:** (a) Enforce at least 2 distinct model families for N≥3 (addresses Q1 in Section 10); (b) route the Weiszfeld path through a Synthesizer role with cross-family verification signal; (c) document that BFT guarantees apply only to independent-fault regimes.
+**Structural mitigation implemented (2026-05-03):** `ExplorerSlotConfig` in `TaskManifest.explorers.slot_configs` enforces different CoT reasoning strategies per slot. `ExplorerSlotConfig::diverse_defaults()` provides four maximally decorrelated strategies: `StepByStep`, `DevilsAdvocate`, `FirstPrinciples`, `BackwardChaining`. When `slot_configs` is populated in the manifest, slot `i` receives `slot_configs[i % len]` — distinct role framing and instruction prefix. This makes simultaneous failure structurally less likely even for same-model same-provider deployments by forcing divergent cognitive paths through the problem.
+
+**Remaining mitigations:** (a) Enforce at least 2 distinct model families for N≥3 — `allow_single_family: false` config flag active; (b) document that BFT guarantees apply only to independent-fault regimes; (c) `slot_configs` is opt-in — callers must populate it. The engine default (empty `slot_configs`) preserves prior behavior.
 
 ### 5.7 CRDT LUB Is Selection, Not Synthesis
 
 The `ProposalSet` CRDT merge (generation-first LUB) picks a *winning proposal* and discards the rest. It does not synthesize content from multiple proposals. "CRDT merge" as advertised in the architecture suggests something closer to operational transformation (reconciling divergent edits); the implementation is closer to a Last-Write-Wins register keyed on (explorer_id, generation).
 
 This is **architecturally correct** for what it claims to do: crash-safe idempotency and generation-monotonic ordering. The `Team-Swarm Hybrid` Synthesizer role is the intended semantic merge path. The framing issue is that "CRDT merge" suggests content synthesis. Clarification: CRDT provides convergence guarantees over proposal *selection*, not proposal *content synthesis*.
+
+**Resolved (2026-05-03):** `SynthesisPhase` now runs after verification when ≥2 proposals pass. The two-stage critique-then-write pipeline (MoA aggregation pattern) produces a unified output from all verified proposals. Selection (Krum/Weiszfeld/ConsensusMedian) is now the fallback when synthesis fails re-verification or `synthesis_min_proposals` is not met. `HarnessAttribution.synthesis_gain` measures `Q(synthesis) − max(Q(individual))` per task.
 
 ### 5.8 Infrastructure Limitations
 
@@ -484,7 +518,7 @@ This is **architecturally correct** for what it claims to do: crash-safe idempot
 Listed in decreasing order of mathematical rigor and domain-transfer confidence:
 
 **1. EigenCalibration N_eff from portfolio theory**  
-The participation ratio `(Σλ)²/Σλ²` applied to the adapter similarity matrix directly measures independent perspectives. No contested domain transfer — eigenvalue decomposition is the right tool to answer "how many independent ideas does this adapter pool contain?" Improves from token Jaccard to embedding cosine after E3.
+The participation ratio `(Σλ)²/Σλ²` applied to the adapter similarity matrix directly measures independent perspectives. No contested domain transfer — eigenvalue decomposition is the right tool to answer "how many independent ideas does this adapter pool contain?" Currently uses constraint-profile Hamming CG (corpus-bounded); improves to embedding cosine after Gap E1 (EmbeddingModel).
 
 **2. Generation-first CRDT LUB**  
 Architecturally correct solution to the retry ordering problem. All CRDT axioms satisfied. The generation-first rule is the correct mechanism to prevent older high-scored proposals from suppressing TAO refinements. No contested domain transfer.
@@ -503,307 +537,14 @@ Ebbinghaus decay with 7-day half-life creates automatic re-calibration pressure.
 
 ---
 
-## 8. Implementation Roadmap — Task Specifications
+## 8. Implementation Status Summary
 
-### 8.0 Dependency Map
+All gaps from the original roadmap are resolved. Key remaining open items:
 
-```
-Task 1: EmbeddingModel wiring (E1)
-   └── Task 2: Replace semantic_jaccard LLM calls (E2)
-         └── Task 3: CG → embedding agreement rate (E3)
-               └── Task 5: Online β₀ from token cost (C2)
-                     └── Task 8: Bandit over N (A1)
-   └── Task 6: Wire Weiszfeld in engine.rs (E4)       [2-line fix]
-Task 4: Fix β_eff formula                              [DONE]
-Task 7: Verification tier system (V1)                  [improves Task 8 reward]
-Task 9: Calibration adapter pool (C1)                  [improves Task 3 input]
-Task 10: Talagrand → τ feedback (A3)                   [no prerequisite]
-Task 11: Rename Krum → OutlierResistant (D2)           [no prerequisite]
-Task 12: Update validation scripts (D3)                [after Tasks 3, 5]
-```
-
-**Minimum viable sequence** (blog-correct, mathematically honest):
-`1 → 6 → 2 → 3 → 12 → 11 → D1(rename physics.rs)`
-
-**Full capability sequence** adds: `7 → 9 → 5 → 8 → 10`
-
----
-
-### Task 1 — EmbeddingModel: Wire fastembed-rs to AppState *(Gap E1)*
-
-**Status:** Struct `FastEmbedModel` implemented behind `#[cfg(feature = "fastembed-embed")]`. Gap is wiring to `AppState`, not implementation.  
-**Effort:** Medium | **Unblocks:** Tasks 2, 6
-
-**Files to change:**
-- `crates/h2ai-context/Cargo.toml` — ensure `fastembed = "3"` present under feature flag
-- `crates/h2ai-api/src/state.rs` — add `embedding_model: Option<Arc<dyn EmbeddingModel>>` to `AppState`; initialize from config flag `embedding.enabled`; warmup call at startup to avoid cold-start latency on first task
-- `crates/h2ai-orchestrator/src/engine.rs` — thread `state.embedding_model.as_deref()` into both `MergeEngine::resolve` call sites (currently `embedding_model: None`)
-
-**Implementation notes:**
-- `EmbeddingModel::embed` must return L2-normalized vectors (cosine similarity = dot product)
-- Use `spawn_blocking` for the synchronous `fastembed-rs` inference call inside async context
-- Model cached to `~/.cache/fastembed/` on first call
-
-**Validation:**
-```rust
-fn embedding_model_cosine_paraphrases() {
-    let model = FastEmbedModel::new().unwrap();
-    let a = model.embed("the payment budget is exhausted");
-    let b = model.embed("the spending limit has been reached");
-    let c = model.embed("the weather is sunny today");
-    let sim_ab: f32 = a.iter().zip(&b).map(|(x,y)| x*y).sum();
-    let sim_ac: f32 = a.iter().zip(&c).map(|(x,y)| x*y).sum();
-    assert!(sim_ab > 0.80);
-    assert!(sim_ac < 0.30);
-}
-```
-
----
-
-### Task 2 — Replace semantic_jaccard LLM Calls with Embedding Cosine *(Gap E2)*
-
-**Status:** Not done. Active circular dependency: judge = same pool as defendants.  
-**Effort:** Small | **Prerequisite:** Task 1 | **Unblocks:** Tasks 3, 5
-
-**Files to change:**
-- `crates/h2ai-context/src/similarity.rs` — update `semantic_jaccard` to accept `Option<&dyn EmbeddingModel>`; when present, use `dot_product(model.embed(a), model.embed(b))`; LLM-adapter path retained as explicit fallback only
-- `crates/h2ai-state/src/krum.rs` — update `mean_pairwise_distance` to use EmbeddingModel cosine when model present
-- `crates/h2ai-context/src/compiler.rs` — pass `embedding_model` to `semantic_jaccard` for J_eff scoring (removes LLM call from J_eff gate)
-
-**Validation:**
-- `test_semantic_jaccard_embedding_paraphrase`: paraphrase pair cosine > 0.80
-- `test_semantic_jaccard_embedding_off_topic`: off-topic pair cosine < 0.30
-- `test_jeff_gate_no_llm_call`: `compile()` with no adapter + EmbeddingModel wired completes without dispatching any LLM call
-
----
-
-### Task 3 — CG Measurement: Embedding Cosine Agreement Rate *(Gap E3)*
-
-**Status:** Not done. All downstream quality predictions depend on token Jaccard CG — the noisiest input in the stack.  
-**Effort:** Medium | **Prerequisite:** Task 2 | **Unblocks:** Task 5
-
-**Files to change:**
-- `crates/h2ai-types/src/physics.rs` — update `CG(i,j)` in `EnsembleCalibration::from_calibration_run` to embedding cosine agreement rate; add `agreement_threshold: f32 = 0.85` to `CalibrationConfig`
-- `crates/h2ai-autonomic/src/calibration.rs` — for each calibration prompt, compute pairwise `cosine(embed_i, embed_j)`; set `CG(i,j) = fraction of prompts where cosine > threshold`
-- `crates/h2ai-types/src/physics.rs` — update `EigenCalibration::from_cg_matrix` input (now embedding agreement rates, not Jaccard scores)
-
-**Validation:**
-- `test_cg_embed_paraphrase_agreement`: adapters producing paraphrases of same answer → CG_embed ≈ 1.0
-- `test_cg_embed_divergent_adapters`: systematically different answers → CG_embed ≈ 0.1–0.3
-- `test_eigenvalue_neff_from_embed_cg`: N_eff from embedding CG matrix stable across runs (variance < 0.1)
-
----
-
-### Task 4 — Fix β_eff Formula to Blog Semantics *(Gap P4)*
-
-**Status: DONE.** Formula is `β₀ / max(CG_embed, 0.05)` in current code. `ZeroCoordinationQualityEvent` wired. Collapse guard at CG < 0.10 active. No code changes needed.
-
-**Remaining work (documentation only):**
-- `scripts/validate_beta_coupling.py` — stale, still tests old `β₀×(1−CG)` curve → fix in Task 12
-- `scripts/validate_math.py` — stale Definition 6 → fix in Task 12
-
----
-
-### Task 5 — Online β₀ from Token Cost *(Gap C2)*
-
-**Status:** Not done. β₀ is a one-shot startup timing measurement. Blog specifies β₀ = "tokens consumed by inter-agent communication as fraction of total tokens."  
-**Effort:** Small | **Prerequisite:** Task 2 (clean T_merge after LLM calls removed)
-
-**Files to change:**
-- `crates/h2ai-types/src/events.rs` — add `merge_token_count: u64` to `MergeCompletedEvent`; add `proposal_token_count: u64` to `ProposalEvent`
-- `crates/h2ai-orchestrator/src/engine.rs` — populate new token count fields
-- `crates/h2ai-autonomic/src/calibration.rs` — add `OnlineBeta0Estimator`:
-
-```rust
-struct OnlineBeta0Estimator {
-    ema: f32,
-    k_tasks: u32,
-    timing_prior: f32,
-}
-
-impl OnlineBeta0Estimator {
-    fn update(&mut self, merge_tokens: u64, n_proposals: u32, mean_proposal_tokens: u64) {
-        let pair_count = n_proposals * (n_proposals - 1) / 2;
-        let sample = (merge_tokens as f32 / pair_count as f32) / mean_proposal_tokens as f32;
-        self.ema = 0.95 * self.ema + 0.05 * sample;
-        self.k_tasks += 1;
-    }
-
-    fn beta0_effective(&self) -> f32 {
-        let w = (self.k_tasks as f32 / 30.0).min(1.0);
-        (1.0 - w) * self.timing_prior + w * self.ema
-    }
-}
-```
-
-**Validation:**
-- `test_online_beta0_convergence`: 30 synthetic events with known token costs → `beta0_effective()` within 10% of truth
-- `test_online_beta0_cold_start`: K=0 → `beta0_effective() == timing_prior`
-
----
-
-### Task 6 — Wire EmbeddingModel into MergeEngine / Enable Weiszfeld *(Gap E4)*
-
-**Status:** Weiszfeld is fully implemented in `weiszfeld.rs` and dispatch logic in `merger.rs`. Both `MergeEngine::resolve` call sites in `engine.rs` pass `embedding_model: None`. This is a two-line fix.  
-**Effort:** Tiny | **Prerequisite:** Task 1
-
-**Files to change:**
-- `crates/h2ai-orchestrator/src/engine.rs` — both `merger.resolve()` call sites: replace `embedding_model: None` with `embedding_model: state.embedding_model.as_deref()`
-
-**Validation:**
-- `test_weiszfeld_path_activates`: incoherent cluster + EmbeddingModel wired → `MergeStrategy::Weiszfeld` selected
-- `test_weiszfeld_geometric_median`: 5 proposals (4 clustered, 1 outlier) → Weiszfeld selects from the 4-cluster
-
----
-
-### Task 7 — Verification Tier System *(Gap V1)*
-
-**Status:** Not done. All tasks run as Tier 3 (LLM judge). `TaskManifest` has no `verification_tier` field.  
-**Effort:** Medium | **Prerequisite:** none | **Unblocks:** Task 8 (meaningful reward signal)
-
-**Files to change:**
-- `crates/h2ai-types/src/events.rs` — add `VerificationTier { Tier1, Tier2, Tier3 }` enum; add `verification_tier: VerificationTier` and `test_runner_uri: Option<String>` to `TaskManifest`; add `verification_signal: f32` to `VerificationCompletedEvent`
-- `crates/h2ai-api/src/routes/tasks.rs` — startup validation: Tier 1 requires non-None `test_runner_uri` (reject 400 otherwise); Tier 3: warn if `judge_adapter_family == explorer_adapter_family`
-- `crates/h2ai-orchestrator/src/engine.rs` — route by tier in verification phase:
-  - Tier 1: call `test_runner_uri`, parse Pass/Fail → `verification_signal = 1.0 or 0.0`
-  - Tier 2: `J_eff × constraint_compliance_score`
-  - Tier 3: constitutional judge score (existing path)
-
-**Default:** `VerificationTier::Tier3` when field absent.
-
-**Validation:**
-- `test_tier1_manifest_rejected_without_test_runner`: → 400 Bad Request
-- `test_tier1_verification_oracle`: passing tests → `verification_signal=1.0`, no LLM judge call
-- `test_tier2_verification_no_llm`: → signal from J_eff × compliance, no LLM judge call
-- `test_tier3_default`: no tier field → Tier3 judge path
-
----
-
-### Task 8 — Bandit over N with USL Warm Prior *(Gap A1)*
-
-**Status:** Not done. N selected statically from `n_max_usl.min(n_pruned)`.  
-**Effort:** Medium | **Prerequisites:** Task 4 (DONE), Task 7
-
-**Files to change:**
-- `crates/h2ai-autonomic/src/planner.rs` — add `BanditState`; activate at Phase 2 (K ≥ 10):
-
-```rust
-struct BanditArm { alpha: f32, beta: f32 }
-
-struct BanditState {
-    arms: Vec<(u32, BanditArm)>,
-    k_tasks: u32,
-    adapter_version_hash: u64,
-}
-
-impl BanditState {
-    fn init_warm(n_max_usl: u32, n_cap: u32) -> Self {
-        let arms = (1..=n_cap.min(6)).map(|n| {
-            let phi = (-((n as f32 - n_max_usl as f32).powi(2)) / 2.0).exp();
-            (n, BanditArm {
-                alpha: n_max_usl as f32 * phi + 1.0,
-                beta:  (n_cap - n_max_usl) as f32 * (1.0 - phi) + 1.0,
-            })
-        }).collect();
-        BanditState { arms, k_tasks: 0, adapter_version_hash: 0 }
-    }
-
-    fn select_n(&self) -> u32 {
-        self.arms.iter()
-            .map(|(n, arm)| (*n, sample_beta(arm.alpha, arm.beta)))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .unwrap().0
-    }
-
-    fn update(&mut self, n: u32, verification_signal: f32) {
-        if let Some((_, arm)) = self.arms.iter_mut().find(|(m, _)| *m == n) {
-            arm.alpha += verification_signal;
-            arm.beta  += 1.0 - verification_signal;
-        }
-        self.k_tasks += 1;
-    }
-}
-```
-
-**Validation:**
-- `test_bandit_warm_prior_not_degenerate`: all arm Beta distributions have alpha > 0 and beta > 0
-- `test_bandit_concentrates_near_n_max`: 30 Tier1 reward=1.0 updates for arm N=3 → selected > 60% of samples
-- `test_bandit_resets_on_version_change`: version hash change → reset to warm prior
-
----
-
-### Task 9 — Calibration Adapter Pool Heterogeneity *(Gap C1)*
-
-**Status:** Not done. All M calibration adapters are the same object (same weights).  
-**Effort:** Medium | **Prerequisite:** none | **Improves:** Task 3 CG signal quality
-
-**Files to change:**
-- `crates/h2ai-api/src/state.rs` — add `adapter_pool: Vec<Arc<dyn IComputeAdapter>>`; populated from config at startup
-- `crates/h2ai-api/src/routes/calibrate.rs` — replace single-adapter repetition with pool cycling:
-```rust
-let adapter_refs: Vec<&dyn IComputeAdapter> = state.adapter_pool.iter()
-    .cycle().take(m).map(|a| a.as_ref()).collect();
-```
-- `CalibrationAccepted` response — add `adapter_family_count: usize`
-
-**Validation:**
-- `test_calibration_heterogeneous_pool`: two-family pool → CG_embed reflects between-family agreement
-- `test_calibration_single_adapter_valid`: single-adapter pool → runs without error, response includes `"adapter_family_count": 1`
-
----
-
-### Task 10 — Wire Talagrand Diagnostic to τ Adjustment *(Gap A3)*
-
-**Status:** Not done. `TalagrandDiagnostic` computed in `diagnostics.rs` but not fed to MAPE-K.  
-**Effort:** Small | **Prerequisite:** none
-
-**Files to change:**
-- `crates/h2ai-orchestrator/src/diagnostics.rs` — expose `TalagrandShape { Flat, UShape, LambdaShape }` from χ² result
-- `crates/h2ai-autonomic/src/planner.rs` — consume shape in `provision()`:
-  - `UShape` → increase `tau_spread` by 20%
-  - `LambdaShape` → emit `DiversityWarningEvent`
-  - `Flat` → no action
-
-**Validation:**
-- `test_talagrand_u_shape_increases_tau`: 20 U-shape histograms → next provision has 20% higher `tau_spread`
-- `test_talagrand_lambda_emits_warning`: Λ-shape → `DiversityWarningEvent` in event log
-
----
-
-### Task 11 — Rename MergeStrategy::Krum → OutlierResistant *(Gap D2)*
-
-**Status:** Not done. BFT framing is inapplicable to stochastic LLM errors.  
-**Effort:** Tiny | **Prerequisite:** none | **Algorithm change:** none
-
-**Files to change:**
-- `crates/h2ai-state/src/krum.rs` — rename variant; update comments to "outlier-resistant selection"
-- `crates/h2ai-autonomic/src/merger.rs` — update match arms
-- `crates/h2ai-types/src/events.rs` — update `MergeStrategy` enum
-- `docs/architecture/math-apparatus.md` — update section 6 framing
-
----
-
-### Task 12 — Update Stale Validation Scripts *(Gap D3)*
-
-**Status:** Three scripts validate the old `β₀×(1−CG)` formula.  
-**Effort:** Small | **Prerequisite:** Task 3 (for correct CG semantics)
-
-1. **`scripts/validate_beta_coupling.py`**: remove old curve; add `β₀/max(CG,0.05)`; add collapse floor visualization; verify CG=1.0 → β=β₀, CG=0.4 → β=2.5×β₀
-2. **`scripts/validate_math.py`**: update Definition 6 (β_eff); update N_max table (AI agents: N_max=6 with β₀=0.01, CG=0.4); add `beta_eff(1.0) == beta_base` assertion
-3. **`scripts/simulate_usl.py`**: regenerate all charts; verify AI-agent tier peaks at N=6, not N=12
-
----
-
-### Task 13 — Rename physics.rs → sizing.rs *(Gap D1)*
-
-**Status:** Not done. Overclaims physical law status for phenomenological heuristics.  
-**Effort:** Tiny | **Prerequisite:** none | **Algorithm change:** none
-
-**Files to change:**
-- `crates/h2ai-types/src/physics.rs` → `crates/h2ai-types/src/sizing.rs`
-- All `use h2ai_types::physics::` imports across workspace
-- `crates/h2ai-types/src/lib.rs` — update `pub mod physics` → `pub mod sizing`
-- Documentation references throughout `docs/`
+- **Gap C4** — Eigenvalue stopping rule Δ<0.05 is hardcoded; should be config-tunable.
+- **Gap A2** — SelfOptimizer suggestions discarded on success path; bandit covers N selection but not topology or τ range.
+- **Gap A0** — Conformal prediction buffer (Phase 3, K≥50) deferred until empirical benchmark runs complete.
+- **Empirical benchmarks** — Harness built (`scripts/benchmark/`); runs not yet executed.
 
 ---
 
@@ -823,9 +564,9 @@ let adapter_refs: Vec<&dyn IComputeAdapter> = state.adapter_pool.iter()
 | 10. Talagrand → τ feedback | A3 | — | **DONE (S4)** |
 | 11. Attribution uncertainty (CI) | S5 | — | **DONE (S5)** |
 | 12. β_eff signal separation (ρ correction) | S7 | — | **DONE (S7)** |
-| 13. Rename Krum → OutlierResistant | D2 | — | Open |
-| 14. Update stale validation scripts | D3 | 3 | Open |
-| 15. Rename physics.rs → sizing.rs | D1 | — | Open |
+| 13. Rename Krum → OutlierResistant | D2 | — | **DONE** |
+| 14. Update stale validation scripts | D3 | 3 | **DONE** |
+| 15. Rename physics.rs → sizing.rs | D1 | — | **DONE** |
 
 **Empirical benchmarking (S8):**
 - Benchmark harness built: `scripts/benchmark/` — GSM8K, HumanEval, TruthfulQA runners
@@ -836,17 +577,10 @@ let adapter_refs: Vec<&dyn IComputeAdapter> = state.adapter_pool.iter()
 
 ## 9. Validation Evidence — Script Catalog
 
-| Script | Status | What it validates |
-|---|---|---|
-| `validate_ensemble_theory.py` | Valid | CJT formula matches Monte Carlo (Δ < 2%), J_eff gate, proxy proxies |
-| `validate_conformal_vs_cjt.py` | Valid | CJT over-prediction 5–15pp at ρ≥0.6 |
-| `validate_bft_methods.py` | Valid (synthetic vectors) | Weiszfeld breakdown 50%; Token Krum fails at paraphrase rate |
-| `validate_eigenvalue_calibration.py` | Valid | N_eff formula, stopping rule, scalar ρ over-estimate |
-| `validate_information_theory.py` | Valid | I_marginal decay, N_it_optimal, Slepian-Wolf efficiency |
-| `validate_beta_coupling.py` | **STALE** — old formula | Add `β₀/max(CG,ε)` curve; remove `β₀×(1−CG)` curve; add collapse floor |
-| `validate_math.py` | **STALE** — old formula | Update Definition 6 (β_eff) and N_max table |
-| `simulate_usl.py` | **STALE** — old formula | Regenerate charts; AI-agent tier should peak at N=6, not N=12 |
-| `baseline_eval.py` | Production tool — must be run for high-stakes deployments | Measures real p and ρ from live adapter; output overrides `baseline_accuracy_proxy` |
+| Script | Purpose |
+|---|---|
+| `scripts/simulate.py` | Visualization: USL curves, β_eff vs CG, N_max vs CG, CJT quality curves, N_eff eigenvalue vs scalar ρ, Talagrand rank histogram shapes |
+| `scripts/baseline_eval.py` | Production tool — measures real p and ρ from live adapter; output overrides `baseline_accuracy_proxy` in config |
 
 ---
 
@@ -878,13 +612,13 @@ For Tier 1/2 tasks (oracle or grounded verification signal), conformal predictio
 | p and ρ proxies | Derived from CG; S7 ρ correction for Case B | Partially resolved (S7) | Run baseline_eval.py for direct measurement |
 | Verification | Three-tier: Oracle HTTP, JsonSchema/Length, LLM judge | ✅ Resolved (S6/V1) | — |
 | Attribution | Bootstrap 90% CI + split-conformal PI | ✅ Resolved (S5) | Conformal PI requires oracle signal |
-| Krum framing | BFT label for stochastic case | `cluster_coherent()` precondition | Gap D2 rename pending |
+| Krum framing | BFT label for stochastic case | `cluster_coherent()` precondition | ✅ Gap D2 done — "outlier-resistance" framing throughout |
 | Weiszfeld | Enabled when embedding model present | ✅ Resolved (S1/E4) | — |
 | Bandit over N | Thompson Sampling over N with USL warm prior | ✅ Resolved (S4/A1) | — |
 | Talagrand | Wired to τ spread adjustment + DiversityWarning | ✅ Resolved (S4/A3) | — |
 | Online β₀ | EMA from actual merge token cost | ✅ Resolved (S3/C2) | — |
 | No benchmarks | Harness built (`scripts/benchmark/`); runs not yet executed | Partial (S8) | Run smoke test, then full GSM8K/HumanEval suite |
-| `physics.rs` | Overclaims "physical law" status | — | Gap D1 rename pending |
+| `sizing.rs` | physics.rs overclaimed "physical law" status | ✅ Resolved (D1) | — |
 | Weiszfeld + correlated hallucinations | BFT guarantee void when ≥50% agents share hallucination | Multi-family enforcement recommendation | Require ≥2 distinct model families for N≥3 |
 | NATS message size | Default 1 MB limit; compiled contexts can exceed | Not mitigated | Store payloads in object store; pass hash through NATS |
 | Event replay O(N) | `SessionJournal::replay` from offset 0; slow on long tasks | Not mitigated | Snapshot store (Akka/Temporal pattern) |

@@ -51,9 +51,33 @@
 /// are too lexically diverse for Krum's BFT proof to apply.
 pub const MAX_CLUSTER_DIAMETER: f64 = 0.7;
 
+use h2ai_context::embedding::semantic_jaccard;
 use h2ai_context::embedding::EmbeddingModel;
-use h2ai_context::similarity::semantic_jaccard;
 use h2ai_types::events::ProposalEvent;
+use std::collections::HashSet;
+
+// When no embedding model is available, fall back to token-Jaccard distance.
+// Token Jaccard is a valid metric (satisfies triangle inequality) required for
+// the Blanchard et al. 2017 Krum BFT proof. Exact equality is NOT a metric and
+// collapses all distinct proposals to the same distance, defeating Krum.
+fn tokenize(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .filter(|t| t.len() > 1)
+        .collect()
+}
+
+fn token_jaccard(a: &str, b: &str) -> f64 {
+    let ta = tokenize(a);
+    let tb = tokenize(b);
+    if ta.is_empty() && tb.is_empty() {
+        return 0.0;
+    }
+    let intersection = ta.intersection(&tb).count() as f64;
+    let union = ta.union(&tb).count() as f64;
+    intersection / union
+}
 
 // ── Public helpers ───────────────────────────────────────────────────────────
 
@@ -93,7 +117,10 @@ pub async fn mean_pairwise_distance(
         .collect();
     let similarities: Vec<f64> = pairs
         .iter()
-        .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], embedding_model))
+        .map(|&(i, j)| match embedding_model {
+            Some(m) => semantic_jaccard(outputs[i], outputs[j], Some(m)),
+            None => token_jaccard(outputs[i], outputs[j]),
+        })
         .collect();
     let total: f64 = similarities.iter().map(|s| 1.0 - s).sum();
     total / similarities.len() as f64
@@ -165,7 +192,10 @@ async fn semantic_distance_matrix(
         .collect();
     let similarities: Vec<f64> = pairs
         .iter()
-        .map(|&(i, j)| semantic_jaccard(outputs[i], outputs[j], embedding_model))
+        .map(|&(i, j)| match embedding_model {
+            Some(m) => semantic_jaccard(outputs[i], outputs[j], Some(m)),
+            None => token_jaccard(outputs[i], outputs[j]),
+        })
         .collect();
     let mut d = vec![vec![0.0f64; n]; n];
     for (k, &(i, j)) in pairs.iter().enumerate() {

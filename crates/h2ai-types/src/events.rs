@@ -2,7 +2,7 @@ use crate::config::{
     AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, TopologyKind,
 };
 use crate::identity::{ExplorerId, SubtaskId, TaskId};
-use crate::physics::{
+use crate::sizing::{
     CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
     MergeStrategy, MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue,
 };
@@ -10,20 +10,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// How CG(i,j) was computed during calibration.
-///
-/// `EmbeddingCosine` means an embedding model was available and CG is the fraction of
-/// calibration prompts where `cosine(embed_i, embed_j) > cg_agreement_threshold` — the
-/// semantically correct measurement per the blog spec.
-///
-/// `TokenJaccard` is the fallback when no embedding model is configured: mean per-prompt
-/// token Jaccard similarity. Downstream quality predictions are less accurate in this mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CgMode {
-    /// CG is an embedding cosine agreement rate (semantically correct).
-    EmbeddingCosine,
-    /// CG is mean token Jaccard similarity (fallback — configure an embedding model for accuracy).
+    /// CG is mean pairwise Hamming distance between constraint satisfaction profiles.
+    /// Falls back to `cfg.calibration_cg_fallback` when no constraint corpus is provided.
     #[default]
-    TokenJaccard,
+    ConstraintProfile,
 }
 
 /// Emitted when the calibration harness finishes measuring α, β₀, and CG for the adapter pool.
@@ -43,8 +35,8 @@ pub struct CalibrationCompletedEvent {
     /// `None` when fewer than 2 adapters ran calibration.
     #[serde(default)]
     pub pairwise_beta: Option<f64>,
-    /// How CG was computed: embedding cosine agreement rate (accurate) or token Jaccard (fallback).
-    /// Defaults to `TokenJaccard` when deserialising events written before this field was added.
+    /// How CG was computed: constraint Hamming distance profile or fallback.
+    /// Defaults to `ConstraintProfile` when deserialising events written before this field was added.
     #[serde(default)]
     pub cg_mode: CgMode,
     /// Distinct non-Mock adapter families present in the calibration pool (sorted).
@@ -59,6 +51,14 @@ pub struct CalibrationCompletedEvent {
     /// Weiszfeld BFT correlated hallucination protection is degraded.
     #[serde(default)]
     pub single_family_warning: bool,
+    /// Lower bound of N_max one-σ confidence interval (CG_mean − cg_std_dev).
+    /// Equals `n_max()` when only one CG sample exists.
+    #[serde(default)]
+    pub n_max_lo: f64,
+    /// Upper bound of N_max one-σ confidence interval (CG_mean + cg_std_dev).
+    /// `n_max_lo ≤ n_max() ≤ n_max_hi`. Wide interval = high CG measurement variance.
+    #[serde(default)]
+    pub n_max_hi: f64,
 }
 
 /// Point-in-time snapshot of a task's in-memory state for crash-recovery replay optimization.
@@ -74,13 +74,12 @@ pub struct TaskSnapshot {
     pub taken_at: DateTime<Utc>,
 }
 
-/// Emitted when a task is initialised: system context compiled and J_eff computed.
+/// Emitted when a task is initialised: system context compiled and locked.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskBootstrappedEvent {
     pub task_id: TaskId,
     pub system_context: String,
     pub pareto_weights: ParetoWeights,
-    pub j_eff: f64,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -408,6 +407,11 @@ fn default_waste_ratio() -> f64 {
 pub enum H2AIEvent {
     /// Wraps [`CalibrationCompletedEvent`]: calibration harness finished.
     CalibrationCompleted(CalibrationCompletedEvent),
+    /// Emitted when calibration fails (e.g. LLM adapter unreachable).
+    CalibrationFailed {
+        calibration_id: String,
+        reason: String,
+    },
     /// Wraps [`TaskBootstrappedEvent`]: task context compiled and J_eff gate passed.
     TaskBootstrapped(TaskBootstrappedEvent),
     /// Wraps [`TopologyProvisionedEvent`]: planner selected topology and explorer roles.

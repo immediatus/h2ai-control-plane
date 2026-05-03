@@ -12,7 +12,7 @@ use h2ai_telemetry::direct_log::DirectLogProvider;
 use h2ai_types::agent::{
     AgentDescriptor, AgentTelemetryEvent, AgentTool, CostTier, TaskPayload, TaskResult,
 };
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::time::Duration;
 
 async fn spawn_fake_agent(nats: Client) {
@@ -60,8 +60,7 @@ async fn spawn_fake_agent(nats: Client) {
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
 async fn execute_and_await_returns_task_result() {
-    let url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let url = h2ai_config::H2AIConfig::default().nats_url;
 
     let state_client = h2ai_state::nats::NatsClient::connect(&url)
         .await
@@ -104,8 +103,7 @@ async fn execute_and_await_returns_task_result() {
 #[tokio::test]
 #[ignore = "requires live NATS at localhost:4222"]
 async fn execute_and_await_times_out_without_agent() {
-    let url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| h2ai_config::H2AIConfig::default().nats_url);
+    let url = h2ai_config::H2AIConfig::default().nats_url;
 
     let state_client = h2ai_state::nats::NatsClient::connect(&url)
         .await

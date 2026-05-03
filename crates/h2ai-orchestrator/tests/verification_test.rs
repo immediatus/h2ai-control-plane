@@ -5,7 +5,7 @@ use h2ai_orchestrator::verification::{VerificationInput, VerificationPhase};
 use h2ai_types::config::{AdapterKind, VerificationConfig};
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 fn make_proposal(task_id: TaskId, text: &str) -> ProposalEvent {
     ProposalEvent {

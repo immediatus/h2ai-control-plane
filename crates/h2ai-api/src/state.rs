@@ -1,5 +1,6 @@
 use h2ai_config::H2AIConfig;
 use h2ai_context::embedding::EmbeddingModel;
+use h2ai_orchestrator::bandit::BanditState;
 use h2ai_orchestrator::self_optimizer::TauSpreadEstimator;
 use h2ai_orchestrator::session_journal::SessionJournal;
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
@@ -51,6 +52,9 @@ pub struct AppState {
     /// EMA-tracked τ spread hint. Updated when SelfOptimizer suggests τ adjustments on
     /// wasteful-but-successful tasks. User-specified τ bounds in task manifests always override.
     pub tau_spread_estimator: Arc<RwLock<TauSpreadEstimator>>,
+    /// Thompson Sampling bandit for adaptive N selection. Learns optimal ensemble size
+    /// from task outcomes across runs. Persisted to NATS KV `H2AI_ESTIMATOR/bandit_state`.
+    pub bandit_state: Arc<RwLock<BanditState>>,
 }
 
 impl AppState {
@@ -74,6 +78,8 @@ impl AppState {
         let max_tasks = cfg.max_concurrent_tasks;
         let tau_spread = cfg.calibration_tau_spread;
         let tao_ema_alpha = cfg.tao_estimator_ema_alpha;
+        let tao_warmup = cfg.tao_estimator_warmup;
+        let n_max_init = cfg.bandit_n_max_initial;
         Self {
             nats,
             cfg: Arc::new(cfg),
@@ -88,12 +94,13 @@ impl AppState {
             task_semaphore: Arc::new(Semaphore::new(max_tasks)),
             embedding_model: None,
             tao_multiplier_estimator: Arc::new(RwLock::new(
-                TaoMultiplierEstimator::new_with_alpha(tao_ema_alpha),
+                TaoMultiplierEstimator::new_with_alpha(tao_ema_alpha).with_warmup(tao_warmup),
             )),
             tau_spread_estimator: Arc::new(RwLock::new(TauSpreadEstimator::new(
                 tau_spread[0],
                 tau_spread[1],
             ))),
+            bandit_state: Arc::new(RwLock::new(BanditState::new(n_max_init, 0))),
         }
     }
 
@@ -152,6 +159,25 @@ impl AppState {
             Ok(None) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load tao_estimator from NATS; using default")
+            }
+        }
+    }
+
+    /// Load persisted bandit state from NATS KV on startup.
+    /// No-op on first run (no entry yet) or on deserialization failure (uses default prior).
+    pub async fn load_bandit_state(&self) {
+        match self.nats.get_bandit_state().await {
+            Ok(Some(bytes)) => match serde_json::from_slice::<BanditState>(&bytes) {
+                Ok(state) => {
+                    *self.bandit_state.write().await = state;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to deserialize bandit state; using default prior")
+                }
+            },
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load bandit state from NATS; using default prior")
             }
         }
     }

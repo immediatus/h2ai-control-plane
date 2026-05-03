@@ -2,7 +2,7 @@ use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ExplorerConfig, ParetoWeights, ReviewGate, RoleSpec,
     TopologyKind,
 };
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 use std::path::PathBuf;
 
 #[test]

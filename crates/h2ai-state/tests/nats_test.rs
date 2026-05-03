@@ -1,6 +1,6 @@
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent};
 use h2ai_types::identity::TaskId;
-use h2ai_types::physics::{CoherencyCoefficients, CoordinationThreshold};
+use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold};
 
 #[test]
 fn h2ai_event_serialises_to_tagged_json() {
@@ -18,6 +18,8 @@ fn h2ai_event_serialises_to_tagged_json() {
         adapter_families: Vec::new(),
         explorer_verification_family_match: false,
         single_family_warning: false,
+        n_max_lo: 0.0,
+        n_max_hi: 0.0,
     });
 
     let json = serde_json::to_string(&event).unwrap();
@@ -41,6 +43,8 @@ fn calibration_event_roundtrip() {
         adapter_families: Vec::new(),
         explorer_verification_family_match: false,
         single_family_warning: false,
+        n_max_lo: 0.0,
+        n_max_hi: 0.0,
     };
     let bytes = serde_json::to_vec(&original).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_slice(&bytes).unwrap();

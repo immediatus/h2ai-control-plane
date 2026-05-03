@@ -1,6 +1,6 @@
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse};
 use h2ai_types::config::AdapterKind;
-use h2ai_types::physics::TauValue;
+use h2ai_types::sizing::TauValue;
 
 #[test]
 fn compute_request_serde_round_trip() {

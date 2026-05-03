@@ -28,7 +28,7 @@ async fn make_engine_input<'a>(
         task_prompts: vec!["Calibrate".into(), "Second task".into(), "Third".into()],
         adapters: vec![&cal_adapter as &dyn IComputeAdapter],
         cfg: &cal_cfg,
-        embedding_model: None,
+        constraint_corpus: &[],
     })
     .await
     .unwrap();
@@ -51,6 +51,7 @@ async fn make_engine_input<'a>(
             tau_max: Some(0.5),
             roles: vec![],
             review_gates: vec![],
+            slot_configs: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -82,6 +83,8 @@ async fn make_engine_input<'a>(
         tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
         )),
+        synthesis_adapter: None,
+        bandit_state: None,
     }
 }
 

@@ -11,8 +11,8 @@
 //! - [`config`] — `ParetoWeights`, `TopologyKind`, `AdapterKind`, `AgentRole`, `RoleSpec`,
 //!   `ReviewGate`, `ExplorerConfig`, `AuditorConfig`
 //! - [`memory`] — `MemoryTier` enum (Working/Episodic/Semantic/Procedural) with ρ and halflife
-//! - [`physics`] — `CoherencyCoefficients`, `RoleErrorCost`, `MergeStrategy`,
-//!   `CoordinationThreshold`, `MultiplicationCondition`, `JeffectiveGap`
+//! - [`sizing`] — `CoherencyCoefficients`, `RoleErrorCost`, `MergeStrategy`,
+//!   `CoordinationThreshold`, `MultiplicationCondition`
 //! - [`adapter`] — `IComputeAdapter` trait, `ComputeRequest`, `ComputeResponse`, `AdapterError`
 //! - [`events`] — all orchestration event structs and the `H2AIEvent` enum
 //! - [`agent`] — `AgentState`, `TaskPayload`, `TaskResult`, `AgentTelemetryEvent`
@@ -25,6 +25,6 @@ pub mod events;
 pub mod identity;
 pub mod manifest;
 pub mod memory;
-pub mod physics;
 pub mod plan;
 pub mod prompts;
+pub mod sizing;

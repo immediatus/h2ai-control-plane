@@ -42,6 +42,7 @@ pub mod repetition;
 pub mod scheduler;
 pub mod self_optimizer;
 pub mod session_journal;
+pub mod synthesis;
 pub mod tao_loop;
 pub mod task_store;
 pub mod verification;

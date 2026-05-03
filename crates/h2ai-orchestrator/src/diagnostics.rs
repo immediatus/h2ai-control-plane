@@ -14,6 +14,21 @@ pub enum CalibrationState {
     Insufficient,
 }
 
+/// Rank histogram calibration diagnostic for the proposal ensemble.
+///
+/// Adapted from Hamill (2001) / Talagrand (1997) numerical weather prediction diagnostics.
+///
+/// **Validity condition:** Rank histograms are calibrated diagnostics only when the
+/// verification scores are exchangeable draws from the same probability distribution —
+/// i.e., the scoring function is a calibrated probabilistic forecaster. LLM-as-judge
+/// scores do not satisfy this: scores for different tasks/prompts are not exchangeable,
+/// and LLM judges are known to exhibit length bias and score miscalibration. The
+/// histogram shape (flat/U/Λ) is observable, but attributing it to ensemble calibration
+/// vs. evaluator drift requires an independent ground-truth signal (Tier 1 oracle).
+///
+/// Use this diagnostic as a weak signal for relative comparisons, not as an absolute
+/// calibration measurement. The chi-squared statistic is computed against a uniform
+/// prior; its p-value is only meaningful when the validity condition holds.
 #[derive(Debug, Clone)]
 pub struct TalagrandDiagnostic {
     /// Rank histogram: histogram[r] = count of runs where runner-up had rank r.

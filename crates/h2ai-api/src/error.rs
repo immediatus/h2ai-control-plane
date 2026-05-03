@@ -4,10 +4,6 @@ use serde_json::json;
 
 #[derive(Debug)]
 pub enum ApiError {
-    ContextUnderflow {
-        j_eff: f64,
-        threshold: f64,
-    },
     CalibrationRequired,
     TaskNotFound(String),
     TaskAlreadyResolved(String),
@@ -24,20 +20,13 @@ pub enum ApiError {
     SingleFamilyPool {
         family: String,
     },
+    /// LLM adapter is unreachable (network error, timeout, or server down).
+    LlmUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
-            ApiError::ContextUnderflow { j_eff, threshold } => (
-                StatusCode::BAD_REQUEST,
-                json!({
-                    "error": "ContextUnderflowError",
-                    "j_eff": j_eff,
-                    "threshold": threshold,
-                    "message": "Jaccard overlap between submitted context and task requirements is too low."
-                }),
-            ),
             ApiError::CalibrationRequired => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({
@@ -77,6 +66,10 @@ impl IntoResponse for ApiError {
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "ServiceUnavailable", "message": msg }),
+            ),
+            ApiError::LlmUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({ "error": "LlmUnavailable", "message": msg }),
             ),
             ApiError::SingleFamilyPool { family } => (
                 StatusCode::BAD_REQUEST,
