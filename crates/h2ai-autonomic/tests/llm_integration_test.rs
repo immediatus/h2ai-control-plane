@@ -65,9 +65,9 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
     );
 
     // Structural invariants
-    assert!(alpha >= 0.0 && alpha < 1.0, "α ∉ [0,1): {alpha}");
+    assert!((0.0..1.0).contains(&alpha), "α ∉ [0,1): {alpha}");
     assert!(beta_base > 0.0, "β₀ must be > 0: {beta_base}");
-    assert!(cg >= 0.0 && cg <= 1.0, "CG ∉ [0,1]: {cg}");
+    assert!((0.0..=1.0).contains(&cg), "CG ∉ [0,1]: {cg}");
     assert!(beta_eff > 0.0, "β_eff must be > 0: {beta_eff}");
     assert!(n_max >= 1.0, "N_max must be ≥ 1: {n_max}");
 
@@ -89,7 +89,7 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
 
     // Plausibility
     assert!(
-        n_max >= 2.0 && n_max <= 50.0,
+        (2.0..=50.0).contains(&n_max),
         "N_max outside [2,50]: {n_max}"
     );
 
@@ -229,7 +229,10 @@ async fn calibration_with_corpus_measures_real_cg() {
         "CG={cg:.3} equals fallback={:.3} — corpus was not used for measurement",
         cfg.calibration_cg_fallback
     );
-    assert!(cg >= 0.0 && cg <= 1.0, "Measured CG must be in [0,1]: {cg}");
+    assert!(
+        (0.0..=1.0).contains(&cg),
+        "Measured CG must be in [0,1]: {cg}"
+    );
 
     assert_theory_invariants(&event.coefficients, "2-adapter / real corpus / measured CG");
 

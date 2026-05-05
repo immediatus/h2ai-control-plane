@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn talagrand_insufficient_when_fewer_than_20_runs() {
         let run = vec![0.9f64, 0.7, 0.5];
-        let scores: Vec<Vec<f64>> = std::iter::repeat(run).take(5).collect();
+        let scores: Vec<Vec<f64>> = std::iter::repeat_n(run, 5).collect();
         let d = TalagrandDiagnostic::from_verification_scores(&scores).unwrap();
         assert_eq!(d.calibration_state, CalibrationState::Insufficient);
     }
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn talagrand_histogram_length_equals_n_adapters_plus_one() {
         let run = vec![0.9f64, 0.7, 0.5, 0.3];
-        let scores: Vec<Vec<f64>> = std::iter::repeat(run).take(5).collect();
+        let scores: Vec<Vec<f64>> = std::iter::repeat_n(run, 5).collect();
         let d = TalagrandDiagnostic::from_verification_scores(&scores).unwrap();
         assert_eq!(
             d.rank_histogram.len(),

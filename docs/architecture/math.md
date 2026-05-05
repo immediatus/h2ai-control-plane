@@ -135,27 +135,67 @@ Matches Condorcet N_optimal within ±1 for ρ ∈ [0.3, 0.95]. Both are advisory
 
 ## 3. Contention and Coordination
 
-### 3.0 Why USL Applies to Agent Swarms
+### 3.0 Why USL Applies to Agent Swarms — and What β Really Captures
 
-The Universal Scalability Law was derived for shared-state distributed systems — CPU caches, database connection pools, multi-core schedulers. At first glance, LLM inference ensembles seem different: adapters run independently in parallel, share no memory, hold no locks. Why does USL apply?
+The Universal Scalability Law was derived for shared-state distributed systems where β captured
+cache-line invalidation messages sent pairwise between N CPUs. At first glance, LLM ensembles
+look nothing like that: adapters run independently, share no memory, send no cache-line messages.
 
-The answer lies in what coordination means for a reasoning system, not a compute system.
+USL still applies — but the physical mechanism is different, and H2AI models both components.
 
-**What agents must share:** Every agent in an ensemble working on a shared problem must eventually produce output that is compatible with every other agent's output. They share the *problem state* — the evolving understanding of what has been established, what is contested, and what the final answer should say. When agents diverge in their partial conclusions (split brain), the merge step must find and resolve every contradiction. This is the coherency cost β captures: not memory-bus cache-line exchange, but pairwise semantic reconciliation.
+#### Component 1 — Conflict reconciliation (Gunther's original β)
 
-**The serial bottleneck α:** Task decomposition, context compilation, and final synthesis are serial by construction — you cannot parallelize "decide how to split the problem" or "produce one coherent answer from N partial answers." These serial phases are exactly the Amdahl fraction α. Adding more agents extends the merge step, not the planning step; α is a floor, not a choice.
+Every agent working on a shared problem must eventually produce output compatible with every
+other agent's output. When agents diverge (split brain), the merge step must detect and resolve
+every contradictory agent-pair. For N=5 agents: 10 pair-checks. For N=8: 28. The quadratic
+growth is structural. The Krum BFT selection and CRDT merge in H2AI perform exactly these
+pairwise checks.
 
-**Why β scales as N(N-1):** To verify that N agents' outputs are mutually consistent, you must check every pair. The CRDT merge and Krum selection in H2AI perform this explicitly — pairwise Jaccard distances, pairwise semantic distances. For N=5 agents: 10 pair comparisons. For N=8: 28. The quadratic growth is structural, not incidental.
+**CG reduces this component.** The coupling `β_eff = β₀ × (1 − CG)` quantifies split-brain
+severity: high CG → agents share the same constraint-satisfaction profiles → fewer contradictions
+to reconcile → lower effective β. At CG < 0.10 the planner forces N_max = 1 (coherence drag
+is unbounded when agents disagree on every constraint).
 
-**CG as split-brain severity:** When agents share high Common Ground — semantically compatible
-partial conclusions — reconciliation is cheap (low β_eff). When agents have split, reconciliation
-is expensive (high β_eff). The coupling `β_eff = β₀ × (1 − CG_embed)` quantifies this: high CG →
-low coordination cost → higher N_max. At CG=0 (total divergence): β_eff = β₀ (full baseline
-cost). At CG=1 (perfect alignment): β_eff → 0 (coordination nearly free). At CG < 0.10:
-emit ZeroCoordinationQualityEvent and force N_max = 1 — below this threshold, agent outputs
-are so divergent that ensemble scaling is unsafe regardless of the formula value.
+#### Component 2 — Context-attention degradation ("Lost in the Middle")
 
-**The human team analogy confirms the model.** Brook's Law (1975) observed that adding engineers to a late project makes it later — because adding person N introduces N−1 new communication channels, and each channel is a reconciliation obligation. The β parameter Gunther measured in computer systems, Brooks observed in human teams, and H2AI models in agent swarms is the same phenomenon: **pairwise synchronization cost scales quadratically with group size when members must maintain mutual consistency.**
+In LLM orchestration, synthesis is a single LLM-as-judge call reading all N proposals in one
+prompt — not N² messages. The true cost is not pairwise message-passing but **attention
+degradation**: as N proposals fill the context window, the synthesizer's retrieval quality
+drops sharply for proposals buried in the middle (Liu et al. 2023, "Lost in the Middle").
+
+For N proposals of L tokens each: context = N·L tokens. The synthesis LLM's probability of
+correctly weighting a middle proposal falls approximately as 1/N, creating a super-linear
+quality penalty that USL's quadratic β term accurately models — even though the mechanism
+is attention decay, not cache-line exchange.
+
+**Structured synthesis prompts reduce this component.** Numbered proposals, per-proposal
+summaries, and chain-of-thought synthesis reduce positional degradation without changing
+the semantic content of the proposals. This is the orthogonal lever to CG.
+
+`n_max_context_aware()` explicitly models this: `β_ctx(N) = β_eff × (1 + γ × fill)` where
+`fill = N × proposal_tokens / max_tokens`. As proposals fill the context, γ amplifies β,
+shrinking N_max below the CG-only ceiling. γ is the attention-sensitivity coefficient.
+
+#### The unified "coherence drag" view
+
+β captures **coherence drag** — the total per-agent-pair cost of maintaining mutual consistency:
+
+```
+coherence_drag(N) = β₀ × (1 − CG)          # conflict component, reduced by CG
+                  × (1 + γ × fill(N))       # positional component, reduced by synthesis structure
+```
+
+Both mechanisms produce a quadratic throughput penalty — hence USL applies — but they have
+different mitigations. H2AI exposes both: CG via calibration, positional pressure via
+`n_max_context_aware()`. The N_max ≈ 4–7 ceiling is correct; the physical reasons are dual.
+
+**The serial bottleneck α:** Task decomposition, context compilation, and final synthesis are
+serial by construction. α is a floor, not a choice; adding agents extends the merge step but
+does not shrink the planning step.
+
+**Brook's Law analogy holds.** Adding engineer N introduces N−1 new communication channels.
+In LLM swarms, adding agent N adds N−1 new contradiction-check pairs AND N·L tokens to
+the synthesis context. Both penalties are quadratic in N; both are β.
 
 ---
 
@@ -180,16 +220,23 @@ alpha, beta_base  — measured via two-phase USL linearization (Gunther 1993).
   or timing is degenerate (negative derived params, near-zero inputs).
 
 beta_eff   = beta_base × (1 − CG_embed)    [Definition 6 — USL+CG coupling]
-             High CG_embed → low beta_eff → higher N_max (reconciliation is cheap).
-             Low CG_embed → high beta_eff → lower N_max (agents diverge, costly to reconcile).
-             At CG_embed = 0.0: beta_eff = beta_base (full baseline coordination cost).
-             At CG_embed = 1.0: beta_eff → 0 (negligible coordination cost).
+             Reduces the *conflict* component of coherence drag.
+             High CG_embed → low beta_eff → higher N_max (agents agree on constraints → cheap merge).
+             Low CG_embed → high beta_eff → lower N_max (agents diverge → expensive merge).
+             At CG_embed = 0.0: beta_eff = beta_base (full baseline coherence drag).
+             At CG_embed = 1.0: beta_eff → 0 (conflict component eliminated).
              At CG_embed < 0.10: emit ZeroCoordinationQualityEvent, force N_max = 1.
              Numerical floor: max(beta_eff, 1e-6) prevents degenerate N_max.
 
              CG_embed source:
                Preferred: mean over calibration_prompts of [cosine(embed_i, embed_j) > 0.85]
-               Fallback:  token Jaccard (current implementation, pending EmbeddingModel)
+               Fallback:  constraint Hamming distance (current implementation)
+
+beta_ctx   = beta_eff × (1 + γ × fill(N))  [Definition 6C — context-pressure model]
+             Reduces the *positional* component of coherence drag (§3.0 Component 2).
+             fill(N) = min(1, N × proposal_tokens / max_tokens)
+             γ = attention-sensitivity coefficient (config: gamma_context_pressure)
+             Used by n_max_context_aware(); base n_max() uses beta_eff without pressure term.
 
 N_max      = round(√((1 − α) / β_eff))    [USL Proposition 1]
              Derived by setting dX/dN = 0 in X(N) = N/(1 + α(N−1) + β·N(N−1)).
@@ -211,6 +258,10 @@ N_max      = round(√((1 − α) / β_eff))    [USL Proposition 1]
 
 *N_max rises steeply with CG. Improving constraint corpus quality (higher CG) directly increases the safe ensemble size.*
 
+![Context-pressure model](../../scripts/output/context_pressure.png)
+
+*Left: N_max shrinks as context fill fraction increases, for several γ values. Right: Longer proposals cause stronger positional drag, reducing the safe ceiling relative to the CG-only N_max.*
+
 **Provenance of α, β₀:** Gunther (1993), Universal Scalability Law. The two-phase fit uses
 the linearization `z(N) = α(N−1) + β₀·N(N−1)` with two data points (N=2 and N=M) to solve
 analytically for both parameters. This replaces the earlier single-phase Amdahl inverse
@@ -222,11 +273,24 @@ against calibration tiers in `scripts/simulate.py`.
 
 ### 3.2 What the Calibration Measures — and What It Should
 
-**Ideal measurement:** β₀ should be measured from the merge phase — `MergeEngine` timing divided by N(N−1)/2 pairs. This gives the true pairwise reconciliation cost per agent pair under the actual task domain. The NATS event log records `ProposalReceivedEvent` and `MergeCompletedEvent` timestamps; a future calibration harness can derive β₀ directly from these spans.
+**Ideal measurement of conflict component:** β₀ should be measured from the merge phase —
+`MergeEngine` timing divided by N(N−1)/2 pairs. This gives the true pairwise conflict cost
+per agent pair under the actual task domain. The NATS event log records `ProposalReceivedEvent`
+and `MergeCompletedEvent` timestamps; a future calibration harness can derive β₀ directly.
 
-**Current measurement:** The two-phase timing harness measures wall-clock time for N concurrent adapter API calls. This captures I/O scheduling serialization and host-level parallelism — a real cost, but a proxy for the true semantic coordination cost. It is conservative: network and scheduling overhead is bounded and predictable, while task-domain reconciliation cost varies with problem complexity.
+**Ideal measurement of positional component:** γ (attention-sensitivity) should be measured
+empirically by varying N on a fixed task and fitting the quality curve against `n_max_context_aware()`.
+A planned `scripts/baseline_eval.py` extension will add a γ calibration mode.
 
-**Practical consequence:** β₀ from timing calibration will generally underestimate true reconciliation cost on complex reasoning tasks (where agents diverge more) and overestimate it on template-like tasks (where agents agree quickly). The CG_mean coupling (`β_eff = β₀ × (1 − CG_mean)`) corrects for divergence dynamically — when agents have actually split, β_eff rises even if β₀ was calibrated under easy conditions.
+**Current measurement:** The two-phase timing harness measures wall-clock time for N concurrent
+adapter API calls. This captures I/O scheduling serialization — a proxy for coherence drag
+baseline. It is conservative: scheduling overhead is bounded, while task-domain conflict cost
+varies with problem complexity, and positional degradation is not captured at all by timing alone.
+
+**Practical consequence:** β₀ from timing underestimates true coherence drag on complex reasoning
+tasks and overestimates on template-like tasks. The CG coupling (`β_eff = β₀ × (1 − CG_mean)`)
+corrects the conflict component dynamically. The positional component is corrected by
+`n_max_context_aware()` when `proposal_tokens` and `max_tokens` are provided.
 
 **When M < 3:** The analytical solution requires two distinct data points (N=2 and N=M). With M < 3, the harness falls back to config defaults `alpha_contention` and `beta_base_default`. These are empirically reasonable starting values; the CG_mean coupling adjusts β_eff in real time regardless of how β₀ was obtained.
 
@@ -373,6 +437,9 @@ triggering a needless fallback. Semantic distance avoids this.
 | N_optimal assumes uniform inference cost | T_synthesis = T_inference approximation | Measure actual synthesis latency |
 | Condorcet assumes majority vote; H2AI uses merge | Merge + verification approximates majority | Direct accuracy measurement of merge outcome |
 | Cluster coherence check is O(n²) pairwise calls | join_all parallelises all calls; n ≤ 9 in practice | Batch embedding endpoint for ≥ 10 proposals |
+| β₀ calibration captures scheduling overhead, not semantic conflict | CG coupling corrects conflict component dynamically | Measure β₀ from MergeEngine timing spans |
+| γ (attention-sensitivity) not calibrated per model family | `n_max_context_aware()` accepts γ as a parameter; default γ=1 | Empirical γ calibration via quality-vs-N sweep |
+| CG reduces conflict component of β only; positional degradation unaddressed by CG | `n_max_context_aware()` models positional component | Structured synthesis prompts as `SynthesisConfig` parameter |
 
 ---
 
@@ -400,9 +467,11 @@ The simulations verify:
 9. M<3 fallback — returns None when fewer than 3 adapters measured
 10. N_max Proposition 1 — `round(√((1−α)/β_eff))` gives 6 (AI agents, CG=0.4), 10 (Human teams, CG=0.6)
 
-**β_eff coupling (section 3):**
+**Coherence drag — dual-component model (section 3):**
 11. β₀×(1−CG) is bounded — β_eff ∈ [0, β₀]; no singularity as CG varies
 12. Proportional coupling verified: β_eff = 0.60×β₀ at CG=0.4 (AI tier); β_eff = 0.40×β₀ at CG=0.6 (Human tier)
+13. Context-pressure model — `β_ctx = β_eff × (1 + γ × fill)` converges in ≤ 5 iterations; N_max_ctx < N_max for fill > 0
+14. Attention-degradation approximation — for fill ∈ [0, 1] and γ=1: N_max shrinks 15–40% vs CG-only ceiling, consistent with "Lost in the Middle" (Liu et al. 2023) quality curves at N=4–8
 
 **CJT vs conformal (section 1):**
 13. CJT over-predicts quality 5–15pp at ρ ≥ 0.6 (typical LLM same-family correlation)

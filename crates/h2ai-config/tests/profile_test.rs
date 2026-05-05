@@ -10,14 +10,16 @@ fn h2ai_config_default_has_empty_profiles() {
 
 #[test]
 fn config_with_profiles_round_trips_json() {
-    let mut cfg = H2AIConfig::default();
-    cfg.adapter_profiles = vec![AdapterProfile {
-        name: "my-ollama".into(),
-        kind: AdapterKind::Ollama {
-            endpoint: "http://localhost:11434".into(),
-            model: "llama3".into(),
-        },
-    }];
+    let cfg = H2AIConfig {
+        adapter_profiles: vec![AdapterProfile {
+            name: "my-ollama".into(),
+            kind: AdapterKind::Ollama {
+                endpoint: "http://localhost:11434".into(),
+                model: "llama3".into(),
+            },
+        }],
+        ..Default::default()
+    };
     let json = serde_json::to_string(&cfg).unwrap();
     let back: H2AIConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(back.adapter_profiles.len(), 1);

@@ -21,6 +21,7 @@ pub enum ApiError {
         family: String,
     },
     /// LLM adapter is unreachable (network error, timeout, or server down).
+    #[allow(dead_code)]
     LlmUnavailable(String),
 }
 

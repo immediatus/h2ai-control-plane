@@ -170,8 +170,9 @@ async fn verification_score_exactly_at_threshold_passes() {
     // Hard threshold in __rubric__ fallback is 0.45; we set both config threshold and
     // ensure the LLM score equals the hard threshold so it just passes.
     let threshold = 0.45;
-    let evaluator =
-        MockAdapter::new(format!(r#"{{"score": {threshold}, "reason": "at threshold"}}"#).into());
+    let evaluator = MockAdapter::new(format!(
+        r#"{{"score": {threshold}, "reason": "at threshold"}}"#
+    ));
     let proposal = make_proposal(TaskId::new(), "Proposal at threshold");
     let config = VerificationConfig {
         threshold,

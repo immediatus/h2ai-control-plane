@@ -115,7 +115,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
     eprintln!("  N_max   = {n_max:.2}");
 
     // Theory invariants
-    assert!(alpha >= 0.0 && alpha < 1.0, "α out of range: {alpha}");
+    assert!((0.0..1.0).contains(&alpha), "α out of range: {alpha}");
     assert!(beta_base > 0.0, "β₀ must be > 0");
     assert!(beta_eff > 0.0, "β_eff must be > 0");
     assert!(n_max >= 1.0, "N_max must be ≥ 1");

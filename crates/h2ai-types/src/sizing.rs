@@ -45,8 +45,14 @@ impl TauValue {
 /// Calibrated coherency parameters for a set of compute adapters.
 ///
 /// `alpha` is the contention (serial-fraction) coefficient from USL calibration.
-/// `beta_base` (β₀) is the base coherency cost per agent pair measured from calibration timing.
-/// `beta_eff` = β₀ × (1 − CG_mean) couples coordination cost with how divergent adapter outputs are.
+/// `beta_base` (β₀) is the base coherence-drag coefficient measured from calibration timing.
+/// Coherence drag has two physical components in LLM ensembles:
+///   1. **Conflict reconciliation** — merge step must resolve every contradictory agent-pair; O(N²).
+///   2. **Context-attention degradation** — synthesis LLM's retrieval quality degrades for proposals
+///      buried in a long context ("Lost in the Middle", Liu et al. 2023); super-linear in N.
+///
+/// `beta_eff` = β₀ × (1 − CG_mean) reduces the *conflict* component via Common Ground.
+/// `n_max_context_aware()` further reduces the *positional* component via context-fill pressure.
 /// Higher CG_mean → lower β_eff → higher N_max. Bounded at β₀ when CG_mean = 0.
 /// `n_max` = round(√((1−α)/β_eff)) is derived from USL Proposition 1 by setting dX/dN = 0
 /// in X(N) = N / (1 + α(N−1) + β·N(N−1)).
@@ -148,11 +154,16 @@ impl CoherencyCoefficients {
         (n_lo.min(n_hi), n_lo.max(n_hi))
     }
 
-    /// N_max adjusted for context-window pressure.
+    /// N_max adjusted for context-window pressure (attention-degradation model).
     ///
-    /// As N agents each contribute `proposal_tokens` to a context of `max_tokens`,
-    /// fill fraction `f(N) = min(1, N × proposal_tokens / max_tokens)` rises.
-    /// Context pressure amplifies β: `β_ctx(N) = β_eff × (1 + γ × f(N))`.
+    /// Models the "Lost in the Middle" phenomenon (Liu et al. 2023): as N proposals
+    /// fill the synthesis context, the synthesizer's retrieval quality degrades for
+    /// middle-positioned proposals. This is the *positional* component of coherence drag,
+    /// orthogonal to the *conflict* component reduced by CG.
+    ///
+    /// Fill fraction `f(N) = min(1, N × proposal_tokens / max_tokens)`.
+    /// Positional drag amplifies β: `β_ctx(N) = β_eff × (1 + γ × f(N))`.
+    /// `γ` (gamma) is the attention-sensitivity coefficient; larger γ = steeper degradation.
     ///
     /// Solves `N = √((1−α) / β_ctx(N))` iteratively (converges in ≤ 5 steps).
     ///
@@ -832,7 +843,7 @@ mod condorcet_tests {
                     let rho = rho_int as f64 / 100.0;
                     let q = condorcet_quality(n, p, rho);
                     assert!(
-                        q >= 0.0 && q <= 1.0,
+                        (0.0..=1.0).contains(&q),
                         "Q out of [0,1]: N={n} p={p} rho={rho} → {q}"
                     );
                 }

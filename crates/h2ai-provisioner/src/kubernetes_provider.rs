@@ -17,6 +17,7 @@ use kube::Client as KubeClient;
 /// Currently scaffolded — full Job manifest generation is TODO.
 pub struct KubernetesProvider {
     #[cfg(feature = "kubernetes")]
+    #[allow(dead_code)]
     client: KubeClient,
     #[allow(dead_code)] // used in Phase 2 Job manifest generation
     namespace: String,

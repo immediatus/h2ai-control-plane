@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(alpha, 0.5, "α=0.8 must be clamped to 0.5");
         // beta0 = 0.02 is within range, not the fallback value 0.01
         assert!(
-            beta0 >= 1e-6 && beta0 <= 0.1,
+            (1e-6..=0.1).contains(&beta0),
             "beta0 out of clamped range: {beta0}"
         );
         assert!(

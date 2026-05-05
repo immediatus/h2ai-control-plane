@@ -65,7 +65,7 @@ fn config_round_trips_through_json() {
 #[test]
 fn beta_base_default_loads_from_kappa_eff_factor_alias() {
     // Serialize a complete config, swap the field name to the legacy alias, then round-trip.
-    let mut v: serde_json::Value = serde_json::to_value(&H2AIConfig::default()).unwrap();
+    let mut v: serde_json::Value = serde_json::to_value(H2AIConfig::default()).unwrap();
     let obj = v.as_object_mut().unwrap();
     obj.remove("beta_base_default");
     obj.insert("kappa_eff_factor".into(), serde_json::json!(0.019));
@@ -126,7 +126,7 @@ fn load_layered_no_override_matches_default() {
 #[test]
 fn load_layered_override_changes_only_specified_field() {
     let mut tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
-    write!(tmp, "bft_threshold = 0.77\n").unwrap();
+    writeln!(tmp, "bft_threshold = 0.77").unwrap();
 
     let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();
     assert!(
@@ -164,7 +164,7 @@ impl Drop for EnvGuard {
 fn load_layered_env_var_wins_over_file() {
     // Use max_autonomic_retries — not asserted by any other test, so parallel races are harmless.
     let mut tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
-    write!(tmp, "max_autonomic_retries = 5\n").unwrap();
+    writeln!(tmp, "max_autonomic_retries = 5").unwrap();
 
     let _guard = EnvGuard::set("H2AI_MAX_AUTONOMIC_RETRIES", "99");
     let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();

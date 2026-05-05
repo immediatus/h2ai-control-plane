@@ -1,3 +1,5 @@
+#![cfg(not(feature = "kubernetes"))]
+
 use h2ai_provisioner::kubernetes_provider::KubernetesProvider;
 use h2ai_provisioner::provider::AgentProvider;
 use h2ai_types::agent::{AgentDescriptor, AgentTool};

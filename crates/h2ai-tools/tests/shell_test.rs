@@ -51,10 +51,9 @@ async fn shell_empty_command_returns_empty_or_ok() {
     let exec = ShellExecutor::default();
     // An empty sh -c "" exits 0 with no output.
     let result = exec.execute_command("").await;
-    match result {
-        Ok(out) => assert!(out.is_empty() || out.trim().is_empty()),
-        Err(_) => {} // also acceptable — platform-specific
-    }
+    if let Ok(out) = result {
+        assert!(out.is_empty() || out.trim().is_empty());
+    } // Err is also acceptable — platform-specific
 }
 
 #[tokio::test]

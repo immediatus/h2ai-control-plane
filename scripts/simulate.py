@@ -1,14 +1,15 @@
 """
 H2AI visualization suite — docs/architecture/math.md
 
-Six plots, saved to scripts/output/ (or shown interactively with --show):
+Seven plots, saved to scripts/output/ (or shown interactively with --show):
 
-  1. usl_curves.png          — USL throughput X(N) for AI agents and human teams
-  2. beta_eff_vs_cg.png      — β_eff = β₀×(1−CG) coupling; how CG shifts reconciliation cost
-  3. n_max_vs_cg.png         — N_max ceiling as a function of CG_mean
-  4. cjt_quality.png         — CJT ensemble quality p_ensemble(N) at varying error correlation ρ
-  5. n_eff_vs_rho.png        — EigenCalibration: N_eff participation ratio vs scalar ρ
-  6. talagrand_histograms.png — Rank histogram shapes (flat=calibrated, U=over-confident, Λ=under-confident)
+  1. usl_curves.png              — USL throughput X(N) for AI agents and human teams
+  2. beta_eff_vs_cg.png          — β_eff = β₀×(1−CG) coupling; CG reduces conflict component
+  3. n_max_vs_cg.png             — N_max ceiling as a function of CG_mean
+  4. cjt_quality.png             — CJT ensemble quality p_ensemble(N) at varying error correlation ρ
+  5. n_eff_vs_rho.png            — EigenCalibration: N_eff participation ratio vs scalar ρ
+  6. talagrand_histograms.png    — Rank histogram shapes (flat=calibrated, U=over-confident, Λ=under-confident)
+  7. context_pressure.png        — Attention-degradation model: N_max_ctx vs fill fraction γ
 
 Usage:
     python scripts/simulate.py              # saves PNGs to scripts/output/
@@ -40,7 +41,7 @@ TIERS = {
 # ---------------------------------------------------------------------------
 
 def beta_eff(beta0: float, cg: float) -> float:
-    """β_eff = β₀ × (1 − CG_mean)  — higher CG → cheaper reconciliation."""
+    """β_eff = β₀ × (1 − CG_mean)  — reduces *conflict* component of coherence drag."""
     return max(beta0 * (1.0 - cg), 1e-9)
 
 
@@ -142,9 +143,9 @@ def plot_beta_eff_vs_cg(show: bool) -> None:
             xy=(cg_op, be_op), fontsize=8,
         )
 
-    ax.set_xlabel("CG_mean  (embedding agreement rate)")
-    ax.set_ylabel("β_eff  (pairwise reconciliation cost)")
-    ax.set_title("β_eff = β₀ × (1 − CG_mean)\nHigher CG → cheaper reconciliation → higher N_max")
+    ax.set_xlabel("CG_mean  (constraint-agreement rate)")
+    ax.set_ylabel("β_eff  (coherence drag — conflict component)")
+    ax.set_title("β_eff = β₀ × (1 − CG_mean)\nHigher CG → lower conflict drag → higher N_max")
     ax.legend()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, None)
@@ -280,6 +281,93 @@ def plot_talagrand_histograms(show: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Plot 7: Context-pressure / attention-degradation model
+# ---------------------------------------------------------------------------
+
+def n_max_context_aware(alpha: float, be: float, proposal_tokens: float, max_tokens: float, gamma: float) -> float:
+    """
+    Iterative N_max with positional coherence drag:
+      β_ctx(N) = β_eff × (1 + γ × fill(N))
+      fill(N)  = min(1, N × proposal_tokens / max_tokens)
+    """
+    n = n_max(alpha, be)
+    for _ in range(5):
+        fill = min(1.0, n * proposal_tokens / max_tokens)
+        beta_ctx = be * (1.0 + gamma * fill)
+        n_new = math.sqrt(max((1.0 - alpha) / max(beta_ctx, 1e-9), 0.0))
+        if abs(n_new - n) < 0.5:
+            break
+        n = n_new
+    return max(n, 1.0)
+
+
+def plot_context_pressure(show: bool) -> None:
+    """
+    Shows how context-window fill shrinks N_max (attention-degradation model).
+    Two sub-plots: (a) N_max vs fill fraction for several γ values (AI agents tier);
+                   (b) N_max_ctx / N_max_base ratio vs N, for 3 proposal-token sizes.
+    """
+    tier = TIERS["AI agents"]
+    alpha = tier["alpha"]
+    be = beta_eff(tier["beta0"], tier["cg"])
+    n_base = n_max(alpha, be)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle(
+        "Attention-Degradation Model: N_max vs Context Pressure\n"
+        r"$\beta_{ctx}(N) = \beta_{eff} \times (1 + \gamma \times fill(N))$,"
+        r"  $fill(N) = \min(1,\, N \times L / L_{max})$"
+    )
+
+    # Sub-plot (a): N_max_ctx vs fill, for γ in {0.5, 1.0, 2.0, 4.0}
+    ax = axes[0]
+    fill_vals = np.linspace(0.0, 1.0, 200)
+    gammas = [0.0, 0.5, 1.0, 2.0, 4.0]
+    colors = plt.cm.plasma(np.linspace(0.1, 0.9, len(gammas)))
+    for gamma, color in zip(gammas, colors):
+        nm_vals = []
+        for fill in fill_vals:
+            beta_ctx = be * (1.0 + gamma * fill)
+            nm_ctx = math.sqrt(max((1.0 - alpha) / max(beta_ctx, 1e-9), 0.0))
+            nm_vals.append(max(nm_ctx, 1.0))
+        label = "γ=0 (no pressure)" if gamma == 0.0 else f"γ={gamma}"
+        ax.plot(fill_vals, nm_vals, color=color, label=label)
+    ax.axhline(n_base, color="gray", linestyle=":", label=f"N_max (CG-only) = {n_base:.1f}")
+    ax.set_xlabel("Context fill fraction  f = N·L / L_max")
+    ax.set_ylabel("N_max_ctx  (effective ceiling with positional drag)")
+    ax.set_title("N_max shrinks as context fills\n(AI agents: α=0.15, β_eff=0.0234)")
+    ax.legend(fontsize=9)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, n_base * 1.5)
+
+    # Sub-plot (b): N_max_ctx / N_max_base vs proposal token budget (γ=1 fixed)
+    ax = axes[1]
+    gamma = 1.0
+    max_tokens = 8192.0
+    prop_token_sizes = [256, 512, 1024, 2048]
+    ns_range = np.arange(1, 15)
+    colors2 = plt.cm.viridis(np.linspace(0.1, 0.9, len(prop_token_sizes)))
+    for ptoks, color in zip(prop_token_sizes, colors2):
+        ratios = []
+        for n_req in ns_range:
+            nm_ctx = n_max_context_aware(alpha, be, float(ptoks), max_tokens, gamma)
+            ratios.append(min(nm_ctx, n_req) / n_base)
+        ax.plot(ns_range, ratios, "o-", color=color, markersize=4,
+                label=f"L={ptoks} tokens/proposal")
+    ax.axhline(1.0, color="gray", linestyle=":", label="N_max base (no pressure)")
+    ax.set_xlabel("Requested N (agents)")
+    ax.set_ylabel("N_max_ctx / N_max_base")
+    ax.set_title(f"Context pressure shrinks ceiling (γ=1, L_max={int(max_tokens)})\n"
+                 "Longer proposals → stronger positional drag")
+    ax.legend(fontsize=9)
+    ax.set_xlim(1, 14)
+    ax.set_ylim(0, 1.3)
+
+    plt.tight_layout()
+    _save_or_show("context_pressure.png", show)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -306,6 +394,7 @@ def main() -> None:
     plot_cjt_quality(args.show)
     plot_n_eff_vs_rho(args.show)
     plot_talagrand_histograms(args.show)
+    plot_context_pressure(args.show)
     if not args.show:
         print(f"\nDone. PNGs written to {OUTPUT_DIR}/")
 

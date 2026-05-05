@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 
 # Cache dependencies before copying source
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo build --release --locked --bin h2ai-control-plane
 

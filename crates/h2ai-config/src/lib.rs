@@ -111,7 +111,7 @@ pub struct H2AIConfig {
     pub calibration_adapter_count: usize,
     /// τ spread `[min, max]` for calibration instances; instances are spaced linearly across this range. The spread may expand up to `tau_spread_max_factor` when Talagrand detects over-confidence.
     pub calibration_tau_spread: [f64; 2],
-    /// CG collapse threshold: when CG_embed drops below this value the planner forces N_max = 1. Default `0.10` — below 10 % pairwise reconciliation is undefined.
+    /// CG collapse threshold: when CG_embed drops below this value the planner forces N_max = 1. Default `0.10` — below 10 % agent outputs are so divergent that coherence drag is unbounded.
     pub cg_collapse_threshold: f64,
     /// Cosine similarity threshold for counting two adapter outputs as "in agreement" when computing CG via embedding cosine (future; currently CG uses constraint-profile Hamming).
     pub cg_agreement_threshold: f64,

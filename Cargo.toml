@@ -56,3 +56,9 @@ rand            = "0.8"
 rand_distr      = "0.4"
 sha2            = "0.10"
 hex             = "0.4"
+
+# ort-sys 2.0.0-rc.12 introduced breaking API changes (size_t removal, fn-pointer types)
+# and a mandatory TLS feature gate, both incompatible with ort 2.0.0-rc.4 used by fastembed.
+# Pin to rc.4 which is API-compatible and has no TLS requirement.
+[patch.crates-io]
+ort-sys = { git = "https://github.com/pykeio/ort", tag = "v2.0.0-rc.4", package = "ort-sys" }

@@ -80,8 +80,10 @@ fn checker_embeds_retry_count_in_failure_event() {
 fn checker_respects_custom_min_competence_threshold() {
     let cc = cc();
     let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
-    let mut cfg = H2AIConfig::default();
-    cfg.min_baseline_competence = 0.8;
+    let cfg = H2AIConfig {
+        min_baseline_competence: 0.8,
+        ..Default::default()
+    };
     let result = MultiplicationChecker::check(&TaskId::new(), &cc, &theta, 0.75, 0.85, 0, &cfg);
     assert!(result.is_err()); // 0.75 < 0.8
 }

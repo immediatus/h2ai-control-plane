@@ -30,8 +30,8 @@ pub struct CalibrationCompletedEvent {
     /// Eigenvalue-based calibration (from pairwise CG matrix). `None` when fewer than 2 adapters.
     pub eigen: Option<EigenCalibration>,
     pub timestamp: DateTime<Utc>,
-    /// β₀ derived from timing the pairwise CG reconciliation loop during calibration.
-    /// More accurate than I/O-timing-derived β₀ for semantic reconciliation cost.
+    /// β₀ derived from timing the pairwise CG measurement loop during calibration.
+    /// Captures coherence-drag baseline; the CG coupling then adjusts for divergence severity.
     /// `None` when fewer than 2 adapters ran calibration.
     #[serde(default)]
     pub pairwise_beta: Option<f64>,

@@ -105,6 +105,7 @@ impl AppState {
     }
 
     #[cfg(feature = "fastembed-embed")]
+    #[allow(dead_code)]
     pub fn with_embedding_model(mut self, model: Arc<dyn EmbeddingModel>) -> Self {
         self.embedding_model = Some(model);
         self

@@ -12,35 +12,35 @@
   "results_by_n": {
     "1": {
       "n": 1,
-      "accuracy": 0.9,
-      "correct": 18,
-      "mean_latency_s": 6.062468966390588,
-      "throughput_correct_per_s": 0.14845436817729937,
+      "accuracy": 0.85,
+      "correct": 17,
+      "mean_latency_s": 13.244952004699735,
+      "throughput_correct_per_s": 0.0641753929873353,
       "cg_mean": 1.0
     },
     "2": {
       "n": 2,
       "accuracy": 0.85,
       "correct": 17,
-      "mean_latency_s": 13.042030517093371,
-      "throughput_correct_per_s": 0.06517390055834928,
-      "cg_mean": 0.95
+      "mean_latency_s": 14.466694692755118,
+      "throughput_correct_per_s": 0.058755646542100436,
+      "cg_mean": 0.9
     },
     "3": {
       "n": 3,
       "accuracy": 0.9,
       "correct": 18,
-      "mean_latency_s": 20.649950201195317,
-      "throughput_correct_per_s": 0.04358364021371363,
-      "cg_mean": 1.0
+      "mean_latency_s": 20.846293235907797,
+      "throughput_correct_per_s": 0.04317314305306555,
+      "cg_mean": 0.9666666666666667
     },
     "4": {
       "n": 4,
-      "accuracy": 0.85,
-      "correct": 17,
-      "mean_latency_s": 28.411185592247058,
-      "throughput_correct_per_s": 0.02991779407586394,
-      "cg_mean": 0.9166666666666666
+      "accuracy": 0.9,
+      "correct": 18,
+      "mean_latency_s": 31.497885586463962,
+      "throughput_correct_per_s": 0.028573346535577294,
+      "cg_mean": 0.95
     }
   },
   "hypotheses": {
@@ -49,7 +49,7 @@
     "H3_beta_eff": true
   },
   "usl_fit": {
-    "alpha": 0.27393138111720444,
-    "beta": 1.4940536014967165
+    "alpha": 0.0,
+    "beta": 0.8197648801672729
   }
 }

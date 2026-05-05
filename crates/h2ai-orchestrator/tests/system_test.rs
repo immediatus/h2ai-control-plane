@@ -325,7 +325,7 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
     assert_eq!(state.explorers_completed, 3);
     assert!(state.proposals_valid >= 1);
     assert!(!out.resolved_output.is_empty());
-    assert!(out.semilattice.valid_proposals.len() >= 1);
+    assert!(!out.semilattice.valid_proposals.is_empty());
     assert_eq!(state.status, "resolved");
 }
 

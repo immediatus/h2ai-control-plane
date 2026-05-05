@@ -25,36 +25,6 @@ impl EventCounter {
     }
 }
 
-#[cfg(test)]
-mod counter_tests {
-    use super::EventCounter;
-
-    #[test]
-    fn zero_interval_never_triggers() {
-        let mut c = EventCounter::new(0);
-        for _ in 0..100 {
-            assert!(!c.tick());
-        }
-    }
-
-    #[test]
-    fn triggers_at_every_multiple_of_interval() {
-        let mut c = EventCounter::new(5);
-        for i in 1usize..=20 {
-            let triggered = c.tick();
-            assert_eq!(triggered, i % 5 == 0, "at event {i}");
-        }
-    }
-
-    #[test]
-    fn interval_of_one_triggers_every_event() {
-        let mut c = EventCounter::new(1);
-        for _ in 0..10 {
-            assert!(c.tick());
-        }
-    }
-}
-
 pub struct SessionJournal {
     nats: Arc<NatsClient>,
     snapshot_interval: usize,
@@ -240,6 +210,36 @@ impl SessionJournal {
                 state.autonomic_retries = e.topologies_tried.len() as u32;
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::EventCounter;
+
+    #[test]
+    fn zero_interval_never_triggers() {
+        let mut c = EventCounter::new(0);
+        for _ in 0..100 {
+            assert!(!c.tick());
+        }
+    }
+
+    #[test]
+    fn triggers_at_every_multiple_of_interval() {
+        let mut c = EventCounter::new(5);
+        for i in 1usize..=20 {
+            let triggered = c.tick();
+            assert_eq!(triggered, i % 5 == 0, "at event {i}");
+        }
+    }
+
+    #[test]
+    fn interval_of_one_triggers_every_event() {
+        let mut c = EventCounter::new(1);
+        for _ in 0..10 {
+            assert!(c.tick());
         }
     }
 }
