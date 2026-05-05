@@ -21,6 +21,7 @@ async fn calibration_produces_valid_coefficients() {
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     assert!(event.coefficients.alpha >= 0.0 && event.coefficients.alpha < 1.0);
@@ -39,6 +40,7 @@ async fn calibration_single_adapter_uses_default_cg() {
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     assert_eq!(event.coefficients.cg_samples, vec![0.7]);
@@ -59,6 +61,7 @@ async fn calibration_two_adapters_empty_corpus_uses_fallback_cg() {
         ],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     // Two adapters with empty corpus → single pair → fallback CG = cfg.calibration_cg_fallback
@@ -86,6 +89,7 @@ async fn calibration_empty_task_prompts_with_two_adapters_produces_cg_zero() {
         ],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     // Should not panic — produces CG from fallback path.
     let event = CalibrationHarness::run(input).await.unwrap();
@@ -106,6 +110,7 @@ async fn calibration_zero_adapters_returns_no_adapters_error() {
         adapters: vec![],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     let result = CalibrationHarness::run(input).await;
     assert!(
@@ -129,6 +134,7 @@ async fn calibration_two_adapters_populates_ensemble() {
         ],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     let ec = event
@@ -227,6 +233,7 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
         ],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     let event = CalibrationHarness::run(input).await.unwrap();
 
@@ -254,6 +261,7 @@ async fn calibration_accepts_empty_corpus() {
         adapters: vec![&a as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     };
     assert!(CalibrationHarness::run(input).await.is_ok());
 }
@@ -289,6 +297,7 @@ async fn calibration_non_empty_corpus_computes_hamming() {
         ],
         cfg: &cfg,
         constraint_corpus: &corpus,
+        embedding_model: None,
     };
     let event = CalibrationHarness::run(input).await.unwrap();
     assert_eq!(event.coefficients.cg_samples.len(), 1);
@@ -308,4 +317,74 @@ async fn cg_mode_is_constraint_profile() {
     let json = serde_json::to_string(&mode).unwrap();
     let back: CgMode = serde_json::from_str(&json).unwrap();
     assert!(matches!(back, CgMode::ConstraintProfile));
+}
+
+#[tokio::test]
+async fn n_eff_cosine_prior_populated_with_embedding_model() {
+    // Diverse stub: orthogonal embeddings for 3 adapters → N_eff ≈ 3.0
+    struct DiverseStub;
+    impl h2ai_context::embedding::EmbeddingModel for DiverseStub {
+        fn embed(&self, text: &str) -> Vec<f32> {
+            if text.contains("stateless") {
+                vec![1.0, 0.0, 0.0]
+            } else if text.contains("CQRS") {
+                vec![0.0, 1.0, 0.0]
+            } else {
+                vec![0.0, 0.0, 1.0]
+            }
+        }
+    }
+    let stub = DiverseStub;
+    let a1 = MockAdapter::new("Use stateless JWT auth approach".into());
+    let a2 = MockAdapter::new("CQRS separates reads and writes".into());
+    let a3 = MockAdapter::new("API boundary isolates services".into());
+    let cfg = H2AIConfig::default();
+    let result = CalibrationHarness::run(CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["First prompt".into(), "Second prompt".into()],
+        adapters: vec![
+            &a1 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &a2 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &a3 as &dyn h2ai_types::adapter::IComputeAdapter,
+        ],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: Some(&stub as &dyn h2ai_context::embedding::EmbeddingModel),
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        result.n_eff_cosine_prior > 1.0,
+        "diverse adapters → n_eff_cosine_prior > 1.0, got {}",
+        result.n_eff_cosine_prior
+    );
+    assert!(
+        result.n_eff_cosine_prior <= 3.0 + 0.01,
+        "n_eff_cosine_prior bounded by N=3, got {}",
+        result.n_eff_cosine_prior
+    );
+}
+
+#[tokio::test]
+async fn n_eff_cosine_prior_fallback_without_embedding_model() {
+    let a = MockAdapter::new("Answer to prompt".into());
+    let cfg = H2AIConfig::default();
+    let result = CalibrationHarness::run(CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["Prompt A".into()],
+        adapters: vec![&a as &dyn h2ai_types::adapter::IComputeAdapter],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: None,
+    })
+    .await
+    .unwrap();
+
+    // Single adapter: fallback = 1.0 + cg_fallback × (1-1) = 1.0
+    assert!(
+        (result.n_eff_cosine_prior - 1.0).abs() < 0.01,
+        "single adapter no model → n_eff_cosine_prior=1.0, got {}",
+        result.n_eff_cosine_prior
+    );
 }

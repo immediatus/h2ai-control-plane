@@ -658,6 +658,71 @@ impl EigenCalibration {
         }
     }
 
+    /// Compute from a pre-normalised N×N cosine kernel matrix K where trace(K) = 1.
+    ///
+    /// The raw cosine matrix C has C[i][i] = 1.0, so trace(C) = N. The caller must
+    /// normalise: K = C / N so that eigenvalues sum to 1 and N_eff ∈ [1, N].
+    /// Clamps negative eigenvalues to 0 (numerical noise from symmetric_eigen).
+    pub fn from_cosine_matrix(k: &DMatrix<f64>, delta: f64) -> Self {
+        let eig = k.clone().symmetric_eigen();
+        let mut evs: Vec<f64> = eig
+            .eigenvalues
+            .iter()
+            .copied()
+            .map(|v| v.max(0.0))
+            .collect();
+        evs.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+        let sum: f64 = evs.iter().sum();
+        let sum_sq: f64 = evs.iter().map(|l| l * l).sum();
+        let n_eff = if sum_sq > 1e-12 {
+            sum * sum / sum_sq
+        } else {
+            1.0
+        };
+
+        let h_div: f64 = evs
+            .iter()
+            .filter(|&&l| l > 1e-12)
+            .map(|&l| {
+                let p = l / sum.max(1e-15);
+                -p * p.ln()
+            })
+            .sum();
+        let h_norm = if evs.len() > 1 {
+            h_div / (evs.len() as f64).ln()
+        } else {
+            0.0
+        };
+
+        let n_pruned = {
+            let mut prev = 0.0f64;
+            let mut pruned = evs.len();
+            for (i, _) in evs.iter().enumerate() {
+                let partial_sum: f64 = evs[..=i].iter().sum();
+                let partial_sum_sq: f64 = evs[..=i].iter().map(|l| l * l).sum();
+                let current = if partial_sum_sq > 1e-12 {
+                    partial_sum * partial_sum / partial_sum_sq
+                } else {
+                    1.0
+                };
+                if i > 0 && current - prev < delta {
+                    pruned = i;
+                    break;
+                }
+                prev = current;
+            }
+            pruned.max(1)
+        };
+
+        Self {
+            n_effective: n_eff,
+            h_diversity: h_norm.clamp(0.0, 1.0),
+            eigenvalues: evs,
+            n_pruned,
+        }
+    }
+
     /// Derive effective correlation from N_eff: ρ_eff = 1 − N_eff/N.
     pub fn rho_eff(&self, n: usize) -> f64 {
         (1.0 - self.n_effective / n as f64).clamp(0.0, 1.0)
@@ -672,6 +737,8 @@ pub enum MultiplicationConditionFailure {
     InsufficientDecorrelation { actual: f64, threshold: f64 },
     #[error("CG_mean {cg_mean:.2} < θ_coord {theta:.2} — common ground below floor")]
     CommonGroundBelowFloor { cg_mean: f64, theta: f64 },
+    #[error("n_eff_cosine_prior {n_eff:.2} < 1 + diversity_threshold {threshold:.2} — pool cannot produce independent perspectives")]
+    InsufficientPoolDiversity { n_eff: f64, threshold: f64 },
 }
 
 impl MultiplicationCondition {
@@ -972,6 +1039,67 @@ mod condorcet_tests {
         assert!(
             (result - fresh_only_beta).abs() < 0.005,
             "recent low-CG sample must dominate: expected ≈{fresh_only_beta:.4}, got {result:.4}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cosine_matrix_tests {
+    use super::*;
+    use nalgebra::DMatrix;
+
+    #[test]
+    fn from_cosine_matrix_full_collapse_n_eff_is_one() {
+        // All-ones normalised matrix: N=3, trace=1, rank=1 → N_eff=1
+        // Raw C = [[1,1,1],[1,1,1],[1,1,1]], K = C/3
+        let n = 3usize;
+        let k = DMatrix::from_element(n, n, 1.0 / n as f64);
+        let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+        assert!(
+            (ec.n_effective - 1.0).abs() < 1e-6,
+            "all-same embeddings → N_eff=1, got {}",
+            ec.n_effective
+        );
+    }
+
+    #[test]
+    fn from_cosine_matrix_full_diversity_n_eff_equals_n() {
+        // Identity / N: eigenvalues all 1/N → N_eff = N
+        let n = 3usize;
+        let k = DMatrix::identity(n, n) / n as f64;
+        let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+        assert!(
+            (ec.n_effective - n as f64).abs() < 1e-6,
+            "orthogonal embeddings → N_eff={n}, got {}",
+            ec.n_effective
+        );
+    }
+
+    #[test]
+    fn from_cosine_matrix_partial_collapse_n_eff_approx_1_8() {
+        // 2 adapters share vector, 1 orthogonal → C=[[1,1,0],[1,1,0],[0,0,1]], K=C/3
+        // eigenvalues ≈ [2/3, 1/3, 0] → N_eff = 1² / (4/9+1/9) = 9/5 = 1.8
+        let n = 3usize;
+        let raw = DMatrix::from_row_slice(n, n, &[1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let k = raw / n as f64;
+        let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+        assert!(
+            (ec.n_effective - 1.8).abs() < 0.01,
+            "partial collapse → N_eff≈1.8, got {}",
+            ec.n_effective
+        );
+    }
+
+    #[test]
+    fn from_cosine_matrix_n2_full_diversity() {
+        // N=2, K=identity/2 → eigenvalues [0.5, 0.5] → N_eff=2
+        let n = 2usize;
+        let k = DMatrix::identity(n, n) / n as f64;
+        let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+        assert!(
+            (ec.n_effective - 2.0).abs() < 1e-6,
+            "N=2 orthogonal → N_eff=2, got {}",
+            ec.n_effective
         );
     }
 }

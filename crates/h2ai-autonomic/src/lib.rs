@@ -7,6 +7,7 @@
 
 pub mod calibration;
 pub mod checker;
+pub mod epistemic;
 pub mod merger;
 pub mod planner;
 pub mod retry;

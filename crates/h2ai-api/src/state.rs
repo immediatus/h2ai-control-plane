@@ -55,6 +55,8 @@ pub struct AppState {
     /// Thompson Sampling bandit for adaptive N selection. Learns optimal ensemble size
     /// from task outcomes across runs. Persisted to NATS KV `H2AI_ESTIMATOR/bandit_state`.
     pub bandit_state: Arc<RwLock<BanditState>>,
+    /// In-memory Prometheus metrics state.
+    pub metrics: std::sync::Arc<tokio::sync::RwLock<crate::metrics::MetricsState>>,
 }
 
 impl AppState {
@@ -101,6 +103,9 @@ impl AppState {
                 tau_spread[1],
             ))),
             bandit_state: Arc::new(RwLock::new(BanditState::new(n_max_init, 0))),
+            metrics: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::metrics::MetricsState::default(),
+            )),
         }
     }
 

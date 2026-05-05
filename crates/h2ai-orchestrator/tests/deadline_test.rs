@@ -29,6 +29,7 @@ async fn make_engine_input<'a>(
         adapters: vec![&cal_adapter as &dyn IComputeAdapter],
         cfg: &cal_cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     })
     .await
     .unwrap();
@@ -74,11 +75,11 @@ async fn make_engine_input<'a>(
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg,
         store,
         nats_dispatch: None,
         registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),

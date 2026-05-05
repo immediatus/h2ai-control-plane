@@ -13,6 +13,8 @@ async fn append_and_replay_preserves_order() {
             task_id: tid.clone(),
             retry_count: 0,
             timestamp: Utc::now(),
+            n_eff_cosine_actual: None,
+            failure_mode: None,
         }))
         .await
         .unwrap();
@@ -43,6 +45,8 @@ async fn replay_from_offset_returns_tail() {
                 task_id: tid.clone(),
                 retry_count: i,
                 timestamp: Utc::now(),
+                n_eff_cosine_actual: None,
+                failure_mode: None,
             }))
             .await
             .unwrap();

@@ -163,6 +163,7 @@ impl TopologyPlanner {
             review_gates: input.review_gates,
             retry_count: input.retry_count,
             timestamp: Utc::now(),
+            constraint_tombstone: None,
         };
         (event, collapse_event)
     }

@@ -27,15 +27,20 @@ X(N) = N / (1 + α(N−1) + β·N(N−1))
 where:
   α = serial fraction — planning, context compilation, final synthesis;
       phases that cannot be parallelized regardless of N
-  β = pairwise reconciliation cost — integrating each new agent's output
-      with every existing one; modulated by how much agents have diverged
+  β = coherence-drag coefficient — the cost each new agent adds to producing a
+      coherent final output. In LLM ensembles β has two physical components:
+        (1) conflict reconciliation: at merge, every contradictory agent-pair must
+            be detected and resolved — O(N²) constraint-fingerprint comparisons.
+        (2) context-attention degradation: as N proposals fill the synthesis LLM's
+            context, retrieval quality for proposals buried deep degrades ("Lost in
+            the Middle", Liu et al. 2023) — super-linear in N.
 ```
 
-The peak of X(N) is `N_max = √((1−α)/β_eff)`. Beyond N_max, adding agents actively degrades output quality because reconciliation cost exceeds the Condorcet quality gain.
+The peak of X(N) is `N_max = √((1−α)/β_eff)`. Beyond N_max, adding agents actively degrades output quality because coherence-drag exceeds the Condorcet quality gain.
 
 **This is not a new observation.** Brook's Law (1975) measured it in human engineering teams — communication channels grow as N(N−1)/2. CPU cache coherency protocols hit the same ceiling at a different scale. LLM agent swarms exhibit the same phenomenon for the same structural reason: pairwise synchronization overhead scales quadratically with group size when agents must reach mutual consistency.
 
-The β parameter is modulated by **Common Ground (CG)** — the semantic embedding cosine agreement rate across the calibration adapter pool. When agents have high CG (compatible partial solutions), reconciliation is cheap and β_eff is small: `β_eff = β₀ × (1 − CG_mean)`. At CG=1 (full overlap) β_eff ≈ 0; at CG=0 β_eff = β₀. CG is measured as the fraction of calibration prompts where `cosine(embed_i, embed_j) > 0.85`.
+The β coefficient is modulated by **Common Ground (CG)** — the agreement rate across the calibration adapter pool, measured as mean pairwise Hamming distance on constraint-satisfaction fingerprints. High CG means agents satisfied compatible constraints; low CG means they diverged and conflict reconciliation is costly. `β_eff = β₀ × (1 − CG_mean)`. At CG=1 (full overlap) β_eff ≈ 0; at CG=0 β_eff = β₀.
 
 H2AI measures both forces, finds their intersection, and enforces a Common Ground floor (θ_coord) before allowing generation to start — preventing split brain before it begins rather than trying to repair it after.
 
@@ -46,7 +51,7 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | Problem | Standard Approach | H2AI Approach |
 |---|---|---|
 | Hallucination amplification | Hope the model self-corrects | Auditor node (τ→0) mathematically blocks propagation |
-| State lives in the model | LLM context window (lossy) | Sovereign CRDTs — orchestrator owns state, models are stateless `f(ctx, τ) → diff` |
+| State lives in the model | LLM context window (lossy) | Orchestrator owns state; models are stateless `f(ctx, τ) → text`. CRDTs track **constraint-satisfaction fingerprints** (metadata), never LLM text. Text is reconciled by the synthesis LLM. |
 | Safety is probabilistic | "Don't do X" in the prompt | Topological interlocks — invalid output cannot reach the human by graph construction |
 | More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates; `constraint_error_cost = 1 − compliance` |
@@ -134,7 +139,7 @@ The calibration harness runs representative tasks through the adapter pool and m
 
 - `α` — the **serial bottleneck fraction**: time spent in planning, context compilation, and final synthesis — phases that serialize regardless of how many agents run in parallel. Measured as the fraction of total wall time that scales with N=1 behavior.
 - `β₀` — the **pairwise reconciliation cost**: how expensive it is to integrate each pair of agents' outputs into a coherent answer. Measured from merge phase timing and output divergence (CG_mean). Scales as N(N−1) in the USL model.
-- `CG(i,j)` — **Common Ground** between every Explorer pair: vocabulary overlap of their outputs × temperature alignment. High CG means agents reached compatible conclusions; low CG means they have split and reconciliation is costly.
+- `CG(i,j)` — **Common Ground** between every Explorer pair: mean pairwise Hamming distance on the binary constraint-satisfaction fingerprints each agent produces (1 bit per constraint: pass/fail). High CG means agents satisfied the same constraints; low CG means they diverged and conflict reconciliation is costly. This is a metadata measurement — the control plane never compares raw LLM text to compute CG.
 
 From these it derives `N_max = sqrt((1−α) / β_eff)` — the agent count at which Condorcet quality gain and reconciliation cost intersect. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
 
@@ -212,9 +217,19 @@ The Auditor spins up on `TopologyProvisionedEvent` — before generation starts.
 
 If all proposals are pruned → `ZeroSurvivalEvent` → the MAPE-K loop adjusts `{N, τ}` and retries. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload.
 
-### 6. Merge — O(1) human decision
+### 6. Merge — two layers, O(1) human decision
 
-Surviving proposals are merged using the provisioned strategy (`ScoreOrdered` / `ConsensusMedian` / `OutlierResistant`). The **Merge Authority UI** presents:
+The merge phase has two deliberately separate layers:
+
+**Layer 1 — Metadata consensus (CRDT semilattice, fast, deterministic):** The control plane aggregates the binary constraint-satisfaction fingerprints from all surviving proposals into a semilattice. This computes, in lock-free Rust, which proposals agree on which constraints. The BFT threshold (e.g. 0.67) is applied to this fingerprint agreement rate — not to raw text similarity. This layer never touches LLM output text. This is where `ConsensusRequiredEvent` fires and `MergeStrategy` is selected.
+
+> **Note on "BFT" in this system:** The `bft_threshold` is a fractional agreement gate (e.g. 0.67) on constraint fingerprints — not PBFT (Practical Byzantine Fault Tolerance). PBFT is designed for adversarial nodes with cryptographic guarantees and costs O(N²) network rounds. Here the "Byzantine nodes" are hallucinating LLMs — stochastic divergence, not malicious actors. A fractional threshold + Krum outlier rejection is the correct tool for epistemic fault tolerance. Full PBFT would be architectural overkill.
+
+**Layer 2 — Semantic reconciliation (synthesis LLM, slow, creative):** Once the metadata layer has identified which proposals cleared the BFT threshold, the synthesis LLM receives only those validated proposals. Synthesis runs in two passes: (1) a **critique pass** at low τ reads all verified proposals and produces a structured gap analysis; (2) a **synthesis pass** reads the proposals plus the critique and produces the final coherent output. The synthesis LLM does what CRDTs cannot: semantic reconciliation of natural-language proposals.
+
+**Diversity gate:** Before synthesis runs, the system checks that the verified proposals are not collectively hallucinated — if mean pairwise Hamming distance across their fingerprints falls below `diversity_threshold`, all proposals are too similar and a MAPE-K retry fires. Synthesis on a mono-culture ensemble produces false confidence.
+
+The **Merge Authority UI** presents:
 
 - **Valid proposals panel** — diff view grouped by target component, τ and adapter shown per proposal
 - **Tombstone panel** — every rejected proposal with Explorer ID, attempted output, rejection reason, and `c_i` weight of the violated constraint. Failures are epistemic data.
@@ -245,7 +260,6 @@ The same law governs coordination-dependent systems at every scale. The paramete
 For AI agents, α captures the serial phases inherent to orchestration (you cannot parallelize task decomposition or final merge), and β captures how expensive it is to find and resolve contradictions between N agents' partial answers. Higher β = more divergence to reconcile = fewer agents before quality peaks.
 
 Reference values: **α ≈ 0.10–0.15, β₀ ≈ 0.015–0.025, N_max ≈ 4–7** for typical LLM ensembles.
-
 ---
 
 ## The Event Vocabulary
@@ -267,7 +281,7 @@ ValidationEvent                    → Auditor: proposal passed
 BranchPrunedEvent                  → Auditor: proposal rejected; violated_constraints[] per-constraint scores + remediation hints; constraint_error_cost = 1 − compliance
 ZeroSurvivalEvent                  → all proposals pruned, autonomic retry fires
 InterfaceSaturationWarningEvent    → active sub-tasks approaching N_max^interface
-ConsensusRequiredEvent             → max(c_i) > 0.85, switching CRDT → BFT
+ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates from ScoreOrdered to ConsensusMedian/OutlierResistant (fractional BFT threshold on fingerprints — not PBFT)
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
 MergeResolvedEvent                 → human O(1) decision, task closed
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
@@ -380,7 +394,7 @@ h2ai-control-plane/
 |---|---|---|
 | Language | Rust + Tokio | Compiler-verified CRDT state, zero-cost FFI to llama.cpp, no GC jitter in β₀ |
 | Event log | NATS JetStream | Single static binary (MB of RAM), Tokio-native `async-nats`, clusters natively |
-| State model | Event-sourced CRDT | α→0 during generation (no locks), full provenance chain, crash recovery = replay |
+| State model | Event-sourced CRDT semilattice | α→0 during generation (no locks), crash recovery = replay. CRDTs operate on constraint-satisfaction fingerprints (metadata). LLM text is reconciled by the synthesis LLM — never by a CRDT. |
 | Local compute | llama.cpp FFI | Zero-cost, 128GB RAM dedicated to weights |
 | Edge agents | `AgentDescriptor { model, tools }` | Any LLM-based container described by model name + capability flags; stateless `f(ctx, τ) → result`, scoped NKeys per task |
 | HTTP | axum | Tokio-native, same async runtime as orchestrator |

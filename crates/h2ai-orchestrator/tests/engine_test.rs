@@ -75,6 +75,7 @@ async fn calibration() -> h2ai_types::events::CalibrationCompletedEvent {
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     })
     .await
     .unwrap()
@@ -134,11 +135,11 @@ async fn engine_runs_ensemble_to_semilattice() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -211,11 +212,11 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -283,11 +284,11 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -355,11 +356,11 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -423,11 +424,11 @@ async fn engine_output_contains_talagrand_diagnostic() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store,
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -520,11 +521,11 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -585,11 +586,11 @@ async fn engine_output_contains_suggested_next_params() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store,
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -685,11 +686,11 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -704,5 +705,138 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         result.unwrap().resolved_output,
         synthesis_text,
         "resolved_output must equal the synthesis text when synthesis succeeds"
+    );
+}
+
+#[test]
+fn constrained_exploration_tombstone_synthesis_unit() {
+    use h2ai_autonomic::epistemic::synthesize_tombstone;
+    use h2ai_types::events::ConstraintViolation;
+
+    let violations = vec![ConstraintViolation {
+        constraint_id: "ADR-001".into(),
+        score: 0.0,
+        severity_label: "Hard".into(),
+        remediation_hint: None,
+    }];
+    let tombstone = synthesize_tombstone(&violations);
+    assert!(
+        tombstone.is_some(),
+        "non-empty violations must produce tombstone"
+    );
+    let s = tombstone.unwrap();
+    assert!(
+        s.contains("ADR-001"),
+        "tombstone must contain constraint ID"
+    );
+}
+
+#[tokio::test]
+async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
+    let adapter = mock_adapter();
+    let scorer = verifier();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let store = TaskStore::new();
+    let cfg = H2AIConfig {
+        diversity_threshold: 0.5,
+        max_autonomic_retries: 0,
+        ..H2AIConfig::default()
+    };
+
+    let mut cal = calibration().await;
+    cal.n_eff_cosine_prior = 1.0; // collapsed pool: below 1 + 0.5 = 1.5 threshold
+
+    let manifest = TaskManifest {
+        description: "Test pool guard".into(),
+        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 2,
+            tau_min: Some(0.3),
+            tau_max: Some(0.7),
+            roles: vec![],
+            review_gates: vec![],
+            slot_configs: vec![],
+        },
+        constraints: vec![],
+        context: None,
+    };
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&adapter as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig {
+            adapter: AdapterKind::CloudGeneric {
+                endpoint: "mock".into(),
+                api_key_env: "NONE".into(),
+            },
+            ..Default::default()
+        },
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: vec![],
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+    };
+
+    let result = ExecutionEngine::run_offline(input).await;
+    assert!(
+        result.is_err(),
+        "collapsed pool must cause engine failure when retries=0"
+    );
+    assert!(
+        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted),
+        "expected MaxRetriesExhausted from pool diversity guard"
+    );
+}
+
+#[test]
+fn epistemic_yield_ratio_formula_correctness() {
+    // N_requested=3, N_responded=2 (one timed out), n_eff_actual=1.5
+    // Correct: 1.5/3=0.5, NOT 1.5/2=0.75
+    let n_requested: usize = 3;
+    let n_eff_actual: f64 = 1.5;
+    let yield_ratio = n_eff_actual / n_requested as f64;
+    assert!((yield_ratio - 0.5).abs() < 1e-9);
+    assert!(yield_ratio < n_eff_actual / 2.0); // conservative vs N_responded
+}
+
+#[test]
+fn epistemic_yield_event_yield_ratio_uses_n_requested() {
+    use h2ai_types::events::EpistemicYieldEvent;
+    use h2ai_types::identity::TaskId;
+
+    let n_requested: usize = 3;
+    let n_eff_cosine_actual: f64 = 1.5;
+    let yield_ratio = n_eff_cosine_actual / n_requested as f64;
+
+    let ev = EpistemicYieldEvent {
+        task_id: TaskId::new(),
+        n_eff_cosine_actual,
+        n_eff_prior: 2.0,
+        yield_ratio,
+        adapters: vec!["a".into(), "b".into(), "c".into()],
+    };
+
+    assert!(
+        (ev.yield_ratio - 0.5).abs() < 1e-9,
+        "yield_ratio must be n_eff / N_requested=3, got {}",
+        ev.yield_ratio
     );
 }

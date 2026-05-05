@@ -9,6 +9,8 @@ fn zero_survival(task_id: &TaskId, retry_count: u32) -> ZeroSurvivalEvent {
         task_id: task_id.clone(),
         retry_count,
         timestamp: Utc::now(),
+        n_eff_cosine_actual: None,
+        failure_mode: None,
     }
 }
 

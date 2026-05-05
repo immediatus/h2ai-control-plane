@@ -83,6 +83,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         adapters: vec![&a1 as &dyn IComputeAdapter, &a2 as &dyn IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &corpus,
+        embedding_model: None,
     })
     .await
     {
@@ -190,11 +191,11 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: corpus,
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 1.0,
         tao_estimator: Arc::new(tokio::sync::RwLock::new(
             TaoMultiplierEstimator::new_with_alpha(0.1),

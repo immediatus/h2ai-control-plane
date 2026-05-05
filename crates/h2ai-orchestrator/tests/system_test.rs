@@ -99,6 +99,7 @@ async fn run_calibration(
         adapters: adapters.to_vec(),
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     })
     .await
     .unwrap()
@@ -172,11 +173,11 @@ async fn system_solves_well_formed_problem() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: constraint_corpus(),
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -243,11 +244,11 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: constraint_corpus(),
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -303,11 +304,11 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: constraint_corpus(),
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
@@ -394,11 +395,11 @@ async fn system_resolves_conflict_via_bft_consensus() {
         tao_config: TaoConfig::default(),
         verification_config: VerificationConfig::default(),
         constraint_corpus: constraint_corpus(),
+        embedding_model: None,
         cfg: &cfg,
         store: store.clone(),
         nats_dispatch: None,
         registry: &registry,
-        embedding_model: None,
         tao_multiplier: 0.6,
         tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
             h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),

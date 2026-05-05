@@ -12,6 +12,7 @@ pub async fn readiness(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"status": "ready", "calibration": cal_status}))
 }
 
-pub async fn metrics() -> String {
-    String::new()
+pub async fn metrics(State(state): State<AppState>) -> String {
+    let m = state.metrics.read().await;
+    m.to_prometheus_text()
 }

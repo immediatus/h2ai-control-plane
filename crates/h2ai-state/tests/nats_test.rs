@@ -20,6 +20,7 @@ fn h2ai_event_serialises_to_tagged_json() {
         single_family_warning: false,
         n_max_lo: 0.0,
         n_max_hi: 0.0,
+        n_eff_cosine_prior: 0.0,
     });
 
     let json = serde_json::to_string(&event).unwrap();
@@ -45,6 +46,7 @@ fn calibration_event_roundtrip() {
         single_family_warning: false,
         n_max_lo: 0.0,
         n_max_hi: 0.0,
+        n_eff_cosine_prior: 0.0,
     };
     let bytes = serde_json::to_vec(&original).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_slice(&bytes).unwrap();

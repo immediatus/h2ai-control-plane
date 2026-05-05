@@ -104,6 +104,7 @@ pub async fn start_calibration(
             adapters: adapter_refs,
             cfg: &state_clone.cfg,
             constraint_corpus: &[],
+            embedding_model: state_clone.embedding_model.as_deref(),
         })
         .await;
 
@@ -115,6 +116,11 @@ pub async fn start_calibration(
                 let mut cal = state_clone.calibration.write().await;
                 *cal = Some(event.clone());
                 drop(cal);
+                // Update Prometheus n_eff_prior gauge
+                {
+                    let mut metrics = state_clone.metrics.write().await;
+                    metrics.n_eff_prior = event.n_eff_cosine_prior;
+                }
                 if let Err(e) = state_clone.nats.put_calibration(&event).await {
                     tracing::error!("failed to persist calibration: {e}");
                 }
@@ -192,6 +198,7 @@ pub async fn current_calibration(State(state): State<AppState>) -> Result<Json<V
             "theta_coord": c.coordination_threshold.value(),
             "cg_mean": c.coefficients.cg_mean(),
             "cg_std_dev": c.coefficients.cg_std_dev(),
+            "n_eff_cosine_prior": c.n_eff_cosine_prior,
         }))),
         None => Err(ApiError::CalibrationRequired),
     }

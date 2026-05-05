@@ -3,8 +3,9 @@ use futures::future::join_all;
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::eval::eval_sync;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
+use h2ai_context::embedding::{cosine_similarity, semantic_jaccard, EmbeddingModel};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
-use h2ai_types::events::CalibrationCompletedEvent;
+use h2ai_types::events::{CalibrationCompletedEvent, CgMode};
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::{
     tau_alignment, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
@@ -43,6 +44,13 @@ pub struct CalibrationInput<'a> {
     /// Constraint corpus for Hamming-distance CG measurement.
     /// Empty slice → CG falls back to `cfg.calibration_cg_fallback`.
     pub constraint_corpus: &'a [ConstraintDoc],
+    /// Optional embedding model for semantic CG measurement.
+    ///
+    /// When `Some`, CG(i,j) is computed as the fraction of calibration prompts where
+    /// `cosine(embed(output_i), embed(output_j)) > cfg.cg_agreement_threshold` — the
+    /// theoretically correct formula that is paraphrase-insensitive.
+    /// When `None`, falls back to Hamming distance on constraint fingerprints.
+    pub embedding_model: Option<&'a dyn EmbeddingModel>,
 }
 
 /// Stateless entry-point for running USL-based adapter calibration.
@@ -116,10 +124,15 @@ impl CalibrationHarness {
             input.cfg.beta_base_default,
         );
 
-        // CG_mean from pairwise Hamming distance on constraint satisfaction fingerprints.
-        // Record one timestamp for the entire calibration run — all pairs are computed
-        // simultaneously so a single timestamp per run is the right granularity.
+        // CG_mean: use embedding cosine when a model is available; fall back to
+        // constraint-profile Hamming otherwise.  Both paths run at calibration time
+        // (once per calibration call) — not per synthesis call.
         let calibration_ts = Utc::now().timestamp() as u64;
+        let cg_mode = if input.embedding_model.is_some() {
+            CgMode::EmbeddingCosine
+        } else {
+            CgMode::ConstraintProfile
+        };
         let (cg_samples, cg_timestamps, ensemble, pairwise_beta) = if adapter_outputs.len() < 2 {
             (
                 vec![input.cfg.calibration_cg_fallback],
@@ -140,6 +153,7 @@ impl CalibrationHarness {
                         &adapter_outputs[i],
                         &adapter_outputs[j],
                         input.constraint_corpus,
+                        input.embedding_model,
                         input.cfg,
                         align,
                     ));
@@ -183,6 +197,7 @@ impl CalibrationHarness {
                         &adapter_outputs[i],
                         &adapter_outputs[j],
                         input.constraint_corpus,
+                        input.embedding_model,
                         input.cfg,
                         align,
                     );
@@ -197,6 +212,45 @@ impl CalibrationHarness {
         } else {
             None
         };
+
+        // ── Cosine N_eff prior — semantic independence of the adapter pool ────
+        // Same adapter_outputs collected above; one extra embedding pass, no extra LLM calls.
+        let n_eff_cosine_prior: f64 = if let Some(model) = input.embedding_model {
+            let n = adapter_outputs.len();
+            let k_prompts = if n > 0 { adapter_outputs[0].len() } else { 0 };
+            if n >= 2 && k_prompts > 0 {
+                use h2ai_types::sizing::EigenCalibration;
+                use nalgebra::DMatrix;
+                // Accumulate pairwise cosine sums over K prompts.
+                let mut c = DMatrix::<f64>::zeros(n, n);
+                for ki in 0..k_prompts {
+                    for i in 0..n {
+                        c[(i, i)] += 1.0;
+                        for j in (i + 1)..n {
+                            let sim = cosine_similarity(
+                                &model.embed(&adapter_outputs[i][ki]),
+                                &model.embed(&adapter_outputs[j][ki]),
+                            )
+                            .max(0.0);
+                            c[(i, j)] += sim;
+                            c[(j, i)] += sim;
+                        }
+                    }
+                }
+                // C[i][j] = mean over K prompts; normalise K_norm = C_avg / N so trace = 1
+                let c_avg = c / k_prompts as f64;
+                let k_norm = c_avg / n as f64;
+                EigenCalibration::from_cosine_matrix(&k_norm, input.cfg.eigen_n_eff_delta)
+                    .n_effective
+            } else {
+                1.0
+            }
+        } else {
+            // No embedding model: fallback formula
+            let n = adapter_outputs.len().max(1) as f64;
+            (1.0 + input.cfg.calibration_cg_fallback * (n - 1.0)).min(n)
+        };
+        // ─────────────────────────────────────────────────────────────────────
 
         let cc = CoherencyCoefficients::new_with_timestamps(
             alpha,
@@ -216,12 +270,13 @@ impl CalibrationHarness {
             eigen,
             timestamp: Utc::now(),
             pairwise_beta,
-            cg_mode: h2ai_types::events::CgMode::ConstraintProfile,
+            cg_mode,
             adapter_families: Vec::new(),
             explorer_verification_family_match: false,
             single_family_warning: false,
             n_max_lo,
             n_max_hi,
+            n_eff_cosine_prior,
         })
     }
 
@@ -269,22 +324,36 @@ impl CalibrationHarness {
         outputs_i: &[String],
         outputs_j: &[String],
         corpus: &[ConstraintDoc],
+        embedding_model: Option<&dyn EmbeddingModel>,
         cfg: &H2AIConfig,
         align: f64,
     ) -> f64 {
-        if corpus.is_empty() || outputs_i.is_empty() || outputs_i.len() != outputs_j.len() {
+        if outputs_i.is_empty() || outputs_i.len() != outputs_j.len() {
             return cfg.calibration_cg_fallback * align;
         }
-        let distances: Vec<f64> = outputs_i
+        let scores: Vec<f64> = outputs_i
             .iter()
             .zip(outputs_j.iter())
             .map(|(oi, oj)| {
-                let fp_i = constraint_fingerprint(oi, corpus);
-                let fp_j = constraint_fingerprint(oj, corpus);
-                hamming_distance(&fp_i, &fp_j)
+                if let Some(model) = embedding_model {
+                    // Embedding cosine: fraction of prompts where cosine > θ_agree.
+                    let sim = semantic_jaccard(oi, oj, Some(model));
+                    if sim >= cfg.cg_agreement_threshold {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    if corpus.is_empty() {
+                        return cfg.calibration_cg_fallback;
+                    }
+                    let fp_i = constraint_fingerprint(oi, corpus);
+                    let fp_j = constraint_fingerprint(oj, corpus);
+                    hamming_distance(&fp_i, &fp_j)
+                }
             })
             .collect();
-        let mean = distances.iter().sum::<f64>() / distances.len() as f64;
+        let mean = scores.iter().sum::<f64>() / scores.len() as f64;
         mean * align
     }
 

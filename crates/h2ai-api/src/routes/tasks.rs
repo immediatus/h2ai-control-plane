@@ -137,6 +137,16 @@ pub async fn submit_task(
 
         match ExecutionEngine::run_offline(input).await {
             Ok(output) => {
+                // Update Prometheus metrics from engine output
+                {
+                    let mut metrics = state_clone.metrics.write().await;
+                    metrics.mapek_mode_collapse_count += output.mode_collapse_count as u64;
+                    let constrained = output
+                        .topology_retry_events
+                        .len()
+                        .saturating_sub(output.mode_collapse_count);
+                    metrics.mapek_constrained_exploration_count += constrained as u64;
+                }
                 for event in output.verification_events {
                     let h2ai_ev = H2AIEvent::VerificationScored(event);
                     match state_clone

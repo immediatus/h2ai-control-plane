@@ -1,570 +1,273 @@
 # H2AI Math Apparatus
 
-This document is the authoritative reference for the mathematical framework underlying H2AI Control Plane.
-It describes the formal definitions used in the codebase, the provenance of each formula,
-and the honest limitations of what is and is not measured.
+The math underlying H2AI Control Plane is built around a single observation: the reliability gain from running N LLM adapters in parallel depends on **two independent diversity signals**, not one. The system measures and uses both:
+
+- **Hamming Common Ground (CG)** — pairwise constraint-profile agreement. Drives the USL coordination cost `β_eff` and the ensemble ceiling `N_max`.
+- **Cosine N_eff** — eigenvalue participation ratio of the embedding cosine kernel. Drives the pool-diversity guard, the MAPE-K failure-mode classifier, and the post-merge `EpistemicYield` event.
+
+This document defines every formula the runtime uses, where it lives in the codebase, and what it does and does not actually measure.
 
 ---
 
-## 1. Theoretical Foundation: Condorcet Jury Theorem
+## 1. Bivariate Common Ground
 
-**Source:** Condorcet (1785), restated in Nitzan & Paroush (1982), extended with correlation by Ladha (1992).  
-**Implemented in:** `crates/h2ai-types/src/sizing.rs` — `condorcet_quality()`
+### 1.1 Hamming CG (constraint profile)
 
-**Statement:** Given N agents each independently correct with probability p > 0.5,
-the probability the majority is correct exceeds p and converges to 1 as N → ∞.
-
-**Definition 1 — Independent ensemble quality:**
+`CgMode::ConstraintProfile` (default). For each pair of adapters (i, j), CG(i, j) is the mean Hamming similarity between their binary constraint-satisfaction vectors over the calibration corpus:
 
 ```
-Q_ind(N, p) = Σ_{k=⌈N/2⌉+1}^{N} C(N,k) × p^k × (1−p)^(N−k)
-             + [if N even: 0.5 × C(N, N/2) × p^(N/2) × (1−p)^(N/2)]
+CG(i, j) = 1 − HammingDistance(profile_i, profile_j) / |corpus|
+CG_mean  = mean over all pairs (i, j) with i < j
 ```
 
-**Definition 2 — Correlated ensemble quality:**
+Source: `crates/h2ai-autonomic/src/calibration.rs`. Falls back to `cfg.calibration_cg_fallback` when no corpus is available.
+
+### 1.2 Cosine N_eff (embedding kernel)
+
+`CgMode::EmbeddingCosine`. For each pair, compute `cos(embed_i, embed_j)` from the calibration prompts. The N×N cosine matrix C is normalised K = C / N so that `trace(K) = 1` and the eigenvalues sum to 1. Then:
 
 ```
-Q(N, p, ρ) = p + (Q_ind(N, p) − p) × (1 − ρ)
+N_eff = (Σ λ_i)² / Σ λ_i²
 ```
 
-where:
-- `p ∈ (0.5, 1]`: per-agent accuracy (probability of correct output)
-- `ρ ∈ [0, 1]`: mean pairwise error correlation (0 = independent, 1 = always err together)
-- Boundary: N=1 → Q=p; ρ=1 → Q=p (no ensemble benefit when all agents err identically)
+This is the participation ratio from portfolio theory (Choueifaty & Coignard 2008). At full independence (K = I/N) it returns N; at full correlation (rank-1 K) it returns 1.
 
-**What this model does NOT claim:**
-- It does not claim LLMs vote on a binary correct/incorrect decision.
-- It does not claim outputs are independent. Adapters from the same model family at different temperatures have correlated errors; ρ > 0 captures this.
-- The proxy `p_mean = 0.5 + CG_mean/2` is a heuristic, not a measurement. Jaccard overlap of token vocabularies does not guarantee semantic agreement. Two adapters can produce similar-looking wrong answers (high CG, low p) or different-looking correct answers (low CG, high p). Use `scripts/baseline_eval.py` for high-stakes deployments.
+Source: `crates/h2ai-types/src/sizing.rs::EigenCalibration::from_cosine_matrix` and `crates/h2ai-autonomic/src/epistemic.rs::compute_n_eff_cosine`.
 
-**See:** `scripts/simulate.py` — Monte Carlo simulation confirms the formula matches empirical
-voting outcomes at 100k trials per parameter set (Δ < 2%).
+### 1.3 Why both
 
-![CJT ensemble quality at varying error correlation ρ](../../scripts/output/cjt_quality.png)
+Hamming CG measures *behavioural* agreement on the constraint corpus. Cosine N_eff measures *semantic* independence at the level of token sequences. They disagree predictably:
 
-*Higher ρ (same model family) rapidly kills the Condorcet gain. At ρ=0.6 the ensemble barely improves over a single agent.*
+- Two adapters can share constraint profiles by accident (high CG_mean) while producing semantically distinct text (high N_eff). Coordination is cheap but exploration is real.
+- Two adapters can produce semantically identical hallucinations (low N_eff) while disagreeing on which constraints they violated (low CG_mean). The committee is degenerate even though it looks decorrelated.
+
+Both signals must be tracked. The runtime uses Hamming CG for the USL coordination cost (because it correlates with merge effort) and cosine N_eff for diversity gating (because it correlates with epistemic independence).
 
 ---
 
-## 2. Parameter Estimation
+## 2. USL — Universal Scalability Law
 
-### 2.1 Common Ground (CG)
-
-**Definition 3 — Target (requires EmbeddingModel):**
+Source: Gunther 1993. Implemented in `crates/h2ai-types/src/sizing.rs::CoherencyCoefficients`.
 
 ```
-CG(i, j) = mean over calibration_prompts of
-            [cosine(embed(output_i), embed(output_j)) > θ_agree]
-
-where θ_agree = 0.85   (agreement threshold in embedding space)
+X(N) = N / (1 + α(N − 1) + β·N(N − 1))
 ```
 
-This is the agreement rate between adapter i and adapter j on a calibration set —
-the fraction of calibration prompts where their outputs are semantically equivalent.
-Matches the blog's specification: "fraction of prompts where agents produce the same answer."
+- `α` — contention (serial-fraction) coefficient, fitted by `usl_fit` in `crates/h2ai-autonomic/src/calibration.rs`.
+- `β`  — coherency-drag coefficient.
 
-**Definition 3B — Current (constraint-profile CG):**
-
-```
-CG(i, j) = hamming_distance(fp_i, fp_j) × tau_alignment(τ_i, τ_j)
-
-where:
-  fp_i  = constraint_fingerprint(output_i) = Vec<bool>
-           fp_i[k] = Hard constraint k passes against output_i
-  hamming_distance(fp_i, fp_j) = |{k : fp_i[k] ≠ fp_j[k]}| / |fp|
-  tau_alignment(τ_i, τ_j)     = exp(−3 × |τ_i − τ_j|) ∈ (0, 1]
-```
-
-**What Definition 3B measures:** Disagreement rate on the Hard-constraint corpus — how
-often adapters produce outputs that satisfy different constraint subsets. Two adapters
-whose outputs satisfy identical constraints score CG = 0 (perfect agreement); outputs
-with entirely opposite constraint profiles score CG = 1 (maximal divergence). This is
-a structural measure: it captures whether agents share the same failure modes, not just
-lexical similarity.
-
-**CG_mean / CG_embed** is the mean of all pairwise CG values across calibration adapters.
-
-### 2.2 Accuracy and Correlation Proxies
-
-When no reference eval set is available, H2AI derives p and ρ from CG_mean:
+The runtime uses an effective β driven by Hamming CG:
 
 ```
-p_mean   = 0.5 + CG_mean / 2   ∈ [0.5, 1.0]
-rho_mean = 1 − CG_mean          ∈ [0, 1]
+β_eff = β₀ × (1 − CG_mean)        bounded at β₀ when CG_mean = 0
 ```
 
-**Limitation:** These are operational proxies, not measured accuracies. For production
-deployments, run `scripts/baseline_eval.py` and set `baseline_accuracy_proxy` in config
-to override the proxy with a measured value.
-
-### 2.3 N_optimal
+Setting `dX/dN = 0` gives the ensemble ceiling:
 
 ```
-N_optimal = argmax_{N=1..9} [ (Q(N, p_mean, rho_mean) − p_mean) / N ]
+N_max = round(√((1 − α) / β_eff))
 ```
 
-This is the **marginal Condorcet gain per agent** above the single-agent baseline.
-N=1 always scores 0 (no gain over itself); the formula finds the N where each additional
-agent contributes the most incremental quality. The cap of 9 is a practical deployment limit.
+A one-σ confidence interval `(n_max_lo, n_max_hi)` is propagated from the empirical CG variance: `n_at_cg(CG_mean ± cg_std_dev)`.
 
-### 2.4 N_it_optimal — Information-Theoretic Ensemble Size
+### 2.1 Context-aware N_max
 
-**Implemented in:** `crates/h2ai-types/src/sizing.rs` — `n_it_optimal(rho)` and `EnsembleCalibration::n_it_optimal()`
+Coordination cost has two physical components: conflict reconciliation (the merge step, reduced by CG) and positional attention degradation in the synthesis context window ("Lost in the Middle", Liu et al. 2023). The latter is orthogonal to CG and is modelled by amplifying β with the context-fill fraction:
 
 ```
-N_it_optimal = ⌈1 + ln(0.5) / ln(1 − ρ)⌉    clamped to [1, 9]
+fill(N)       = min(1, N × proposal_tokens / max_tokens)
+β_ctx(N)      = β_eff × (1 + γ × fill(N))
+N_max_ctx     = solve N = √((1 − α) / β_ctx(N))   (iterative; ≤ 5 iterations)
 ```
 
-Derived from the condition `I_marginal(N) < 0.5 × H(X)`: the marginal information
-gain of adding the N-th agent drops below half of the per-adapter entropy when
-`(1−ρ)^(N−1) < 0.5`, i.e. `N > 1 + ln(0.5)/ln(1−ρ)`.
+`γ` is the attention-sensitivity coefficient.
 
-| ρ | N_it_optimal | interpretation |
-|---|---|---|
-| 0.0 | 1 | independent agents — single is sufficient |
-| 0.3 | 3 | mild correlation |
-| 0.5 | 2 | moderate correlation |
-| 1.0 | 9 | fully correlated — cap applies |
+### 2.2 Temporal decay
 
-Matches Condorcet N_optimal within ±1 for ρ ∈ [0.3, 0.95]. Both are advisory;
-`N_max` from USL is the hard capacity ceiling.
+CG samples carry Unix timestamps. `beta_eff_temporal(now)` weights each sample by `exp(−(now − t) / CG_HALFLIFE_SECS)` with `CG_HALFLIFE_SECS = 604_800` (7 days, Ebbinghaus-style). As samples age, β_eff drifts toward the conservative ceiling β₀ — older calibration data deflates without explicit recalibration.
 
-**See:** `scripts/simulate.py` — I_marginal exponential decay.
+### 2.3 Calibration
+
+The harness runs two phases:
+- **Phase A** with 2 adapters → measures `z_2` (latency at N=2).
+- **Phase B** with M adapters → measures `z_M`.
+
+Analytical USL fit (M ≥ 3):
+
+```
+β₀ = (z_M − z_2 × (M − 1)) / ((M − 1)(M − 2))
+α  = z_2 − 2β₀
+```
+
+When M < 3 the fit falls back to `cfg.calibration_default_alpha` and `cfg.calibration_default_beta`. Online β₀ is then tracked via `beta_from_token_spans` — an EMA over per-merge timing pulled from the live token stream.
 
 ---
 
-## 3. Contention and Coordination
+## 3. Eigenvalue Calibration
 
-### 3.0 Why USL Applies to Agent Swarms — and What β Really Captures
+Source: `crates/h2ai-types/src/sizing.rs::EigenCalibration`.
 
-The Universal Scalability Law was derived for shared-state distributed systems where β captured
-cache-line invalidation messages sent pairwise between N CPUs. At first glance, LLM ensembles
-look nothing like that: adapters run independently, share no memory, send no cache-line messages.
-
-USL still applies — but the physical mechanism is different, and H2AI models both components.
-
-#### Component 1 — Conflict reconciliation (Gunther's original β)
-
-Every agent working on a shared problem must eventually produce output compatible with every
-other agent's output. When agents diverge (split brain), the merge step must detect and resolve
-every contradictory agent-pair. For N=5 agents: 10 pair-checks. For N=8: 28. The quadratic
-growth is structural. The Krum BFT selection and CRDT merge in H2AI perform exactly these
-pairwise checks.
-
-**CG reduces this component.** The coupling `β_eff = β₀ × (1 − CG)` quantifies split-brain
-severity: high CG → agents share the same constraint-satisfaction profiles → fewer contradictions
-to reconcile → lower effective β. At CG < 0.10 the planner forces N_max = 1 (coherence drag
-is unbounded when agents disagree on every constraint).
-
-#### Component 2 — Context-attention degradation ("Lost in the Middle")
-
-In LLM orchestration, synthesis is a single LLM-as-judge call reading all N proposals in one
-prompt — not N² messages. The true cost is not pairwise message-passing but **attention
-degradation**: as N proposals fill the context window, the synthesizer's retrieval quality
-drops sharply for proposals buried in the middle (Liu et al. 2023, "Lost in the Middle").
-
-For N proposals of L tokens each: context = N·L tokens. The synthesis LLM's probability of
-correctly weighting a middle proposal falls approximately as 1/N, creating a super-linear
-quality penalty that USL's quadratic β term accurately models — even though the mechanism
-is attention decay, not cache-line exchange.
-
-**Structured synthesis prompts reduce this component.** Numbered proposals, per-proposal
-summaries, and chain-of-thought synthesis reduce positional degradation without changing
-the semantic content of the proposals. This is the orthogonal lever to CG.
-
-`n_max_context_aware()` explicitly models this: `β_ctx(N) = β_eff × (1 + γ × fill)` where
-`fill = N × proposal_tokens / max_tokens`. As proposals fill the context, γ amplifies β,
-shrinking N_max below the CG-only ceiling. γ is the attention-sensitivity coefficient.
-
-#### The unified "coherence drag" view
-
-β captures **coherence drag** — the total per-agent-pair cost of maintaining mutual consistency:
-
-```
-coherence_drag(N) = β₀ × (1 − CG)          # conflict component, reduced by CG
-                  × (1 + γ × fill(N))       # positional component, reduced by synthesis structure
-```
-
-Both mechanisms produce a quadratic throughput penalty — hence USL applies — but they have
-different mitigations. H2AI exposes both: CG via calibration, positional pressure via
-`n_max_context_aware()`. The N_max ≈ 4–7 ceiling is correct; the physical reasons are dual.
-
-**The serial bottleneck α:** Task decomposition, context compilation, and final synthesis are
-serial by construction. α is a floor, not a choice; adding agents extends the merge step but
-does not shrink the planning step.
-
-**Brook's Law analogy holds.** Adding engineer N introduces N−1 new communication channels.
-In LLM swarms, adding agent N adds N−1 new contradiction-check pairs AND N·L tokens to
-the synthesis context. Both penalties are quadratic in N; both are β.
-
----
-
-### 3.1 Formal Definitions
-
-`CoherencyCoefficients` is produced by `CalibrationHarness` and used for topology provisioning.
-
-```
-alpha, beta_base  — measured via two-phase USL linearization (Gunther 1993).
-
-  Phase A: run first 2 adapters in parallel → T₁ (mean per-adapter time) and T₂ (wall clock).
-  Phase B: run all M adapters in parallel   → T_M (wall clock) and adapter outputs for CG_mean.
-
-  Linearization: z(N) = N·T_parallel(N)/T₁ − 1 = α(N−1) + β₀·N(N−1)
-
-  Analytical solution from z₂ and z_M:
-    β₀ = (z_M − z₂·(M−1)) / ((M−1)(M−2))    [only valid when M ≥ 3]
-    α  = z₂ − 2·β₀
-
-  Clamped: α → [0.05, 0.5], β₀ → [1e-6, 0.1].
-  Falls back to config `alpha_contention` and `beta_base_default` when M < 3
-  or timing is degenerate (negative derived params, near-zero inputs).
-
-beta_eff   = beta_base × (1 − CG_embed)    [Definition 6 — USL+CG coupling]
-             Reduces the *conflict* component of coherence drag.
-             High CG_embed → low beta_eff → higher N_max (agents agree on constraints → cheap merge).
-             Low CG_embed → high beta_eff → lower N_max (agents diverge → expensive merge).
-             At CG_embed = 0.0: beta_eff = beta_base (full baseline coherence drag).
-             At CG_embed = 1.0: beta_eff → 0 (conflict component eliminated).
-             At CG_embed < 0.10: emit ZeroCoordinationQualityEvent, force N_max = 1.
-             Numerical floor: max(beta_eff, 1e-6) prevents degenerate N_max.
-
-             CG_embed source:
-               Preferred: mean over calibration_prompts of [cosine(embed_i, embed_j) > 0.85]
-               Fallback:  constraint Hamming distance (current implementation)
-
-beta_ctx   = beta_eff × (1 + γ × fill(N))  [Definition 6C — context-pressure model]
-             Reduces the *positional* component of coherence drag (§3.0 Component 2).
-             fill(N) = min(1, N × proposal_tokens / max_tokens)
-             γ = attention-sensitivity coefficient (config: gamma_context_pressure)
-             Used by n_max_context_aware(); base n_max() uses beta_eff without pressure term.
-
-N_max      = round(√((1 − α) / β_eff))    [USL Proposition 1]
-             Derived by setting dX/dN = 0 in X(N) = N/(1 + α(N−1) + β·N(N−1)).
-             Beyond N_max the USL throughput curve enters retrograde (X decreasing).
-             Two-tier calibration table (β_eff = β₀ × (1 − CG)):
-               Human teams (α=0.10, β₀=0.0225, CG=0.6): β_eff=0.009  → N_max ≈ 10
-               AI agents  (α=0.15, β₀=0.039,  CG=0.4): β_eff=0.0234 → N_max ≈  6
-```
-
-![USL throughput curves for AI agents and human teams](../../scripts/output/usl_curves.png)
-
-*X(N) peaks at N_max and enters retrograde beyond it — adding agents past the ceiling degrades throughput.*
-
-![β_eff vs CG coupling](../../scripts/output/beta_eff_vs_cg.png)
-
-*β_eff = β₀ × (1 − CG_mean). Operating points show calibrated tiers; a well-calibrated corpus moves the operating point right, raising N_max.*
-
-![N_max vs CG](../../scripts/output/n_max_vs_cg.png)
-
-*N_max rises steeply with CG. Improving constraint corpus quality (higher CG) directly increases the safe ensemble size.*
-
-![Context-pressure model](../../scripts/output/context_pressure.png)
-
-*Left: N_max shrinks as context fill fraction increases, for several γ values. Right: Longer proposals cause stronger positional drag, reducing the safe ceiling relative to the CG-only N_max.*
-
-**Provenance of α, β₀:** Gunther (1993), Universal Scalability Law. The two-phase fit uses
-the linearization `z(N) = α(N−1) + β₀·N(N−1)` with two data points (N=2 and N=M) to solve
-analytically for both parameters. This replaces the earlier single-phase Amdahl inverse
-(which derived only α).
-
-**Provenance of N_max:** USL Proposition 1 — the discrete peak of X(N) under USL.
-Setting dX/dN = 0 yields `N_max = √((1−α)/β_eff)` (rounded to nearest integer). Verified
-against calibration tiers in `scripts/simulate.py`.
-
-### 3.2 What the Calibration Measures — and What It Should
-
-**Ideal measurement of conflict component:** β₀ should be measured from the merge phase —
-`MergeEngine` timing divided by N(N−1)/2 pairs. This gives the true pairwise conflict cost
-per agent pair under the actual task domain. The NATS event log records `ProposalReceivedEvent`
-and `MergeCompletedEvent` timestamps; a future calibration harness can derive β₀ directly.
-
-**Ideal measurement of positional component:** γ (attention-sensitivity) should be measured
-empirically by varying N on a fixed task and fitting the quality curve against `n_max_context_aware()`.
-A planned `scripts/baseline_eval.py` extension will add a γ calibration mode.
-
-**Current measurement:** The two-phase timing harness measures wall-clock time for N concurrent
-adapter API calls. This captures I/O scheduling serialization — a proxy for coherence drag
-baseline. It is conservative: scheduling overhead is bounded, while task-domain conflict cost
-varies with problem complexity, and positional degradation is not captured at all by timing alone.
-
-**Practical consequence:** β₀ from timing underestimates true coherence drag on complex reasoning
-tasks and overestimates on template-like tasks. The CG coupling (`β_eff = β₀ × (1 − CG_mean)`)
-corrects the conflict component dynamically. The positional component is corrected by
-`n_max_context_aware()` when `proposal_tokens` and `max_tokens` are provided.
-
-**When M < 3:** The analytical solution requires two distinct data points (N=2 and N=M). With M < 3, the harness falls back to config defaults `alpha_contention` and `beta_base_default`. These are empirically reasonable starting values; the CG_mean coupling adjusts β_eff in real time regardless of how β₀ was obtained.
-
-### 3.3 Eigenvalue Calibration (N_effective)
-
-**Source:** Portfolio theory (Choueifaty & Coignard 2008, "Toward Maximum Diversification").  
-**Implemented in:** `crates/h2ai-types/src/sizing.rs` — `EigenCalibration::from_cg_matrix()`
-
-**Definition 6B — Effective adapter count:**
-
-```
-Σ ∈ ℝ^(N×N)   pairwise CG similarity matrix (Σ_ij = CG(adapter_i, adapter_j))
-λ_1 ≥ ... ≥ λ_N = eigenvalues of Σ
-
-N_eff     = (Σ λᵢ)² / Σ λᵢ²        [participation ratio]
-H_div     = −Σ (λᵢ/Σλ) × log(λᵢ/Σλ)
-H_norm    = H_div / log(N)           [normalized diversity ∈ [0,1]]
-ρ_eff     = 1 − N_eff/N              [effective correlation from matrix]
-```
-
-N_eff is a strictly more informative measure than the scalar ρ_mean = 1 − CG_mean.
-Example: 5 adapters with 2 independent + 3 in a tight cluster give N_eff ≈ 2.5
-but scalar CG_mean proxy gives ρ_mean ≈ 0.27 → N_eff_scalar ≈ 3.9 (over-estimate by 55%).
-
-**Adapter pruning rule:** Add adapter N+1 only if N_eff increases by ≥ 0.05.
-For typical LLM ensembles with ρ ≈ 0.9: optimal N = 2 (further adapters redundant).
-The result is stored in `EigenCalibration.n_pruned`.
-
-**Provisioning ceiling:** `N_optimal` (`n_pruned`) is used as a provisioning ceiling in
-`h2ai-autonomic/src/planner.rs` — `ProvisionInput.eigen`. After computing `n_max_usl` from
-USL/context pressure, the planner applies: `n_max = n_max_usl.min(n_pruned)`.
-This ensures the ensemble never exceeds the eigenvalue-derived stopping point even when
-the USL capacity ceiling is higher. Guard: skipped when `n_pruned == 0` (degenerate).
-
-**See:** `scripts/simulate.py` — validates formula against uniform and heterogeneous
-correlation matrices; stopping rule comparison.
-
-![N_eff participation ratio vs scalar ρ](../../scripts/output/n_eff_vs_rho.png)
-
-*At ρ=0.9 (typical same-family LLM correlation), N_eff collapses to ≈1.4 even for m=12 adapters — the eigenvalue stopping rule prunes the ensemble to N=2.*
-
-### 3.4 Temporal Decay for CG Calibration
-
-**Implemented in:** `crates/h2ai-types/src/sizing.rs` — `CoherencyCoefficients::beta_eff_temporal()`
-
-CG samples become stale as models are updated and environments drift.
-`beta_eff_temporal` applies Ebbinghaus exponential decay to down-weight old samples:
-
-```
-w(t_i) = exp(-(now_secs − t_i) / CG_HALFLIFE_SECS)
-
-CG_eff = Σ(CG_i × w(t_i)) / Σ(w(t_i))
-
-beta_eff_temporal = max(beta_base × (1 − CG_eff), 1e-6)
-```
-
-where `CG_HALFLIFE_SECS = 604_800` (7 days): a sample one week old contributes at 50% weight.
-
-**Conservative aging:** As all samples age past ~35 half-lives, `CG_eff → 0` and
-`beta_eff_temporal → beta_base` (the conservative ceiling with no CG discount).
-This reduces N_max and creates natural pressure to re-calibrate.
-
-**Fallback asymmetry:**
-- Mismatched/empty timestamps → `beta_eff()` (no timing info; neutral unweighted result)
-- Weight exhaustion (all samples ancient) → `beta_base` (conservative; timing present but stale)
-
----
-
-## 4. Attribution Model
-
-**Implemented in:** `crates/h2ai-orchestrator/src/attribution.rs`
-
-```
-baseline_quality   = p_mean
-topology_gain      = Q(N, p_mean, rho_mean) − p_mean     [Condorcet gain]
-tao_multiplier     = tao_per_turn_factor ^ (turns − 1)
-error_remaining    = (1 − Q(N, p_mean, rho_mean)) × verification_filter_ratio × tao_multiplier
-total_quality      = 1 − error_remaining,  clamped to [p_mean, 1.0]
-```
-
-`topology_gain` is the marginal ensemble quality improvement predicted by Condorcet JT.
-`tao_gain` and `verification_gain` are upper-bound estimates of per-phase contributions;
-they are informational and do not partition `total_quality` additively.
-
----
-
-## 5. Semantic Cluster Coherence
-
-**Implemented in:** `crates/h2ai-state/src/krum.rs`, `crates/h2ai-state/src/bft.rs`
-
-Krum and Multi-Krum BFT selection require an honest cluster assumption: honest agent outputs
-must cluster tightly in metric space so Krum can distinguish them from Byzantine outliers.
-This assumption holds for _semantic_ distance but not necessarily for _lexical_ distance —
-LLM paraphrases of the same solution may share few tokens while being semantically identical.
-
-### 5.1 Mean Pairwise Distance
-
-```
-mean_pairwise_distance(proposals, embedding_model)
-  = mean over all (i, j) pairs of (1 − semantic_jaccard(output_i, output_j, embedding_model))
-```
-
-All pairwise calls are evaluated concurrently.
-
-**Token fallback:** When `embedding_model` is `None`, uses `1 − token_jaccard(i, j)` (token Jaccard — a valid metric satisfying the triangle inequality, required for the Blanchard et al. 2017 BFT proof). This is distinct from `semantic_jaccard(…, None)` which returns exact-string equality; the BFT path intentionally uses token Jaccard to preserve metric structure.
-
-### 5.2 Cluster Coherence Guard
-
-```
-cluster_coherent(proposals, embedding_model) = mean_pairwise_distance(proposals, embedding_model) < MAX_CLUSTER_DIAMETER
-```
-
-where `MAX_CLUSTER_DIAMETER = 0.7` (constant in `krum.rs`).
-
-**Effect:** Before applying Krum BFT selection, the merger checks whether the surviving proposals
-form a coherent cluster. If `cluster_coherent` returns false, the Blanchard et al. geometric
-assumption is violated and Krum's BFT guarantee does not hold. The fallback chain is:
-
-```
-cluster_coherent → semantic Krum / Multi-Krum
-cluster incoherent + embedding_model present → Weiszfeld geometric median (breakdown 50%)
-cluster incoherent + no embedding model → ConsensusMedian (token Fréchet median)
-```
-
-`Weiszfeld` (Pillutla et al. 2019, arXiv:1912.13445) minimises the sum of Euclidean distances
-to all input vectors and tolerates ⌊n/2⌋ − 1 corrupted inputs (breakdown point 1/2, Vardi &
-Zhang 2000). It operates directly in the embedding's Euclidean space, giving a metric guarantee
-that token-based ConsensusMedian lacks. When no embedding model is provided, ConsensusMedian
-is retained as a zero-cost fallback that does not require the cluster assumption.
-
-**Why semantic distance matters:** If honest agents produce lexically diverse paraphrases of
-the same correct answer (high token distance, low semantic distance), token-based
-`mean_pairwise_distance` would incorrectly classify a coherent cluster as incoherent,
-triggering a needless fallback. Semantic distance avoids this.
-
----
-
-## 6. Known Limitations and Future Work
-
-| Limitation | Current mitigation | Future path |
-|---|---|---|
-| p and ρ proxied from CG_mean, not measured | `baseline_accuracy_proxy` config override | Per-task accuracy via reference eval sets |
-| τ alignment always 1.0 during calibration | Documented — all adapters run same τ | Multi-τ calibration with role-specific prompts |
-| N_optimal assumes uniform inference cost | T_synthesis = T_inference approximation | Measure actual synthesis latency |
-| Condorcet assumes majority vote; H2AI uses merge | Merge + verification approximates majority | Direct accuracy measurement of merge outcome |
-| Cluster coherence check is O(n²) pairwise calls | join_all parallelises all calls; n ≤ 9 in practice | Batch embedding endpoint for ≥ 10 proposals |
-| β₀ calibration captures scheduling overhead, not semantic conflict | CG coupling corrects conflict component dynamically | Measure β₀ from MergeEngine timing spans |
-| γ (attention-sensitivity) not calibrated per model family | `n_max_context_aware()` accepts γ as a parameter; default γ=1 | Empirical γ calibration via quality-vs-N sweep |
-| CG reduces conflict component of β only; positional degradation unaddressed by CG | `n_max_context_aware()` models positional component | Structured synthesis prompts as `SynthesisConfig` parameter |
-
----
-
-## 7. Simulation Evidence
-
-```bash
-python3 scripts/simulate.py   # all visualization sections: USL curves, β_eff coupling, N_max vs CG, CJT quality, eigenvalue N_eff, Talagrand histograms
-```
-
-The simulations verify:
-
-**Condorcet / Ensemble:**
-1. Formula boundary conditions — N=1 → Q=p; ρ=1 → Q=p
-2. Monotonicity — Q non-decreasing in N for p > 0.5, ρ < 1
-3. Monte Carlo match — empirical voting at 100k trials matches formula within 2%
-4. Proxy sensibility — derived p and ρ produce valid n_optimal values
-
-**Cluster coherence and BFT:**
-5. Semantic paraphrase cluster — lexically distant but semantically equivalent proposals have low cosine distance
-6. Token Krum at f=1 — honest selection rate 0.9% (cluster guard fires 100% with 90% paraphrase rate)
-7. Embedding Krum / Weiszfeld at f=1,2 — honest selection rate 100%
-
-**USL calibration (section 3):**
-8. Two-phase parameter recovery — `usl_fit()` recovers α and β₀ from simulated timing, error < 0.01 (α) < 0.002 (β₀)
-9. M<3 fallback — returns None when fewer than 3 adapters measured
-10. N_max Proposition 1 — `round(√((1−α)/β_eff))` gives 6 (AI agents, CG=0.4), 10 (Human teams, CG=0.6)
-
-**Coherence drag — dual-component model (section 3):**
-11. β₀×(1−CG) is bounded — β_eff ∈ [0, β₀]; no singularity as CG varies
-12. Proportional coupling verified: β_eff = 0.60×β₀ at CG=0.4 (AI tier); β_eff = 0.40×β₀ at CG=0.6 (Human tier)
-13. Context-pressure model — `β_ctx = β_eff × (1 + γ × fill)` converges in ≤ 5 iterations; N_max_ctx < N_max for fill > 0
-14. Attention-degradation approximation — for fill ∈ [0, 1] and γ=1: N_max shrinks 15–40% vs CG-only ceiling, consistent with "Lost in the Middle" (Liu et al. 2023) quality curves at N=4–8
-
-**CJT vs conformal (section 1):**
-13. CJT over-predicts quality 5–15pp at ρ ≥ 0.6 (typical LLM same-family correlation)
-14. Conformal set size > 1 correctly signals no consensus; triggers TAO retry
-
-**Information-theoretic N_optimal (innovation synthesis):**
-15. I_marginal(N) = H(X)×(1−ρ)^(N-1) — exponential decay, matches USL retrograde N_max within ±1 at ρ ∈ [0.3, 0.95]
-16. Slepian-Wolf η drops below 0.5 at N=3 for ρ=0.7 — beyond N=3 each adapter is >50% redundant
-17. USL and Kuramoto mean-field diverge < 0.05 for N ≤ 9 at AI-agent tier — confirms analogy
-
-**Eigenvalue N_eff (innovation synthesis):**
-18. N_eff = (Σλ)²/Σλ² matches Choueifaty formula for uniform correlation; differs for heterogeneous Σ
-19. Scalar ρ_mean overstates N_eff by 55% for {2 independent + 3 clustered} adapter structure
-20. Eigenvalue stopping rule prunes to N=2 at ρ=0.9 (9 adapters → 1.4 effective ideas)
-
----
-
-## 8. Talagrand Ensemble Calibration Diagnostic
-
-**Implemented in:** `crates/h2ai-orchestrator/src/diagnostics.rs` — `TalagrandDiagnostic`  
-**Inspired by:** Weather ensemble forecasting (Leutbecher & Palmer 2008, ECMWF).
-
-After each verification phase, H2AI records where the runner-up proposal ranks in the
-sorted verification score list. Over T ≥ 20 runs, the rank histogram should be uniform.
-
-**Definition 8 — Rank histogram:**
-
-```
-For run t with N adapter proposals, sort scores descending: s₁ ≥ s₂ ≥ ... ≥ s_N.
-Rank r_t = position of the runner-up in the score ordering (r_t ∈ {1, ..., N}).
-Histogram H[r] = count{t : r_t = r} for r = 1..N.
-
-Uniformity test: χ² = Σ_r (H[r] − T/N)² / (T/N)
-Calibrated iff χ² < 3.84 (χ²(1) at α=0.05 approximation).
-```
-
-**Interpretation:**
-- Flat histogram → well-calibrated ensemble
-- U-shape (high tail counts) → over-confident: adapters too certain, expand τ spread
-- Λ-shape (high center counts) → under-dispersed: all adapters mediocre, try diverse model families
-
-**Key advantage:** No ground-truth labels needed. Quality measured from internal consistency alone.
-
-![Talagrand rank histogram shapes](../../scripts/output/talagrand_histograms.png)
-
-*Flat = well-calibrated (no action). U-shape = over-confident adapters (increase τ spread). Λ-shape = under-dispersed (emit DiversityWarning, try diverse model families).*
-
-**See:** `scripts/simulate.py` — Talagrand histogram shapes for calibrated, over-confident, and
-under-dispersed ensembles.
-
----
-
-## 9. Hybrid Retrieval and RRF Fusion
-
-**Implemented in:** `crates/h2ai-context/src/fusion.rs`, `crates/h2ai-context/src/embedding.rs`
-
-### 9.1 EmbeddingModel Trait
-
-`EmbeddingModel` (`crates/h2ai-context/src/embedding.rs`) provides a local dense-vector
-embedding path:
+Two constructors, both producing the same output shape (`n_effective`, `h_diversity`, `eigenvalues`, `n_pruned`):
 
 ```rust
-trait EmbeddingModel: Send + Sync {
-    fn embed(&self, text: &str) -> Vec<f32>;  // must return L2-normalised vector
-}
+EigenCalibration::from_cg_matrix(sigma, delta)        // Hamming CG similarity matrix
+EigenCalibration::from_cosine_matrix(k, delta)        // pre-normalised cosine kernel (trace = 1)
 ```
 
-`semantic_jaccard(a, b, model: Option<&dyn EmbeddingModel>)` returns cosine similarity
-when a model is present, and falls back to **exact-string equality** when `None` (1.0 for
-identical strings, 0.0 for all others). Token Jaccard is not used by `semantic_jaccard`;
-BFT selection paths (§5) maintain their own local token Jaccard implementation to preserve
-the metric-space guarantee required by the Blanchard BFT proof.
+Both compute symmetric eigendecomposition, clamp negative eigenvalues to 0 (numerical noise), and return:
 
-### 9.2 Reciprocal Rank Fusion (RRF)
+- `n_effective = (Σ λ)² / Σ λ²` — participation ratio.
+- `h_diversity = −Σ p_i ln p_i / ln N` — normalised Shannon entropy of the eigenvalue spectrum.
+- `n_pruned` — the smallest N where adding the next adapter raises N_eff by less than `delta` (default `cfg.eigen_n_eff_delta = 0.05`).
+- `rho_eff(n) = 1 − N_eff / n` — derived effective correlation.
 
-**Source:** Cormack, Clarke & Buettcher (2009), SIGIR.
+`from_cg_matrix` is invoked at calibration time to produce the diversity-prior structure stored in `CalibrationCompletedEvent.eigen`. `from_cosine_matrix` is invoked both at calibration time (for `n_eff_cosine_prior`) and at MAPE-K decision time (for `n_eff_cosine_actual` from the wave's raw outputs).
+
+---
+
+## 4. Multiplication Condition Gates
+
+Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Four failure modes:
+
+1. **InsufficientCompetence** — `p_mean ≤ min_competence`. Adding more adapters makes the committee worse.
+2. **InsufficientDecorrelation** — `rho_mean ≥ max_correlation`. Errors are correlated; CJT gain collapses.
+3. **CommonGroundBelowFloor** — `cg_mean < θ_coord`. Adapters too epistemically distant; coordination cost exceeds diversity benefit.
+4. **InsufficientPoolDiversity** — `n_eff_cosine_prior < 1.0 + diversity_threshold`. Pool is semantically near-degenerate.
+
+The first three are checked at Phase 2.5 by `MultiplicationChecker::check`. The fourth is checked at Phase 2.6 by the engine directly when `cfg.diversity_threshold > 0`.
+
+---
+
+## 5. Condorcet Jury Theorem — quality with correlation
+
+Source: `crates/h2ai-types/src/sizing.rs::condorcet_quality`. Combines Condorcet (1785), Nitzan & Paroush (1982), and Ladha (1992):
 
 ```
-rrf_score(d) = Σ_i  1 / (k + rank_i(d))
+Q_ind(N, p) = Σ_{k > N/2} C(N, k) p^k (1 − p)^(N − k)
+              + (if N even) 0.5 × C(N, N/2) × p^(N/2) × (1 − p)^(N/2)
+
+Q(N, p, ρ)  = p + (Q_ind(N, p) − p) × (1 − ρ)
 ```
 
-where `k = 60` (standard constant) and `rank_i(d)` is the 1-based position of document `d`
-in ranked list `i`. Documents absent from a list contribute nothing from that list.
-Lower `k` amplifies top-rank advantage; higher `k` flattens the distribution.
+Boundary cases enforced in code: `N = 1 → Q = p`, `ρ = 1 → Q = p`, `p ≤ 0 → Q = 0`, `p ≥ 1 → Q = 1`.
 
-### 9.3 Hybrid Search
+`EnsembleCalibration::from_cg_mean` derives p and ρ from CG_mean using two proxies:
 
-`hybrid_search(query, docs, model, k)` fuses two independently ranked streams via RRF:
+```
+p_mean   = 0.5 + CG_mean / 2
+rho_mean = 1 − CG_mean
+```
 
-1. **BM25 stream** — `bm25_search(query, docs)` using a per-call tantivy RAM index (Okapi BM25)
-2. **Embedding cosine stream** — `rank_by_embedding(query, doc, model)` when model is present
+`EnsembleCalibration::from_measured_p` accepts a directly measured baseline accuracy from `scripts/baseline_eval.py` and switches `prediction_basis` from `Heuristic` to `Empirical`.
 
-**Why both streams:** BM25 finds exact term matches reliably; embeddings find semantic
-equivalents. A query for "JWT" ranks "bearer token authentication" near-zero with
-BM25 but near-one with a domain-trained embedding. RRF prevents either
-stream from dominating when they disagree.
+`n_optimal` is the N that maximises `(Q(N, p, ρ) − p) / N` — the marginal Condorcet gain per adapter — capped at `max_n` (default 9 in production config).
+
+### 5.1 Information-theoretic ceiling
+
+Source: `n_it_optimal(rho)`. Returns the smallest N where `(1 − ρ)^(N−1) < 0.5`, i.e. where the marginal information gain drops below half the per-adapter entropy. Matches the Condorcet `n_optimal` within ±1 for ρ ∈ [0.3, 0.95].
+
+### 5.2 Honest limitation
+
+The CJT is a theorem about **independent voters**. The system uses `(1 − ρ)` as a correction term, but it does *not* directly measure ρ — it proxies it from `1 − CG_mean` (Hamming) or `1 − N_eff / N` (cosine). When two adapters from the same family hallucinate the same answer, both proxies underestimate the true correlation. This is mitigated by Phase 2.6 (cosine N_eff guard), `single_family_warning` on `CalibrationCompletedEvent`, and `explorer_verification_family_match` flagging — but not eliminated. Empirical baseline accuracy from `scripts/baseline_eval.py` upgrades `PredictionBasis::Heuristic → Empirical` for the p estimate; the ρ estimate remains a proxy.
+
+---
+
+## 6. MAPE-K Failure-Mode Classification
+
+Source: `crates/h2ai-autonomic/src/epistemic.rs::classify_failure_mode`.
+
+After a `ZeroSurvival` event, the engine computes `n_eff_cosine_actual` from the wave's raw outputs and classifies:
+
+```
+classify(n_eff, n_requested, diversity_threshold) =
+    ConstrainedExploration   if n_eff > diversity_threshold × n_requested
+    ModeCollapse             otherwise
+```
+
+The boundary depends on `diversity_threshold` (in `H2AIConfig`). At 0.0 the boundary is also 0.0 — every positive N_eff classifies as `ConstrainedExploration`. Production deployments set it to a meaningful value (e.g. 0.5).
+
+Per-mode planner action:
+
+| FailureMode | Diagnosis | Retry action |
+|---|---|---|
+| `ConstrainedExploration` | Diverse generation (high N_eff), but no proposal satisfied constraints. | Synthesise a Constraint Violation Tombstone — IDs and severity labels only — and pin it onto the next `TopologyProvisioned`. Topology unchanged. |
+| `ModeCollapse` | Pool-correlated hallucination (low N_eff). | Increment `adapter_rotation_offset` modulo pool size; the next wave samples a rotated subset. |
+
+Both are bookkept on Prometheus counter `h2ai_mapek_interventions_total{failure_mode="..."}`.
+
+### 6.1 Tombstone synthesis
+
+`synthesize_tombstone(violations: &[ConstraintViolation])` produces a single dense string containing each violated `constraint_id`, `severity_label`, and `score`. It deliberately does *not* include raw proposal text or remediation hints — the tombstone keeps context fill α low and avoids "Lost in the Middle" attention degradation on retries.
+
+---
+
+## 7. Epistemic Yield
+
+Source: `crates/h2ai-types/src/events.rs::EpistemicYieldEvent`.
+
+After `MergeResolved`, the engine spawns an async task that publishes:
+
+```
+yield_ratio = n_eff_cosine_actual / N_requested
+```
+
+The denominator is `N_requested`, not `N_responded`. The framing is financial: the operator pays for N adapters and receives `n_eff_actual` independent perspectives. A yield ratio below 1.0 means some of the requested adapters either failed or contributed redundant output. Below 0.5 indicates persistent semantic redundancy and is grounds for adapter pool review.
+
+This event never blocks task close. It is an observability signal, not a control signal.
+
+---
+
+## 8. Merge Strategy Selection
+
+Source: `crates/h2ai-types/src/sizing.rs::MergeStrategy::from_role_costs`.
+
+A three-tier ladder driven by the maximum role error cost `c_i` across surviving proposals:
+
+```
+max_ci = max(role_error_costs)
+
+if krum_f > 0 AND max_ci > krum_threshold     → OutlierResistant { f: krum_f }
+elif max_ci > bft_threshold                   → ConsensusMedian
+else                                          → ScoreOrdered
+```
+
+- `ScoreOrdered` — pick the highest verification score (cheapest, no Byzantine resistance).
+- `ConsensusMedian` — pick the proposal with highest mean Jaccard similarity to the rest. Honest limitation: not Byzantine-resistant; vulnerable at f ≥ n/2.
+- `OutlierResistant{f}` — Krum (Blanchard et al. 2017): pick the proposal with smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space. Quorum requirement: `n ≥ 2f + 3`.
+- `MultiOutlierResistant{f, m}` — apply OutlierResistant iteratively to keep m survivors, then take the highest verification score.
+
+---
+
+## 9. Attribution
+
+Source: `crates/h2ai-orchestrator/src/attribution.rs::HarnessAttribution::compute`.
+
+Per-task quality decomposition:
+
+```
+Q_total = base_quality
+        × verification_filter_ratio
+        × tao_uplift_factor
+        × topology_correction(rho_eff)
+        + synthesis_gain
+```
+
+- `base_quality` — `Q(N, p, ρ)` from the calibrated CJT chain.
+- `verification_filter_ratio` — fraction of proposals that survived Phase 3.5 + Phase 4.
+- `tao_uplift_factor` — derived from the live `TaoMultiplierEstimator`, which is updated each task with turn-1 score vs. final score pairs.
+- `topology_correction(rho_eff)` — soft penalty when the eigen-derived ρ exceeds the calibrated `rho_mean`.
+- `synthesis_gain` — `Q(synthesis) − max(Q(individuals))` when Phase 5a runs; 0 otherwise.
+
+Bootstrap intervals over CG samples (`bootstrap_interval`, 1000 resamples) provide `q_interval_lo` / `q_interval_hi` whenever ≥ 2 CG samples are available. The Talagrand rank histogram (`TalagrandDiagnostic::from_verification_scores`) supplies a calibration state used as a soft ρ correction in `S7`.
+
+---
+
+## 10. Honest Limitations
+
+The math used in this system is calibrated to specific assumptions. They are listed here so they are not forgotten:
+
+- **CJT independence.** The theorem assumes independent voters. The runtime corrects with `(1 − ρ)`, but ρ is proxied — not directly measured. Cross-family pools, single-family warnings, and the cosine N_eff guard mitigate this; they do not eliminate it.
+- **CG as a proxy chain.** The flow is `CG → β_eff → N_max` and `CG → (p, ρ) → Q`. Each arrow is a heuristic. Empirical validation upgrades `p` to measured; ρ remains a proxy.
+- **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 reduces but does not solve this.
+- **Synthesis gain is local.** `synthesis_gain` is measured against the same verification adapter that scored the individual proposals. A verifier blind spot inflates both terms equally and cancels out.
+- **No oracle.** Without a `q_measured` from an external oracle, `q_predicted` is the only quality signal. The bootstrap interval reflects CG variance, not ground-truth uncertainty.

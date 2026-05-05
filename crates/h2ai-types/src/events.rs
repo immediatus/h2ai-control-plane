@@ -16,6 +16,40 @@ pub enum CgMode {
     /// Falls back to `cfg.calibration_cg_fallback` when no constraint corpus is provided.
     #[default]
     ConstraintProfile,
+    /// CG is the fraction of calibration prompts where cosine(embed_i, embed_j) > θ_agree.
+    /// Semantically robust: paraphrase-insensitive, matches the theoretical specification.
+    /// Requires the `fastembed-embed` feature and an `EmbeddingModel` in `AppState`.
+    EmbeddingCosine,
+}
+
+/// Classifies why all proposals were pruned in a MAPE-K zero-survival wave.
+///
+/// Computed synchronously from cosine N_eff before re-provisioning.
+/// Drives retry routing: ConstrainedExploration injects a tombstone;
+/// ModeCollapse rotates the adapter selection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureMode {
+    /// Agents explored diverse solution areas but none satisfied constraints.
+    /// Retry: same topology, inject Constraint Violation Tombstone.
+    ConstrainedExploration,
+    /// Agents converged on a shared hallucination (N_eff ≈ 1).
+    /// Retry: rotate adapter selection or widen τ_spread.
+    ModeCollapse,
+}
+
+/// Emitted asynchronously after `MergeResolvedEvent` — does not block task close.
+///
+/// Measures semantic independence of the surviving proposals. `yield_ratio` uses
+/// `N_requested` as the denominator (not `N_responded`) — financial yield: you paid
+/// for N adapters, you received `n_eff_cosine_actual` independent perspectives.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpistemicYieldEvent {
+    pub task_id: TaskId,
+    pub n_eff_cosine_actual: f64,
+    pub n_eff_prior: f64,
+    /// n_eff_actual / N_requested
+    pub yield_ratio: f64,
+    pub adapters: Vec<String>,
 }
 
 /// Emitted when the calibration harness finishes measuring α, β₀, and CG for the adapter pool.
@@ -59,6 +93,11 @@ pub struct CalibrationCompletedEvent {
     /// `n_max_lo ≤ n_max() ≤ n_max_hi`. Wide interval = high CG measurement variance.
     #[serde(default)]
     pub n_max_hi: f64,
+    /// Pool-level semantic independence measured at calibration time via cosine N_eff.
+    /// Used as the Bayesian prior at task provisioning. `0.0` when no EmbeddingModel
+    /// is present (fallback formula: 1.0 + cg_fallback × (N − 1) is computed in the harness).
+    #[serde(default)]
+    pub n_eff_cosine_prior: f64,
 }
 
 /// Point-in-time snapshot of a task's in-memory state for crash-recovery replay optimization.
@@ -100,6 +139,11 @@ pub struct TopologyProvisionedEvent {
     pub review_gates: Vec<ReviewGate>,
     pub retry_count: u32,
     pub timestamp: DateTime<Utc>,
+    /// Dense constraint violation summary injected on `ConstrainedExploration` retries.
+    /// Contains constraint IDs and c_i weights only — never raw proposal text.
+    /// `None` on wave 1 and on `ModeCollapse` retries.
+    #[serde(default)]
+    pub constraint_tombstone: Option<String>,
 }
 
 /// Emitted when the multiplication condition gate rejects the current topology on a given retry.
@@ -193,6 +237,13 @@ pub struct ZeroSurvivalEvent {
     pub task_id: TaskId,
     pub retry_count: u32,
     pub timestamp: DateTime<Utc>,
+    /// Effective independent adapters computed from cosine similarity on failed proposals.
+    /// `None` when no `EmbeddingModel` is present in `AppState`.
+    #[serde(default)]
+    pub n_eff_cosine_actual: Option<f64>,
+    /// MAPE-K failure classification. `None` when no EmbeddingModel is available.
+    #[serde(default)]
+    pub failure_mode: Option<FailureMode>,
 }
 
 /// Emitted when CG_embed falls below `cg_collapse_threshold`.
@@ -458,10 +509,57 @@ pub enum H2AIEvent {
     SubtaskCompleted(SubtaskCompletedEvent),
     /// Wraps [`TaskAttributionEvent`]: quality attribution snapshot for a completed task.
     TaskAttribution(TaskAttributionEvent),
+    /// Wraps [`EpistemicYieldEvent`]: semantic independence of surviving proposals (async, post-merge).
+    EpistemicYield(EpistemicYieldEvent),
 }
 
 impl H2AIEvent {
     pub fn subject(&self, task_id: &TaskId) -> String {
         format!("h2ai.tasks.{}", task_id)
+    }
+}
+
+#[cfg(test)]
+mod bivariate_types_tests {
+    use super::*;
+
+    #[test]
+    fn epistemic_yield_event_roundtrip() {
+        use crate::identity::TaskId;
+        let ev = EpistemicYieldEvent {
+            task_id: TaskId::new(),
+            n_eff_cosine_actual: 2.3,
+            n_eff_prior: 2.8,
+            yield_ratio: 0.77,
+            adapters: vec!["anthropic-a".into(), "openai-b".into()],
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: EpistemicYieldEvent = serde_json::from_str(&json).unwrap();
+        assert!((back.n_eff_cosine_actual - 2.3).abs() < 1e-9);
+        assert_eq!(back.adapters.len(), 2);
+    }
+
+    #[test]
+    fn failure_mode_serde() {
+        let fm = FailureMode::ModeCollapse;
+        let s = serde_json::to_string(&fm).unwrap();
+        let back: FailureMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, FailureMode::ModeCollapse);
+    }
+
+    #[test]
+    fn zero_survival_event_new_fields_default_to_none() {
+        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000000","retry_count":0,"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let ev: ZeroSurvivalEvent = serde_json::from_str(json).unwrap();
+        assert!(ev.n_eff_cosine_actual.is_none());
+        assert!(ev.failure_mode.is_none());
+    }
+
+    #[test]
+    fn topology_provisioned_constraint_tombstone_defaults_none() {
+        // Simulate old serialised event that doesn't carry the new field
+        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000000","topology_kind":"Ensemble","explorer_configs":[],"auditor_config":{"adapter":{"CloudGeneric":{"endpoint":"x","api_key_env":"X"}},"prompt_template":"","tau":0.2,"max_tokens":1000},"n_max":3.0,"interface_n_max":null,"beta_eff":0.03,"role_error_costs":[],"merge_strategy":"ScoreOrdered","coordination_threshold":0.1,"review_gates":[],"retry_count":0,"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let ev: TopologyProvisionedEvent = serde_json::from_str(json).unwrap();
+        assert!(ev.constraint_tombstone.is_none());
     }
 }

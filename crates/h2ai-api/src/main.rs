@@ -1,4 +1,5 @@
 mod error;
+mod metrics;
 mod routes;
 mod state;
 

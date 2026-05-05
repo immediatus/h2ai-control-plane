@@ -152,6 +152,8 @@ mod tests {
             task_id: TaskId::new(),
             retry_count: 0,
             timestamp: Utc::now(),
+            n_eff_cosine_actual: None,
+            failure_mode: None,
         }
     }
 

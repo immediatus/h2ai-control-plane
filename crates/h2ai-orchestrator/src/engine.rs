@@ -140,6 +140,13 @@ pub struct EngineOutput {
     /// Empty when not wasteful or no applicable suggestion was found.
     /// Callers should apply these to AppState (τ spread EMA, topology hint).
     pub applied_optimizations: Vec<h2ai_types::events::AppliedOptimization>,
+    /// Retry topology events in order — one entry per MAPE-K retry wave.
+    /// Populated only when a ZeroSurvivalEvent fired; empty on first-wave success.
+    pub topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent>,
+    /// Number of ModeCollapse rotations applied across all retries.
+    pub mode_collapse_count: usize,
+    /// Epistemic yield from the resolved wave (reserved for Task 9 metrics wiring).
+    pub epistemic_yield: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -243,6 +250,12 @@ impl ExecutionEngine {
         let mut quality_history: Vec<QualityMeasurement> = Vec::new();
         let mut all_verification_events: Vec<VerificationScoredEvent> = Vec::new();
         let mut last_multiplication_failure: Option<MultiplicationConditionFailure> = None;
+        let mut adapter_rotation_offset: usize = 0;
+        let mut pending_tombstone: Option<String> = None;
+        let mut topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent> =
+            Vec::new();
+        let mut mode_collapse_count: usize = 0;
+        let mut all_raw_texts_this_wave: Vec<String> = Vec::new();
 
         let task_deadline = input
             .cfg
@@ -297,7 +310,7 @@ impl ExecutionEngine {
                 .store
                 .set_phase(&task_id, TaskPhase::Provisioning, 0, retry_count);
 
-            let (provisioned, _cg_collapse) = TopologyPlanner::provision(ProvisionInput {
+            let (mut provisioned, _cg_collapse) = TopologyPlanner::provision(ProvisionInput {
                 task_id: task_id.clone(),
                 cc: &input.calibration.coefficients,
                 pareto_weights: &input.manifest.pareto_weights,
@@ -310,6 +323,10 @@ impl ExecutionEngine {
                 cfg: input.cfg,
                 eigen: input.calibration.eigen.as_ref(),
             });
+            provisioned.constraint_tombstone = pending_tombstone.clone();
+            if retry_count > 0 {
+                topology_retry_events.push(provisioned.clone());
+            }
 
             tried_topologies.push(provisioned.topology_kind.clone());
             let explorer_count = provisioned.explorer_configs.len() as u32;
@@ -371,6 +388,8 @@ impl ExecutionEngine {
                     task_id: task_id.clone(),
                     retry_count,
                     timestamp: Utc::now(),
+                    n_eff_cosine_actual: None,
+                    failure_mode: None,
                 };
                 match RetryPolicy::decide(
                     &zero_event,
@@ -435,6 +454,62 @@ impl ExecutionEngine {
                 }
             }
 
+            // ── Phase 2.6: Pool Diversity Guard ────────────────────────────────
+            if input.cfg.diversity_threshold > 0.0 {
+                let n_eff_prior = input.calibration.n_eff_cosine_prior;
+                let threshold = 1.0 + input.cfg.diversity_threshold;
+                if n_eff_prior > 0.0 && n_eff_prior < threshold {
+                    last_multiplication_failure = Some(
+                        h2ai_types::sizing::MultiplicationConditionFailure::InsufficientPoolDiversity {
+                            n_eff: n_eff_prior,
+                            threshold: input.cfg.diversity_threshold,
+                        },
+                    );
+                    let tau_values: Vec<f64> = provisioned
+                        .explorer_configs
+                        .iter()
+                        .map(|ec| ec.tau.value())
+                        .collect();
+                    tau_values_tried.push(tau_values);
+                    let zero_event = ZeroSurvivalEvent {
+                        task_id: task_id.clone(),
+                        retry_count,
+                        timestamp: Utc::now(),
+                        n_eff_cosine_actual: Some(n_eff_prior),
+                        failure_mode: Some(h2ai_types::events::FailureMode::ModeCollapse),
+                    };
+                    match RetryPolicy::decide(
+                        &zero_event,
+                        &tried_topologies,
+                        all_pruned.clone(),
+                        tau_values_tried.clone(),
+                        last_multiplication_failure.clone(),
+                    ) {
+                        RetryAction::Retry(next_topology) => {
+                            force_topology = Some(next_topology);
+                            continue;
+                        }
+                        RetryAction::RetryWithTauReduction {
+                            topology,
+                            tau_factor,
+                        } => {
+                            force_topology = Some(topology);
+                            tau_reduction_factor *= tau_factor;
+                            continue;
+                        }
+                        RetryAction::RetryWithHints { topology, .. } => {
+                            force_topology = Some(topology);
+                            continue;
+                        }
+                        RetryAction::Fail(_) => {
+                            input.store.mark_failed(&task_id);
+                            return Err(EngineError::MaxRetriesExhausted);
+                        }
+                    }
+                }
+            }
+            // ───────────────────────────────────────────────────────────────────
+
             // ── Phase 3: Parallel Generation ───────────────────────────────
             input.store.set_phase(
                 &task_id,
@@ -483,8 +558,13 @@ impl ExecutionEngine {
                             (task, ctx)
                         }
                     };
+                    let effective_ctx = if let Some(ref tombstone) = pending_tombstone {
+                        format!("{}\n\n{}", slot_system_ctx, tombstone)
+                    } else {
+                        slot_system_ctx
+                    };
                     let req = ComputeRequest {
-                        system_context: slot_system_ctx,
+                        system_context: effective_ctx,
                         task: slot_task,
                         tau: explorer_cfg.tau,
                         max_tokens: input.cfg.explorer_max_tokens,
@@ -531,7 +611,8 @@ impl ExecutionEngine {
                         });
                         fut
                     } else {
-                        let adapter_idx = idx % input.explorer_adapters.len();
+                        let pool_len = input.explorer_adapters.len();
+                        let adapter_idx = (idx + adapter_rotation_offset) % pool_len;
                         let adapter = input.explorer_adapters[adapter_idx];
                         let generation = retry_count as u64;
                         let fut: ExplorerFuture<'_> = Box::pin(async move {
@@ -590,6 +671,9 @@ impl ExecutionEngine {
                 }
             }
 
+            // Capture raw texts for epistemic yield / FailureMode classification.
+            all_raw_texts_this_wave = proposals.iter().map(|p| p.raw_output.clone()).collect();
+
             let tao_turns_mean = if tao_turns_collected.is_empty() {
                 1.0
             } else {
@@ -638,6 +722,8 @@ impl ExecutionEngine {
                     task_id: task_id.clone(),
                     retry_count,
                     timestamp: Utc::now(),
+                    n_eff_cosine_actual: None,
+                    failure_mode: None,
                 };
                 match RetryPolicy::decide(
                     &zero_event,
@@ -1071,6 +1157,9 @@ impl ExecutionEngine {
                     suggested_next_params: Some(suggested_next),
                     waste_ratio,
                     applied_optimizations: vec![],
+                    topology_retry_events: topology_retry_events.clone(),
+                    mode_collapse_count,
+                    epistemic_yield: None,
                 });
             }
 
@@ -1149,6 +1238,47 @@ impl ExecutionEngine {
                     };
 
                     input.store.mark_resolved(&task_id);
+
+                    // Spawn async EpistemicYield — does not block task close.
+                    if let Some(model) = input.embedding_model {
+                        let surviving_texts: Vec<String> = synthesis_candidates
+                            .iter()
+                            .map(|p| p.raw_output.clone())
+                            .collect();
+                        let n_requested = all_raw_texts_this_wave.len().max(1);
+                        let n_eff_prior = input.calibration.n_eff_cosine_prior;
+                        let task_id_yield = task_id.clone();
+                        let eigen_delta = input.cfg.eigen_n_eff_delta;
+                        let adapter_ids: Vec<String> = provisioned
+                            .explorer_configs
+                            .iter()
+                            .map(|ec| ec.explorer_id.to_string())
+                            .collect();
+                        // Safety: EmbeddingModel is Arc-owned in AppState and outlives this spawn.
+                        let model_ref: &'static dyn h2ai_context::embedding::EmbeddingModel =
+                            unsafe { std::mem::transmute(model) };
+                        tokio::spawn(async move {
+                            let n_eff = h2ai_autonomic::epistemic::compute_n_eff_cosine(
+                                &surviving_texts,
+                                model_ref,
+                                eigen_delta,
+                            );
+                            let yield_ratio = n_eff / n_requested as f64;
+                            let _yield_ev = h2ai_types::events::EpistemicYieldEvent {
+                                task_id: task_id_yield,
+                                n_eff_cosine_actual: n_eff,
+                                n_eff_prior,
+                                yield_ratio,
+                                adapters: adapter_ids,
+                            };
+                            tracing::debug!(
+                                n_eff_cosine_actual = n_eff,
+                                yield_ratio,
+                                "EpistemicYield computed"
+                            );
+                        });
+                    }
+
                     if let Some(ref bandit_arc) = input.bandit_state {
                         let n_used = current_params.n_agents;
                         let tier3_score = Some(attribution.total_quality.clamp(0.0, 1.0));
@@ -1170,9 +1300,51 @@ impl ExecutionEngine {
                         suggested_next_params: Some(suggested_next),
                         waste_ratio,
                         applied_optimizations,
+                        topology_retry_events: topology_retry_events.clone(),
+                        mode_collapse_count,
+                        epistemic_yield: None,
                     });
                 }
-                MergeOutcome::ZeroSurvival(zero_event) => {
+                MergeOutcome::ZeroSurvival(mut zero_event) => {
+                    // Compute epistemic diagnostics synchronously on the MAPE-K path.
+                    let detected_failure_mode = if let Some(model) = input.embedding_model {
+                        let n_eff = h2ai_autonomic::epistemic::compute_n_eff_cosine(
+                            &all_raw_texts_this_wave,
+                            model,
+                            input.cfg.eigen_n_eff_delta,
+                        );
+                        let failure = h2ai_autonomic::epistemic::classify_failure_mode(
+                            n_eff,
+                            all_raw_texts_this_wave.len().max(1),
+                            input.cfg.diversity_threshold,
+                        );
+                        zero_event.n_eff_cosine_actual = Some(n_eff);
+                        zero_event.failure_mode = Some(failure.clone());
+                        Some(failure)
+                    } else {
+                        None
+                    };
+
+                    // Apply FailureMode routing before RetryPolicy topology selection.
+                    match &detected_failure_mode {
+                        Some(h2ai_types::events::FailureMode::ModeCollapse) => {
+                            let pool_len = input.explorer_adapters.len().max(1);
+                            adapter_rotation_offset = (adapter_rotation_offset + 1) % pool_len;
+                            mode_collapse_count += 1;
+                            pending_tombstone = None;
+                        }
+                        Some(h2ai_types::events::FailureMode::ConstrainedExploration) => {
+                            let all_violations: Vec<h2ai_types::events::ConstraintViolation> =
+                                all_pruned
+                                    .iter()
+                                    .flat_map(|p| p.violated_constraints.iter().cloned())
+                                    .collect();
+                            pending_tombstone =
+                                h2ai_autonomic::epistemic::synthesize_tombstone(&all_violations);
+                        }
+                        None => {}
+                    }
+
                     match RetryPolicy::decide(
                         &zero_event,
                         &tried_topologies,

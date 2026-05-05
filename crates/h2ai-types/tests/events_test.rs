@@ -41,6 +41,7 @@ fn calibration_completed_event_serde_round_trip() {
         single_family_warning: false,
         n_max_lo: 0.0,
         n_max_hi: 0.0,
+        n_eff_cosine_prior: 0.0,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -100,6 +101,7 @@ fn topology_provisioned_event_includes_physics_fields() {
         review_gates: vec![],
         retry_count: 0,
         timestamp: Utc::now(),
+        constraint_tombstone: None,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: TopologyProvisionedEvent = serde_json::from_str(&json).unwrap();
@@ -214,6 +216,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             single_family_warning: false,
             n_max_lo: 0.0,
             n_max_hi: 0.0,
+            n_eff_cosine_prior: 0.0,
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
@@ -238,6 +241,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             review_gates: vec![],
             retry_count: 0,
             timestamp: Utc::now(),
+            constraint_tombstone: None,
         }),
         H2AIEvent::MultiplicationConditionFailed(MultiplicationConditionFailedEvent {
             task_id: task_id(),
@@ -303,6 +307,8 @@ fn h2ai_event_enum_wraps_all_17_events() {
             task_id: task_id(),
             retry_count: 0,
             timestamp: Utc::now(),
+            n_eff_cosine_actual: None,
+            failure_mode: None,
         }),
         H2AIEvent::InterfaceSaturationWarning(InterfaceSaturationWarningEvent {
             task_id: task_id(),
@@ -392,6 +398,8 @@ fn h2ai_event_serde_preserves_variant_tag() {
         task_id: task_id(),
         retry_count: 2,
         timestamp: Utc::now(),
+        n_eff_cosine_actual: None,
+        failure_mode: None,
     });
     let json = serde_json::to_string(&original).unwrap();
     assert!(json.contains("\"event_type\":\"ZeroSurvival\""));

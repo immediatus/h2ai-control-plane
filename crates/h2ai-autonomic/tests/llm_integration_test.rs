@@ -135,6 +135,7 @@ async fn calibration_no_corpus_fallback_cg_invariants_hold() {
         ],
         cfg: &cfg,
         constraint_corpus: &[],
+        embedding_model: None,
     })
     .await
     {
@@ -201,6 +202,7 @@ async fn calibration_with_corpus_measures_real_cg() {
         adapters: vec![&a1 as &dyn IComputeAdapter, &a2 as &dyn IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &corpus,
+        embedding_model: None,
     })
     .await
     {

@@ -66,6 +66,8 @@ impl MergeEngine {
                 task_id,
                 retry_count,
                 timestamp: Utc::now(),
+                n_eff_cosine_actual: None,
+                failure_mode: None,
             });
         }
 

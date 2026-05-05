@@ -132,6 +132,8 @@ fn apply_zero_survival_increments_retries() {
             task_id: tid.clone(),
             retry_count: 1,
             timestamp: Utc::now(),
+            n_eff_cosine_actual: None,
+            failure_mode: None,
         }),
     );
     assert_eq!(state.autonomic_retries, 1);
