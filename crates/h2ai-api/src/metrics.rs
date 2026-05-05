@@ -47,12 +47,13 @@ mod metrics_tests {
 
     #[test]
     fn metrics_state_formats_prometheus_text() {
-        let mut m = MetricsState::default();
-        m.n_eff_prior = 2.5;
-        m.n_eff_actual = 2.1;
-        m.epistemic_yield_ratio = 0.7;
-        m.mapek_mode_collapse_count = 3;
-        m.mapek_constrained_exploration_count = 1;
+        let m = MetricsState {
+            n_eff_prior: 2.5,
+            n_eff_actual: 2.1,
+            epistemic_yield_ratio: 0.7,
+            mapek_mode_collapse_count: 3,
+            mapek_constrained_exploration_count: 1,
+        };
         let text = m.to_prometheus_text();
         assert!(text.contains("h2ai_n_eff_prior 2.5"));
         assert!(text.contains("h2ai_n_eff_actual 2.1"));

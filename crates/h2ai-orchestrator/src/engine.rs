@@ -255,8 +255,6 @@ impl ExecutionEngine {
         let mut topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent> =
             Vec::new();
         let mut mode_collapse_count: usize = 0;
-        let mut all_raw_texts_this_wave: Vec<String> = Vec::new();
-
         let task_deadline = input
             .cfg
             .task_deadline_secs
@@ -672,7 +670,8 @@ impl ExecutionEngine {
             }
 
             // Capture raw texts for epistemic yield / FailureMode classification.
-            all_raw_texts_this_wave = proposals.iter().map(|p| p.raw_output.clone()).collect();
+            let all_raw_texts_this_wave: Vec<String> =
+                proposals.iter().map(|p| p.raw_output.clone()).collect();
 
             let tao_turns_mean = if tao_turns_collected.is_empty() {
                 1.0

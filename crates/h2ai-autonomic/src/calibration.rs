@@ -223,6 +223,9 @@ impl CalibrationHarness {
                 use nalgebra::DMatrix;
                 // Accumulate pairwise cosine sums over K prompts.
                 let mut c = DMatrix::<f64>::zeros(n, n);
+                // ki is a column index used across multiple rows (adapter_outputs[i][ki],
+                // adapter_outputs[j][ki]) — a range loop is the correct pattern here.
+                #[allow(clippy::needless_range_loop)]
                 for ki in 0..k_prompts {
                     for i in 0..n {
                         c[(i, i)] += 1.0;

@@ -87,7 +87,13 @@ async fn main() {
 
     let nats = NatsClient::connect(&cfg.nats_url)
         .await
-        .expect("NATS connect");
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "ERROR: cannot connect to NATS at {} — {e}\n       Start a NATS server first:  nats-server -js",
+                cfg.nats_url
+            );
+            std::process::exit(1);
+        });
     nats.ensure_infrastructure()
         .await
         .expect("NATS infrastructure setup");
