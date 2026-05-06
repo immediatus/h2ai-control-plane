@@ -480,6 +480,7 @@ mod wire_protocol_tests {
             context: ContextPayload::Inline("ctx".into()),
             tau: TauValue::new(0.5).unwrap(),
             max_tokens: 256,
+            wave_mode: h2ai_types::agent::WaveMode::Normal,
         };
         nats.publish_task_payload(&payload).await.expect("publish");
 

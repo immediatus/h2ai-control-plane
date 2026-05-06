@@ -50,12 +50,14 @@ async fn dispatch_executes_addressed_task_and_publishes_result() {
     let dispatch_agent_id = agent_id.clone();
     let dispatch_adapter = adapter.clone();
     let dispatch_active = active_tasks.clone();
+    let dispatch_cfg = Arc::new(h2ai_config::H2AIConfig::default());
     let _dispatch_handle = tokio::spawn(async move {
         DispatchLoop::new(
             dispatch_client,
             dispatch_agent_id,
             dispatch_adapter,
             dispatch_active,
+            dispatch_cfg,
         )
         .run()
         .await
@@ -74,6 +76,7 @@ async fn dispatch_executes_addressed_task_and_publishes_result() {
         context: ContextPayload::Inline("test context".into()),
         tau: TauValue::new(0.5).unwrap(),
         max_tokens: 64,
+        wave_mode: h2ai_types::agent::WaveMode::Normal,
     };
     nats.client
         .publish(

@@ -57,6 +57,8 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates; `constraint_error_cost = 1 − compliance` |
 | Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
 | Edge agent secrets leak | Long-lived API keys in containers | Scoped NATS NKeys per task_id — token expires when task closes |
+| Shell injection via LLM output | `sh -c <llm_string>` executes metacharacters | `ShellExecutor` uses JSON contract + `Command::new(cmd).args(args)` — no shell interpreter; PGID-scoped process group kill on timeout |
+| Hardened wave still has full tooling | One tool policy for all waves | `WaveMode` (Normal/Hardened) on `TaskPayload`; `ToolRegistry::for_wave()` selects a reduced allowlist for `ConstrainedExploration` and `ModeCollapse` retries |
 | Context lost between restarts | Agents rebuild context from scratch | MemoryProvider — control plane assembles and injects context before dispatch |
 | Audit log is an afterthought | Logs scattered across containers | AuditProvider with redaction middleware — immutable telemetry on NATS JetStream |
 
@@ -201,7 +203,7 @@ This distinction flows directly into topology selection:
 The full dispatch-and-await loop per Explorer:
 
 1. **Context assembly** — `MemoryProvider::get_recent_history` retrieves prior session history; assembled into the `context` field of `TaskPayload`.
-2. **Payload construction** — `TaskPayload { task_id, agent: AgentDescriptor, instructions, context, τ, max_tokens }` is built. The full descriptor travels with the payload so the edge agent knows what capabilities it has been granted.
+2. **Payload construction** — `TaskPayload { task_id, agent: AgentDescriptor, instructions, context, τ, max_tokens, wave_mode: WaveMode }` is built. The full descriptor and `wave_mode` travel with the payload so the edge agent's `ToolRegistry` is scoped to the correct allowlist for this wave.
 3. **Capacity check** — `AgentProvider::ensure_agent_capacity(descriptor, task_load)` verifies the container pool. The provider selects the container image from `descriptor.model` and configures volume mounts and security contexts from `descriptor.tools` — no hardcoded image names in the orchestrator.
 4. **Dispatch** — `TaskPayload` is published to `h2ai.tasks.ephemeral.{task_id}` on the durable JetStream `H2AI_TASKS` stream. A scoped **NKey** for this `task_id` is injected into the container — the edge agent has no NATS credentials before this moment and none after. The NKey's `allowed_publish` set is sized to match the tool set.
 5. **Live telemetry** — the control plane subscribes to `h2ai.telemetry.{task_id}`. Every `AgentTelemetryEvent` (LLM calls, shell commands, errors) is routed through `RedactionMiddleware` (secrets scrubbed before logging) into `AuditProvider::record_event` in real time.
@@ -301,7 +303,7 @@ SubtaskCompletedEvent              → Subtask completed; output injected as con
 ```
 AgentTelemetryEvent::LlmPromptSent        → tokens dispatched to edge agent LLM
 AgentTelemetryEvent::LlmResponseReceived  → completion tokens received from edge agent
-AgentTelemetryEvent::ShellCommandExecuted → shell command run by edge agent (exit code recorded)
+AgentTelemetryEvent::ShellCommandExecuted → command + args (structured, no raw shell string) + exit code
 AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable error
 ```
 
@@ -312,9 +314,9 @@ AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable 
 ```
 h2ai-control-plane/
 ├── Dockerfile                      # multi-stage: builder (rust+clang) → runtime (debian-slim)
-├── typeshare.toml                  # typeshare CLI config — Go bindings output to bindings/go/
+├── typeshare.toml                  # typeshare CLI config (Rust→TypeScript/Swift/Kotlin; Go dropped in v1.13+)
 ├── bindings/
-│   └── go/                         # generated Go types (from typeshare CLI, committed to repo)
+│   └── go/                         # hand-authored Go types (typeshare CLI dropped Go in v1.13+; maintained manually)
 ├── crates/
 │   ├── h2ai-types/                 # Pure types boundary — zero I/O deps
 │   │                               # All 23 core events + AgentTelemetryEvent, IComputeAdapter,
@@ -337,6 +339,7 @@ h2ai-control-plane/
 │   │                               # cycle/empty checks before semantic LLM review
 │   ├── h2ai-telemetry/             # AuditProvider trait + DirectLogProvider + BrokerPublisherProvider
 │   │                               # Immutable audit log with secret redaction middleware
+│   │                               # ShellCommandExecuted.args redacted per-element
 │   ├── h2ai-orchestrator/          # DAG builder + Pareto topology router + NatsDispatchAdapter
 │   │                               # CompoundTaskEngine (decompose → review → schedule pipeline)
 │   │                               # SchedulingEngine (Kahn topo-sort wave execution)
@@ -345,8 +348,11 @@ h2ai-control-plane/
 │   ├── h2ai-context/               # Dark Knowledge Compiler + constraint corpus loader
 │   │                               # corpus_keywords from ConstraintDoc::vocabulary()
 │   ├── h2ai-adapters/              # IComputeAdapter: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + AdapterFactory
+│   ├── h2ai-tools/                 # Shell execution perimeter: ShellExecutor (JSON contract, no shell interpreter,
+│   │                               # PGID process group kill), ToolError, ToolRegistry::for_wave(cfg, WaveMode)
 │   ├── h2ai-api/                   # axum REST gateway + Merge Authority web UI
-│   └── h2ai-agent/                 # Edge agent binary — heartbeat publisher + NATS task dispatch loop
+│   └── h2ai-agent/                 # Edge agent binary — heartbeat + NATS task dispatch loop
+│                                   # builds ToolRegistry::for_wave(cfg, wave_mode) per task
 ├── nats/
 │   ├── dev.conf                    # single-node JetStream config (Local Plan)
 │   └── cluster.conf                # 3-node cluster config (Server/Cloud Plan)
@@ -398,9 +404,9 @@ h2ai-control-plane/
 | Local compute | llama.cpp FFI | Zero-cost, 128GB RAM dedicated to weights |
 | Edge agents | `AgentDescriptor { model, tools }` | Any LLM-based container described by model name + capability flags; stateless `f(ctx, τ) → result`, scoped NKeys per task |
 | HTTP | axum | Tokio-native, same async runtime as orchestrator |
-| Type bindings | `typeshare` | Rust types → Go structs for edge agent contracts; no hand-maintained schemas |
+| Type bindings | `typeshare` + hand-authored | Rust types → TypeScript/Swift/Kotlin via typeshare CLI; Go structs hand-maintained (`typeshare` dropped Go in v1.13+) |
 | Tracing | `tracing` + OpenTelemetry | task_id as root span, DAG execution visible in Jaeger/Grafana Tempo |
-| Metrics | Prometheus `/metrics` | 20 gauges: β_eff, α, N_max, θ_coord, VRAM, c_i per role, adapter latency |
+| Metrics | Prometheus `/metrics` | 5 series: n_eff_prior, n_eff_actual, epistemic_yield_ratio, mapek_interventions{mode_collapse}, mapek_interventions{constrained_exploration} |
 
 ---
 

@@ -33,6 +33,7 @@ fn redact_removes_api_key_from_shell_command() {
         command:
             "curl -H 'Authorization: sk-abcdefghijklmnopqrstuvwxyz1234567' https://api.example.com"
                 .into(),
+        args: vec![],
         stdout: String::new(),
         stderr: String::new(),
         exit_code: 0,
@@ -42,6 +43,36 @@ fn redact_removes_api_key_from_shell_command() {
     if let AgentTelemetryEvent::ShellCommandExecuted { command, .. } = redacted {
         assert!(command.contains("[REDACTED]"));
         assert!(!command.contains("sk-"));
+    }
+}
+
+#[test]
+fn redact_removes_secret_from_shell_args() {
+    let event = AgentTelemetryEvent::ShellCommandExecuted {
+        task_id: task_id(),
+        agent_id: agent_id(),
+        command: "curl".into(),
+        args: vec![
+            "-H".into(),
+            "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz1234567".into(),
+            "https://api.example.com".into(),
+        ],
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 0,
+        timestamp: Utc::now(),
+    };
+    let redacted = redact_event(event);
+    if let AgentTelemetryEvent::ShellCommandExecuted { args, .. } = redacted {
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("[REDACTED]"),
+            "expected redaction in args: {joined}"
+        );
+        assert!(
+            !joined.contains("sk-"),
+            "secret key should be removed from args: {joined}"
+        );
     }
 }
 

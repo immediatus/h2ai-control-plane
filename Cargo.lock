@@ -1202,6 +1202,7 @@ dependencies = [
  "h2ai-config",
  "h2ai-nats",
  "h2ai-state",
+ "h2ai-tools",
  "h2ai-types",
  "serde",
  "serde_json",
@@ -1239,6 +1240,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -1444,10 +1446,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "h2ai-config",
  "h2ai-types",
+ "libc",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

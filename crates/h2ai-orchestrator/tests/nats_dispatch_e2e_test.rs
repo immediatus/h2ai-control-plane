@@ -86,7 +86,13 @@ async fn nats_dispatch_e2e_full_pipeline() {
     });
     let active_tasks = Arc::new(AtomicU32::new(0));
 
-    let dispatch_loop = DispatchLoop::new(agent_nats, agent_id.clone(), mock_adapter, active_tasks);
+    let dispatch_loop = DispatchLoop::new(
+        agent_nats,
+        agent_id.clone(),
+        mock_adapter,
+        active_tasks,
+        Arc::new(h2ai_config::H2AIConfig::default()),
+    );
     tokio::spawn(async move {
         dispatch_loop.run().await.unwrap();
     });

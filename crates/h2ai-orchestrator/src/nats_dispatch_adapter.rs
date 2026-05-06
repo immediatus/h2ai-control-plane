@@ -95,6 +95,7 @@ impl IComputeAdapter for NatsDispatchAdapter {
             context,
             tau: request.tau,
             max_tokens: request.max_tokens,
+            wave_mode: h2ai_types::agent::WaveMode::Normal,
         };
 
         // Set up result consumer BEFORE publishing — critical ordering invariant.

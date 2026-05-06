@@ -11,4 +11,8 @@ pub enum ToolError {
     Timeout,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("command not permitted by allowlist: {0:?}")]
+    NotPermitted(String),
+    #[error("malformed tool input: {0}")]
+    MalformedInput(String),
 }

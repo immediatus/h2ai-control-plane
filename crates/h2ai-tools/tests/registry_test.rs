@@ -4,7 +4,12 @@ use h2ai_types::agent::AgentTool;
 #[tokio::test]
 async fn shell_executor_runs_echo_command() {
     let registry = ToolRegistry::default_with_shell();
-    let result = registry.execute(AgentTool::Shell, "echo hello_tool").await;
+    let result = registry
+        .execute(
+            AgentTool::Shell,
+            r#"{"command": "echo", "args": ["hello_tool"]}"#,
+        )
+        .await;
     assert!(result.is_ok(), "{:?}", result);
     assert!(result.unwrap().contains("hello_tool"));
 }
@@ -12,7 +17,10 @@ async fn shell_executor_runs_echo_command() {
 #[tokio::test]
 async fn shell_executor_returns_error_on_nonzero_exit() {
     let registry = ToolRegistry::default_with_shell();
-    let result = registry.execute(AgentTool::Shell, "exit 1").await;
+    // `false` exits with code 1 — no shell interpreter needed
+    let result = registry
+        .execute(AgentTool::Shell, r#"{"command": "false"}"#)
+        .await;
     assert!(result.is_err());
 }
 

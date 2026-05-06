@@ -1,6 +1,8 @@
 use async_nats::Client;
 use futures::StreamExt;
+use h2ai_config::H2AIConfig;
 use h2ai_nats::subjects::task_result_subject;
+use h2ai_tools::registry::ToolRegistry;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::agent::{ContextPayload, TaskPayload, TaskResult};
 use h2ai_types::identity::AgentId;
@@ -12,6 +14,7 @@ pub struct DispatchLoop {
     agent_id: AgentId,
     adapter: Arc<dyn IComputeAdapter>,
     active_tasks: Arc<AtomicU32>,
+    cfg: Arc<H2AIConfig>,
 }
 
 impl DispatchLoop {
@@ -20,12 +23,14 @@ impl DispatchLoop {
         agent_id: AgentId,
         adapter: Arc<dyn IComputeAdapter>,
         active_tasks: Arc<AtomicU32>,
+        cfg: Arc<H2AIConfig>,
     ) -> Self {
         Self {
             client,
             agent_id,
             adapter,
             active_tasks,
+            cfg,
         }
     }
 
@@ -69,6 +74,11 @@ impl DispatchLoop {
     }
 
     async fn execute_task(&self, payload: TaskPayload) -> TaskResult {
+        // Build the per-task, wave-scoped tool registry. Currently held here for future
+        // use when IComputeAdapter gains a ToolRegistry parameter; the wave_mode field
+        // on TaskPayload ensures the correct allowlist is ready at that point.
+        let _registry = ToolRegistry::for_wave(&self.cfg, payload.wave_mode);
+
         let system_context = match payload.context {
             ContextPayload::Inline(s) => s,
             ContextPayload::Ref { hash, byte_len } => {
@@ -121,8 +131,9 @@ pub async fn run(
     agent_id: AgentId,
     adapter: Arc<dyn IComputeAdapter>,
     active_tasks: Arc<AtomicU32>,
+    cfg: Arc<H2AIConfig>,
 ) -> anyhow::Result<()> {
-    DispatchLoop::new(client, agent_id, adapter, active_tasks)
+    DispatchLoop::new(client, agent_id, adapter, active_tasks, cfg)
         .run()
         .await
 }

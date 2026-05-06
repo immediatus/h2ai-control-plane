@@ -169,6 +169,12 @@ pub struct H2AIConfig {
     pub synthesis_critique_max_tokens: u64,
     /// Max tokens for the synthesis call. Default: 2048.
     pub synthesis_max_tokens: u64,
+    /// Commands permitted in Normal-mode waves. Empty = unrestricted (unsafe in production).
+    pub shell_allowlist: Vec<String>,
+    /// Commands permitted in Hardened-mode waves. Should be a subset of `shell_allowlist`.
+    pub shell_hardened_allowlist: Vec<String>,
+    /// Maximum seconds a shell tool invocation may run before it is killed. Default: 5.
+    pub shell_timeout_secs: u64,
 }
 
 #[cfg(test)]
@@ -183,6 +189,26 @@ mod synthesis_config_tests {
         assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
         assert_eq!(cfg.synthesis_critique_max_tokens, 1024);
         assert_eq!(cfg.synthesis_max_tokens, 2048);
+    }
+
+    #[test]
+    fn subset_validation_does_not_panic_on_contradiction() {
+        let cfg = H2AIConfig {
+            shell_allowlist: vec!["git".into(), "ls".into()],
+            shell_hardened_allowlist: vec!["ls".into(), "rm".into()],
+            ..H2AIConfig::default()
+        };
+        cfg.validate_shell_allowlist_subset();
+    }
+
+    #[test]
+    fn subset_validation_skipped_when_normal_allowlist_empty() {
+        let cfg = H2AIConfig {
+            shell_allowlist: vec![],
+            shell_hardened_allowlist: vec!["rm".into()],
+            ..H2AIConfig::default()
+        };
+        cfg.validate_shell_allowlist_subset();
     }
 }
 
@@ -220,6 +246,27 @@ impl Default for H2AIConfig {
 }
 
 impl H2AIConfig {
+    /// Emits tracing::warn! for every command in shell_hardened_allowlist that is
+    /// absent from shell_allowlist (when shell_allowlist is non-empty).
+    /// Does NOT abort — the process boots with the contradiction in place.
+    pub fn validate_shell_allowlist_subset(&self) {
+        if self.shell_allowlist.is_empty() {
+            return;
+        }
+        let normal: std::collections::HashSet<&str> =
+            self.shell_allowlist.iter().map(String::as_str).collect();
+        for cmd in &self.shell_hardened_allowlist {
+            if !normal.contains(cmd.as_str()) {
+                tracing::warn!(
+                    cmd = cmd.as_str(),
+                    "security contradiction: command is in shell_hardened_allowlist \
+                     but absent from shell_allowlist — hardened mode grants MORE \
+                     capability than normal mode"
+                );
+            }
+        }
+    }
+
     /// Load configuration using the three-layer stack (later layers win):
     ///
     /// 1. Embedded `reference.toml` — all defaults, always present
@@ -247,7 +294,9 @@ impl H2AIConfig {
                 .try_parsing(true),
         );
 
-        Ok(builder.build()?.try_deserialize()?)
+        let cfg: Self = builder.build()?.try_deserialize()?;
+        cfg.validate_shell_allowlist_subset();
+        Ok(cfg)
     }
 
     /// Load configuration from a complete JSON file.
@@ -256,6 +305,8 @@ impl H2AIConfig {
     /// must contain all required fields. Partial JSON will fail deserialization.
     pub fn load_from_file(path: &Path) -> Result<Self, ConfigLoadError> {
         let contents = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&contents)?)
+        let cfg: Self = serde_json::from_str(&contents)?;
+        cfg.validate_shell_allowlist_subset();
+        Ok(cfg)
     }
 }

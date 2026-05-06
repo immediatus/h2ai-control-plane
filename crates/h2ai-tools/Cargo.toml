@@ -5,11 +5,16 @@ edition = "2021"
 
 [dependencies]
 h2ai-types = { path = "../h2ai-types" }
+h2ai-config = { path = "../h2ai-config" }
 tokio = { workspace = true, features = ["process"] }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

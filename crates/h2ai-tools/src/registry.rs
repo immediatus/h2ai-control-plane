@@ -1,7 +1,8 @@
 use crate::error::ToolError;
 use crate::shell::ShellExecutor;
 use crate::ToolExecutor;
-use h2ai_types::agent::AgentTool;
+use h2ai_config::H2AIConfig;
+use h2ai_types::agent::{AgentTool, WaveMode};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,6 +22,20 @@ impl ToolRegistry {
     pub fn default_with_shell() -> Self {
         let mut r = Self::new();
         r.register_shell(ShellExecutor::default());
+        r
+    }
+
+    /// Constructs a fresh registry with a ShellExecutor whose allowlist is
+    /// selected by wave epistemic state:
+    /// - WaveMode::Normal   → cfg.shell_allowlist
+    /// - WaveMode::Hardened → cfg.shell_hardened_allowlist
+    pub fn for_wave(cfg: &H2AIConfig, mode: WaveMode) -> Self {
+        let allowlist = match mode {
+            WaveMode::Normal => cfg.shell_allowlist.clone(),
+            WaveMode::Hardened => cfg.shell_hardened_allowlist.clone(),
+        };
+        let mut r = Self::new();
+        r.register_shell(ShellExecutor::new(allowlist, cfg.shell_timeout_secs));
         r
     }
 

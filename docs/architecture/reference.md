@@ -307,6 +307,16 @@ The TOML key is the lower-snake-case Rust field name. The env-var key is the upp
 | `synthesis_critique_max_tokens` | `1024` | Critique stage budget. |
 | `synthesis_max_tokens` | `2048` | Synthesis stage budget. |
 
+### Shell Tool
+
+| Field | Default | Purpose |
+|---|---|---|
+| `shell_allowlist` | `[]` | Commands permitted in Normal-mode waves. Empty = unrestricted. **Not safe for production** — populate with an explicit list before deployment. |
+| `shell_hardened_allowlist` | `["ls","cat","git","find","echo","pwd"]` | Commands permitted in Hardened-mode waves (`ConstrainedExploration` / `ModeCollapse`). Must be a subset of `shell_allowlist` when `shell_allowlist` is non-empty. The system emits `tracing::warn!` at boot if any entry here is absent from `shell_allowlist`. Note: with `shell_allowlist = []` (unrestricted) both modes are unrestricted — this list takes effect only once `shell_allowlist` is populated. |
+| `shell_timeout_secs` | `5` | Maximum seconds a shell tool invocation may run before the process group is killed (SIGKILL to the PGID). |
+
+`ToolRegistry::for_wave(cfg, WaveMode::Normal)` selects `shell_allowlist`; `ToolRegistry::for_wave(cfg, WaveMode::Hardened)` selects `shell_hardened_allowlist`. The `wave_mode` field on `TaskPayload` carries the per-task mode from the NATS wire; the agent dispatch loop builds a fresh registry per task.
+
 ### Token budgets and concurrency
 
 | Field | Default | Purpose |
@@ -389,6 +399,12 @@ pub enum AgentTool {
     WebSearch,
     CodeExecution,
     FileSystem,
+}
+
+// Carried on every TaskPayload; selects the ToolRegistry allowlist for the task.
+pub enum WaveMode {
+    Normal,    // uses cfg.shell_allowlist
+    Hardened,  // uses cfg.shell_hardened_allowlist (ConstrainedExploration / ModeCollapse)
 }
 ```
 

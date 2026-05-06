@@ -279,3 +279,20 @@ synthesis_critique_max_tokens = 1024
 
 # Max tokens for the synthesis call (Stage 2).
 synthesis_max_tokens = 2048
+
+# ── Shell Tool ────────────────────────────────────────────────────────────────
+
+# Allowlist for Normal-mode waves. Empty array = unrestricted.
+# WARNING: empty allowlist is NOT safe for production deployments.
+shell_allowlist = []
+
+# Allowlist for Hardened-mode waves (ConstrainedExploration / ModeCollapse).
+# When shell_allowlist is non-empty, this MUST be a subset of shell_allowlist.
+# The system emits tracing::warn! at boot for any command here that is absent from
+# shell_allowlist — that would grant MORE capability in the hardened state.
+# NOTE: with shell_allowlist = [] (unrestricted), BOTH modes are unrestricted —
+# this list has no effect until shell_allowlist is populated for production.
+shell_hardened_allowlist = ["ls", "cat", "git", "find", "echo", "pwd"]
+
+# Maximum seconds a shell tool call may run before the process group is killed. Default: 5.
+shell_timeout_secs = 5

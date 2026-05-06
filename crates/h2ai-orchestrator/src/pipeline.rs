@@ -69,6 +69,7 @@ where
             context: ContextPayload::Inline(context),
             tau,
             max_tokens,
+            wave_mode: h2ai_types::agent::WaveMode::Normal,
         };
 
         self.provisioner
@@ -152,6 +153,7 @@ where
             context: ContextPayload::Inline(context),
             tau,
             max_tokens,
+            wave_mode: h2ai_types::agent::WaveMode::Normal,
         };
 
         self.provisioner

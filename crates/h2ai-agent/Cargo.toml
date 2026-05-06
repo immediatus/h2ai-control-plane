@@ -19,6 +19,7 @@ h2ai-types    = { path = "../h2ai-types" }
 h2ai-config   = { path = "../h2ai-config" }
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-state    = { path = "../h2ai-state" }
+h2ai-tools    = { path = "../h2ai-tools" }
 h2ai-nats     = { path = "../h2ai-nats" }
 async-nats    = { workspace = true }
 tokio         = { workspace = true }

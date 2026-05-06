@@ -75,6 +75,14 @@ impl ContextPayload {
 }
 
 #[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum WaveMode {
+    #[default]
+    Normal,
+    Hardened,
+}
+
+#[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskPayload {
     pub task_id: TaskId,
@@ -85,6 +93,7 @@ pub struct TaskPayload {
     pub context: ContextPayload,
     pub tau: TauValue,
     pub max_tokens: u64,
+    pub wave_mode: WaveMode,
 }
 
 #[typeshare]
@@ -128,6 +137,7 @@ pub enum AgentTelemetryEvent {
         task_id: TaskId,
         agent_id: AgentId,
         command: String,
+        args: Vec<String>,
         stdout: String,
         stderr: String,
         exit_code: i32,

@@ -86,6 +86,7 @@ fn task_payload_serde_roundtrip() {
         context: ContextPayload::Inline("system: you are a helpful assistant".into()),
         tau: TauValue::new(0.4).unwrap(),
         max_tokens: 512,
+        wave_mode: h2ai_types::agent::WaveMode::Normal,
     };
     let json = serde_json::to_string(&payload).unwrap();
     let back: TaskPayload = serde_json::from_str(&json).unwrap();
@@ -98,6 +99,14 @@ fn task_payload_serde_roundtrip() {
     assert_eq!(back.instructions, "summarise the doc");
     assert_eq!(back.tau.value(), 0.4);
     assert_eq!(back.max_tokens, 512);
+    assert_eq!(back.wave_mode, h2ai_types::agent::WaveMode::Normal);
+}
+
+#[test]
+fn wave_mode_hardened_serde_roundtrip() {
+    let json = serde_json::to_string(&h2ai_types::agent::WaveMode::Hardened).unwrap();
+    let back: h2ai_types::agent::WaveMode = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, h2ai_types::agent::WaveMode::Hardened);
 }
 
 // --- TaskResult ---
@@ -206,6 +215,7 @@ fn agent_telemetry_shell_command_executed_serde_roundtrip() {
         task_id: tid.clone(),
         agent_id: "agent-3".into(),
         command: "ls -la".into(),
+        args: vec![],
         stdout: "total 8\ndrwxr-xr-x 2 user user 4096 Jan 1 00:00 .".into(),
         stderr: String::new(),
         exit_code: 0,
@@ -219,6 +229,7 @@ fn agent_telemetry_shell_command_executed_serde_roundtrip() {
             task_id,
             agent_id,
             command,
+            args,
             stdout,
             stderr,
             exit_code,
@@ -227,6 +238,7 @@ fn agent_telemetry_shell_command_executed_serde_roundtrip() {
             assert_eq!(task_id, tid);
             assert_eq!(agent_id, AgentId::from("agent-3"));
             assert_eq!(command, "ls -la");
+            assert_eq!(args, Vec::<String>::new());
             assert_eq!(stdout, "total 8\ndrwxr-xr-x 2 user user 4096 Jan 1 00:00 .");
             assert_eq!(stderr, "");
             assert_eq!(exit_code, 0);

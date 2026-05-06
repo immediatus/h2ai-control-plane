@@ -13,8 +13,8 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cfg = H2AIConfig::default();
-    let nats_url = cfg.nats_url;
+    let cfg = Arc::new(H2AIConfig::default());
+    let nats_url = cfg.nats_url.clone();
 
     let agent_id_str = std::env::var("H2AI_AGENT_ID").unwrap_or_else(|_| String::new());
     let agent_id: AgentId = if agent_id_str.is_empty() {
@@ -49,5 +49,5 @@ async fn main() -> anyhow::Result<()> {
     let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
         Arc::new(h2ai_adapters::mock::MockAdapter::new(String::new()));
 
-    dispatch::run(client, agent_id, adapter, active_tasks).await
+    dispatch::run(client, agent_id, adapter, active_tasks, cfg).await
 }

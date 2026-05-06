@@ -132,8 +132,10 @@ h2ai-provisioner    Static / NATS / Kubernetes agent providers.
 h2ai-state          CRDT-friendly TaskState, ProposalSet (LUB by generation, then score),
                     snapshot/replay machinery.
 h2ai-telemetry      tracing→OTLP plumbing, structured spans for every phase.
-h2ai-tools          CLI utilities (calibration triggers, manifest validation, corpus linting).
+h2ai-tools          Shell execution perimeter: ShellExecutor (JSON-contract, no-shell-interpreter,
+                    PGID-scoped process group kill), ToolError, ToolRegistry::for_wave(cfg, mode).
 h2ai-agent          Edge-side agent runtime (the container that runs an explorer in production).
+                    DispatchLoop builds a fresh ToolRegistry::for_wave(cfg, wave_mode) per task.
 h2ai-api            Axum HTTP server: POST /tasks, SSE event stream, calibration endpoints,
                     health/ready/metrics, Merge Authority UI assets.
 ```
