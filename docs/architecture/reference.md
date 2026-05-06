@@ -172,6 +172,28 @@ struct ZeroSurvivalEvent {
 }
 ```
 
+#### TaoIterationEvent
+
+Emitted once per TAO agent turn, capturing the tool call and its output for the audit trail.
+
+```rust
+struct TaoIterationEvent {
+    task_id: TaskId,
+    iteration: u8,
+    tool_calls: Vec<ToolCallRecord>,
+    total_token_cost: u32,
+}
+
+struct ToolCallRecord {
+    tool: AgentTool,       // Shell | WebSearch | FileSystem | CodeExecution
+    input_json: String,    // JSON payload sent to the executor
+    output: String,        // executor result string
+    iteration: u8,         // which TAO turn this call occurred in
+}
+```
+
+`tool_calls` is `#[serde(default, skip_serializing_if = "Vec::is_empty")]` — turns with no tool calls serialise without the field, keeping old events readable.
+
 #### EpistemicYieldEvent
 
 ```rust
@@ -317,6 +339,44 @@ The TOML key is the lower-snake-case Rust field name. The env-var key is the upp
 
 `ToolRegistry::for_wave(cfg, WaveMode::Normal)` selects `shell_allowlist`; `ToolRegistry::for_wave(cfg, WaveMode::Hardened)` selects `shell_hardened_allowlist`. The `wave_mode` field on `TaskPayload` carries the per-task mode from the NATS wire; the agent dispatch loop builds a fresh registry per task.
 
+### Web Search Tool
+
+| Field | Default | Purpose |
+|---|---|---|
+| `[web_search]` | absent | Section absent = WebSearch executor not registered. |
+| `web_search.api_key_env` | — | Environment variable name holding the Google Custom Search API key. `validate_tool_configs` panics at startup if this var is missing or empty when the section is present. |
+| `web_search.cx_env` | — | Environment variable name holding the Google Custom Search Engine (CX) ID. Panics at startup if missing or empty when the section is present. |
+| `web_search.max_results` | — | Maximum results returned per query. Capped internally at 10 (Google API hard limit). |
+
+The live backend sends HTTPS requests to `https://www.googleapis.com/customsearch/v1`. Only registered in `WaveMode::Normal`; absent in `WaveMode::Hardened`.
+
+### Filesystem Tool (MCP)
+
+| Field | Default | Purpose |
+|---|---|---|
+| `[mcp_filesystem]` | absent | Section absent = FileSystem executor not registered. |
+| `mcp_filesystem.command` | — | Executable to launch as the MCP stdio server (e.g. `"npx"` or a compiled binary). |
+| `mcp_filesystem.args` | `[]` | Arguments to pass to the MCP server command. |
+| `mcp_filesystem.timeout_secs` | `5` | Maximum seconds to wait for an MCP response before sending SIGKILL to the server's process group. |
+
+The `McpExecutor` enforces a read-only policy: only `read_file` and `list_directory` operations are permitted. Any other operation name returns `ToolError::NotPermitted`. This policy is enforced in the executor layer, not in the backend, so it holds regardless of which backend is wired. Only registered in `WaveMode::Normal`.
+
+### WASM Code Execution Tool
+
+| Field | Default | Purpose |
+|---|---|---|
+| `[wasm_executor]` | absent | Section absent = CodeExecution executor not registered. |
+| `wasm_executor.interpreter_wasm_path` | — | Path to the WASM binary that acts as the JavaScript interpreter sandbox. `validate_tool_configs` panics at startup if this path does not exist when the section is present. |
+| `wasm_executor.fuel_budget` | — | Wasmtime fuel units allocated per execution. Fuel exhaustion is a safe termination — the engine traps without crashing the host process. |
+
+Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; other languages return `ToolError::NotPermitted`. No WASI imports are linked — the sandbox has no network or filesystem access by design. Registered in both `WaveMode::Normal` and `WaveMode::Hardened`.
+
+### TAO Agent
+
+| Field | Default | Purpose |
+|---|---|---|
+| `agent_max_tool_iterations` | `5` | Maximum tool-call turns the TAO agent may execute per wave. Prevents runaway tool loops. |
+
 ### Token budgets and concurrency
 
 | Field | Default | Purpose |
@@ -403,10 +463,14 @@ pub enum AgentTool {
 
 // Carried on every TaskPayload; selects the ToolRegistry allowlist for the task.
 pub enum WaveMode {
-    Normal,    // uses cfg.shell_allowlist
-    Hardened,  // uses cfg.shell_hardened_allowlist (ConstrainedExploration / ModeCollapse)
+    Normal,    // uses cfg.shell_allowlist; all configured executors registered
+    Hardened,  // uses cfg.shell_hardened_allowlist; only Shell and CodeExecution registered
 }
 ```
+
+**Backend injection pattern.** Every tool executor wraps a `Box<dyn *Backend>` trait object. In production `ToolRegistry::for_wave(cfg, mode)` wires live backends (GoogleSearchBackend, StdioMcpBackend, RealWasmBackend). In tests `ToolRegistry::for_wave_with_mocks(cfg, mode)` injects mock backends (MockSearchBackend, MockMcpBackend, MockWasmBackend) without touching env vars, the filesystem, or spawning subprocesses. Both constructors apply identical WaveMode gating logic.
+
+The TAO agent's local tool loop runs up to `agent_max_tool_iterations` turns. Each turn: call LLM with accumulated context, parse `{"tool": "...", "input": {...}}` from the response, dispatch to `ToolRegistry`, append a `ToolCallRecord` to the audit trail. The resulting `TaskResult.tool_calls` field carries the complete iteration history.
 
 Tool presence shifts the calibrated physics: `Shell` and `FileSystem` raise α (serialised access to shared state); `WebSearch` raises β₀ (retrieval nondeterminism inflates CG variance); `CodeExecution` raises both. Default `c_i` ranges by tool set:
 

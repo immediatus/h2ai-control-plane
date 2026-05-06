@@ -300,3 +300,22 @@ shell_timeout_secs = 5
 # Maximum number of TAO loop tool-call iterations an edge agent may execute per task.
 # After this limit the agent returns whatever output the LLM produced last. Default: 5.
 agent_max_tool_iterations = 5
+
+# ── Enterprise executor capabilities ─────────────────────────────────────────
+# Uncomment and configure any section to enable the corresponding tool.
+# Absent sections = executor silently omitted from registry.
+# Present sections with invalid config (missing env vars, bad paths) = node panics at startup.
+
+# [web_search]
+# api_key_env = "GOOGLE_SEARCH_API_KEY"   # env var name holding the API key
+# cx_env      = "GOOGLE_SEARCH_CX"        # env var name holding the CSE ID
+# max_results = 3
+
+# [mcp_filesystem]
+# command      = "npx"
+# args         = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+# timeout_secs = 10
+
+# [wasm_executor]
+# interpreter_wasm_path = "assets/quickjs.wasm"
+# fuel_budget           = 100_000

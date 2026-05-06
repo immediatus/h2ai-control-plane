@@ -206,10 +206,11 @@ The full dispatch-and-await loop per Explorer:
 2. **Payload construction** — `TaskPayload { task_id, agent: AgentDescriptor, instructions, context, τ, max_tokens, wave_mode: WaveMode }` is built. The full descriptor and `wave_mode` travel with the payload so the edge agent's `ToolRegistry` is scoped to the correct allowlist for this wave.
 3. **Capacity check** — `AgentProvider::ensure_agent_capacity(descriptor, task_load)` verifies the container pool. The provider selects the container image from `descriptor.model` and configures volume mounts and security contexts from `descriptor.tools` — no hardcoded image names in the orchestrator.
 4. **Dispatch** — `TaskPayload` is published to `h2ai.tasks.ephemeral.{task_id}` on the durable JetStream `H2AI_TASKS` stream. A scoped **NKey** for this `task_id` is injected into the container — the edge agent has no NATS credentials before this moment and none after. The NKey's `allowed_publish` set is sized to match the tool set.
-5. **Live telemetry** — the control plane subscribes to `h2ai.telemetry.{task_id}`. Every `AgentTelemetryEvent` (LLM calls, shell commands, errors) is routed through `RedactionMiddleware` (secrets scrubbed before logging) into `AuditProvider::record_event` in real time.
-6. **Result wait** — the control plane subscribes to `h2ai.results.{task_id}`. The edge agent publishes `TaskResult` when done and terminates.
-7. **Memory commit** — on `TaskResult`, `MemoryProvider::commit_new_memories` persists the output for future context assembly. `AuditProvider::flush` drains the audit buffer.
-8. **NKey expiry** — the scoped NKey expires. The container loses all NATS permissions and is reaped.
+5. **TAO local tool loop** — inside the edge agent, `TaoAgent::run` iterates up to `agent_max_tool_iterations` turns. Each turn: call the LLM with accumulated context and all tool schemas injected into the system prompt; parse `{"tool": "...", "input": {...}}` from the response; dispatch to `ToolRegistry::execute(tool, input_json)`; append a `ToolCallRecord { tool, input_json, output, iteration }` to the audit trail. The loop terminates when the LLM produces a final answer (no tool field) or the iteration budget is exhausted.
+6. **Live telemetry** — the control plane subscribes to `h2ai.telemetry.{task_id}`. Every `AgentTelemetryEvent` (LLM calls, shell commands, errors) is routed through `RedactionMiddleware` (secrets scrubbed before logging) into `AuditProvider::record_event` in real time.
+7. **Result wait** — the control plane subscribes to `h2ai.results.{task_id}`. The edge agent publishes `TaskResult { answer, tool_calls: Vec<ToolCallRecord>, total_token_cost, .. }` when done and terminates. `tool_calls` carries the complete TAO iteration history for audit.
+8. **Memory commit** — on `TaskResult`, `MemoryProvider::commit_new_memories` persists the output for future context assembly. `AuditProvider::flush` drains the audit buffer.
+9. **NKey expiry** — the scoped NKey expires. The container loses all NATS permissions and is reaped.
 
 **Security invariant:** An edge agent can only publish to `h2ai.telemetry.{its agent_id}`, `audit.events.{its agent_id}`, and `h2ai.results.{its task_id}`. It cannot read other agents' payloads, write to the orchestration event bus, or retain credentials after its task closes. This is enforced at the NATS server level — not by application code.
 
@@ -287,7 +288,7 @@ ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
 MergeResolvedEvent                 → human O(1) decision, task closed
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
-TaoIterationEvent                  → TAO loop turn result per Explorer per turn
+TaoIterationEvent                  → TAO loop turn result: tool_calls[] (tool, input_json, output, iteration) + total_token_cost
 VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5)
 ```
 
@@ -348,10 +349,17 @@ h2ai-control-plane/
 │   ├── h2ai-context/               # Dark Knowledge Compiler + constraint corpus loader
 │   │                               # corpus_keywords from ConstraintDoc::vocabulary()
 │   ├── h2ai-adapters/              # IComputeAdapter: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + AdapterFactory
-│   ├── h2ai-tools/                 # Shell execution perimeter: ShellExecutor (JSON contract, no shell interpreter,
-│   │                               # PGID process group kill), ToolError, ToolRegistry::for_wave(cfg, WaveMode)
+│   ├── h2ai-tools/                 # Tool executor framework: ToolExecutor trait, ToolRegistry, ToolError
+│   │                               # ShellExecutor (JSON contract, no shell interpreter, PGID kill on timeout)
+│   │                               # WebSearchExecutor (GoogleSearchBackend, max 10 results)
+│   │                               # McpExecutor (StdioMcpBackend, read_file/list_directory only)
+│   │                               # WasmExecutor (RealWasmBackend via wasmtime, fuel-bounded JS sandbox)
+│   │                               # ToolRegistry::for_wave(cfg, WaveMode) — live backends
+│   │                               # ToolRegistry::for_wave_with_mocks(cfg, WaveMode) — test helper
 │   ├── h2ai-api/                   # axum REST gateway + Merge Authority web UI
 │   └── h2ai-agent/                 # Edge agent binary — heartbeat + NATS task dispatch loop
+│                                   # TaoAgent: tool-call loop up to agent_max_tool_iterations turns
+│                                   # config_validation::validate_tool_configs — fail-fast at startup
 │                                   # builds ToolRegistry::for_wave(cfg, wave_mode) per task
 ├── nats/
 │   ├── dev.conf                    # single-node JetStream config (Local Plan)

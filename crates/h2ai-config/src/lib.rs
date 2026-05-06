@@ -179,6 +179,51 @@ pub struct H2AIConfig {
     /// After this limit the agent returns whatever output the LLM produced last. Default: 5.
     /// Valid range: 1–255. A value of 0 is rejected by the TaoAgent and treated as 1.
     pub agent_max_tool_iterations: u8,
+    /// Google Custom Search configuration. Absent = WebSearch executor disabled.
+    #[serde(default)]
+    pub web_search: Option<WebSearchConfig>,
+    /// MCP filesystem subprocess configuration. Absent = MCP executor disabled.
+    #[serde(default)]
+    pub mcp_filesystem: Option<McpFilesystemConfig>,
+    /// WASM interpreter executor configuration. Absent = WASM executor disabled.
+    #[serde(default)]
+    pub wasm_executor: Option<WasmExecutorConfig>,
+}
+
+/// Configuration for the WebSearch executor (Google Custom Search API).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    /// Name of the environment variable holding the Google Custom Search API key.
+    pub api_key_env: String,
+    /// Name of the environment variable holding the Google Custom Search Engine ID.
+    pub cx_env: String,
+    /// Maximum number of search result snippets returned to the LLM. Default: 3.
+    #[serde(default = "default_max_results")]
+    pub max_results: usize,
+}
+
+fn default_max_results() -> usize {
+    3
+}
+
+/// Configuration for the MCP filesystem executor (stdio subprocess transport).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpFilesystemConfig {
+    /// Binary to spawn for the MCP server (e.g. "npx").
+    pub command: String,
+    /// Arguments passed to the binary (e.g. ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]).
+    pub args: Vec<String>,
+    /// Seconds before the subprocess is killed via the process group reaper.
+    pub timeout_secs: u64,
+}
+
+/// Configuration for the WASM executor (QuickJS interpreter sandbox).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WasmExecutorConfig {
+    /// Path to the pre-compiled trusted interpreter WASM binary (e.g. "assets/quickjs.wasm").
+    pub interpreter_wasm_path: String,
+    /// Computational fuel budget per script execution; traps safely when exhausted.
+    pub fuel_budget: u64,
 }
 
 #[cfg(test)]

@@ -3,15 +3,23 @@ name = "h2ai-tools"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+web-search      = ["dep:reqwest"]
+wasm            = ["dep:wasmtime"]
+mcp-filesystem  = []
+enterprise      = ["web-search", "wasm", "mcp-filesystem"]
+
 [dependencies]
-h2ai-types = { path = "../h2ai-types" }
+h2ai-types  = { path = "../h2ai-types" }
 h2ai-config = { path = "../h2ai-config" }
-tokio = { workspace = true, features = ["process"] }
-thiserror = { workspace = true }
+tokio       = { workspace = true, features = ["process"] }
+thiserror   = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
+futures     = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+reqwest     = { workspace = true, optional = true }
+wasmtime    = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

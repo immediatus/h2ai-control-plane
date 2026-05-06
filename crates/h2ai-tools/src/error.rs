@@ -15,4 +15,10 @@ pub enum ToolError {
     NotPermitted(String),
     #[error("malformed tool input: {0}")]
     MalformedInput(String),
+    #[error("network error: {0}")]
+    NetworkError(String),
+    #[error("executor initialization failed: {0}")]
+    InitializationFailed(String),
+    #[error("execution failed: {0}")]
+    ExecutionFailed(String),
 }

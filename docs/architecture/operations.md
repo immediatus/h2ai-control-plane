@@ -38,6 +38,67 @@ Topology: stateless `Deployment/h2ai-control-plane`, `StatefulSet/nats` (3 nodes
 
 ---
 
+## 1b. Enterprise Tool Executor Setup
+
+Edge agents can be granted up to four tool executors, configured in `h2ai.toml`. Each section is optional — absent sections are silently skipped. At startup, `h2ai_agent::config_validation::validate_tool_configs` performs fail-fast validation of any present section; missing env vars or missing WASM files cause an immediate panic rather than a confusing runtime error.
+
+### Shell Executor
+
+Always registered. No additional setup beyond the allowlist config:
+
+```toml
+shell_allowlist = ["ls", "cat", "git", "echo", "pwd", "find", "grep"]
+shell_hardened_allowlist = ["ls", "cat", "git", "echo", "pwd"]
+shell_timeout_secs = 5
+```
+
+`shell_allowlist = []` disables the allowlist (unrestricted). For production deployments, always populate it with an explicit list. The agent uses PGID-scoped process group kill (SIGKILL) on timeout — no runaway child processes.
+
+### Web Search Executor
+
+Requires a Google Custom Search API key and a Custom Search Engine (CX) ID. Registered only in `WaveMode::Normal`.
+
+```toml
+[web_search]
+api_key_env = "GOOGLE_CSE_API_KEY"
+cx_env      = "GOOGLE_CSE_CX"
+max_results = 5
+```
+
+```bash
+export GOOGLE_CSE_API_KEY="AIza..."
+export GOOGLE_CSE_CX="017576662512468239146:omuauf_lfve"
+```
+
+`validate_tool_configs` panics at startup if either env var is missing or empty. `max_results` is capped at 10 by the Google API; requesting more silently returns 10.
+
+### Filesystem (MCP) Executor
+
+Launches an MCP-compatible stdio server. Registered only in `WaveMode::Normal`. The executor enforces a read-only policy: `read_file` and `list_directory` only. All write operations return an error at the executor layer regardless of what the backend supports.
+
+```toml
+[mcp_filesystem]
+command      = "npx"
+args         = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+timeout_secs = 10
+```
+
+No startup validation beyond TOML parsing — the MCP process is only spawned at first use. If the command cannot be found, the executor returns `ToolError::InitializationFailed` on the first call.
+
+### WASM Code Execution Executor
+
+Requires the `wasm` cargo feature and a compiled JavaScript interpreter WASM binary. Registered in both `WaveMode::Normal` and `WaveMode::Hardened`.
+
+```toml
+[wasm_executor]
+interpreter_wasm_path = "/opt/h2ai/jsinterp.wasm"
+fuel_budget           = 1_000_000
+```
+
+`validate_tool_configs` panics at startup if `interpreter_wasm_path` does not exist. `fuel_budget` limits computation — fuel exhaustion is a safe trap, not a crash. The sandbox has no WASI imports: no network, no filesystem, no env vars. Only `language = "javascript"` is accepted.
+
+---
+
 ## 2. NATS configuration
 
 NATS is the authoritative event log and the KV backing store. The runtime expects the following streams and KV buckets to exist (created by the control plane on first startup if absent):
@@ -209,3 +270,9 @@ These are the system's hard limits. They are not bugs; they are physical or desi
 | Yield ratio falling over time on identical workloads | Pool drift | Recalibrate; compare new `n_eff_cosine_prior` to historical |
 | Auditor approving everything despite verifier rejections | Auditor too lax for the corpus | Move auditor to a stronger model family; check `explorer_verification_family_match` |
 | Slow Phase 3 with no events | Blocking pool saturated, or cloud rate-limited | `H2AI_MAX_BLOCKING_THREADS` vs. concurrent task count; adapter logs for 429s |
+| Agent process panics at startup with "is missing or empty" | `web_search.api_key_env` or `cx_env` not set in environment | Export the env vars named in the TOML `[web_search]` section before starting the agent |
+| Agent process panics at startup with "does not exist" | `wasm_executor.interpreter_wasm_path` points to a missing file | Copy or build the WASM interpreter binary to the configured path |
+| `TaoIterationEvent.tool_calls` is empty despite tools being configured | WaveMode is Hardened but tool requested WebSearch or FileSystem | Only Shell and CodeExecution are available in Hardened mode; check `wave_mode` on `TaskPayload` |
+| TAO agent stops before completing the task | `agent_max_tool_iterations` budget exhausted | Raise `agent_max_tool_iterations` in config; investigate whether the agent is looping on a tool error |
+| MCP tool always returns `not allowed` or `permitted` error | Agent is requesting a write operation (not `read_file` / `list_directory`) | The MCP executor enforces read-only policy regardless of server capability; restrict tool use in the agent prompt |
+| WASM execution returns "fuel exhausted" | Script complexity exceeds `wasm_executor.fuel_budget` | Raise `fuel_budget`; simplify the script; check for infinite loops |

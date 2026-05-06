@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Arc::new(H2AIConfig::default());
+    h2ai_agent::config_validation::validate_tool_configs(&cfg);
     let nats_url = cfg.nats_url.clone();
 
     let agent_id_str = std::env::var("H2AI_AGENT_ID").unwrap_or_else(|_| String::new());

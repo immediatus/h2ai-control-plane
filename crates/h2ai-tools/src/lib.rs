@@ -1,6 +1,9 @@
 pub mod error;
+pub mod mcp;
 pub mod registry;
 pub mod shell;
+pub mod wasm;
+pub mod web_search;
 
 use async_trait::async_trait;
 
