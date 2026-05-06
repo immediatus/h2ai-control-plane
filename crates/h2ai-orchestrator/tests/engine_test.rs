@@ -840,3 +840,209 @@ fn epistemic_yield_event_yield_ratio_uses_n_requested() {
         ev.yield_ratio
     );
 }
+
+// ── Verifier/Explorer Family Conflict Gate ──────────────────────────────────
+
+/// A mock adapter that reports a specific AdapterKind (and thus family).
+#[derive(Debug)]
+struct FamilyAdapter {
+    output: String,
+    kind: AdapterKind,
+}
+
+impl FamilyAdapter {
+    fn anthropic(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            kind: AdapterKind::Anthropic {
+                api_key_env: "ANTHROPIC_KEY".into(),
+                model: "claude-3-5-sonnet-20241022".into(),
+            },
+        }
+    }
+    fn openai(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            kind: AdapterKind::OpenAI {
+                api_key_env: "OPENAI_KEY".into(),
+                model: "gpt-4o".into(),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IComputeAdapter for FamilyAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        Ok(ComputeResponse {
+            output: self.output.clone(),
+            token_cost: 10,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+        })
+    }
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
+
+/// When the verifier shares a family with the explorer pool and allow_single_family=false,
+/// the engine must reject the task immediately with VerifierExplorerFamilyConflict.
+/// No LLM tokens are burned — the gate fires before topology provisioning.
+#[tokio::test]
+async fn engine_rejects_verifier_explorer_family_conflict() {
+    // Obtain a valid calibration via the harness, then set the conflict flag.
+    let mut cal = calibration().await;
+    cal.explorer_verification_family_match = true;
+
+    let explorer = FamilyAdapter::anthropic("some proposal text");
+    let verifier = FamilyAdapter::anthropic(r#"{"score": 0.9, "reason": "ok"}"#);
+    let auditor = FamilyAdapter::anthropic(r#"{"approved": true, "reason": "ok"}"#);
+
+    let mut cfg = H2AIConfig::default();
+    cfg.allow_single_family = false; // enforce the hard gate
+
+    let store = TaskStore::new();
+    let registry =
+        AdapterRegistry::new(Arc::new(FamilyAdapter::anthropic("")) as Arc<dyn IComputeAdapter>);
+
+    let manifest = TaskManifest {
+        description: "any task".into(),
+        pareto_weights: h2ai_types::config::ParetoWeights::new(0.33, 0.34, 0.33).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 2,
+            tau_min: Some(0.3),
+            tau_max: Some(0.7),
+            roles: vec![],
+            review_gates: vec![],
+            slot_configs: vec![],
+        },
+        constraints: vec![],
+        context: None,
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&explorer as &dyn IComputeAdapter],
+        verification_adapter: &verifier as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig {
+            adapter: AdapterKind::Anthropic {
+                api_key_env: "ANTHROPIC_KEY".into(),
+                model: "claude-3-5-sonnet-20241022".into(),
+            },
+            ..Default::default()
+        },
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: vec![],
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+    };
+
+    let err = ExecutionEngine::run_offline(input).await.unwrap_err();
+    match err {
+        EngineError::MultiplicationConditionFailed(msg) => {
+            assert!(
+                msg.contains("VerifierExplorerFamilyConflict") || msg.contains("monoculture"),
+                "error message should name the conflict, got: {msg}"
+            );
+        }
+        other => panic!("expected MultiplicationConditionFailed, got: {other:?}"),
+    }
+}
+
+/// When allow_single_family=true the conflict gate is bypassed and execution proceeds.
+#[tokio::test]
+async fn engine_bypasses_family_conflict_gate_when_allow_single_family() {
+    let mut cal = calibration().await;
+    cal.explorer_verification_family_match = true;
+
+    // Explorer and verifier both Anthropic, but allow_single_family bypasses the gate.
+    let explorer = FamilyAdapter::anthropic("stateless JWT authentication token refresh ADR-001");
+    let verifier = FamilyAdapter::openai(r#"{"score": 0.9, "reason": "ok"}"#);
+    let auditor = FamilyAdapter::openai(r#"{"approved": true, "reason": "ok"}"#);
+
+    let mut cfg = H2AIConfig::default();
+    cfg.allow_single_family = true; // bypass gate
+
+    let store = TaskStore::new();
+    let registry =
+        AdapterRegistry::new(Arc::new(FamilyAdapter::anthropic("")) as Arc<dyn IComputeAdapter>);
+
+    let manifest = TaskManifest {
+        description: "stateless JWT authentication token refresh ADR-001".into(),
+        pareto_weights: h2ai_types::config::ParetoWeights::new(0.33, 0.34, 0.33).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 2,
+            tau_min: Some(0.3),
+            tau_max: Some(0.7),
+            roles: vec![],
+            review_gates: vec![],
+            slot_configs: vec![],
+        },
+        constraints: vec![],
+        context: None,
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![
+            &explorer as &dyn IComputeAdapter,
+            &explorer as &dyn IComputeAdapter,
+        ],
+        verification_adapter: &verifier as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig {
+            adapter: AdapterKind::OpenAI {
+                api_key_env: "OPENAI_KEY".into(),
+                model: "gpt-4o".into(),
+            },
+            ..Default::default()
+        },
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: vec![],
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+    };
+
+    // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
+    let result = ExecutionEngine::run_offline(input).await;
+    if let Err(EngineError::MultiplicationConditionFailed(msg)) = &result {
+        assert!(
+            !msg.contains("monoculture"),
+            "gate fired despite allow_single_family=true: {msg}"
+        );
+    }
+}

@@ -2,6 +2,7 @@ use crate::diagnostics::TalagrandDiagnostic;
 pub use crate::nats_dispatch_adapter::NatsDispatchConfig;
 use crate::self_optimizer::{OptimizerParams, QualityMeasurement, SelfOptimizer, SuggestInput};
 use crate::task_store::{TaskPhase, TaskState, TaskStore};
+use crate::verification::extract_json_object;
 use chrono::Utc;
 use futures::future::join_all;
 use h2ai_autonomic::checker::MultiplicationChecker;
@@ -208,6 +209,28 @@ impl ExecutionEngine {
             .first()
             .map(|a| a.kind().clone())
             .unwrap_or_else(|| input.auditor_config.adapter.clone());
+
+        // ── Verifier/Explorer Family Conflict Gate ──────────────────────────
+        // Enforced once before the MAPE-K loop: no retry can resolve a deployment
+        // topology where the verification adapter shares a provider family with the
+        // explorer pool. Such a configuration invalidates Condorcet independence —
+        // the verifier cannot detect its own blind spots.
+        //
+        // Bypassed when `allow_single_family = true` (test/dev environments only).
+        if !input.cfg.allow_single_family && input.calibration.explorer_verification_family_match {
+            use h2ai_types::adapter::AdapterFamily;
+            let explorer_family = AdapterFamily::from(&explorer_adapter_kind).to_string();
+            let verifier_family =
+                AdapterFamily::from(input.verification_adapter.kind()).to_string();
+            input.store.mark_failed(&task_id);
+            return Err(EngineError::MultiplicationConditionFailed(
+                MultiplicationConditionFailure::VerifierExplorerFamilyConflict {
+                    explorer_family,
+                    verifier_family,
+                }
+                .to_string(),
+            ));
+        }
 
         let cg_mean = input.calibration.coefficients.cg_mean();
         let n_max_ceiling = input.calibration.coefficients.n_max().floor() as u32;
@@ -881,9 +904,9 @@ impl ExecutionEngine {
                     .map_err(|e| EngineError::Adapter(e.to_string()))?;
 
                 let (rejected, audit_reason) =
-                    match serde_json::from_str::<AuditResponse>(&audit_result.output) {
-                        Ok(r) => (!r.approved, r.reason),
-                        Err(_) => {
+                    match extract_json_object::<AuditResponse>(&audit_result.output) {
+                        Some(r) => (!r.approved, r.reason),
+                        None => {
                             tracing::warn!(
                                 task_id = %task_id,
                                 output = %audit_result.output,

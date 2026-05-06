@@ -739,6 +739,11 @@ pub enum MultiplicationConditionFailure {
     CommonGroundBelowFloor { cg_mean: f64, theta: f64 },
     #[error("n_eff_cosine_prior {n_eff:.2} < 1 + diversity_threshold {threshold:.2} — pool cannot produce independent perspectives")]
     InsufficientPoolDiversity { n_eff: f64, threshold: f64 },
+    #[error("verifier family '{verifier_family}' matches explorer family '{explorer_family}' — monoculture verification invalidates Condorcet independence")]
+    VerifierExplorerFamilyConflict {
+        explorer_family: String,
+        verifier_family: String,
+    },
 }
 
 impl MultiplicationCondition {

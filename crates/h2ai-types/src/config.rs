@@ -199,7 +199,7 @@ impl Default for VerificationConfig {
             rubric: crate::prompts::COT_RUBRIC.into(),
             evaluator_system_prompt: crate::prompts::EVALUATOR_SYSTEM_PROMPT.into(),
             evaluator_tau: TauValue::new(0.1).unwrap(),
-            evaluator_max_tokens: 128,
+            evaluator_max_tokens: 512,
         }
     }
 }

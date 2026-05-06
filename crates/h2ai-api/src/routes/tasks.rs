@@ -8,7 +8,7 @@ use axum::{
 use h2ai_constraints::loader::load_corpus;
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_types::config::{TaoConfig, VerificationConfig};
-use h2ai_types::events::{H2AIEvent, TaskAttributionEvent, TaskFailedEvent};
+use h2ai_types::events::{H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent};
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use serde_json::{json, Value};
@@ -203,6 +203,19 @@ pub async fn submit_task(
                     }
                     Err(e) => tracing::warn!("failed to publish TaskAttributionEvent: {e}"),
                 }
+                // Publish MergeResolved so SSE clients receive the terminal event and close.
+                let merge_ev = H2AIEvent::MergeResolved(MergeResolvedEvent {
+                    task_id: output.task_id.clone(),
+                    resolved_output: output.resolved_output.clone(),
+                    timestamp: chrono::Utc::now(),
+                });
+                if let Err(e) = state_clone
+                    .nats
+                    .publish_event(&output.task_id, &merge_ev)
+                    .await
+                {
+                    tracing::warn!("failed to publish MergeResolvedEvent: {e}");
+                }
                 state_clone.store.mark_resolved(&output.task_id);
             }
             Err(e) => {
@@ -211,8 +224,10 @@ pub async fn submit_task(
                     || msg.contains("connection refused")
                     || msg.contains("timed out");
                 if is_network {
+                    eprintln!("WARN: task engine stopped — LLM adapter unreachable: {msg}");
                     tracing::warn!("task engine stopped — LLM adapter unreachable: {msg}");
                 } else {
+                    eprintln!("ERROR: task engine error: {msg}");
                     tracing::error!("task engine error: {msg}");
                 }
                 let failed_ev = H2AIEvent::TaskFailed(TaskFailedEvent {

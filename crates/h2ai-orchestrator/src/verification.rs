@@ -276,13 +276,57 @@ impl VerificationPhase {
             max_tokens,
         };
         match evaluator.execute(req).await {
-            Ok(resp) => match serde_json::from_str::<ScoreResponse>(&resp.output) {
-                Ok(s) => s.score.clamp(0.0, 1.0),
-                Err(_) => 0.0,
+            Ok(resp) => match extract_json_object::<ScoreResponse>(&resp.output) {
+                Some(s) => s.score.clamp(0.0, 1.0),
+                None => 0.0,
             },
             Err(_) => 0.0,
         }
     }
+}
+
+/// Extract the first valid JSON object `{...}` from a string that may contain
+/// surrounding prose or markdown code fences (e.g. ```json ... ```).
+pub(crate) fn extract_json_object<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> {
+    // Fast path: whole string is valid JSON.
+    if let Ok(v) = serde_json::from_str::<T>(text) {
+        return Some(v);
+    }
+    // Try every `{...}` span: find each `{`, pair with the matching `}`, parse.
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    for start in 0..n {
+        if chars[start] != '{' {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        for end in start..n {
+            let c = chars[end];
+            if escaped {
+                escaped = false;
+            } else if c == '\\' && in_string {
+                escaped = true;
+            } else if c == '"' {
+                in_string = !in_string;
+            } else if !in_string {
+                if c == '{' {
+                    depth += 1;
+                } else if c == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        let slice: String = chars[start..=end].iter().collect();
+                        if let Ok(v) = serde_json::from_str::<T>(&slice) {
+                            return Some(v);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn severity_label(s: &ConstraintSeverity) -> String {
