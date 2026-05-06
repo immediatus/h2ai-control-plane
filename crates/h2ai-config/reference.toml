@@ -296,3 +296,7 @@ shell_hardened_allowlist = ["ls", "cat", "git", "find", "echo", "pwd"]
 
 # Maximum seconds a shell tool call may run before the process group is killed. Default: 5.
 shell_timeout_secs = 5
+
+# Maximum number of TAO loop tool-call iterations an edge agent may execute per task.
+# After this limit the agent returns whatever output the LLM produced last. Default: 5.
+agent_max_tool_iterations = 5

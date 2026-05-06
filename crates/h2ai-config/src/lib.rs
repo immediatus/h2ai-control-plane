@@ -175,6 +175,10 @@ pub struct H2AIConfig {
     pub shell_hardened_allowlist: Vec<String>,
     /// Maximum seconds a shell tool invocation may run before it is killed. Default: 5.
     pub shell_timeout_secs: u64,
+    /// Maximum number of TAO loop tool-call iterations an edge agent may execute per task.
+    /// After this limit the agent returns whatever output the LLM produced last. Default: 5.
+    /// Valid range: 1–255. A value of 0 is rejected by the TaoAgent and treated as 1.
+    pub agent_max_tool_iterations: u8,
 }
 
 #[cfg(test)]
@@ -209,6 +213,17 @@ mod synthesis_config_tests {
             ..H2AIConfig::default()
         };
         cfg.validate_shell_allowlist_subset();
+    }
+}
+
+#[cfg(test)]
+mod agent_config_tests {
+    use super::*;
+
+    #[test]
+    fn agent_max_tool_iterations_default_is_five() {
+        let cfg = H2AIConfig::default();
+        assert_eq!(cfg.agent_max_tool_iterations, 5);
     }
 }
 

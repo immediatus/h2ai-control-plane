@@ -15,3 +15,4 @@ pub mod ollama;
 pub mod openai;
 
 pub use mock::MockAdapter;
+pub use mock::SequencedMockAdapter;

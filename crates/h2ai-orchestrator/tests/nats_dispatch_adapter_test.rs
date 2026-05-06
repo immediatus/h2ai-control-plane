@@ -116,6 +116,7 @@ async fn nats_dispatch_adapter_round_trip() {
             output: format!("echo: {}", payload.instructions),
             token_cost: 42,
             error: None,
+            tool_calls: vec![],
         };
 
         let js = async_nats::jetstream::new(nats_agent.client.clone());

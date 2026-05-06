@@ -528,6 +528,7 @@ mod wire_protocol_tests {
             output: "hello".into(),
             token_cost: 10,
             error: None,
+            tool_calls: vec![],
         };
         let js = async_nats::jetstream::new(nats.client.clone());
         let result_subject = h2ai_nats::subjects::task_result_subject(&task_id);

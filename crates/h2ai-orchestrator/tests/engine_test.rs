@@ -899,8 +899,10 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
     let verifier = FamilyAdapter::anthropic(r#"{"score": 0.9, "reason": "ok"}"#);
     let auditor = FamilyAdapter::anthropic(r#"{"approved": true, "reason": "ok"}"#);
 
-    let mut cfg = H2AIConfig::default();
-    cfg.allow_single_family = false; // enforce the hard gate
+    let cfg = H2AIConfig {
+        allow_single_family: false,
+        ..Default::default()
+    };
 
     let store = TaskStore::new();
     let registry =
@@ -978,8 +980,10 @@ async fn engine_bypasses_family_conflict_gate_when_allow_single_family() {
     let verifier = FamilyAdapter::openai(r#"{"score": 0.9, "reason": "ok"}"#);
     let auditor = FamilyAdapter::openai(r#"{"approved": true, "reason": "ok"}"#);
 
-    let mut cfg = H2AIConfig::default();
-    cfg.allow_single_family = true; // bypass gate
+    let cfg = H2AIConfig {
+        allow_single_family: true,
+        ..Default::default()
+    };
 
     let store = TaskStore::new();
     let registry =

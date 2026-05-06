@@ -1,7 +1,7 @@
 use chrono::Utc;
 use h2ai_types::agent::{
     AgentDescriptor, AgentState, AgentTelemetryEvent, AgentTool, ContextPayload, CostTier,
-    TaskPayload, TaskResult,
+    TaskPayload, TaskResult, ToolCallRecord,
 };
 use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::sizing::TauValue;
@@ -120,6 +120,7 @@ fn task_result_serde_roundtrip_success() {
         output: "The answer is 42.".into(),
         token_cost: 120,
         error: None,
+        tool_calls: vec![],
     };
     let json = serde_json::to_string(&result).unwrap();
     let back: TaskResult = serde_json::from_str(&json).unwrap();
@@ -138,6 +139,7 @@ fn task_result_serde_roundtrip_failure() {
         output: String::new(),
         token_cost: 0,
         error: Some("adapter timed out".into()),
+        tool_calls: vec![],
     };
     let json = serde_json::to_string(&result).unwrap();
     let back: TaskResult = serde_json::from_str(&json).unwrap();
@@ -275,4 +277,37 @@ fn agent_telemetry_system_error_serde_roundtrip() {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
+}
+
+#[test]
+fn task_result_deserializes_with_empty_tool_calls_when_field_absent() {
+    // Existing serialized TaskResult without tool_calls must still deserialize cleanly.
+    let json = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "agent_id": "agent-1",
+        "output": "hello",
+        "token_cost": 10,
+        "error": null
+    }"#;
+    let result: TaskResult = serde_json::from_str(json).unwrap();
+    assert!(
+        result.tool_calls.is_empty(),
+        "tool_calls must default to empty vec"
+    );
+}
+
+#[test]
+fn tool_call_record_roundtrips_through_json() {
+    let record = ToolCallRecord {
+        tool: AgentTool::Shell,
+        input_json: r#"{"command":"echo","args":["hi"]}"#.into(),
+        output: "hi\n".into(),
+        iteration: 1,
+    };
+    let json = serde_json::to_string(&record).unwrap();
+    let back: ToolCallRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.tool, AgentTool::Shell);
+    assert_eq!(back.iteration, 1);
+    assert_eq!(back.output, "hi\n");
+    assert_eq!(back.input_json, r#"{"command":"echo","args":["hi"]}"#);
 }

@@ -1196,6 +1196,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
+ "async-trait",
  "chrono",
  "futures",
  "h2ai-adapters",

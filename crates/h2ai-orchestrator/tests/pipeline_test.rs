@@ -155,6 +155,7 @@ async fn pipeline_finalize_commits_to_memory() {
         output: "The answer is 42.".into(),
         token_cost: 100,
         error: None,
+        tool_calls: vec![],
     };
     pipeline.finalize("session-1", &result).await.unwrap();
     assert!(!memory.lock().unwrap().is_empty());

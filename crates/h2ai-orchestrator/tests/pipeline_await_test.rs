@@ -46,6 +46,7 @@ async fn spawn_fake_agent(nats: Client) {
                 output: "design approved".into(),
                 token_cost: 150,
                 error: None,
+                tool_calls: vec![],
             };
             let _ = nats
                 .publish(

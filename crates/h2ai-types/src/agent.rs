@@ -96,6 +96,19 @@ pub struct TaskPayload {
     pub wave_mode: WaveMode,
 }
 
+/// Single tool invocation record, carried in `TaskResult` for the NATS audit trail.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallRecord {
+    pub tool: AgentTool,
+    /// Serialized JSON string of the input passed to the tool executor.
+    pub input_json: String,
+    /// Raw string output returned by the tool executor.
+    pub output: String,
+    /// 1-based TAO iteration index at which this call was made.
+    pub iteration: u8,
+}
+
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskResult {
@@ -104,6 +117,9 @@ pub struct TaskResult {
     pub output: String,
     pub token_cost: u64,
     pub error: Option<String>,
+    /// Ordered list of tool calls made during the local TAO loop. Empty for direct (no-tool) executions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallRecord>,
 }
 
 #[typeshare]

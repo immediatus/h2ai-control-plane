@@ -39,3 +39,4 @@ h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-state    = { path = "../h2ai-state" }
 h2ai-nats     = { path = "../h2ai-nats" }
 async-nats    = { workspace = true }
+async-trait   = { workspace = true }

@@ -3,7 +3,7 @@ use futures::StreamExt;
 use h2ai_config::H2AIConfig;
 use h2ai_nats::subjects::task_result_subject;
 use h2ai_tools::registry::ToolRegistry;
-use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
+use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::agent::{ContextPayload, TaskPayload, TaskResult};
 use h2ai_types::identity::AgentId;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -74,16 +74,11 @@ impl DispatchLoop {
     }
 
     async fn execute_task(&self, payload: TaskPayload) -> TaskResult {
-        // Build the per-task, wave-scoped tool registry. Currently held here for future
-        // use when IComputeAdapter gains a ToolRegistry parameter; the wave_mode field
-        // on TaskPayload ensures the correct allowlist is ready at that point.
-        let _registry = ToolRegistry::for_wave(&self.cfg, payload.wave_mode);
+        let registry = ToolRegistry::for_wave(&self.cfg, payload.wave_mode);
 
         let system_context = match payload.context {
             ContextPayload::Inline(s) => s,
             ContextPayload::Ref { hash, byte_len } => {
-                // Object store backend not yet available on the agent side.
-                // Large contexts (Ref payloads) are unsupported until NatsObjectStoreBackend ships.
                 tracing::warn!(
                     hash = %hash,
                     byte_len = byte_len,
@@ -92,27 +87,40 @@ impl DispatchLoop {
                 String::new()
             }
         };
-        let request = ComputeRequest {
+
+        let tao_input = crate::tao_agent::TaoAgentInput {
+            instructions: payload.instructions.clone(),
             system_context,
-            task: payload.instructions.clone(),
             tau: payload.tau,
             max_tokens: payload.max_tokens,
         };
-        match self.adapter.execute(request).await {
-            Ok(resp) => TaskResult {
-                task_id: payload.task_id,
-                agent_id: self.agent_id.clone(),
-                output: resp.output,
-                token_cost: resp.token_cost,
-                error: None,
-            },
-            Err(e) => TaskResult {
-                task_id: payload.task_id,
-                agent_id: self.agent_id.clone(),
-                output: String::new(),
-                token_cost: 0,
-                error: Some(e.to_string()),
-            },
+
+        let result = crate::tao_agent::TaoAgent::new(self.adapter.as_ref(), registry, &self.cfg)
+            .run(tao_input)
+            .await;
+
+        if result.truncated {
+            tracing::warn!(
+                task_id = %payload.task_id,
+                tool_calls = result.tool_calls.len(),
+                "task result is truncated — iteration cap reached before LLM produced a final answer"
+            );
+        }
+
+        // Extract error before moving result.output so the AdapterError cause string
+        // is visible to the control plane, not just in tracing logs.
+        let error = if result.adapter_failed {
+            Some(result.output.clone())
+        } else {
+            None
+        };
+        TaskResult {
+            task_id: payload.task_id,
+            agent_id: self.agent_id.clone(),
+            output: result.output,
+            token_cost: result.total_token_cost,
+            error,
+            tool_calls: result.tool_calls,
         }
     }
 
