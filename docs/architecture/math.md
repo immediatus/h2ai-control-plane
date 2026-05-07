@@ -70,7 +70,19 @@ N_max = round(√((1 − α) / β_eff))
 
 A one-σ confidence interval `(n_max_lo, n_max_hi)` is propagated from the empirical CG variance: `n_at_cg(CG_mean ± cg_std_dev)`.
 
-### 2.1 Context-aware N_max
+### 2.1 Two layers of cost — orchestration vs. synthesis
+
+A common misreading of the USL model is: "the system uses a DAG for orchestration, so coordination is O(N), and therefore β does not apply." This conflates two separate costs that operate at different layers.
+
+**Orchestration layer — O(N):** Selecting topology (HierarchicalTree vs. Ensemble), routing proposals through a DAG, and dispatching subtasks all scale at most linearly in N. The `HierarchicalTree` topology is selected precisely when N > N_max to reduce *orchestration* coordination from O(N²) to O(N).
+
+**Synthesis layer — O(N²):** After proposals arrive, the system must reconcile them. Two O(N²) costs occur here regardless of the orchestration topology:
+1. **CG computation** — `CG_mean` is the mean over all `N×(N−1)/2` pairwise Hamming similarities across surviving proposals. This is measured, not approximated.
+2. **Synthesis context reconciliation** — the synthesis LLM receives all N surviving proposals concatenated. Identifying which proposals contradict which constraints across N proposals is a pairwise comparison problem. The "Lost in the Middle" attention degradation (Liu et al. 2023) is also super-linear: retrieval quality for any single proposal decays as the total context grows, so the effective O(N²) term is in proposal-pair incompatibility detection, not just sequential token processing.
+
+β_eff is fitted from merge-phase timing, which captures both components. The orchestration topology does not reduce β — it reduces α.
+
+### 2.3 Context-aware N_max
 
 Coordination cost has two physical components: conflict reconciliation (the merge step, reduced by CG) and positional attention degradation in the synthesis context window ("Lost in the Middle", Liu et al. 2023). The latter is orthogonal to CG and is modelled by amplifying β with the context-fill fraction:
 
@@ -82,11 +94,11 @@ N_max_ctx     = solve N = √((1 − α) / β_ctx(N))   (iterative; ≤ 5 iterat
 
 `γ` is the attention-sensitivity coefficient.
 
-### 2.2 Temporal decay
+### 2.4 Temporal decay
 
 CG samples carry Unix timestamps. `beta_eff_temporal(now)` weights each sample by `exp(−(now − t) / CG_HALFLIFE_SECS)` with `CG_HALFLIFE_SECS = 604_800` (7 days, Ebbinghaus-style). As samples age, β_eff drifts toward the conservative ceiling β₀ — older calibration data deflates without explicit recalibration.
 
-### 2.3 Calibration
+### 2.5 Calibration
 
 The harness runs two phases:
 - **Phase A** with 2 adapters → measures `z_2` (latency at N=2).
@@ -166,9 +178,19 @@ rho_mean = 1 − CG_mean
 
 Source: `n_it_optimal(rho)`. Returns the smallest N where `(1 − ρ)^(N−1) < 0.5`, i.e. where the marginal information gain drops below half the per-adapter entropy. Matches the Condorcet `n_optimal` within ±1 for ρ ∈ [0.3, 0.95].
 
-### 5.2 Honest limitation
+### 5.2 Physical enforcement of the independence requirement
 
-The CJT is a theorem about **independent voters**. The system uses `(1 − ρ)` as a correction term, but it does *not* directly measure ρ — it proxies it from `1 − CG_mean` (Hamming) or `1 − N_eff / N` (cosine). When two adapters from the same family hallucinate the same answer, both proxies underestimate the true correlation. This is mitigated by Phase 2.6 (cosine N_eff guard), `single_family_warning` on `CalibrationCompletedEvent`, and `explorer_verification_family_match` flagging — but not eliminated. Empirical baseline accuracy from `scripts/baseline_eval.py` upgrades `PredictionBasis::Heuristic → Empirical` for the p estimate; the ρ estimate remains a proxy.
+The CJT independence requirement is not just a mathematical axiom — it is a physical constraint that the system actively enforces at three layers:
+
+**Shared state isolation.** `WasmExecutor` runs scripts in a `wasmtime` sandbox with no WASI imports: no filesystem, no network, no host mutation. An agent cannot contaminate another agent's state space via code execution. `McpExecutor` enforces read-only access (`read_file`, `list_directory` only) at the executor layer regardless of backend capability. Agents that read the same resource get the same content and diverge only through their own reasoning — the intended source of independent diversity.
+
+**Affinity bias elimination.** `VerifierExplorerFamilyConflict` is a hard gate in `h2ai-orchestrator/src/engine.rs` that fires before the MAPE-K loop. When the explorer pool and the verification adapter share a provider family and `cfg.allow_single_family = false` (the default), the task fails immediately with `MultiplicationConditionFailure::VerifierExplorerFamilyConflict`. This is not retryable — no MAPE-K retry can fix a deployment topology where the judge and the defendant share the same pre-training biases. The constraint is architectural.
+
+**Serial fraction protection.** The TaoAgent TAO loop runs entirely inside the edge agent binary. No tool call crosses the NATS boundary during generation. α captures only the genuinely serial phases: constraint compilation, topology provisioning, and merge. The tool-call loop itself is fully parallel across N agents and contributes zero to α. This directly protects N_max from being driven toward 1 by accumulated NATS round-trip latency.
+
+### 5.3 Honest limitation
+
+The CJT is a theorem about **independent voters**. The system uses `(1 − ρ)` as a correction term, but it does *not* directly measure ρ — it proxies it from `1 − CG_mean` (Hamming) or `1 − N_eff / N` (cosine). When two adapters from the same family hallucinate the same answer, both proxies underestimate the true correlation. Physical enforcement (§5.2) reduces the contamination surface but cannot eliminate shared pre-training data as a source of correlated failure. Empirical baseline accuracy from `scripts/baseline_eval.py` upgrades `PredictionBasis::Heuristic → Empirical` for the p estimate; the ρ estimate remains a proxy.
 
 ---
 
@@ -235,6 +257,8 @@ else                                          → ScoreOrdered
 - `ConsensusMedian` — pick the proposal with highest mean Jaccard similarity to the rest. Honest limitation: not Byzantine-resistant; vulnerable at f ≥ n/2.
 - `OutlierResistant{f}` — Krum (Blanchard et al. 2017): pick the proposal with smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space. Quorum requirement: `n ≥ 2f + 3`.
 - `MultiOutlierResistant{f, m}` — apply OutlierResistant iteratively to keep m survivors, then take the highest verification score.
+
+**On the term "Byzantine" here.** The `OutlierResistant` algorithm is drawn from *federated learning Byzantine-robust aggregation* (Blanchard et al. 2017; Pillutla et al. 2019), not from PBFT (Practical Byzantine Fault Tolerance for distributed ledgers). In the federated learning literature, a "Byzantine fault" means any gradient that is a statistical outlier in the aggregation — not a cryptographically adversarial actor. LLM hallucinations that cluster in embedding space are precisely this kind of fault: they are outliers relative to the correct-answer distribution, not malicious agents subverting a protocol. The algorithm's breakdown-point proof (tolerating up to `f` outlier workers among `n ≥ 2f + 3`) applies to this statistical framing. The `bft_threshold` config key is shorthand for "fractional agreement gate" — it is not a reference to PBFT and implies no cryptographic guarantees.
 
 ---
 

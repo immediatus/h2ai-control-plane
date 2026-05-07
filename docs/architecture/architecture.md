@@ -83,16 +83,16 @@ The planner selects topology, explorer roles, and merge strategy from the calibr
 
 ```mermaid
 flowchart TD
-    A[CalibrationCompletedEvent\n+ ParetoWeights] --> B{topology_kind}
-    B -->|diversity dominant\nN ≤ N_max| C[Ensemble\nO N² edges, peer committee]
-    B -->|containment dominant\nor N > N_max| D[HierarchicalTree\nO N edges, k sub-groups]
-    B -->|roles[] present| E[TeamSwarmHybrid\nRole-differentiated + Review Gates]
+    A["CalibrationCompletedEvent + ParetoWeights"] --> B{topology_kind}
+    B -->|"diversity dominant, N <= N_max"| C["Ensemble: O(N^2) edges, peer committee"]
+    B -->|"containment dominant or N > N_max"| D["HierarchicalTree: O(N) edges, k sub-groups"]
+    B -->|"roles present"| E["TeamSwarmHybrid: role-differentiated + review gates"]
     C --> F[MergeStrategy::from_role_costs]
     D --> F
     E --> F
-    F -->|max ci ≤ bft_threshold| G[ScoreOrdered]
-    F -->|bft_threshold < max ci ≤ krum_threshold| H[ConsensusMedian]
-    F -->|max ci > krum_threshold\nkrum_f > 0| I[OutlierResistant{f}]
+    F -->|"max_ci <= bft_threshold"| G[ScoreOrdered]
+    F -->|"bft_threshold < max_ci <= krum_threshold"| H[ConsensusMedian]
+    F -->|"max_ci > krum_threshold, krum_f > 0"| I["OutlierResistant(f)"]
     G --> J[TopologyProvisionedEvent]
     H --> J
     I --> J
@@ -139,8 +139,10 @@ Surviving proposals enter `MergeEngine::resolve` with the strategy chosen at Pha
 
 - **ScoreOrdered**: pick the highest verification score.
 - **ConsensusMedian**: pick the proposal with highest mean Jaccard similarity to the rest. *Not Byzantine-resistant — vulnerable to coordinated proposals at f ≥ n/2.*
-- **OutlierResistant{f}**: smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space (Krum-style). Requires `n ≥ 2f + 3`.
+- **OutlierResistant{f}**: smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space (Krum-style, from federated learning Byzantine-robust aggregation — Blanchard et al. 2017). Requires `n ≥ 2f + 3`.
 - **MultiOutlierResistant{f, m}**: iteratively select m survivors via OutlierResistant, then take the highest verification score.
+
+**The two-layer cost model.** The `HierarchicalTree` orchestration topology reduces *orchestration* coordination to O(N) (α). The synthesis step is a separate, unavoidable O(N²) cost: computing `CG_mean` requires `N×(N−1)/2` pairwise Hamming comparisons, and the synthesis LLM must hold all N proposals in context and resolve their pairwise constraint conflicts. The β coefficient is fitted from merge-phase timing and captures this synthesis cost directly. DAG topology reduces α, not β — the two costs are independent.
 
 Emits `SemilatticeCompiled` and either `MergeResolved` (success) or `ZeroSurvival` (zero-survival → MAPE-K retry).
 
@@ -152,17 +154,17 @@ When `synthesis_enabled` and at least `synthesis_min_proposals` have survived au
 
 ```mermaid
 flowchart TD
-    ZS[ZeroSurvivalEvent] --> M[Monitor:\ncompute n_eff_cosine_actual\nfrom wave raw outputs]
-    M --> A{Analyse:\nn_eff vs diversity_threshold × n_requested}
-    A -->|n_eff > threshold × n_requested| CE[ConstrainedExploration\ndiverse generation,\nconstraints rejected everything]
-    A -->|n_eff ≤ threshold| MC[ModeCollapse\ncorrelated hallucination]
-    CE --> P1[Plan:\nsynthesize Constraint Violation Tombstone\nIDs + severity only, no raw text]
-    MC --> P2[Plan:\nincrement adapter_rotation_offset\nmod pool_size]
-    P1 --> E[Execute:\nRetryPolicy::decide\nnext topology / τ-reduction]
-    P2 --> E
-    E --> R{retries < max_autonomic_retries?}
-    R -->|yes| Ph2[Phase 2 — Topology Provisioning\nwith tombstone or rotated pool]
-    R -->|no| TF[TaskFailedEvent\nfull diagnostic payload]
+    ZS[ZeroSurvivalEvent] --> M["Monitor: compute n_eff_cosine_actual from wave outputs"]
+    M --> A{"Analyse: n_eff vs diversity_threshold x n_requested"}
+    A -->|"n_eff > threshold x n_requested"| CE["ConstrainedExploration: diverse generation, constraints rejected all"]
+    A -->|"n_eff <= threshold"| MC["ModeCollapse: correlated hallucination"]
+    CE --> P1["Plan: synthesize Constraint Violation Tombstone (IDs + severity only)"]
+    MC --> P2["Plan: increment adapter_rotation_offset mod pool_size"]
+    P1 --> Ex["Execute: RetryPolicy::decide next topology or tau-reduction"]
+    P2 --> Ex
+    Ex --> R{"retries < max_autonomic_retries?"}
+    R -->|yes| Ph2["Phase 2: Topology Provisioning with tombstone or rotated pool"]
+    R -->|no| TF["TaskFailedEvent: full diagnostic payload"]
 ```
 
 Both interventions are bookkept as Prometheus counters with a `failure_mode` label (`mode_collapse` and `constrained_exploration`).
@@ -213,8 +215,8 @@ sequenceDiagram
     loop N explorers (JoinSet)
         Orch->>Prov: ensure_agent_capacity(descriptor)
         Prov->>NATS: create scoped NKey for task_id
-        Prov-->>Orch: Job/h2ai-agent-{task_id}-{i} ready
-        Orch->>NATS: publish TaskPayload → h2ai.tasks.ephemeral.{task_id}
+        Prov-->>Orch: Job/h2ai-agent-task_id-N ready
+        Orch->>NATS: publish TaskPayload to h2ai.tasks.ephemeral.task_id
         NATS-->>Agent: TaskPayload
         Agent->>Agent: ToolRegistry::for_wave(cfg, wave_mode)
         loop TAO iterations (≤ agent_max_tool_iterations)
@@ -227,7 +229,7 @@ sequenceDiagram
                 Agent->>Agent: terminate loop
             end
         end
-        Agent->>NATS: publish TaskResult → h2ai.results.{task_id}
+        Agent->>NATS: publish TaskResult to h2ai.results.task_id
         Orch->>NATS: publish ProposalEvent
         NATS-->>C: SSE: Proposal
     end
@@ -265,9 +267,9 @@ sequenceDiagram
 
 ### 3.1 Submission and bootstrapping
 
-```
-Client ──POST /tasks──► h2ai-api
-         { description, pareto_weights, explorers, constraints, context }
+```mermaid
+flowchart LR
+    C[Client] -->|"POST /tasks: description, pareto_weights, explorers, constraints, context"| A[h2ai-api]
 ```
 
 1. **Validation** — weights must sum to 1.0; manifest structure must be valid. `503` if no current calibration in `H2AI_CALIBRATION` KV.
@@ -278,13 +280,12 @@ Client ──POST /tasks──► h2ai-api
 
 ### 3.2 Provisioning and gates
 
-```
-ExecutionEngine
-  ──► h2ai-planner (ParetoRouter::select)
-        reads: CalibrationCompletedEvent, pareto_weights, task.explorers
-        writes: TopologyProvisionedEvent → h2ai.tasks.{task_id}
-  ──► MultiplicationChecker::check (Phase 2.5)
-  ──► diversity guard (Phase 2.6, if diversity_threshold > 0)
+```mermaid
+flowchart TD
+    EE[ExecutionEngine] --> PL["h2ai-planner: ParetoRouter::select"]
+    PL --> TPE["TopologyProvisionedEvent to h2ai.tasks.task_id"]
+    EE --> MC["MultiplicationChecker::check (Phase 2.5)"]
+    EE --> DG["diversity guard (Phase 2.6, if diversity_threshold > 0)"]
 ```
 
 Gate failures write `MultiplicationConditionFailedEvent` and re-enter provisioning (up to `max_autonomic_retries`). On third failure, `TaskFailedEvent` is written and the engine exits.
@@ -435,10 +436,10 @@ On each iteration the agent:
 flowchart LR
     cfg[H2AIConfig] --> reg[ToolRegistry::for_wave]
     wm[WaveMode] --> reg
-    reg --> shell[ShellExecutor\nalways registered]
-    reg -->|Normal + web_search configured| ws[WebSearchExecutor\nGoogleSearchBackend]
-    reg -->|Normal + mcp_filesystem configured| mcp[McpExecutor\nStdioMcpBackend]
-    reg -->|wasm_executor configured\nboth modes| wasm[WasmExecutor\nRealWasmBackend]
+    reg --> shell["ShellExecutor (always registered)"]
+    reg -->|"Normal + web_search configured"| ws["WebSearchExecutor / GoogleSearchBackend"]
+    reg -->|"Normal + mcp_filesystem configured"| mcp["McpExecutor / StdioMcpBackend"]
+    reg -->|"wasm_executor configured, both modes"| wasm["WasmExecutor / RealWasmBackend"]
 
     style ws fill:#d4edda
     style mcp fill:#d4edda
@@ -448,8 +449,8 @@ flowchart LR
 
 | WaveMode | Shell | WebSearch | FileSystem | CodeExecution |
 |---|---|---|---|---|
-| `Normal` | ✅ `shell_allowlist` | ✅ if configured | ✅ if configured | ✅ if configured |
-| `Hardened` | ✅ `shell_hardened_allowlist` | — | — | ✅ if configured |
+| `Normal` | yes (`shell_allowlist`) | yes, if configured | yes, if configured | yes, if configured |
+| `Hardened` | yes (`shell_hardened_allowlist`) | no | no | yes, if configured |
 
 `Hardened` mode activates automatically on `ConstrainedExploration` and `ModeCollapse` retry waves — restricting agents to local, deterministic tools only during retry so that retrieval nondeterminism and network-side-effects cannot compound an already-failing wave.
 
@@ -590,10 +591,10 @@ C4Deployment
             Container(nats0, "nats-0", "NATS", "client :4222\ncluster :6222")
             Container(nats1, "nats-1", "NATS", "")
             Container(nats2, "nats-2", "NATS", "")
-            ContainerDb(pvc, "PVC/nats-data-{i}", "file store", "JetStream persistence")
+            ContainerDb(pvc, "PVC/nats-data-N", "file store", "JetStream persistence")
         }
 
-        Deployment_Node(agent_job, "Job/h2ai-agent-{task_id}-{i}", "ephemeral, one per explorer") {
+        Deployment_Node(agent_job, "Job/h2ai-agent-task_id-N", "ephemeral, one per explorer") {
             Container(agent_c, "h2ai-agent", "Rust", "TaoAgent + DispatchLoop")
         }
 
@@ -601,7 +602,7 @@ C4Deployment
             Container(cm1, "ConfigMap/constraint-corpus", "", "ADR markdown files")
             Container(cm2, "ConfigMap/h2ai-config", "", "h2ai.toml")
             Container(sec1, "Secret/h2ai-credentials", "", "LLM API keys")
-            Container(sec2, "Secret/nkey-{task_id}", "", "scoped NKey (TTL: task lifetime)")
+            Container(sec2, "Secret/nkey-task_id", "", "scoped NKey (TTL: task lifetime)")
         }
     }
 
@@ -637,16 +638,16 @@ sequenceDiagram
     participant NATS as NATS JetStream
     participant Job as Job Pod (h2ai-agent)
 
-    Prov->>NATS: mint scoped NKey → Secret/nkey-{task_id}-{i}
-    Prov->>K8s: create Job/h2ai-agent-{task_id}-{i}\n(image, volumes, resource limits, NKey env)
+    Prov->>NATS: mint scoped NKey, store as Secret/nkey-task_id-i
+    Prov->>K8s: create Job/h2ai-agent-task_id-i (image, volumes, NKey env)
     K8s-->>Job: Pod starts
-    Job->>NATS: subscribe h2ai.tasks.ephemeral.{task_id}
+    Job->>NATS: subscribe h2ai.tasks.ephemeral.task_id
     NATS-->>Job: TaskPayload
     Job->>Job: TaoAgent::run (TAO loop)
-    Job->>NATS: publish TaskResult → h2ai.results.{task_id}
+    Job->>NATS: publish TaskResult to h2ai.results.task_id
     Job->>Job: process exits (code 0)
     K8s->>K8s: Pod terminates (TTL: 60s after completion)
-    Prov->>K8s: delete Secret/nkey-{task_id}-{i}
+    Prov->>K8s: delete Secret/nkey-task_id-i
     Note over Job,NATS: NKey expired — agent has no NATS access
 ```
 
@@ -662,16 +663,16 @@ The security boundary is the NATS NKey system. Every agent Job has exactly one c
 
 ```mermaid
 flowchart TD
-    CP[Control Plane] -->|allowed_publish| TS[h2ai.tasks.*]
-    CP -->|allowed_publish| CS[h2ai.calibration.*]
-    CP -->|allowed_subscribe| RS[h2ai.results.*]
-    CP -->|allowed_subscribe| TE[h2ai.telemetry.*]
-    CP -->|allowed_subscribe| HB[h2ai.agent.heartbeat]
+    CP["Control Plane"] -->|"allowed_publish"| TS["h2ai.tasks.*"]
+    CP -->|"allowed_publish"| CS["h2ai.calibration.*"]
+    CP -->|"allowed_subscribe"| RS["h2ai.results.*"]
+    CP -->|"allowed_subscribe"| TE["h2ai.telemetry.*"]
+    CP -->|"allowed_subscribe"| HB["h2ai.agent.heartbeat"]
 
-    AJ[Agent Job\nscoped NKey] -->|allowed_publish| AT[h2ai.telemetry.{agent_id}]
-    AJ -->|allowed_publish| AE[audit.events.{agent_id}]
-    AJ -->|allowed_publish| AR[h2ai.results.{task_id}]
-    AJ -->|allowed_subscribe| EP[h2ai.tasks.ephemeral.{task_id}]
+    AJ["Agent Job (scoped NKey)"] -->|"allowed_publish"| AT["h2ai.telemetry.&lt;agent_id&gt;"]
+    AJ -->|"allowed_publish"| AE["audit.events.&lt;agent_id&gt;"]
+    AJ -->|"allowed_publish"| AR["h2ai.results.&lt;task_id&gt;"]
+    AJ -->|"allowed_subscribe"| EP["h2ai.tasks.ephemeral.&lt;task_id&gt;"]
 
     style CP fill:#cce5ff
     style AJ fill:#d4edda
@@ -709,9 +710,9 @@ flowchart LR
     T[Task execution] -->|5 series| P[Prometheus /metrics]
     T -->|per-phase spans| O[OTLP exporter]
     T -->|H2AIEvent stream| SSE[SSE /events]
-    O --> G[Grafana Tempo\nor Jaeger]
-    P --> A[Alertmanager\nyield_ratio, mode_collapse\nconstrained_exploration]
-    SSE --> UI[Merge Authority UI\noperator terminal]
+    O --> G["Grafana Tempo or Jaeger"]
+    P --> A["Alertmanager: yield_ratio, mode_collapse, constrained_exploration"]
+    SSE --> UI["Merge Authority UI (operator terminal)"]
 ```
 
 Three observability layers run concurrently and independently of the control path:
@@ -824,27 +825,24 @@ h2ai-api            Axum HTTP server: POST /tasks, SSE event stream, calibration
 
 ### Concrete request flow
 
-```
-POST /tasks           h2ai-api
-                        → ExecutionEngine::run (Tokio task, one per task_id)
-  Phase 1               h2ai-constraints (corpus) + h2ai-context (compile system_context)
-  Phase 2               h2ai-planner (ParetoRouter::select)
-  Phase 2.5/2.6         h2ai-orchestrator (MultiplicationChecker, diversity guard)
-  Phase 3 (per explorer)
-    KubernetesProvider  create Job/h2ai-agent-{task_id}-{i}
-    h2ai-nats           mint scoped NKey, publish TaskPayload → h2ai.tasks.ephemeral.{task_id}
-    h2ai-agent          DispatchLoop receives TaskPayload
-                          TaoAgent::run (tool dispatch via h2ai-tools ToolRegistry)
-                          publishes TaskResult → h2ai.results.{task_id}
-    h2ai-orchestrator   collects TaskResult via JoinSet, converts to ProposalEvent
-  Phase 3.5             h2ai-orchestrator + verification adapter (LLM-as-Judge)
-  Phase 4               h2ai-orchestrator + auditor adapter
-  Phase 5/5a            MergeEngine::resolve + optional synthesis adapter
-  Each event  ──────►   h2ai-nats → H2AI_TASKS stream → h2ai.tasks.{task_id}
-  Each retry  ──────►   RetryPolicy → MAPE-K → Phase 2 (up to max_autonomic_retries)
-
-GET /tasks/:id/events  h2ai-api SSE ← NATS consumer on h2ai.tasks.{task_id}
-                        id: <nats_sequence>  (reconnect with Last-Event-ID)
+```mermaid
+flowchart TD
+    POST["POST /tasks to h2ai-api"] --> EE["ExecutionEngine::run: one Tokio task per task_id"]
+    EE --> P1["Phase 1: h2ai-constraints + h2ai-context compile system_context"]
+    P1 --> P2["Phase 2: h2ai-planner ParetoRouter::select"]
+    P2 --> P25["Phase 2.5/2.6: MultiplicationChecker + diversity guard"]
+    P25 --> P3["Phase 3 per explorer: KubernetesProvider creates Job h2ai-agent-task_id-i"]
+    P3 --> NK["h2ai-nats: mint scoped NKey, publish TaskPayload to h2ai.tasks.ephemeral.task_id"]
+    NK --> AG["h2ai-agent: DispatchLoop receives TaskPayload, TaoAgent::run via ToolRegistry"]
+    AG --> TR["h2ai-agent: publish TaskResult to h2ai.results.task_id"]
+    TR --> CO["h2ai-orchestrator: collect via JoinSet, emit ProposalEvent"]
+    CO --> P35["Phase 3.5: h2ai-orchestrator + verification adapter LLM-as-Judge"]
+    P35 --> P4["Phase 4: h2ai-orchestrator + auditor adapter"]
+    P4 --> P5["Phase 5/5a: MergeEngine::resolve + optional synthesis adapter"]
+    P5 --> EV["h2ai-nats publishes each H2AIEvent to H2AI_TASKS stream"]
+    EV --> ZS{"zero survival?"}
+    ZS -->|"yes: RetryPolicy, MAPE-K, up to max_autonomic_retries"| P2
+    ZS -->|no| SSE["GET /tasks/:id/events: SSE stream (reconnect with Last-Event-ID)"]
 ```
 
 ---

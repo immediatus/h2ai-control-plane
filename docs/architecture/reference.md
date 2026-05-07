@@ -216,8 +216,11 @@ Published asynchronously after `MergeResolved`. Never blocks task close.
 InsufficientCompetence { actual, required }
 InsufficientDecorrelation { actual, threshold }
 CommonGroundBelowFloor { cg_mean, theta }
-InsufficientPoolDiversity { n_eff, threshold }    // Phase 2.6
+InsufficientPoolDiversity { n_eff, threshold }          // Phase 2.6
+VerifierExplorerFamilyConflict { explorer_family, verifier_family }   // hard gate, pre-MAPE-K
 ```
+
+`VerifierExplorerFamilyConflict` is evaluated once, before the MAPE-K retry loop, in `h2ai-orchestrator/src/engine.rs`. It fires when `calibration.explorer_verification_family_match = true` and `cfg.allow_single_family = false`. Unlike the other variants — which may be resolved by MAPE-K retries — this variant marks the task permanently failed. No retry can resolve a deployment topology where the verification judge and the explorer pool share a provider family. The fix is a configuration change: route the verification adapter to a different model family and recalibrate.
 
 #### TaskAttributionEvent
 
