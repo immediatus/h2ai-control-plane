@@ -3,10 +3,6 @@
 **/*.rs.bk
 # Cargo.lock is intentionally tracked for binary applications (reproducible Docker builds)
 
-# NATS JetStream data
-/nats/data/
-/var/lib/nats/
-
 # Environment
 .env
 .env.*

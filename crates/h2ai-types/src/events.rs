@@ -4,10 +4,24 @@ use crate::config::{
 use crate::identity::{ExplorerId, SubtaskId, TaskId};
 use crate::sizing::{
     CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
-    MergeStrategy, MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue,
+    MergeStrategy, MultiplicationConditionFailure, PredictionBasis, ProbeSkipReason, RoleErrorCost,
+    TaskQuadrant, TauValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Quality level of the current calibration state.
+///
+/// Used in Phase 1.5 bootstrap guard: when `Bootstrap`, synthetic priors are the only
+/// source and the N-probe sampling is bypassed (routes to Coverage unconditionally).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CalibrationQuality {
+    /// Calibration has run against real adapters; priors are empirically grounded.
+    #[default]
+    Domain,
+    /// Only synthetic priors available (no real adapter data yet).
+    Bootstrap,
+}
 
 /// How CG(i,j) was computed during calibration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -98,6 +112,11 @@ pub struct CalibrationCompletedEvent {
     /// is present (fallback formula: 1.0 + cg_fallback × (N − 1) is computed in the harness).
     #[serde(default)]
     pub n_eff_cosine_prior: f64,
+    /// Whether this calibration is empirically grounded (`Domain`) or synthetic-prior only
+    /// (`Bootstrap`). Phase 1.5 skips the N-probe path when `Bootstrap`.
+    /// Defaults to `Domain` so existing serialised events deserialise correctly.
+    #[serde(default)]
+    pub calibration_quality: CalibrationQuality,
 }
 
 /// Point-in-time snapshot of a task's in-memory state for crash-recovery replay optimization.
@@ -264,9 +283,13 @@ pub struct ConsensusRequiredEvent {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Emitted when the merge engine selects surviving proposals and computes the semilattice join.
+/// Emitted when the merge engine finishes selecting surviving proposals.
+///
+/// The CRDT semilattice resolves to a single winning proposal by selection; content synthesis,
+/// if enabled, is a separate Phase 5a operation. This event records which proposals survived
+/// and which were pruned, the merge strategy used, and the merge timing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SemilatticeCompiledEvent {
+pub struct SelectionResolvedEvent {
     pub task_id: TaskId,
     pub valid_proposals: Vec<ExplorerId>,
     pub pruned_proposals: Vec<(ExplorerId, String)>,
@@ -415,15 +438,18 @@ pub struct AppliedOptimization {
 
 /// Quality attribution snapshot for a completed task.
 ///
-/// Published alongside `SemilatticeCompiled` on the success path.
-/// `q_predicted` is the heuristic/empirical estimate; `q_measured` (when present)
-/// is the Tier 1 oracle result. The interval fields are `None` when fewer than
-/// 2 CG calibration samples are available.
+/// Published alongside `SelectionResolved` on the success path.
+/// `q_confidence` is the heuristic/empirical confidence estimate from the CG/USL/CJT chain —
+/// it measures how confident the system is in its output, not whether the output is correct.
+/// `q_measured` (when present) is the Tier 1 oracle result (actual correctness).
+/// The interval fields are `None` when fewer than 2 CG calibration samples are available.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskAttributionEvent {
     pub task_id: TaskId,
-    /// Heuristic or empirical Q_total estimate from CG/USL/CJT chain.
-    pub q_predicted: f64,
+    /// Heuristic or empirical confidence estimate from CG/USL/CJT chain.
+    /// This is a confidence score (system's self-assessment), not oracle-grounded quality.
+    /// See `prediction_basis` for whether it is `Heuristic` or `Empirical`.
+    pub q_confidence: f64,
     /// Fraction of Tier 1 oracle tests passed. `None` when no oracle ran.
     #[serde(default)]
     pub q_measured: Option<f64>,
@@ -448,6 +474,64 @@ pub struct TaskAttributionEvent {
 
 fn default_waste_ratio() -> f64 {
     1.0
+}
+
+/// Emitted at the end of Phase 1.5 (Task Complexity Assessment).
+///
+/// Records the full complexity signal chain: structural prior → optional empirical probe →
+/// effective TCC → quadrant classification. Always emitted even in shadow mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskComplexityAssessedEvent {
+    pub task_id: TaskId,
+    /// TCC_structural: zero-cost prior from corpus metadata (formula-based, no LLM calls).
+    pub tcc_structural: f64,
+    /// TCC_empirical: participation ratio from N-probe satisfaction matrix.
+    /// `None` when probe was skipped (see `probe_skip_reason`).
+    #[serde(default)]
+    pub tcc_empirical: Option<f64>,
+    /// TCC_effective = max(tcc_structural, tcc_empirical) + mismatch_penalty.
+    /// Equals tcc_structural when probe was skipped.
+    pub tcc_effective: f64,
+    /// Pool-level N_eff from the most recent calibration (eigenvalue participation ratio).
+    /// `None` when EigenCalibration was not available at calibration time.
+    #[serde(default)]
+    pub n_eff_pool: Option<f64>,
+    /// Routing quadrant before shadow_mode override.
+    pub task_quadrant: TaskQuadrant,
+    /// Whether the N-probe mini-generation step was skipped.
+    pub probe_skipped: bool,
+    /// Reason the probe was skipped; `None` when probe ran.
+    #[serde(default)]
+    pub probe_skip_reason: ProbeSkipReason,
+    /// Fraction of Heavy-tier constraints (OracleExecution) in the corpus.
+    pub heavy_fraction: f64,
+    /// True when tcc_empirical diverges from tcc_structural by > 0.3 (signal mismatch).
+    pub tcc_mismatch: bool,
+    /// Total tokens consumed by the probe mini-generation calls (0 when probe skipped).
+    pub probe_cost_tokens: u64,
+    /// Number of Static-tier constraints that produced informative variation in the probe.
+    pub n_informative_static: usize,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted after Phase 3.5 verification; records the full constraint satisfaction matrix
+/// across all surviving proposals for Pareto frontier coverage analysis.
+///
+/// Used for H3 validation in the GAP-A1 experiment: measures whether cross-family
+/// committees actually cover more of the constraint Pareto frontier than Self-MoA.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintFrontierEvent {
+    pub task_id: TaskId,
+    /// satisfaction_matrix[i][j] = score of proposal i on constraint j ∈ [0, 1].
+    pub satisfaction_matrix: Vec<Vec<f64>>,
+    /// Constraint IDs in column order.
+    pub constraint_ids: Vec<String>,
+    /// Explorer IDs in row order.
+    pub explorer_ids: Vec<ExplorerId>,
+    /// Participation ratio (Σλ)²/Σλ² of the column-space eigenvalues.
+    /// Measures how much of the constraint Pareto frontier was covered by the ensemble.
+    pub pareto_coverage: f64,
+    pub timestamp: DateTime<Utc>,
 }
 
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
@@ -489,8 +573,8 @@ pub enum H2AIEvent {
     InterfaceSaturationWarning(InterfaceSaturationWarningEvent),
     /// Wraps [`ConsensusRequiredEvent`]: error costs exceed the BFT threshold, switching to consensus merge.
     ConsensusRequired(ConsensusRequiredEvent),
-    /// Wraps [`SemilatticeCompiledEvent`]: merge engine finished selecting and joining proposals.
-    SemilatticeCompiled(SemilatticeCompiledEvent),
+    /// Wraps [`SelectionResolvedEvent`]: merge engine finished selecting surviving proposals.
+    SelectionResolved(SelectionResolvedEvent),
     /// Wraps [`MergeResolvedEvent`]: final resolved output string produced for the task.
     MergeResolved(MergeResolvedEvent),
     /// Wraps [`TaskFailedEvent`]: MAPE-K loop exhausted retries without resolving.
@@ -511,6 +595,10 @@ pub enum H2AIEvent {
     TaskAttribution(TaskAttributionEvent),
     /// Wraps [`EpistemicYieldEvent`]: semantic independence of surviving proposals (async, post-merge).
     EpistemicYield(EpistemicYieldEvent),
+    /// Wraps [`TaskComplexityAssessedEvent`]: Phase 1.5 task complexity and routing quadrant.
+    TaskComplexityAssessed(TaskComplexityAssessedEvent),
+    /// Wraps [`ConstraintFrontierEvent`]: Pareto frontier coverage of constraint satisfaction matrix.
+    ConstraintFrontier(ConstraintFrontierEvent),
 }
 
 impl H2AIEvent {

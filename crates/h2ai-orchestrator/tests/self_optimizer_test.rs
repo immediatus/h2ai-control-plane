@@ -98,7 +98,7 @@ fn suggest_skips_already_tried_params() {
             max_turns: 2,
             ..current.clone()
         },
-        q_total: 0.78,
+        q_confidence: 0.78,
     }];
     let cfg = cfg();
     let suggestion = SelfOptimizer::suggest(SuggestInput {
@@ -205,7 +205,7 @@ fn quality_is_monotone_in_suggested_direction() {
             talagrand_state: None,
             eigen_calibration: None,
         })
-        .total_quality;
+        .q_confidence;
         assert!(
             q >= last_q - 1e-9,
             "quality regressed: {last_q:.4} → {q:.4}"

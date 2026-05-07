@@ -159,8 +159,8 @@ async fn engine_runs_ensemble_to_semilattice() {
         state.status
     );
     assert!(outcome.attribution.baseline_quality > 0.0);
-    assert!(outcome.attribution.total_quality >= outcome.attribution.baseline_quality);
-    assert!(outcome.attribution.total_quality <= 1.0);
+    assert!(outcome.attribution.q_confidence >= outcome.attribution.baseline_quality);
+    assert!(outcome.attribution.q_confidence <= 1.0);
 }
 
 #[tokio::test]

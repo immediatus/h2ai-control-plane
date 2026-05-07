@@ -159,6 +159,11 @@ impl SessionJournal {
                 state.phase = TaskPhase::Bootstrap as u8;
                 state.phase_name = TaskPhase::Bootstrap.name_str().into();
             }
+            H2AIEvent::TaskComplexityAssessed(_) => {
+                state.status = TaskPhase::ComplexityAssessed.status_str().into();
+                state.phase = TaskPhase::ComplexityAssessed as u8;
+                state.phase_name = TaskPhase::ComplexityAssessed.name_str().into();
+            }
             H2AIEvent::TopologyProvisioned(e) => {
                 state.status = TaskPhase::Provisioning.status_str().into();
                 state.phase = TaskPhase::Provisioning as u8;
@@ -193,7 +198,7 @@ impl SessionJournal {
             H2AIEvent::ZeroSurvival(_) => {
                 state.autonomic_retries += 1;
             }
-            H2AIEvent::SemilatticeCompiled(_) => {
+            H2AIEvent::SelectionResolved(_) => {
                 state.status = TaskPhase::Merging.status_str().into();
                 state.phase = TaskPhase::Merging as u8;
                 state.phase_name = TaskPhase::Merging.name_str().into();

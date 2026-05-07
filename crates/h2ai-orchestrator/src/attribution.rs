@@ -30,28 +30,32 @@ pub struct AttributionInput {
     pub eigen_calibration: Option<EigenCalibration>,
 }
 
-/// Condorcet-grounded decomposition of total output quality into per-component contributions.
+/// Condorcet-grounded decomposition of output confidence into per-component contributions.
 ///
-/// `total_quality = 1 − (1 − Q(N, p, ρ_adj)) × verification_filter_ratio × tao_multiplier`
+/// `q_confidence = 1 − (1 − Q(N, p, ρ_adj)) × verification_filter_ratio × tao_multiplier`
 /// clamped to `[p_mean, 1.0]`, where ρ_adj may be conservatively adjusted upward when
 /// Case B (correlated failure) signals fire.
+///
+/// `q_confidence` measures how confident the system is in its output, not whether the output
+/// is correct. Oracle-grounded correctness requires external measurement (see GAP-B3, GAP-E1).
 ///
 /// Ground truth for ρ_actual requires `baseline_eval.py` ICC measurement (see S5/S8).
 #[derive(Debug, Clone)]
 pub struct HarnessAttribution {
-    /// Single-agent expected quality: p_mean.
+    /// Single-agent expected accuracy: p_mean.
     pub baseline_quality: f64,
-    /// Quality improvement from N-agent ensemble via Condorcet Jury Theorem.
+    /// Confidence improvement from N-agent ensemble via Condorcet Jury Theorem.
     /// Computed using `rho_adjusted`, not raw `rho_mean`.
     pub topology_gain: f64,
-    /// Upper-bound estimate of the quality contribution from the verification phase.
+    /// Upper-bound estimate of the confidence contribution from the verification phase.
     /// Computed as `Q_ensemble × (1 − verification_filter_ratio)`. Informational only.
     pub verification_gain: f64,
-    /// Upper-bound estimate of the quality contribution from TAO loop iterations.
+    /// Upper-bound estimate of the confidence contribution from TAO loop iterations.
     /// Computed as `Q_ensemble × (1 − tao_multiplier)`. Informational only.
     pub tao_gain: f64,
-    /// Total quality, clamped to `[p_mean, 1.0]`.
-    pub total_quality: f64,
+    /// Total output confidence, clamped to `[p_mean, 1.0]`.
+    /// This is a self-assessment: it predicts correctness but does not measure it.
+    pub q_confidence: f64,
     /// Basis for quality predictions: CG-proxy (Heuristic) or measured baseline accuracy (Empirical).
     pub prediction_basis: PredictionBasis,
     /// Fraction of oracle (Tier 1) tests passed for this task.
@@ -113,7 +117,7 @@ impl HarnessAttribution {
             topology_gain,
             verification_gain,
             tao_gain,
-            total_quality,
+            q_confidence: total_quality,
             prediction_basis: input.prediction_basis,
             q_measured: None,
             rho_adjusted,
@@ -136,23 +140,23 @@ pub enum IntervalBasis {
     None,
 }
 
-/// Total quality with a 90% uncertainty interval.
+/// Output confidence with a 90% uncertainty interval.
 #[derive(Debug, Clone)]
 pub struct AttributionInterval {
-    /// Point estimate (same as `HarnessAttribution::total_quality`).
-    pub q_total: f64,
+    /// Point estimate (same as `HarnessAttribution::q_confidence`).
+    pub q_confidence: f64,
     /// 5th percentile of the bootstrap or conformal interval.
-    pub q_total_lo: f64,
+    pub q_confidence_lo: f64,
     /// 95th percentile of the bootstrap or conformal interval.
-    pub q_total_hi: f64,
+    pub q_confidence_hi: f64,
     /// Source of the interval.
     pub interval_basis: IntervalBasis,
 }
 
-/// Compute a 90% bootstrap confidence interval for `Q_total` from CG sample variance.
+/// Compute a 90% bootstrap confidence interval for `q_confidence` from CG sample variance.
 ///
-/// Draws `n_bootstrap` samples with replacement from `cg_samples`, recomputes `Q_total`
-/// for each, and returns the (p5, p95) percentiles as `[q_total_lo, q_total_hi]`.
+/// Draws `n_bootstrap` samples with replacement from `cg_samples`, recomputes `q_confidence`
+/// for each, and returns the (p5, p95) percentiles as `[q_confidence_lo, q_confidence_hi]`.
 ///
 /// Returns `IntervalBasis::None` when `cg_samples.len() < 2`.
 pub fn bootstrap_interval(
@@ -160,13 +164,13 @@ pub fn bootstrap_interval(
     cg_samples: &[f64],
     n_bootstrap: usize,
 ) -> AttributionInterval {
-    let q_total = HarnessAttribution::compute(base_input).total_quality;
+    let q_confidence = HarnessAttribution::compute(base_input).q_confidence;
 
     if cg_samples.len() < 2 {
         return AttributionInterval {
-            q_total,
-            q_total_lo: q_total,
-            q_total_hi: q_total,
+            q_confidence,
+            q_confidence_lo: q_confidence,
+            q_confidence_hi: q_confidence,
             interval_basis: IntervalBasis::None,
         };
     }
@@ -196,7 +200,7 @@ pub fn bootstrap_interval(
             rho_mean: rho_boot,
             ..base_input.clone()
         };
-        boot_totals.push(HarnessAttribution::compute(&boot_input).total_quality);
+        boot_totals.push(HarnessAttribution::compute(&boot_input).q_confidence);
     }
 
     boot_totals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -204,9 +208,9 @@ pub fn bootstrap_interval(
     let p95_idx = ((n_bootstrap as f64 * 0.95) as usize).min(n_bootstrap - 1);
 
     AttributionInterval {
-        q_total,
-        q_total_lo: boot_totals[p5_idx],
-        q_total_hi: boot_totals[p95_idx],
+        q_confidence,
+        q_confidence_lo: boot_totals[p5_idx],
+        q_confidence_hi: boot_totals[p95_idx],
         interval_basis: IntervalBasis::Bootstrap { n_cg_samples: n },
     }
 }
@@ -284,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn attribution_total_quality_bounded() {
+    fn attribution_q_confidence_bounded() {
         let input = AttributionInput {
             p_mean: 0.7,
             rho_mean: 0.3,
@@ -298,9 +302,9 @@ mod tests {
         };
         let attr = HarnessAttribution::compute(&input);
         assert!(
-            attr.total_quality >= 0.0 && attr.total_quality <= 1.0,
-            "total_quality out of bounds: {}",
-            attr.total_quality
+            attr.q_confidence >= 0.0 && attr.q_confidence <= 1.0,
+            "q_confidence out of bounds: {}",
+            attr.q_confidence
         );
     }
 
@@ -326,8 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn attribution_total_quality_at_least_baseline() {
-        // total_quality must always be >= p_mean (the single-agent baseline)
+    fn attribution_q_confidence_at_least_baseline() {
+        // q_confidence must always be >= p_mean (the single-agent baseline)
         let input = AttributionInput {
             p_mean: 0.6,
             rho_mean: 0.4,
@@ -341,9 +345,9 @@ mod tests {
         };
         let attr = HarnessAttribution::compute(&input);
         assert!(
-            attr.total_quality >= attr.baseline_quality,
-            "total_quality {} < baseline_quality {}",
-            attr.total_quality,
+            attr.q_confidence >= attr.baseline_quality,
+            "q_confidence {} < baseline_quality {}",
+            attr.q_confidence,
             attr.baseline_quality
         );
     }
@@ -416,7 +420,10 @@ mod tests {
             IntervalBasis::None,
             "single CG sample must produce IntervalBasis::None"
         );
-        assert_eq!(iv.q_total_lo, iv.q_total_hi, "lo == hi when no interval");
+        assert_eq!(
+            iv.q_confidence_lo, iv.q_confidence_hi,
+            "lo == hi when no interval"
+        );
     }
 
     #[test]
@@ -449,8 +456,8 @@ mod tests {
         let iv_low = bootstrap_interval(&input, &low_var, 2000);
         let iv_high = bootstrap_interval(&input, &high_var, 2000);
 
-        let width_low = iv_low.q_total_hi - iv_low.q_total_lo;
-        let width_high = iv_high.q_total_hi - iv_high.q_total_lo;
+        let width_low = iv_low.q_confidence_hi - iv_low.q_confidence_lo;
+        let width_high = iv_high.q_confidence_hi - iv_high.q_confidence_lo;
         assert!(
             width_high > width_low,
             "higher CG variance must produce wider CI: high={width_high:.4}, low={width_low:.4}"
@@ -459,17 +466,17 @@ mod tests {
 
     #[test]
     fn bootstrap_interval_lo_le_hi() {
-        // The bootstrap CI is derived from cg_samples; q_total comes from base_input directly,
-        // so q_total is not guaranteed to lie inside the CI. The invariant is lo ≤ hi.
+        // The bootstrap CI is derived from cg_samples; q_confidence comes from base_input directly,
+        // so q_confidence is not guaranteed to lie inside the CI. The invariant is lo ≤ hi.
         let samples: Vec<f64> = (0..10).map(|i| 0.3 + i as f64 * 0.05).collect();
         let iv = bootstrap_interval(&base_input(), &samples, 1000);
         assert!(
-            iv.q_total_lo <= iv.q_total_hi,
+            iv.q_confidence_lo <= iv.q_confidence_hi,
             "bootstrap CI must be non-inverted: lo={:.4}, hi={:.4}",
-            iv.q_total_lo,
-            iv.q_total_hi
+            iv.q_confidence_lo,
+            iv.q_confidence_hi
         );
-        assert!(iv.q_total_hi > 0.0, "CI hi must be positive");
+        assert!(iv.q_confidence_hi > 0.0, "CI hi must be positive");
     }
 
     // ── conformal_interval ────────────────────────────────────────────────────
@@ -681,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn total_quality_at_least_baseline_after_rho_correction() {
+    fn q_confidence_at_least_baseline_after_rho_correction() {
         // Spec criterion 8: clamp(baseline_quality, 1.0) preserved after correction
         let input = AttributionInput {
             p_mean: 0.6,
@@ -696,12 +703,12 @@ mod tests {
         };
         let attr = HarnessAttribution::compute(&input);
         assert!(
-            attr.total_quality >= attr.baseline_quality,
-            "total_quality {:.4} < baseline {:.4} after Case B correction",
-            attr.total_quality,
+            attr.q_confidence >= attr.baseline_quality,
+            "q_confidence {:.4} < baseline {:.4} after Case B correction",
+            attr.q_confidence,
             attr.baseline_quality
         );
-        assert!(attr.total_quality <= 1.0);
+        assert!(attr.q_confidence <= 1.0);
     }
 
     #[test]

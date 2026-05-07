@@ -7,7 +7,7 @@ use h2ai_types::events::{TopologyProvisionedEvent, ZeroCoordinationQualityEvent}
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::{
     CoherencyCoefficients, CoordinationThreshold, EigenCalibration, MergeStrategy, RoleErrorCost,
-    TauValue,
+    TaskQuadrant, TauValue,
 };
 
 /// All parameters required to provision a topology for a single task execution.
@@ -42,6 +42,10 @@ pub struct ProvisionInput<'a> {
     /// Pruning adapters beyond the spectral optimum avoids coherency overhead without
     /// sacrificing ensemble quality.
     pub eigen: Option<&'a EigenCalibration>,
+    /// Phase 1.5 routing quadrant. `None` when shadow_mode=true (no routing change).
+    /// When `Some(Precision)`, n_max is capped at 3 (within-family τ-spread, 2–3 slots).
+    /// `Degenerate` is rejected before this call — the engine fails early.
+    pub task_quadrant: Option<TaskQuadrant>,
 }
 
 /// Stateless planner that converts calibration state and operator policy into a
@@ -103,14 +107,33 @@ impl TopologyPlanner {
         let n_max = if cg_collapsed {
             1.0
         } else {
-            match input.eigen {
+            let eigen_capped = match input.eigen {
                 Some(eigen) if eigen.n_pruned > 0 => n_max_usl.min(eigen.n_pruned as f64),
                 _ => n_max_usl,
+            };
+            // Phase 1.5: quadrant-driven n_max overrides (non-shadow mode).
+            // Precision → within-family τ-spread, up to 3 same-family slots.
+            //   Cap at 3: beyond 3 the synthesis benefit plateaus for precision tasks.
+            // Complex   → maximum ensemble (bypass eigen cap; use full USL n_max).
+            if matches!(input.task_quadrant, Some(TaskQuadrant::Precision)) {
+                eigen_capped.min(3.0)
+            } else if matches!(input.task_quadrant, Some(TaskQuadrant::Complex)) {
+                n_max_usl // bypass eigen pruning for maximum coverage
+            } else {
+                eigen_capped
             }
         };
-        let topology_kind = input.force_topology.clone().unwrap_or_else(|| {
-            Self::select_topology(input.pareto_weights, &input.review_gates, n_max)
-        });
+        // Phase 1.5: Complex quadrant forces Ensemble topology for maximum cross-family
+        // coverage when shadow_mode=false and no explicit override is supplied.
+        let topology_kind = if matches!(input.task_quadrant, Some(TaskQuadrant::Complex))
+            && input.force_topology.is_none()
+        {
+            TopologyKind::Ensemble
+        } else {
+            input.force_topology.clone().unwrap_or_else(|| {
+                Self::select_topology(input.pareto_weights, &input.review_gates, n_max)
+            })
+        };
         let coordination_threshold =
             CoordinationThreshold::from_calibration(input.cc, input.cfg.coordination_threshold_max);
 

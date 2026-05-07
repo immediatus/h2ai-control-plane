@@ -37,7 +37,7 @@ A decision stated only as "we use JWT" gives the Auditor nothing to enforce. A d
 
 **The `## Constraints` section is the most important part of every document.** It should contain a bullet list of hard rules in imperative language. Every bullet becomes a potential Auditor rejection reason.
 
-See the [Constraint Corpus Guide](../architecture/constraint-corpus.md) for the full typed format with explicit severity, predicate, and remediation sections.
+The full typed format uses explicit `severity`, `predicate`, and `remediation` fields — see the constraint documents in `ads-platform/constraints/` for worked examples.
 
 ---
 
@@ -76,7 +76,7 @@ The integration test harness (`tests/integration/`) reads the `_expected` block 
 - `j_eff` is at or above `j_eff_min`
 - Number of valid proposals is at or above `valid_proposals_min`
 - Each entry in `should_prune` produces a `BranchPrunedEvent` citing the specified constraint
-- The task reaches `SemilatticeCompiledEvent` (not `TaskFailedEvent`)
+- The task reaches `SelectionResolvedEvent` (not `TaskFailedEvent`)
 
 ---
 

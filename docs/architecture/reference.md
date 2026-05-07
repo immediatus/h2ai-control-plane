@@ -104,7 +104,7 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `ReviewGateTriggered` | `ReviewGateTriggeredEvent` | 3.5 |
 | `ReviewGateBlocked` | `ReviewGateBlockedEvent` | 3.5 |
 | `ConsensusRequired` | `ConsensusRequiredEvent` | 5 |
-| `SemilatticeCompiled` | `SemilatticeCompiledEvent` | 5 |
+| `SelectionResolved` | `SelectionResolvedEvent` | 5 |
 | `MergeResolved` | `MergeResolvedEvent` | 5 |
 | `ZeroSurvival` | `ZeroSurvivalEvent` | 5 → MAPE-K |
 | `EpistemicYield` | `EpistemicYieldEvent` | post-merge (async) |
@@ -227,7 +227,7 @@ VerifierExplorerFamilyConflict { explorer_family, verifier_family }   // hard ga
 ```rust
 struct TaskAttributionEvent {
     task_id: TaskId,
-    q_predicted: f64,
+    q_confidence: f64,          // heuristic confidence estimate (self-assessment, not oracle quality)
     q_measured: Option<f64>,                        // Tier 1 oracle pass-rate; None when no oracle
     q_interval_lo: Option<f64>,                     // 5th percentile (bootstrap or conformal)
     q_interval_hi: Option<f64>,                     // 95th percentile

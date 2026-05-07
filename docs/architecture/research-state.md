@@ -40,7 +40,7 @@ H2AI Control Plane orchestrates pools of LLM adapters as an *adversarial committ
 - The throughput-vs-coordination trade-off is captured by USL (Gunther 1993) with a CG-coupled coherency cost: `β_eff = β₀ × (1 − CG_mean)`, `N_max = round(√((1 − α) / β_eff))`.
 - The quality of the committee is bounded by a correlation-corrected Condorcet Jury Theorem (Nitzan & Paroush 1982; Ladha 1992): `Q(N, p, ρ) = p + (Q_ind(N, p) − p)(1 − ρ)`.
 - Failures are classifiable: post-zero-survival, the cosine N_eff distinguishes `ConstrainedExploration` (diverse generation rejected by constraints) from `ModeCollapse` (correlated hallucination). MAPE-K routes each to a different intervention (tombstone vs adapter rotation).
-- Every successful task produces an attribution decomposition `Q_total ≈ baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain` (`crates/h2ai-orchestrator/src/attribution.rs`).
+- Every successful task produces a confidence decomposition `q_confidence ≈ baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain` (`crates/h2ai-orchestrator/src/attribution.rs`). This is a self-confidence score, not oracle-grounded quality.
 
 The differentiating claim is not the math itself — most components have decades of literature behind them. It is that all four signals (USL, CJT, eigenvalue diversity, Talagrand calibration) are tracked together, calibrated together, and used together to bound a single committee-execution loop.
 

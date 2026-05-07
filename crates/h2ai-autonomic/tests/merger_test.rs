@@ -113,15 +113,18 @@ async fn merge_engine_consensus_median_selects_a_proposal() {
 }
 
 #[tokio::test]
-async fn merge_engine_resolved_outcome_carries_semilattice_compiled_event() {
+async fn merge_engine_resolved_outcome_carries_selection_resolved_event() {
     let task_id = TaskId::new();
     let mut set = ProposalSet::new();
     set.insert(proposal(&task_id, ExplorerId::new(), "output", 5));
 
     let outcome =
         MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
-    if let MergeOutcome::Resolved { compiled, .. } = outcome {
-        assert!(!compiled.valid_proposals.is_empty());
+    if let MergeOutcome::Resolved {
+        selection_resolved, ..
+    } = outcome
+    {
+        assert!(!selection_resolved.valid_proposals.is_empty());
     } else {
         panic!("expected Resolved");
     }
@@ -472,12 +475,15 @@ async fn merge_resolved_event_contains_timing_fields() {
 
     let outcome =
         MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
-    if let MergeOutcome::Resolved { compiled, .. } = outcome {
+    if let MergeOutcome::Resolved {
+        selection_resolved, ..
+    } = outcome
+    {
         assert!(
-            compiled.merge_elapsed_secs.is_some(),
+            selection_resolved.merge_elapsed_secs.is_some(),
             "merge_elapsed_secs must be populated"
         );
-        assert_eq!(compiled.n_input_proposals, 3);
+        assert_eq!(selection_resolved.n_input_proposals, 3);
     } else {
         panic!("expected Resolved");
     }
@@ -507,9 +513,12 @@ async fn merge_n_input_proposals_includes_pruned_count() {
         None,
     )
     .await;
-    if let MergeOutcome::Resolved { compiled, .. } = outcome {
+    if let MergeOutcome::Resolved {
+        selection_resolved, ..
+    } = outcome
+    {
         assert_eq!(
-            compiled.n_input_proposals, 3,
+            selection_resolved.n_input_proposals, 3,
             "must count proposals in set plus pruned events"
         );
     } else {

@@ -280,6 +280,7 @@ impl CalibrationHarness {
             n_max_lo,
             n_max_hi,
             n_eff_cosine_prior,
+            calibration_quality: Default::default(),
         })
     }
 
@@ -455,7 +456,7 @@ fn hamming_distance(a: &[bool], b: &[bool]) -> f64 {
 /// Derive β₀ from a set of merge phase timings.
 ///
 /// `spans`: each tuple is `(merge_elapsed_secs, n_proposals)` from a
-/// `SemilatticeCompiledEvent`. `n_proposals` is `n_input_proposals`.
+/// `SelectionResolvedEvent`. `n_proposals` is `n_input_proposals`.
 /// `t1_secs`: serial T₁ from `CalibrationHarness` (the API call time proxy).
 ///
 /// Formula: β₀ = mean(elapsed_i / pairs_i) / T₁

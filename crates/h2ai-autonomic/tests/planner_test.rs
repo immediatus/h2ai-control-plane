@@ -4,7 +4,9 @@ use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, ReviewGate, RoleSpec, TopologyKind,
 };
 use h2ai_types::identity::TaskId;
-use h2ai_types::sizing::{CoherencyCoefficients, EigenCalibration, MergeStrategy, TauValue};
+use h2ai_types::sizing::{
+    CoherencyCoefficients, EigenCalibration, MergeStrategy, TaskQuadrant, TauValue,
+};
 
 fn cc() -> CoherencyCoefficients {
     CoherencyCoefficients::new(0.1, 0.02, vec![0.8, 0.85, 0.9]).unwrap()
@@ -58,6 +60,7 @@ fn planner_selects_team_swarm_when_weights_balanced() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert_eq!(event.topology_kind, TopologyKind::TeamSwarmHybrid);
 }
@@ -79,6 +82,7 @@ fn planner_selects_hierarchical_tree_when_containment_dominant() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert!(matches!(
         event.topology_kind,
@@ -107,6 +111,7 @@ fn planner_selects_team_swarm_hybrid_when_review_gates_present() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert_eq!(event.topology_kind, TopologyKind::TeamSwarmHybrid);
 }
@@ -128,6 +133,7 @@ fn planner_computes_positive_n_max_and_beta_eff() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert!(event.n_max > 0.0);
     assert!(event.beta_eff > 0.0);
@@ -150,6 +156,7 @@ fn planner_creates_one_explorer_config_per_role_spec() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert_eq!(event.explorer_configs.len(), 2);
 }
@@ -177,6 +184,7 @@ fn planner_uses_role_default_tau_when_spec_has_none() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert!((event.explorer_configs[0].tau.value() - 0.05).abs() < 1e-9);
 }
@@ -204,6 +212,7 @@ fn planner_uses_override_tau_when_spec_provides_one() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert!((event.explorer_configs[0].tau.value() - 0.2).abs() < 1e-9);
 }
@@ -231,6 +240,7 @@ fn planner_selects_bft_consensus_when_evaluator_present() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        task_quadrant: None,
     });
     assert_eq!(event.merge_strategy, MergeStrategy::ConsensusMedian);
 }
@@ -270,6 +280,7 @@ fn planner_eigen_caps_explorer_count_below_usl_ceiling() {
         retry_count: 0,
         cfg: &cfg,
         eigen: Some(&eigen),
+        task_quadrant: None,
     });
     // With eigen.n_pruned = 3 and n_max_usl ≈ 17, the ceiling applied is 3.0.
     assert!(
@@ -310,6 +321,7 @@ fn planner_eigen_does_not_raise_below_usl_ceiling() {
         retry_count: 0,
         cfg: &cfg,
         eigen: Some(&eigen),
+        task_quadrant: None,
     });
     let usl_n_max = cc.n_max();
     // eigen.n_pruned=6 > usl_n_max, so the ceiling must not raise n_max above USL.
@@ -317,5 +329,135 @@ fn planner_eigen_does_not_raise_below_usl_ceiling() {
         event.n_max <= usl_n_max,
         "eigen must not raise n_max above USL ceiling: usl={usl_n_max}, got={}",
         event.n_max
+    );
+}
+
+#[test]
+fn planner_precision_quadrant_caps_n_max_at_three() {
+    // cc() gives n_max_usl >> 3. Precision must hard-cap at 3.0 regardless of eigen/USL.
+    let cc = cc();
+    let weights = ParetoWeights::new(0.34, 0.33, 0.33).unwrap();
+    let cfg = H2AIConfig::default();
+    // eigen allows up to 9 — Precision cap (3) must win.
+    let eigen = EigenCalibration {
+        n_effective: 7.0,
+        h_diversity: 0.9,
+        eigenvalues: vec![4.0, 2.0, 1.0, 0.5, 0.3, 0.1, 0.05, 0.03, 0.02],
+        n_pruned: 9,
+    };
+    let (event, _) = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &weights,
+        role_specs: &two_roles(),
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: Some(&eigen),
+        task_quadrant: Some(TaskQuadrant::Precision),
+    });
+    assert!(
+        event.n_max <= 3.0,
+        "Precision quadrant must cap n_max at 3.0, got {}",
+        event.n_max
+    );
+    assert!(
+        event.n_max >= 1.0,
+        "Precision quadrant n_max must be at least 1.0, got {}",
+        event.n_max
+    );
+}
+
+#[test]
+fn planner_complex_quadrant_bypasses_eigen_cap() {
+    // cc() gives n_max_usl >> eigen.n_pruned. Complex must bypass eigen and use full USL n_max.
+    let cc = cc();
+    let weights = ParetoWeights::new(0.34, 0.33, 0.33).unwrap();
+    let cfg = H2AIConfig::default();
+    let eigen = EigenCalibration {
+        n_effective: 2.4,
+        h_diversity: 0.7,
+        eigenvalues: vec![3.0, 0.5, 0.3, 0.1, 0.1],
+        n_pruned: 3,
+    };
+    let usl_n_max = cc.n_max();
+    let (event, _) = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &weights,
+        role_specs: &two_roles(),
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: Some(&eigen),
+        task_quadrant: Some(TaskQuadrant::Complex),
+    });
+    // Complex bypasses eigen.n_pruned=3, so n_max must equal the uncapped USL value.
+    assert!(
+        (event.n_max - usl_n_max).abs() < 1e-9,
+        "Complex quadrant must bypass eigen cap: expected n_max={usl_n_max}, got {}",
+        event.n_max
+    );
+}
+
+#[test]
+fn planner_complex_quadrant_forces_ensemble_topology() {
+    // Containment-heavy weights would normally select HierarchicalTree.
+    // Complex quadrant must override to Ensemble regardless.
+    let cc = cc();
+    let weights = ParetoWeights::new(0.1, 0.8, 0.1).unwrap();
+    let cfg = H2AIConfig::default();
+    let (event, _) = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &weights,
+        role_specs: &two_roles(),
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: None,
+        task_quadrant: Some(TaskQuadrant::Complex),
+    });
+    assert_eq!(
+        event.topology_kind,
+        TopologyKind::Ensemble,
+        "Complex quadrant must force Ensemble topology, got {:?}",
+        event.topology_kind
+    );
+}
+
+#[test]
+fn planner_complex_quadrant_force_topology_overrides_ensemble() {
+    // When force_topology is set, it takes precedence even over Complex quadrant forcing.
+    let cc = cc();
+    let weights = ParetoWeights::new(0.34, 0.33, 0.33).unwrap();
+    let cfg = H2AIConfig::default();
+    let (event, _) = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &weights,
+        role_specs: &two_roles(),
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: Some(TopologyKind::TeamSwarmHybrid),
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: None,
+        task_quadrant: Some(TaskQuadrant::Complex),
+    });
+    assert_eq!(
+        event.topology_kind,
+        TopologyKind::TeamSwarmHybrid,
+        "force_topology must override Complex quadrant Ensemble forcing"
     );
 }

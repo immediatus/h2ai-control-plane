@@ -1,3 +1,4 @@
+use crate::complexity::assess_task_complexity;
 use crate::diagnostics::TalagrandDiagnostic;
 pub use crate::nats_dispatch_adapter::NatsDispatchConfig;
 use crate::self_optimizer::{OptimizerParams, QualityMeasurement, SelfOptimizer, SuggestInput};
@@ -21,11 +22,12 @@ use h2ai_types::config::{
 };
 use h2ai_types::events::{
     BranchPrunedEvent, CalibrationCompletedEvent, GenerationPhaseCompletedEvent, ProposalEvent,
-    ProposalFailedEvent, ProposalFailureReason, SemilatticeCompiledEvent, TaskBootstrappedEvent,
-    VerificationScoredEvent, ZeroSurvivalEvent,
+    ProposalFailedEvent, ProposalFailureReason, SelectionResolvedEvent, TaskBootstrappedEvent,
+    TaskComplexityAssessedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::TaskManifest;
+use h2ai_types::sizing::TaskQuadrant;
 use h2ai_types::sizing::{
     MergeStrategy, MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue,
 };
@@ -118,11 +120,11 @@ pub struct EngineOutput {
     pub task_id: TaskId,
     /// Final merged output string produced by the merge engine.
     pub resolved_output: String,
-    /// Semilattice compilation event describing which proposals survived and the merge strategy used.
-    pub semilattice: SemilatticeCompiledEvent,
-    /// Quality attribution snapshot (Q_total, components) computed at resolve time.
+    /// Selection-resolved event: which proposals survived, pruned, merge strategy, and timing.
+    pub selection_resolved: SelectionResolvedEvent,
+    /// Quality attribution snapshot (q_confidence + components) computed at resolve time.
     pub attribution: crate::attribution::HarnessAttribution,
-    /// Bootstrap CI over Q_total from CG sample variance. `None` when < 2 CG samples.
+    /// Bootstrap CI over q_confidence from CG sample variance. `None` when < 2 CG samples.
     pub attribution_interval: Option<crate::attribution::AttributionInterval>,
     /// All verification scored events collected across every MAPE-K retry iteration.
     pub verification_events: Vec<VerificationScoredEvent>,
@@ -148,6 +150,20 @@ pub struct EngineOutput {
     pub mode_collapse_count: usize,
     /// Epistemic yield from the resolved wave (reserved for Task 9 metrics wiring).
     pub epistemic_yield: Option<f64>,
+    /// Routing quadrant assigned by Phase 1.5 task complexity assessment.
+    /// In shadow_mode this is informational only — topology was not changed.
+    /// `None` only when the engine path skips Phase 1.5 (should not happen in production).
+    pub task_quadrant: Option<TaskQuadrant>,
+    /// Full Phase 1.5 assessment event for NATS publishing by the caller.
+    /// Always `Some` — carried here so the API route can publish to JetStream.
+    pub complexity_event: TaskComplexityAssessedEvent,
+    /// Constraint Pareto frontier coverage measured from the final wave's satisfaction matrix.
+    /// `None` only when no proposals survived auditing.
+    pub frontier_event: Option<h2ai_types::events::ConstraintFrontierEvent>,
+    /// Per-explorer correctness flag from the final verification wave.
+    /// `true` = proposal passed verification (score ≥ verify_threshold).
+    /// Used for H1 (ρ_actual) empirical measurement in the GAP-A1 experiment.
+    pub adapter_correctness: Vec<(h2ai_types::identity::ExplorerId, bool)>,
 }
 
 #[derive(serde::Deserialize)]
@@ -232,6 +248,44 @@ impl ExecutionEngine {
             ));
         }
 
+        // ── Phase 1.5: Task Complexity Assessment ──────────────────────────
+        // Classifies the task into a routing quadrant (Precision / Coverage /
+        // Complex / Degenerate) using corpus metadata and calibration state.
+        // In shadow_mode (default: true) this is purely observational — the
+        // quadrant does not change topology selection downstream. Disarm via
+        // cfg.task_complexity.shadow_mode = false after GAP-A1 experiment.
+        let probe_adapter = input.explorer_adapters.first().copied();
+        let complexity_assessment = assess_task_complexity(
+            &input.constraint_corpus,
+            &input.calibration,
+            &input.cfg.task_complexity,
+            task_id.clone(),
+            probe_adapter.map(|a| (a as &dyn IComputeAdapter, system_context.as_str())),
+        )
+        .await;
+        let assessed_quadrant = complexity_assessment.task_quadrant;
+        // Store the assessment for NATS publishing after the engine returns.
+        let complexity_event_for_output = complexity_assessment.clone();
+
+        // Degenerate guard (non-shadow mode only): both TCC and pool N_eff are below
+        // their thresholds. The pool cannot explore the solution space for this task;
+        // fail immediately rather than wasting MAPE-K retries.
+        if !input.cfg.task_complexity.shadow_mode && assessed_quadrant == TaskQuadrant::Degenerate {
+            input.store.mark_failed(&task_id);
+            return Err(EngineError::MultiplicationConditionFailed(
+                MultiplicationConditionFailure::InsufficientPoolDiversity {
+                    n_eff: input
+                        .calibration
+                        .eigen
+                        .as_ref()
+                        .map(|e| e.n_effective)
+                        .unwrap_or(0.0),
+                    threshold: input.cfg.task_complexity.n_eff_complex_threshold,
+                }
+                .to_string(),
+            ));
+        }
+
         let cg_mean = input.calibration.coefficients.cg_mean();
         let n_max_ceiling = input.calibration.coefficients.n_max().floor() as u32;
 
@@ -293,10 +347,35 @@ impl ExecutionEngine {
                 }
             }
             // ── Phase 2: Topology Provisioning ─────────────────────────────
+            // Phase 1.5 Precision override (non-shadow): use within-family τ-spread
+            // with 2–3 slots and the calibration_tau_spread bounds. The explorer_adapter
+            // is already within-family (single AdapterKind); τ diversity decorrelates
+            // the samples structurally without crossing family boundaries.
+            // TODO(gap-a1-multi-family): when multiple calibrated families are available,
+            // select the family with the highest EnsembleCalibration::p_mean here instead
+            // of the single explorer_adapter family. Requires per-family p_mean tracking
+            // in CalibrationCompletedEvent (not yet implemented).
+            let precision_active = !input.cfg.task_complexity.shadow_mode
+                && assessed_quadrant == TaskQuadrant::Precision;
             let role_specs: Vec<RoleSpec> = if input.manifest.explorers.roles.is_empty() {
-                let count = current_params.n_agents.max(1);
-                let tau_min_manifest = input.manifest.explorers.tau_min.unwrap_or(0.2);
-                let tau_max_manifest = input.manifest.explorers.tau_max.unwrap_or(0.9);
+                let count = if precision_active {
+                    // 2–3 slots: more than 1 provides synthesis benefit; cap at 3 to stay
+                    // within the Self-MoA budget where within-family wins.
+                    (n_max_ceiling as usize).clamp(2, 3) as u32
+                } else {
+                    current_params.n_agents.max(1)
+                };
+                let (tau_min_manifest, tau_max_manifest) = if precision_active {
+                    // Use calibration τ-spread bounds for Precision — not the manifest
+                    // values, which are set for multi-family Coverage tasks.
+                    let s = input.cfg.calibration_tau_spread;
+                    (s[0].clamp(0.05, 0.95), s[1].clamp(0.05, 0.95))
+                } else {
+                    (
+                        input.manifest.explorers.tau_min.unwrap_or(0.2),
+                        input.manifest.explorers.tau_max.unwrap_or(0.9),
+                    )
+                };
                 // Apply τ-spread expansion (Talagrand U-curve feedback) around the manifest centre.
                 let tau_center = (tau_max_manifest + tau_min_manifest) / 2.0;
                 let half_spread = (tau_max_manifest - tau_min_manifest) / 2.0;
@@ -331,6 +410,15 @@ impl ExecutionEngine {
                 .store
                 .set_phase(&task_id, TaskPhase::Provisioning, 0, retry_count);
 
+            // In shadow_mode: quadrant is observational only — pass None to preserve
+            // current topology selection. When armed (shadow_mode=false), pass the
+            // assessed quadrant so TopologyPlanner can apply self-MoA for Precision tasks.
+            let effective_quadrant = if input.cfg.task_complexity.shadow_mode {
+                None
+            } else {
+                Some(assessed_quadrant)
+            };
+
             let (mut provisioned, _cg_collapse) = TopologyPlanner::provision(ProvisionInput {
                 task_id: task_id.clone(),
                 cc: &input.calibration.coefficients,
@@ -343,6 +431,7 @@ impl ExecutionEngine {
                 retry_count,
                 cfg: input.cfg,
                 eigen: input.calibration.eigen.as_ref(),
+                task_quadrant: effective_quadrant,
             });
             provisioned.constraint_tombstone = pending_tombstone.clone();
             if retry_count > 0 {
@@ -554,13 +643,31 @@ impl ExecutionEngine {
                         + 'f,
                 >,
             >;
+            // Phase 1.5 Complex override (non-shadow): inject structural CoT diversity
+            // into every slot when the manifest provides no explicit slot_configs.
+            // StepByStep/DevilsAdvocate/FirstPrinciples/BackwardChaining ensure
+            // independent reasoning paths, reducing correlated-hallucination risk
+            // for high-TCC tasks where the solution space is multi-dimensional.
+            let complex_slot_configs_owned;
+            let effective_slot_configs: &[h2ai_types::manifest::ExplorerSlotConfig] =
+                if !input.cfg.task_complexity.shadow_mode
+                    && assessed_quadrant == TaskQuadrant::Complex
+                    && input.manifest.explorers.slot_configs.is_empty()
+                {
+                    complex_slot_configs_owned =
+                        h2ai_types::manifest::ExplorerSlotConfig::diverse_defaults();
+                    &complex_slot_configs_owned
+                } else {
+                    &input.manifest.explorers.slot_configs
+                };
+
             let futures_vec: Vec<ExplorerFuture<'_>> = provisioned
                 .explorer_configs
                 .iter()
                 .enumerate()
                 .map(|(idx, explorer_cfg)| {
                     let (slot_task, slot_system_ctx) = {
-                        let configs = &input.manifest.explorers.slot_configs;
+                        let configs = effective_slot_configs;
                         if configs.is_empty() {
                             (input.manifest.description.clone(), system_context.clone())
                         } else {
@@ -946,6 +1053,59 @@ impl ExecutionEngine {
                 }
             }
 
+            // ── Constraint Frontier (Phase 4.5) ────────────────────────────
+            // Build satisfaction matrix from surviving proposals × Static-tier constraints.
+            // Compute pareto_coverage = participation_ratio(matrix) as a scalar measure of
+            // how well the ensemble covered the constraint Pareto frontier.
+            let frontier_event: Option<h2ai_types::events::ConstraintFrontierEvent> = {
+                let static_constraints: Vec<&ConstraintDoc> = input
+                    .constraint_corpus
+                    .iter()
+                    .filter(|d| d.tier() == h2ai_constraints::types::ConstraintTier::Static)
+                    .collect();
+                if !synthesis_candidates.is_empty() && !static_constraints.is_empty() {
+                    let constraint_ids: Vec<String> =
+                        static_constraints.iter().map(|c| c.id.clone()).collect();
+                    let explorer_ids: Vec<h2ai_types::identity::ExplorerId> = synthesis_candidates
+                        .iter()
+                        .map(|p| p.explorer_id.clone())
+                        .collect();
+                    let satisfaction_matrix: Vec<Vec<f64>> = synthesis_candidates
+                        .iter()
+                        .map(|proposal| {
+                            static_constraints
+                                .iter()
+                                .map(|c| {
+                                    h2ai_constraints::eval::eval_sync(
+                                        &c.predicate,
+                                        &proposal.raw_output,
+                                    )
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    let pareto_coverage =
+                        crate::complexity::participation_ratio(&satisfaction_matrix);
+                    Some(h2ai_types::events::ConstraintFrontierEvent {
+                        task_id: task_id.clone(),
+                        satisfaction_matrix,
+                        constraint_ids,
+                        explorer_ids,
+                        pareto_coverage,
+                        timestamp: chrono::Utc::now(),
+                    })
+                } else {
+                    None
+                }
+            };
+
+            // Per-explorer correctness from this wave's verification — used for H1 ρ_actual.
+            let adapter_correctness: Vec<(h2ai_types::identity::ExplorerId, bool)> =
+                iteration_verification_events
+                    .iter()
+                    .map(|e| (e.explorer_id.clone(), e.passed))
+                    .collect();
+
             // ── Phase 5: Merge ──────────────────────────────────────────────
             input
                 .store
@@ -1022,7 +1182,12 @@ impl ExecutionEngine {
             tau_values_tried.push(tau_values);
 
             // ── Phase 5a: Synthesis (optional, replaces selection on success) ───────
-            let synthesis_output: Option<(String, f64)> = if input.cfg.synthesis_enabled
+            // Complex quadrant forces synthesis regardless of synthesis_enabled flag —
+            // the task geometry demands cross-proposal reconciliation.
+            let synthesis_forced = !input.cfg.task_complexity.shadow_mode
+                && assessed_quadrant == TaskQuadrant::Complex;
+            let synthesis_output: Option<(String, f64)> = if (input.cfg.synthesis_enabled
+                || synthesis_forced)
                 && synthesis_candidates.len() >= input.cfg.synthesis_min_proposals
             {
                 if let Some(synth_adapter) = input.synthesis_adapter {
@@ -1125,7 +1290,7 @@ impl ExecutionEngine {
                 attribution.synthesis_gain = synthesis_gain;
                 quality_history.push(QualityMeasurement {
                     params: current_params.clone(),
-                    q_total: attribution.total_quality + synthesis_gain,
+                    q_confidence: attribution.q_confidence + synthesis_gain,
                 });
                 let suggested_next = SelfOptimizer::suggest(SuggestInput {
                     current: &current_params,
@@ -1142,7 +1307,7 @@ impl ExecutionEngine {
                     cfg: input.cfg,
                 });
                 let waste_ratio = filter_ratio;
-                let semilattice = SemilatticeCompiledEvent {
+                let selection_resolved = SelectionResolvedEvent {
                     task_id: task_id.clone(),
                     valid_proposals: synthesis_candidates
                         .iter()
@@ -1160,7 +1325,7 @@ impl ExecutionEngine {
                 input.store.mark_resolved(&task_id);
                 if let Some(ref bandit_arc) = input.bandit_state {
                     let n_used = current_params.n_agents;
-                    let tier3_score = Some(attribution.total_quality.clamp(0.0, 1.0));
+                    let tier3_score = Some(attribution.q_confidence.clamp(0.0, 1.0));
                     let mut bandit = bandit_arc.write().await;
                     bandit.update(n_used, None, tier3_score);
                     bandit.apply_optimizer_hint(n_used, suggested_next.n_agents);
@@ -1171,7 +1336,7 @@ impl ExecutionEngine {
                 return Ok(EngineOutput {
                     task_id,
                     resolved_output: synthesis_text,
-                    semilattice,
+                    selection_resolved,
                     attribution,
                     attribution_interval,
                     verification_events: all_verification_events,
@@ -1182,6 +1347,10 @@ impl ExecutionEngine {
                     topology_retry_events: topology_retry_events.clone(),
                     mode_collapse_count,
                     epistemic_yield: None,
+                    task_quadrant: Some(assessed_quadrant),
+                    complexity_event: complexity_event_for_output.clone(),
+                    frontier_event: frontier_event.clone(),
+                    adapter_correctness: adapter_correctness.clone(),
                 });
             }
 
@@ -1213,12 +1382,12 @@ impl ExecutionEngine {
 
             match outcome {
                 MergeOutcome::Resolved {
-                    compiled: semilattice,
+                    selection_resolved,
                     resolved,
                 } => {
                     quality_history.push(QualityMeasurement {
                         params: current_params.clone(),
-                        q_total: attribution.total_quality,
+                        q_confidence: attribution.q_confidence,
                     });
                     let suggested_next = SelfOptimizer::suggest(SuggestInput {
                         current: &current_params,
@@ -1303,7 +1472,7 @@ impl ExecutionEngine {
 
                     if let Some(ref bandit_arc) = input.bandit_state {
                         let n_used = current_params.n_agents;
-                        let tier3_score = Some(attribution.total_quality.clamp(0.0, 1.0));
+                        let tier3_score = Some(attribution.q_confidence.clamp(0.0, 1.0));
                         let mut bandit = bandit_arc.write().await;
                         bandit.update(n_used, None, tier3_score);
                         bandit.apply_optimizer_hint(n_used, suggested_next.n_agents);
@@ -1314,7 +1483,7 @@ impl ExecutionEngine {
                     return Ok(EngineOutput {
                         task_id,
                         resolved_output: resolved.resolved_output,
-                        semilattice,
+                        selection_resolved,
                         attribution,
                         attribution_interval,
                         verification_events: all_verification_events,
@@ -1325,6 +1494,10 @@ impl ExecutionEngine {
                         topology_retry_events: topology_retry_events.clone(),
                         mode_collapse_count,
                         epistemic_yield: None,
+                        task_quadrant: Some(assessed_quadrant),
+                        complexity_event: complexity_event_for_output.clone(),
+                        frontier_event: frontier_event.clone(),
+                        adapter_correctness: adapter_correctness.clone(),
                     });
                 }
                 MergeOutcome::ZeroSurvival(mut zero_event) => {

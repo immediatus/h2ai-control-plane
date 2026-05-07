@@ -62,6 +62,8 @@ The runtime uses an effective β driven by Hamming CG:
 β_eff = β₀ × (1 − CG_mean)        bounded at β₀ when CG_mean = 0
 ```
 
+> **Note (GAP-B1):** `β_eff = β₀ × (1 − CG_mean)` is an empirical heuristic, not a consequence derived from USL theory. The functional form is fitted from merge-phase timing data; the correct form is an open research question.
+
 Setting `dX/dN = 0` gives the ensemble ceiling:
 
 ```
@@ -266,14 +268,14 @@ else                                          → ScoreOrdered
 
 Source: `crates/h2ai-orchestrator/src/attribution.rs::HarnessAttribution::compute`.
 
-Per-task quality decomposition:
+Per-task confidence decomposition (`q_confidence` — self-assessment, not oracle quality):
 
 ```
-Q_total = base_quality
-        × verification_filter_ratio
-        × tao_uplift_factor
-        × topology_correction(rho_eff)
-        + synthesis_gain
+q_confidence = base_quality
+             × verification_filter_ratio
+             × tao_uplift_factor
+             × topology_correction(rho_eff)
+             + synthesis_gain
 ```
 
 - `base_quality` — `Q(N, p, ρ)` from the calibrated CJT chain.
@@ -294,4 +296,4 @@ The math used in this system is calibrated to specific assumptions. They are lis
 - **CG as a proxy chain.** The flow is `CG → β_eff → N_max` and `CG → (p, ρ) → Q`. Each arrow is a heuristic. Empirical validation upgrades `p` to measured; ρ remains a proxy.
 - **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 reduces but does not solve this.
 - **Synthesis gain is local.** `synthesis_gain` is measured against the same verification adapter that scored the individual proposals. A verifier blind spot inflates both terms equally and cancels out.
-- **No oracle.** Without a `q_measured` from an external oracle, `q_predicted` is the only quality signal. The bootstrap interval reflects CG variance, not ground-truth uncertainty.
+- **No oracle.** Without a `q_measured` from an external oracle, `q_confidence` is the only quality signal and it measures the system's self-confidence, not correctness. The bootstrap interval reflects CG variance, not ground-truth uncertainty.

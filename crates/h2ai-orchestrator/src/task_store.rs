@@ -13,6 +13,9 @@ pub enum TaskPhase {
     Merging = 6,
     Resolved = 7,
     Failed = 8,
+    /// Phase 1.5: task complexity assessed, routing quadrant assigned.
+    /// Uses value 9 to avoid reordering existing phase discriminants.
+    ComplexityAssessed = 9,
 }
 
 impl TryFrom<u8> for TaskPhase {
@@ -27,6 +30,7 @@ impl TryFrom<u8> for TaskPhase {
             x if x == Self::Merging as u8 => Ok(Self::Merging),
             x if x == Self::Resolved as u8 => Ok(Self::Resolved),
             x if x == Self::Failed as u8 => Ok(Self::Failed),
+            x if x == Self::ComplexityAssessed as u8 => Ok(Self::ComplexityAssessed),
             other => Err(other),
         }
     }
@@ -36,6 +40,7 @@ impl TaskPhase {
     pub fn status_str(&self) -> &'static str {
         match self {
             Self::Bootstrap => "pending",
+            Self::ComplexityAssessed => "assessing",
             Self::Provisioning => "provisioning",
             Self::MultiplicationCheck => "validating",
             Self::ParallelGeneration => "generating",
@@ -49,6 +54,7 @@ impl TaskPhase {
     pub fn name_str(&self) -> &'static str {
         match self {
             Self::Bootstrap => "Bootstrap",
+            Self::ComplexityAssessed => "ComplexityAssessment",
             Self::Provisioning => "TopologyProvisioning",
             Self::MultiplicationCheck => "MultiplicationCheck",
             Self::ParallelGeneration => "ParallelGeneration",

@@ -61,11 +61,11 @@ pub struct OptimizerParams {
     pub verify_threshold: f64,
 }
 
-/// One historical measurement: the params used and the resulting total quality.
+/// One historical measurement: the params used and the resulting confidence estimate.
 #[derive(Debug, Clone)]
 pub struct QualityMeasurement {
     pub params: OptimizerParams,
-    pub q_total: f64,
+    pub q_confidence: f64,
 }
 
 pub struct SelfOptimizer;
@@ -74,10 +74,10 @@ impl SelfOptimizer {
     /// Suggest improved params given current params, history, and the N_max ceiling.
     ///
     /// Strategy (matches Proposition 8 MAPE-K guidance):
-    /// 1. If max_turns < 4 and adding a TAO turn is predicted to raise Q_total
+    /// 1. If max_turns < 4 and adding a TAO turn is predicted to raise q_confidence
     ///    more than adding an agent → raise max_turns first.
     /// 2. Else if verify_threshold > 0.3 and tightening threshold is predicted
-    ///    to raise Q_total → lower verify_threshold by 0.1.
+    ///    to raise q_confidence → lower verify_threshold by 0.1.
     /// 3. Else if n_agents < n_max_ceiling → raise n_agents by 1.
     /// 4. If nothing improves (already at ceiling on all axes) → return current.
     ///
@@ -169,7 +169,7 @@ impl SelfOptimizer {
             talagrand_state: None,
             eigen_calibration: None,
         });
-        attr.total_quality
+        attr.q_confidence
     }
 
     fn already_tried(candidate: &OptimizerParams, history: &[QualityMeasurement]) -> bool {

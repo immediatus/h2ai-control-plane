@@ -7,7 +7,7 @@ use h2ai_state::krum::{
 use h2ai_state::semilattice::{ProposalSet, SemilatticeResult};
 use h2ai_state::weiszfeld;
 use h2ai_types::events::{
-    BranchPrunedEvent, MergeResolvedEvent, SemilatticeCompiledEvent, ZeroSurvivalEvent,
+    BranchPrunedEvent, MergeResolvedEvent, SelectionResolvedEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::MergeStrategy;
@@ -15,13 +15,13 @@ use tokio::time::Instant;
 
 /// Result of a single `MergeEngine::resolve` call.
 ///
-/// `Resolved` carries both the structural semilattice audit event and the
-/// final merged output; `ZeroSurvival` is returned when every proposal was
-/// pruned before merge could begin, signalling the orchestrator to retry.
+/// `Resolved` carries both the selection audit event and the final merged output;
+/// `ZeroSurvival` is returned when every proposal was pruned before merge could begin,
+/// signalling the orchestrator to retry.
 pub enum MergeOutcome {
-    /// All proposals were validated and at least one survived the semilattice compile step.
+    /// At least one proposal survived; carries the selection event and the resolved output.
     Resolved {
-        compiled: SemilatticeCompiledEvent,
+        selection_resolved: SelectionResolvedEvent,
         resolved: MergeResolvedEvent,
     },
     /// No proposals survived the semilattice compile step; the task should be retried.
@@ -155,7 +155,7 @@ impl MergeEngine {
         };
 
         let merge_elapsed = merge_start.elapsed().as_secs_f64();
-        let compiled = SemilatticeCompiledEvent {
+        let selection_resolved = SelectionResolvedEvent {
             task_id: task_id.clone(),
             valid_proposals: result
                 .valid_proposals
@@ -179,6 +179,9 @@ impl MergeEngine {
             timestamp: Utc::now(),
         };
 
-        MergeOutcome::Resolved { compiled, resolved }
+        MergeOutcome::Resolved {
+            selection_resolved,
+            resolved,
+        }
     }
 }

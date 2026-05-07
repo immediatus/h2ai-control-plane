@@ -11,6 +11,7 @@ use h2ai_types::config::{TaoConfig, VerificationConfig};
 use h2ai_types::events::{H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent};
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
+use h2ai_types::sizing::TaskQuadrant;
 use serde_json::{json, Value};
 use std::convert::Infallible;
 
@@ -146,7 +147,50 @@ pub async fn submit_task(
                         .len()
                         .saturating_sub(output.mode_collapse_count);
                     metrics.mapek_constrained_exploration_count += constrained as u64;
+                    // Phase 1.5 quadrant distribution — used to validate θ_tcc before
+                    // shadow_mode can be disabled (see gap-a1-solution.md §4.3).
+                    match output.complexity_event.task_quadrant {
+                        TaskQuadrant::Precision => metrics.phase15_quadrant_precision += 1,
+                        TaskQuadrant::Coverage => metrics.phase15_quadrant_coverage += 1,
+                        TaskQuadrant::Complex => metrics.phase15_quadrant_complex += 1,
+                        TaskQuadrant::Degenerate => metrics.phase15_quadrant_degenerate += 1,
+                    }
                 }
+                let complexity_ev =
+                    H2AIEvent::TaskComplexityAssessed(output.complexity_event.clone());
+                match state_clone
+                    .nats
+                    .publish_event_seq(&output.task_id, &complexity_ev)
+                    .await
+                {
+                    Ok(seq) => {
+                        if let Some(ts) = state_clone.store.get(&output.task_id) {
+                            state_clone.journal.note_event(&output.task_id, seq, &ts);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to publish TaskComplexityAssessedEvent: {e}")
+                    }
+                }
+
+                if let Some(ref frontier_ev) = output.frontier_event {
+                    let h2ai_ev = H2AIEvent::ConstraintFrontier(frontier_ev.clone());
+                    match state_clone
+                        .nats
+                        .publish_event_seq(&output.task_id, &h2ai_ev)
+                        .await
+                    {
+                        Ok(seq) => {
+                            if let Some(ts) = state_clone.store.get(&output.task_id) {
+                                state_clone.journal.note_event(&output.task_id, seq, &ts);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to publish ConstraintFrontierEvent: {e}")
+                        }
+                    }
+                }
+
                 for event in output.verification_events {
                     let h2ai_ev = H2AIEvent::VerificationScored(event);
                     match state_clone
@@ -161,6 +205,20 @@ pub async fn submit_task(
                         }
                         Err(e) => tracing::warn!("failed to publish VerificationScoredEvent: {e}"),
                     }
+                }
+
+                let selection_ev = H2AIEvent::SelectionResolved(output.selection_resolved.clone());
+                match state_clone
+                    .nats
+                    .publish_event_seq(&output.task_id, &selection_ev)
+                    .await
+                {
+                    Ok(seq) => {
+                        if let Some(ts) = state_clone.store.get(&output.task_id) {
+                            state_clone.journal.note_event(&output.task_id, seq, &ts);
+                        }
+                    }
+                    Err(e) => tracing::warn!("failed to publish SelectionResolvedEvent: {e}"),
                 }
 
                 // Apply τ-spread EMA update when the engine detected waste.
@@ -182,10 +240,16 @@ pub async fn submit_task(
 
                 let attr_ev = H2AIEvent::TaskAttribution(TaskAttributionEvent {
                     task_id: output.task_id.clone(),
-                    q_predicted: output.attribution.total_quality,
+                    q_confidence: output.attribution.q_confidence,
                     q_measured: output.attribution.q_measured,
-                    q_interval_lo: output.attribution_interval.as_ref().map(|iv| iv.q_total_lo),
-                    q_interval_hi: output.attribution_interval.as_ref().map(|iv| iv.q_total_hi),
+                    q_interval_lo: output
+                        .attribution_interval
+                        .as_ref()
+                        .map(|iv| iv.q_confidence_lo),
+                    q_interval_hi: output
+                        .attribution_interval
+                        .as_ref()
+                        .map(|iv| iv.q_confidence_hi),
                     prediction_basis: output.attribution.prediction_basis,
                     waste_ratio: output.waste_ratio,
                     applied_optimizations: output.applied_optimizations,

@@ -200,10 +200,10 @@ async fn system_solves_well_formed_problem() {
     assert_eq!(state.proposals_pruned, 0);
     assert_eq!(state.explorers_completed, 3);
     assert!(out.attribution.baseline_quality > 0.0);
-    assert!(out.attribution.total_quality >= out.attribution.baseline_quality);
-    assert!(out.attribution.total_quality <= 1.0);
-    assert_eq!(out.semilattice.valid_proposals.len(), 3);
-    assert!(out.semilattice.pruned_proposals.is_empty());
+    assert!(out.attribution.q_confidence >= out.attribution.baseline_quality);
+    assert!(out.attribution.q_confidence <= 1.0);
+    assert_eq!(out.selection_resolved.valid_proposals.len(), 3);
+    assert!(out.selection_resolved.pruned_proposals.is_empty());
     assert_eq!(
         state.status, "resolved",
         "task should reach resolved status after successful merge"
@@ -326,7 +326,7 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
     assert_eq!(state.explorers_completed, 3);
     assert!(state.proposals_valid >= 1);
     assert!(!out.resolved_output.is_empty());
-    assert!(!out.semilattice.valid_proposals.is_empty());
+    assert!(!out.selection_resolved.valid_proposals.is_empty());
     assert_eq!(state.status, "resolved");
 }
 
@@ -413,10 +413,10 @@ async fn system_resolves_conflict_via_bft_consensus() {
 
     let out = result.unwrap();
     assert_eq!(
-        out.semilattice.merge_strategy,
+        out.selection_resolved.merge_strategy,
         MergeStrategy::ConsensusMedian
     );
-    assert_eq!(out.semilattice.valid_proposals.len(), 2);
+    assert_eq!(out.selection_resolved.valid_proposals.len(), 2);
     // Condorcet picks the most consensus proposal; with 2 similar proposals either is valid
     assert!(
         out.resolved_output == "low-cost auth solution — stateless ADR-001"

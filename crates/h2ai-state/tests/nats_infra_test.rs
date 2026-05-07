@@ -57,6 +57,7 @@ async fn put_and_get_calibration_roundtrip() {
         n_max_lo: 0.0,
         n_max_hi: 0.0,
         n_eff_cosine_prior: 0.0,
+        calibration_quality: Default::default(),
     };
 
     client.put_calibration(&event).await.expect("put");

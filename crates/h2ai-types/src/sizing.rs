@@ -781,6 +781,44 @@ impl MultiplicationCondition {
     }
 }
 
+/// Routing quadrant for Phase 1.5 task complexity assessment.
+///
+/// Derived from TCC_effective (task dimensionality) and pool N_eff (adapter diversity).
+/// Drives topology selection: Precision → Self-MoA, Coverage → cross-family committee,
+/// Complex → forced CoT + synthesis, Degenerate → MultiplicationConditionFailed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskQuadrant {
+    /// Low TCC, normal N_eff: single feasible region; within-family τ-spread suffices.
+    Precision,
+    /// High TCC, normal N_eff: diverse solution space; cross-family committee needed.
+    Coverage,
+    /// High TCC, low N_eff: complex space but pool is under-diverse; force CoT + synthesis.
+    Complex,
+    /// Both low: pool cannot explore the space; routes to MultiplicationConditionFailed.
+    Degenerate,
+}
+
+/// Reason the N-probe mini-generation step was skipped in Phase 1.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ProbeSkipReason {
+    /// Probe ran normally; TCC_empirical is present.
+    #[default]
+    None,
+    /// TCC_structural clearly above `tcc_coverage_threshold`; probe cannot change routing.
+    UnambiguousCoverage,
+    /// TCC_structural clearly below `tcc_precision_threshold`; probe cannot change routing.
+    UnambiguousPrecision,
+    /// `static_coverage < min_static_coverage_for_probe`: satisfaction matrix would be
+    /// near-empty; heavy amplification applied to TCC_structural instead.
+    HeavyDominantCorpus,
+    /// `CalibrationQuality::Bootstrap`: synthetic priors not suitable for probe comparison.
+    BootstrapCalibration,
+    /// TCC_structural is in the ambiguous band `(tcc_precision_threshold, tcc_coverage_threshold)`
+    /// but the N-probe step is deferred pending GAP-A1 experiment threshold validation.
+    /// Routes conservatively to Coverage. Remove once Path B probe is enabled in shadow_mode=false.
+    AmbiguousBandProbeDeferred,
+}
+
 #[cfg(test)]
 mod context_aware_tests {
     use super::*;

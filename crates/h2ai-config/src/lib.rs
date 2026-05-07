@@ -5,6 +5,61 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 
+/// Configuration for Phase 1.5 task complexity assessment and quadrant routing.
+///
+/// All defaults are set in `reference.toml` under `[task_complexity]`.
+/// Shadow mode (default: `true`) lets you collect routing data before the
+/// GAP-A1 experiment validates the thresholds — ParetoRouter is unchanged until
+/// shadow_mode is set to `false`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskComplexityConfig {
+    /// When `true` (default): Phase 1.5 emits `TaskComplexityAssessedEvent` but
+    /// `TopologyPlanner` ignores the quadrant — all tasks route as Coverage.
+    /// Disable only after the GAP-A1 experiment validates threshold calibration.
+    pub shadow_mode: bool,
+    /// TCC below this threshold classifies the task as Precision (Self-MoA).
+    pub tcc_precision_threshold: f64,
+    /// TCC above this threshold classifies the task as Coverage (cross-family).
+    pub tcc_coverage_threshold: f64,
+    /// Soft-constraint weight coefficient in TCC_structural formula.
+    pub k_soft: f64,
+    /// Type-diversity coefficient in TCC_structural formula.
+    pub k_type: f64,
+    /// Interaction-term (soft_fraction × type_diversity) coefficient in TCC_structural.
+    pub k_cross: f64,
+    /// Heavy-fraction amplification: when `static_coverage < min_static_coverage_for_probe`,
+    /// TCC_effective = tcc_structural × (1 + k_heavy × heavy_fraction).
+    pub k_heavy: f64,
+    /// Minimum static coverage fraction required to run the N-probe sampling.
+    /// Corpora with `static_coverage < this` are treated as heavy-dominant (probe skipped).
+    pub min_static_coverage_for_probe: f64,
+    /// Number of mini-probe calls used to estimate TCC_empirical (ambiguous band only).
+    /// Probe is skipped on unambiguous Precision/Coverage paths and heavy-dominant corpora.
+    pub n_probe: usize,
+    /// Pool N_eff threshold below which Coverage → Complex escalation occurs.
+    pub n_eff_complex_threshold: f64,
+    /// Max tokens per probe completion. Probe outputs are structure assessments, not
+    /// full answers — 512 tokens is sufficient for static constraint evaluation.
+    pub probe_max_tokens: u64,
+    /// Temperature for probe completions. Mid-range τ produces varied but coherent
+    /// outputs needed to generate an informative satisfaction matrix.
+    pub probe_tau: f64,
+    /// Minimum number of informative static constraints (≥1 pass AND ≥1 fail across
+    /// probes) needed to compute TCC_empirical. Below this, eigendecomposition is
+    /// degenerate; fall back to TCC_structural with heavy amplification.
+    pub tcc_min_informative_constraints: usize,
+    /// Penalty added to TCC_effective when TCC_structural > TCC_empirical + 1.0.
+    /// Signals that the corpus is more complex than static probes detected — typically
+    /// because Heavy-tier constraints dominate actual complexity. Routes toward Coverage.
+    pub tcc_mismatch_penalty: f64,
+    /// Probe n_eff threshold (as fraction of n_probe) for Coverage vs Complex routing.
+    /// Tasks with probe n_eff below `neff_probe_min_fraction × n_probe` escalate to Complex.
+    pub neff_probe_min_fraction: f64,
+    /// Probe n_eff threshold (as fraction of n_probe) for Precision vs Degenerate routing.
+    /// Tasks with probe n_eff below `neff_probe_warning_fraction × n_probe` → Degenerate.
+    pub neff_probe_warning_fraction: f64,
+}
+
 /// Named adapter configuration entry used for TaskProfile routing.
 ///
 /// Operators populate `H2AIConfig::adapter_profiles` with these entries so that
@@ -188,6 +243,8 @@ pub struct H2AIConfig {
     /// WASM interpreter executor configuration. Absent = WASM executor disabled.
     #[serde(default)]
     pub wasm_executor: Option<WasmExecutorConfig>,
+    /// Phase 1.5 task complexity assessment and quadrant routing configuration.
+    pub task_complexity: TaskComplexityConfig,
 }
 
 /// Configuration for the WebSearch executor (Google Custom Search API).

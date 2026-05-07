@@ -144,7 +144,9 @@ Surviving proposals enter `MergeEngine::resolve` with the strategy chosen at Pha
 
 **The two-layer cost model.** The `HierarchicalTree` orchestration topology reduces *orchestration* coordination to O(N) (α). The synthesis step is a separate, unavoidable O(N²) cost: computing `CG_mean` requires `N×(N−1)/2` pairwise Hamming comparisons, and the synthesis LLM must hold all N proposals in context and resolve their pairwise constraint conflicts. The β coefficient is fitted from merge-phase timing and captures this synthesis cost directly. DAG topology reduces α, not β — the two costs are independent.
 
-Emits `SemilatticeCompiled` and either `MergeResolved` (success) or `ZeroSurvival` (zero-survival → MAPE-K retry).
+Emits `SelectionResolved` and either `MergeResolved` (success) or `ZeroSurvival` (zero-survival → MAPE-K retry).
+
+> The CRDT semilattice resolves to a single winning proposal by selection (LUB over `(generation, score)` tuples); content synthesis, if enabled, is a separate Phase 5a operation.
 
 ### Phase 5a — Synthesis (optional)
 
@@ -255,7 +257,7 @@ sequenceDiagram
     alt survivors > 0
         Note over Orch: Phase 5 — Merge
         Orch->>Orch: MergeEngine::resolve(strategy)
-        Orch->>NATS: publish SemilatticeCompiled
+        Orch->>NATS: publish SelectionResolved
         Orch->>NATS: publish MergeResolved
         NATS-->>C: SSE: MergeResolved
         Orch->>NATS: publish EpistemicYield (async)

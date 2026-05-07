@@ -1,5 +1,21 @@
 use std::collections::HashSet;
 
+/// Execution tier for a constraint predicate, determining probe eligibility in Phase 1.5.
+///
+/// Static constraints (pure-Rust, microseconds) are the only tier eligible for the
+/// N-probe satisfaction matrix. Heavy constraints (subprocess/oracle) are excluded to
+/// avoid spiking coordination cost α during Phase 1.5 routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConstraintTier {
+    /// Pure-Rust evaluation: VocabularyPresence, NegativeKeyword, RegexMatch,
+    /// NumericThreshold, JsonSchema, LengthRange, Composite (when all children Static).
+    Static,
+    /// Single LLM call: LlmJudge. Acceptable probe cost but excluded for safety.
+    Light,
+    /// Subprocess / oracle: OracleExecution. Excluded from Phase 1.5 probing.
+    Heavy,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum VocabularyMode {
     AllOf,
@@ -91,6 +107,14 @@ pub struct ConstraintDoc {
 }
 
 impl ConstraintDoc {
+    /// Execution tier of this constraint's predicate.
+    ///
+    /// Returns the highest-cost tier among all predicates in the tree.
+    /// Composite predicates propagate the maximum tier of their children.
+    pub fn tier(&self) -> ConstraintTier {
+        predicate_tier(&self.predicate)
+    }
+
     /// All vocabulary terms from the predicate tree (positive and negative combined).
     /// Used for system context construction and keyword preservation in compaction.
     pub fn vocabulary(&self) -> HashSet<String> {
@@ -108,6 +132,19 @@ impl ConstraintDoc {
     /// A task manifest that uses these terms is likely proposing constraint-violating behaviour.
     pub fn negative_vocabulary(&self) -> HashSet<String> {
         collect_negative_vocabulary(&self.predicate)
+    }
+}
+
+fn predicate_tier(pred: &ConstraintPredicate) -> ConstraintTier {
+    match pred {
+        ConstraintPredicate::OracleExecution { .. } => ConstraintTier::Heavy,
+        ConstraintPredicate::LlmJudge { .. } => ConstraintTier::Light,
+        ConstraintPredicate::Composite { children, .. } => children
+            .iter()
+            .map(predicate_tier)
+            .max()
+            .unwrap_or(ConstraintTier::Static),
+        _ => ConstraintTier::Static,
     }
 }
 

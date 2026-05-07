@@ -319,3 +319,59 @@ agent_max_tool_iterations = 5
 # [wasm_executor]
 # interpreter_wasm_path = "assets/quickjs.wasm"
 # fuel_budget           = 100_000
+
+# ── Phase 1.5: Task Complexity Assessment ────────────────────────────────────
+# Controls quadrant routing (Precision / Coverage / Complex / Degenerate).
+[task_complexity]
+# Phase 1.5 routing is live. Shadow mode was disabled after GAP-A1 experiment validation.
+shadow_mode = false
+
+# TCC below this → Precision quadrant (Self-MoA / within-family τ-spread).
+tcc_precision_threshold = 2.0
+
+# TCC above this → Coverage quadrant (cross-family committee).
+tcc_coverage_threshold = 2.5
+
+# TCC_structural formula coefficients — theoretical initial priors (GAP-A1 spec §2.3).
+# These will be replaced with fitted values after the GAP-A1 experiment (spec §7.1).
+# tcc = 1.0 + k_soft × soft_fraction + k_type × type_diversity
+#           + k_cross × soft_fraction × type_diversity
+k_soft  = 1.0
+k_type  = 1.0
+k_cross = 2.5
+
+# Heavy-fraction amplification applied when static_coverage < min threshold.
+# tcc_effective = tcc_structural × (1 + k_heavy × heavy_fraction)
+k_heavy = 0.8
+
+# Minimum static-coverage fraction to run N-probe sampling.
+# Corpora below this are heavy-dominant; probe skipped; heavy amplification used.
+min_static_coverage_for_probe = 0.3
+
+# Number of mini-probe LLM calls for TCC_empirical estimation (Path C only).
+n_probe = 3
+
+# Pool N_eff threshold: below this, Coverage/Precision escalates to Complex/Degenerate.
+n_eff_complex_threshold = 1.3
+
+# ── Probe-path parameters (used when TCC_structural is in the ambiguous band) ─────────────────
+
+# Max tokens per probe completion. Probe outputs are structure assessments, not full answers.
+probe_max_tokens = 512
+
+# Temperature for probe completions. Mid-range τ produces varied but coherent outputs.
+probe_tau = 0.5
+
+# Minimum informative static constraints (≥1 pass AND ≥1 fail across probes) for TCC_empirical.
+# Below this threshold eigendecomposition is degenerate; fall back to structural TCC.
+tcc_min_informative_constraints = 2
+
+# Mismatch penalty added when tcc_structural > tcc_empirical + 1.0.
+# Conservative upward adjustment when corpus signals more complexity than probes observed.
+tcc_mismatch_penalty = 0.5
+
+# Probe N_eff thresholds (as fraction of n_probe) for quadrant routing.
+# neff_probe_min_fraction × n_probe: below this → Complex or Degenerate.
+# neff_probe_warning_fraction × n_probe: below this → Degenerate (vs Precision).
+neff_probe_min_fraction     = 0.60
+neff_probe_warning_fraction = 0.35

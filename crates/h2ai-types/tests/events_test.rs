@@ -42,6 +42,7 @@ fn calibration_completed_event_serde_round_trip() {
         n_max_lo: 0.0,
         n_max_hi: 0.0,
         n_eff_cosine_prior: 0.0,
+        calibration_quality: Default::default(),
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -146,9 +147,9 @@ fn multiplication_condition_failed_event_names_failing_condition() {
 }
 
 #[test]
-fn semilattice_compiled_event_includes_merge_strategy() {
+fn selection_resolved_event_includes_merge_strategy() {
     let eid = explorer_id();
-    let e = SemilatticeCompiledEvent {
+    let e = SelectionResolvedEvent {
         task_id: task_id(),
         valid_proposals: vec![eid.clone()],
         pruned_proposals: vec![(eid, "ADR-004 violation".into())],
@@ -158,7 +159,7 @@ fn semilattice_compiled_event_includes_merge_strategy() {
         n_input_proposals: 0,
     };
     let json = serde_json::to_string(&e).unwrap();
-    let back: SemilatticeCompiledEvent = serde_json::from_str(&json).unwrap();
+    let back: SelectionResolvedEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(back.merge_strategy, MergeStrategy::ScoreOrdered);
 }
 
@@ -217,6 +218,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             n_max_lo: 0.0,
             n_max_hi: 0.0,
             n_eff_cosine_prior: 0.0,
+            calibration_quality: Default::default(),
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
@@ -322,7 +324,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             max_role_error_cost: RoleErrorCost::new(0.91).unwrap(),
             timestamp: Utc::now(),
         }),
-        H2AIEvent::SemilatticeCompiled(SemilatticeCompiledEvent {
+        H2AIEvent::SelectionResolved(SelectionResolvedEvent {
             task_id: task_id(),
             valid_proposals: vec![],
             pruned_proposals: vec![],
@@ -344,8 +346,31 @@ fn h2ai_event_enum_wraps_all_17_events() {
             multiplication_condition_failure: None,
             timestamp: Utc::now(),
         }),
+        H2AIEvent::TaskComplexityAssessed(TaskComplexityAssessedEvent {
+            task_id: task_id(),
+            tcc_structural: 1.5,
+            tcc_empirical: None,
+            tcc_effective: 1.5,
+            n_eff_pool: None,
+            task_quadrant: h2ai_types::sizing::TaskQuadrant::Coverage,
+            probe_skipped: true,
+            probe_skip_reason: Default::default(),
+            heavy_fraction: 0.0,
+            tcc_mismatch: false,
+            probe_cost_tokens: 0,
+            n_informative_static: 0,
+            timestamp: Utc::now(),
+        }),
+        H2AIEvent::ConstraintFrontier(ConstraintFrontierEvent {
+            task_id: task_id(),
+            satisfaction_matrix: vec![],
+            constraint_ids: vec![],
+            explorer_ids: vec![],
+            pareto_coverage: 1.0,
+            timestamp: Utc::now(),
+        }),
     ];
-    assert_eq!(events.len(), 17);
+    assert_eq!(events.len(), 19);
 }
 
 #[test]
