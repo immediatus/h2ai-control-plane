@@ -155,6 +155,8 @@ mod tests {
             severity,
             predicate: pred,
             remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
         }
     }
 

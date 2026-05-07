@@ -1,3 +1,4 @@
+use crate::constraint_source::reconstruct_docs;
 use crate::{error::ApiError, state::AppState};
 use axum::{
     extract::{Path, State},
@@ -5,8 +6,8 @@ use axum::{
     response::sse::Event,
     response::{IntoResponse, Json, Sse},
 };
-use h2ai_constraints::loader::load_corpus;
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
+use h2ai_types::checkpoint::ConstraintSnapshot;
 use h2ai_types::config::{TaoConfig, VerificationConfig};
 use h2ai_types::events::{H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent};
 use h2ai_types::identity::TaskId;
@@ -53,10 +54,13 @@ pub async fn submit_task(
         cal.clone().ok_or(ApiError::CalibrationRequired)?
     };
 
-    let corpus_path =
-        std::env::var("H2AI_CONSTRAINT_CORPUS_PATH").unwrap_or_else(|_| "/constraints".into());
-    let corpus = load_corpus(&corpus_path)
-        .map_err(|e| ApiError::Internal(format!("constraint corpus load failed: {e}")))?;
+    let source = state.constraint_source();
+    let task_tags = manifest.constraint_tags.clone();
+    let explicit_ids = manifest.constraints.clone();
+    let metas = source.resolve_context(&task_tags, &explicit_ids).await;
+    let wiki_revision = source.revision();
+    let resolved_ids: Vec<String> = metas.iter().map(|m| m.id.clone()).collect();
+    let corpus = reconstruct_docs(metas, source.as_ref()).await;
 
     let topology_kind_str = manifest.topology.kind.clone();
     let n_max = calibration.coefficients.n_max();
@@ -95,6 +99,10 @@ pub async fn submit_task(
     let auditor = state.auditor_adapter.clone();
     let registry = state.registry();
 
+    let resolved_ids_for_checkpoint = resolved_ids.clone();
+    let wiki_revision_for_checkpoint = wiki_revision;
+    let evaluated_ids_for_checkpoint: Vec<String> = corpus.iter().map(|d| d.id.clone()).collect();
+
     let state_clone = state.clone();
     let manifest_clone = manifest.clone();
     let calibration_clone = calibration.clone();
@@ -111,6 +119,11 @@ pub async fn submit_task(
         let tao_multiplier_estimator = std::sync::Arc::clone(&state_clone.tao_multiplier_estimator);
         let bandit = std::sync::Arc::clone(&state_clone.bandit_state);
         let task_id_for_failure = task_id_clone.clone();
+        let oracle_spec_clone = manifest_clone.oracle.clone();
+        let require_approval_clone = manifest_clone.require_approval;
+        // Pre-serialize manifest for checkpoint (manifest_clone is moved into input below).
+        let manifest_json_for_checkpoint =
+            serde_json::to_string(&manifest_clone).unwrap_or_default();
         let input = EngineInput {
             task_id: task_id_clone,
             manifest: manifest_clone,
@@ -138,6 +151,116 @@ pub async fn submit_task(
 
         match ExecutionEngine::run_offline(input).await {
             Ok(output) => {
+                // Phase checkpoint: save resolved output before publishing events (best-effort).
+                {
+                    use h2ai_types::checkpoint::TaskCheckpoint;
+                    let node_id = format!(
+                        "{}:{}",
+                        hostname::get()
+                            .map(|h| h.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| "unknown".into()),
+                        std::process::id()
+                    );
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let checkpoint = TaskCheckpoint {
+                        task_id: output.task_id.to_string(),
+                        phase: "Merging".into(),
+                        node_id,
+                        lease_seq: 0,
+                        proposals: vec![],
+                        auditor_survivors: vec![],
+                        resolved_output: Some(output.resolved_output.clone()),
+                        manifest_json: manifest_json_for_checkpoint.clone(),
+                        object_store_ref: None,
+                        created_at_ms: now_ms,
+                        updated_at_ms: now_ms,
+                        constraint_snapshot: Some(ConstraintSnapshot {
+                            wiki_revision: wiki_revision_for_checkpoint,
+                            resolved_ids: resolved_ids_for_checkpoint,
+                            evaluated_ids: evaluated_ids_for_checkpoint,
+                            violation_ids: vec![],
+                        }),
+                    };
+                    if let Err(e) = state_clone
+                        .nats
+                        .put_task_checkpoint(&checkpoint, None)
+                        .await
+                    {
+                        tracing::warn!(task_id = %output.task_id, "checkpoint write failed (best-effort): {e}");
+                    }
+                }
+                // HITL approval gate: check conditions before publishing any events
+                let needs_approval = state_clone.cfg.hitl.enabled
+                    && oracle_spec_clone.is_none()  // oracle tasks always auto-proceed
+                    && (require_approval_clone
+                        || output.attribution.q_confidence < state_clone.cfg.hitl.confidence_threshold);
+
+                if needs_approval {
+                    use h2ai_types::approval::{compute_risk_level, ApprovalRecord};
+                    use h2ai_types::events::{ApprovalTrigger, PendingApprovalEvent};
+
+                    let triggered_by = if require_approval_clone {
+                        ApprovalTrigger::ManifestFlag
+                    } else {
+                        ApprovalTrigger::LowConfidence
+                    };
+                    let risk_level =
+                        compute_risk_level(&triggered_by, output.attribution.q_confidence);
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let timeout_at_ms = now_ms + state_clone.cfg.hitl.timeout_ms;
+
+                    // 1. Write approval record to KV
+                    let record = ApprovalRecord {
+                        task_id: output.task_id.to_string(),
+                        proposed_output: output.resolved_output.clone(),
+                        q_confidence: output.attribution.q_confidence,
+                        triggered_by: triggered_by.clone(),
+                        created_at_ms: now_ms,
+                        timeout_at_ms,
+                    };
+                    if let Err(e) = state_clone.nats.put_approval_record(&record).await {
+                        tracing::warn!(task_id = %output.task_id, "failed to write approval record: {e}");
+                        // Fall through to normal resolution if KV write fails
+                    } else {
+                        // 2. Publish PendingApproval event
+                        let n_used = output.selection_resolved.n_input_proposals as u32;
+                        let prediction_basis_u8 = match output.attribution.prediction_basis {
+                            h2ai_types::sizing::PredictionBasis::Heuristic => 0u8,
+                            h2ai_types::sizing::PredictionBasis::Empirical => 2u8,
+                        };
+                        let pending_ev =
+                            h2ai_types::events::H2AIEvent::PendingApproval(PendingApprovalEvent {
+                                task_id: output.task_id.clone(),
+                                proposed_output: output.resolved_output.clone(),
+                                q_confidence: output.attribution.q_confidence,
+                                prediction_basis: prediction_basis_u8,
+                                n_used,
+                                risk_level,
+                                triggered_by,
+                                timeout_at_ms,
+                                timestamp_ms: now_ms,
+                            });
+                        if let Err(e) = state_clone
+                            .nats
+                            .publish_event(&output.task_id, &pending_ev)
+                            .await
+                        {
+                            tracing::warn!(task_id = %output.task_id, "failed to publish PendingApproval: {e}");
+                        }
+
+                        // 3. Update task store phase
+                        state_clone.store.set_awaiting_approval(&output.task_id);
+
+                        // 4. Thread is free — checkpoint already written above
+                        return;
+                    }
+                }
                 // Update Prometheus metrics from engine output
                 {
                     let mut metrics = state_clone.metrics.write().await;
@@ -155,6 +278,15 @@ pub async fn submit_task(
                         TaskQuadrant::Complex => metrics.phase15_quadrant_complex += 1,
                         TaskQuadrant::Degenerate => metrics.phase15_quadrant_degenerate += 1,
                     }
+                    metrics.oracle_tasks_total += 1;
+                    if oracle_spec_clone.is_some() {
+                        metrics.oracle_tasks_with_spec += 1;
+                    }
+                    metrics.oracle_coverage_rate = if metrics.oracle_tasks_total > 0 {
+                        metrics.oracle_tasks_with_spec as f64 / metrics.oracle_tasks_total as f64
+                    } else {
+                        0.0
+                    };
                 }
                 let complexity_ev =
                     H2AIEvent::TaskComplexityAssessed(output.complexity_event.clone());
@@ -254,6 +386,7 @@ pub async fn submit_task(
                     waste_ratio: output.waste_ratio,
                     applied_optimizations: output.applied_optimizations,
                     timestamp: chrono::Utc::now(),
+                    approval_decision: None,
                 });
                 match state_clone
                     .nats
@@ -280,7 +413,35 @@ pub async fn submit_task(
                 {
                     tracing::warn!("failed to publish MergeResolvedEvent: {e}");
                 }
+                // Phase 6: async oracle dispatch (fire-and-forget, non-blocking)
+                if let Some(ref oracle_spec) = oracle_spec_clone {
+                    let nats_client = state_clone.nats.client.clone();
+                    let task_id_oracle = output.task_id.clone();
+                    let resolved = output.resolved_output.clone();
+                    let q = output.attribution.q_confidence;
+                    let n_used = output.selection_resolved.n_input_proposals as u32;
+                    let spec = oracle_spec.clone();
+                    tokio::spawn(async move {
+                        h2ai_orchestrator::oracle::oracle_dispatch::fire(
+                            &nats_client,
+                            task_id_oracle,
+                            &resolved,
+                            q,
+                            n_used,
+                            &spec,
+                        )
+                        .await;
+                    });
+                }
                 state_clone.store.mark_resolved(&output.task_id);
+                // GC: delete checkpoint now that task is permanently resolved.
+                if let Err(e) = state_clone
+                    .nats
+                    .delete_task_checkpoint(&output.task_id.to_string())
+                    .await
+                {
+                    tracing::debug!(task_id = %output.task_id, "checkpoint GC on resolve (may not exist): {e}");
+                }
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -308,6 +469,15 @@ pub async fn submit_task(
                     .await
                 {
                     tracing::warn!("failed to publish TaskFailedEvent: {pub_err}");
+                }
+                state_clone.store.mark_failed(&task_id_for_failure);
+                // GC: delete checkpoint on failure.
+                if let Err(e) = state_clone
+                    .nats
+                    .delete_task_checkpoint(&task_id_for_failure.to_string())
+                    .await
+                {
+                    tracing::debug!("checkpoint GC on failure (may not exist): {e}");
                 }
             }
         }
@@ -379,6 +549,18 @@ pub async fn task_events(
                 while let Some(item) = events.next().await {
                     match item {
                         Ok((seq, event)) => {
+                            // Update local TaskStore for cross-node consistency:
+                            // When approval is processed on Node B, Node A's store must converge.
+                            match &event {
+                                H2AIEvent::MergeResolved(ev) => {
+                                    state.store.mark_resolved(&ev.task_id);
+                                }
+                                H2AIEvent::TaskFailed(ev) => {
+                                    state.store.mark_failed(&ev.task_id);
+                                }
+                                _ => {}
+                            }
+
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             yield Ok::<Event, Infallible>(
                                 Event::default().id(seq.to_string()).data(data)

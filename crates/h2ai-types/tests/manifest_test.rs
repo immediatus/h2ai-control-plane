@@ -22,6 +22,9 @@ fn task_manifest_roundtrip() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let json = serde_json::to_string(&m).unwrap();
     let back: TaskManifest = serde_json::from_str(&json).unwrap();
@@ -121,6 +124,9 @@ fn manifest_with_slot_configs_roundtrips_json() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let json = serde_json::to_string(&m).unwrap();
     let back: TaskManifest = serde_json::from_str(&json).unwrap();
@@ -142,4 +148,32 @@ fn manifest_without_slot_configs_deserializes_to_empty() {
     }"#;
     let m: TaskManifest = serde_json::from_str(json).unwrap();
     assert!(m.explorers.slot_configs.is_empty());
+}
+
+#[test]
+fn manifest_constraint_tags_defaults_empty() {
+    let json = r#"{
+        "description": "test",
+        "pareto_weights": {"throughput": 0.5, "containment": 0.3, "diversity": 0.2},
+        "topology": {"kind": "auto"},
+        "explorers": {"count": 2}
+    }"#;
+    let m: TaskManifest = serde_json::from_str(json).unwrap();
+    assert!(
+        m.constraint_tags.is_empty(),
+        "constraint_tags must default to empty vec"
+    );
+}
+
+#[test]
+fn manifest_constraint_tags_roundtrip() {
+    let json = r#"{
+        "description": "EU data task",
+        "pareto_weights": {"throughput": 0.33, "containment": 0.33, "diversity": 0.34},
+        "topology": {"kind": "auto"},
+        "explorers": {"count": 3},
+        "constraint_tags": ["eu_data", "financial_report"]
+    }"#;
+    let m: TaskManifest = serde_json::from_str(json).unwrap();
+    assert_eq!(m.constraint_tags, vec!["eu_data", "financial_report"]);
 }

@@ -1,4 +1,7 @@
+use crate::constraint_source::NatsWikiConstraintSource;
 use h2ai_config::H2AIConfig;
+use h2ai_constraints::source::{ConstraintSource, FsConstraintSource};
+use h2ai_constraints::wiki::WikiCache;
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_orchestrator::bandit::BanditState;
 use h2ai_orchestrator::self_optimizer::TauSpreadEstimator;
@@ -57,6 +60,10 @@ pub struct AppState {
     pub bandit_state: Arc<RwLock<BanditState>>,
     /// In-memory Prometheus metrics state.
     pub metrics: std::sync::Arc<tokio::sync::RwLock<crate::metrics::MetricsState>>,
+    /// In-memory constraint wiki index; loaded from NATS KV at startup.
+    /// Analogue of `calibration` — small, in-memory, NATS-backed, refreshed via KV watch.
+    /// When `cfg.constraint_wiki.enabled = false`, this holds an empty WikiCache.
+    pub wiki_cache: Arc<RwLock<WikiCache>>,
 }
 
 impl AppState {
@@ -106,6 +113,7 @@ impl AppState {
             metrics: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::metrics::MetricsState::default(),
             )),
+            wiki_cache: Arc::new(RwLock::new(WikiCache::default())),
         }
     }
 
@@ -185,6 +193,56 @@ impl AppState {
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load bandit state from NATS; using default prior")
             }
+        }
+    }
+
+    /// Load WikiCache from NATS KV into the in-memory field.
+    ///
+    /// Called once at startup after NATS infrastructure is ready.
+    /// No-op when wiki is disabled in config.
+    pub async fn load_wiki_cache(&self) {
+        if !self.cfg.constraint_wiki.enabled {
+            return;
+        }
+        match self.nats.get_wiki_cache().await {
+            Ok(Some((cache, _))) => {
+                *self.wiki_cache.write().await = cache;
+                tracing::info!("constraint wiki cache loaded from NATS KV");
+            }
+            Ok(None) => {
+                tracing::warn!("H2AI_CONSTRAINT_WIKI KV is empty — wiki not bootstrapped yet");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load wiki cache; using empty cache");
+            }
+        }
+    }
+
+    /// Build the appropriate ConstraintSource for the current config.
+    ///
+    /// When `constraint_wiki.enabled = true`: NatsWikiConstraintSource (NATS KV + Object Store).
+    /// When `constraint_wiki.enabled = false`: FsConstraintSource (flat directory, backward compat).
+    pub fn constraint_source(&self) -> Arc<dyn ConstraintSource> {
+        if self.cfg.constraint_wiki.enabled {
+            Arc::new(NatsWikiConstraintSource::new(
+                self.wiki_cache.clone(),
+                self.nats.clone(),
+            ))
+        } else {
+            let corpus_path = self
+                .cfg
+                .constraint_wiki
+                .corpus_path
+                .clone()
+                .unwrap_or_else(|| "/constraints".to_string());
+            let source = FsConstraintSource::load(&corpus_path).unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "constraint corpus load failed at path {corpus_path}; using empty corpus"
+                );
+                FsConstraintSource::from_docs(vec![])
+            });
+            Arc::new(source)
         }
     }
 }

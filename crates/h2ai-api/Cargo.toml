@@ -23,6 +23,7 @@ h2ai-constraints  = { path = "../h2ai-constraints" }
 h2ai-adapters     = { path = "../h2ai-adapters" }
 h2ai-config       = { path = "../h2ai-config" }
 h2ai-orchestrator = { path = "../h2ai-orchestrator" }
+async-trait       = { workspace = true }
 axum              = { workspace = true }
 tokio             = { workspace = true }
 tokio-stream      = { workspace = true }
@@ -40,6 +41,8 @@ futures           = { workspace = true }
 dashmap           = { workspace = true }
 uuid              = { workspace = true }
 async-stream      = { workspace = true }
+hostname          = { workspace = true }
+rand              = { workspace = true }
 
 [features]
 # Enables FastEmbedModel for semantic CG measurement. Requires ORT (ONNX Runtime) on the host.
@@ -47,8 +50,9 @@ fastembed-embed = ["h2ai-context/fastembed-embed"]
 
 [dev-dependencies]
 axum          = { workspace = true, features = ["macros"] }
-tokio         = { workspace = true }
+tokio         = { workspace = true, features = ["macros", "rt"] }
 tower         = { workspace = true, features = ["util"] }
 reqwest       = { workspace = true, features = ["json"] }
 uuid          = { workspace = true }
 h2ai-adapters = { path = "../h2ai-adapters" }
+tempfile      = "3"

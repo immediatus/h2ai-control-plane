@@ -39,6 +39,9 @@ fn base_manifest() -> TaskManifest {
         },
         constraints: vec![],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     }
 }
 

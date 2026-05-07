@@ -97,3 +97,29 @@ fn load_corpus_missing_dir_returns_empty() {
     assert!(result.is_ok());
     assert!(result.unwrap().is_empty());
 }
+
+#[test]
+fn loader_parses_frontmatter_domains() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let content = "---\ndomains:\n  - eu_data\n  - compliance\nmandatory_for_tags:\n  - audit\n---\n\n## Hard Constraints\npersonal data minimization\n";
+    fs::write(dir.path().join("GDPR-001.md"), content).unwrap();
+
+    let docs = load_corpus(dir.path()).unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "GDPR-001");
+    assert_eq!(docs[0].domains, vec!["eu_data", "compliance"]);
+    assert_eq!(docs[0].mandatory_for_tags, vec!["audit"]);
+}
+
+#[test]
+fn loader_no_frontmatter_defaults_empty_domains() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let content = "## Hard Constraints\npersonal data minimization\n";
+    fs::write(dir.path().join("ADR-001.md"), content).unwrap();
+
+    let docs = load_corpus(dir.path()).unwrap();
+    assert_eq!(docs[0].domains, Vec::<String>::new());
+    assert_eq!(docs[0].mandatory_for_tags, Vec::<String>::new());
+}

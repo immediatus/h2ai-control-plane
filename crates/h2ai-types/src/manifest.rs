@@ -1,4 +1,5 @@
 use crate::config::{ParetoWeights, ReviewGate, RoleSpec};
+use crate::sizing::OracleSpec;
 use serde::{Deserialize, Serialize};
 
 /// Chain-of-thought reasoning style injected as a per-slot instruction prefix.
@@ -101,6 +102,19 @@ pub struct TaskManifest {
     #[serde(default)]
     pub constraints: Vec<String>,
     pub context: Option<String>,
+    #[serde(default)]
+    pub oracle: Option<OracleSpec>,
+    /// When `true`, operator requires human review before output is delivered,
+    /// regardless of q_confidence. Defaults to `false`.
+    #[serde(default)]
+    pub require_approval: bool,
+    /// Domain tags for automatic constraint routing via the wiki context map.
+    ///
+    /// Example: `["eu_data", "financial_report"]` causes the wiki to resolve
+    /// all constraints mapped to those domains. Explicit `constraints` IDs are
+    /// always included regardless of tags.
+    #[serde(default)]
+    pub constraint_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

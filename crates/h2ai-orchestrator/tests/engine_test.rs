@@ -111,6 +111,9 @@ async fn engine_runs_ensemble_to_semilattice() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let adapter2 = mock_adapter2();
@@ -193,6 +196,9 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -265,6 +271,9 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -337,6 +346,9 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -408,6 +420,9 @@ async fn engine_output_contains_talagrand_diagnostic() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let input = EngineInput {
@@ -498,6 +513,9 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -573,6 +591,9 @@ async fn engine_output_contains_suggested_next_params() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let input = EngineInput {
@@ -655,6 +676,9 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let valid_critique = r#"{"proposal_critiques":[{"proposal_id":"p1","strengths":["s1"],"weaknesses":[],"verdict":"partial"},{"proposal_id":"p2","strengths":["s2"],"weaknesses":[],"verdict":"strong"}],"contradictions":[],"synthesis_guidance":"Use p2."}"#;
@@ -763,6 +787,9 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         },
         constraints: vec![],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -925,6 +952,9 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         },
         constraints: vec![],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let input = EngineInput {
@@ -1006,6 +1036,9 @@ async fn engine_bypasses_family_conflict_gate_when_allow_single_family() {
         },
         constraints: vec![],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let input = EngineInput {

@@ -184,3 +184,14 @@ fn load_layered_missing_override_path_returns_error() {
         "missing override path must return ConfigLoadError::Config"
     );
 }
+
+#[test]
+fn constraint_wiki_config_defaults_are_sane() {
+    let cfg = H2AIConfig::load_layered(None).expect("load defaults");
+    assert!(!cfg.constraint_wiki.enabled, "wiki disabled by default");
+    assert_eq!(cfg.constraint_wiki.resolve_k, 50);
+    assert_eq!(
+        cfg.constraint_wiki.corpus_path.as_deref(),
+        Some("/constraints")
+    );
+}

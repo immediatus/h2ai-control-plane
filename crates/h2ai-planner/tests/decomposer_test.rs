@@ -23,6 +23,9 @@ fn manifest() -> TaskManifest {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     }
 }
 

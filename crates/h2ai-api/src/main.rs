@@ -1,5 +1,9 @@
+mod approval_reaper;
+mod constraint_source;
 mod error;
 mod metrics;
+mod oracle;
+mod recovery;
 mod routes;
 mod state;
 
@@ -49,6 +53,7 @@ fn adapter_family(kind: &AdapterKind) -> &'static str {
         AdapterKind::Ollama { .. } => "ollama",
         AdapterKind::LocalLlamaCpp { .. } => "llamacpp",
         AdapterKind::CloudGeneric { .. } => "cloudgeneric",
+        AdapterKind::A2a { .. } => "a2a",
     }
 }
 
@@ -156,6 +161,28 @@ async fn main() {
 
     app_state.load_tao_estimator().await;
     app_state.load_bandit_state().await;
+    app_state.load_wiki_cache().await;
+
+    // Recover in-flight tasks from checkpoints persisted before last restart
+    crate::recovery::recover_in_flight_tasks(Arc::new(app_state.clone())).await;
+
+    // Spawn Phase 6 oracle accumulator — subscribes to h2ai.oracle.results
+    // and accumulates calibration residuals in NATS KV.
+    {
+        let accumulator = crate::oracle::OracleAccumulator {
+            nats_raw: app_state.nats.client.clone(),
+            nats_state: app_state.nats.clone(),
+            bandit: app_state.bandit_state.clone(),
+            metrics: app_state.metrics.clone(),
+        };
+        tokio::spawn(accumulator.run());
+    }
+
+    // Spawn HITL approval reaper — scans for timed-out approvals every 60s
+    {
+        let reaper_state = Arc::new(app_state.clone());
+        tokio::spawn(crate::approval_reaper::run_approval_reaper(reaper_state));
+    }
 
     let app = Router::new()
         .merge(routes::task_router())

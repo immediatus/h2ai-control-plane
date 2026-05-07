@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod calibrate;
 pub mod health;
 pub mod recovery;
@@ -14,6 +15,8 @@ pub fn task_router() -> Router<AppState> {
         .route("/tasks/:task_id", get(tasks::task_status))
         .route("/tasks/:task_id/merge", post(tasks::merge_task))
         .route("/tasks/:task_id/recover", get(recovery::recover_task))
+        .route("/tasks/:task_id/approve", post(approval::approve_task))
+        .route("/tasks/:task_id/approval", get(approval::get_approval))
 }
 
 pub fn calibrate_router() -> Router<AppState> {

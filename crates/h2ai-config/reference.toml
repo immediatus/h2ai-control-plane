@@ -260,6 +260,18 @@ scheduler_spillover_threshold = 10
 # model = "claude-sonnet-4-5"
 adapter_profiles = []
 
+# Example A2A adapter profile entry (external agent delegation via Agent2Agent protocol)
+# [[adapter_profiles]]
+# name = "specialist-planner"
+# [adapter_profiles.kind.A2a]
+# endpoint              = "https://my-specialist-agent.example.com"
+# auth_scheme           = "bearer"          # "bearer", "api_key", or "none"
+# auth_token_env        = "A2A_TOKEN"       # env var; leave empty for auth_scheme = "none"
+# timeout_minutes       = 10
+# poll_interval_ms      = 2000
+# max_poll_interval_ms  = 30000
+# agent_card_cache_ttl_s = 3600
+
 # ── Synthesis ─────────────────────────────────────────────────────────────────
 
 # Enable the two-stage critique-then-write synthesis phase.
@@ -375,3 +387,35 @@ tcc_mismatch_penalty = 0.5
 # neff_probe_warning_fraction × n_probe: below this → Degenerate (vs Precision).
 neff_probe_min_fraction     = 0.60
 neff_probe_warning_fraction = 0.35
+
+# ── Oracle sidecar ────────────────────────────────────────────────────────────
+# Configuration for the Phase 6 async oracle evaluation service.
+# The sidecar receives POST /oracle/run requests and runs test suites
+# against the winning merged output.
+# Absent or commented-out = Phase 6 oracle disabled (bootstrap intervals used).
+
+# [oracle_sidecar]
+# # HTTP endpoint of the oracle sidecar service.
+# runner_uri = "http://oracle-sidecar:9090"
+# # Default timeout for oracle evaluations in milliseconds.
+# default_timeout_ms = 10000
+# # Language runtime to use when not specified by the task manifest.
+# default_language = "python"
+
+# ── Human-in-the-loop approval gate ──────────────────────────────────────────
+# Controls when task outputs are held for human review before delivery.
+# Disable entirely with enabled = false (useful for development environments).
+
+[hitl]
+enabled              = true
+confidence_threshold = 0.50   # q_confidence below this triggers human review
+timeout_ms           = 1800000 # 30 minutes — auto-rejected after this
+
+# ── Constraint Wiki ───────────────────────────────────────────────────────────
+# When disabled (default), loads all .md files from corpus_path — identical to
+# pre-wiki behavior. Set enabled = true after bootstrapping H2AI_CONSTRAINT_WIKI.
+
+[constraint_wiki]
+enabled      = false
+corpus_path  = "/constraints"
+resolve_k    = 50

@@ -123,6 +123,9 @@ fn default_manifest(count: usize) -> TaskManifest {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     }
 }
 
@@ -376,6 +379,9 @@ async fn system_resolves_conflict_via_bft_consensus() {
         },
         constraints: vec!["ADR-001".into()],
         context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
     };
 
     let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(

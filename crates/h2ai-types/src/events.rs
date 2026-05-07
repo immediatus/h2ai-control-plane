@@ -4,8 +4,8 @@ use crate::config::{
 use crate::identity::{ExplorerId, SubtaskId, TaskId};
 use crate::sizing::{
     CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
-    MergeStrategy, MultiplicationConditionFailure, PredictionBasis, ProbeSkipReason, RoleErrorCost,
-    TaskQuadrant, TauValue,
+    MergeStrategy, MultiplicationConditionFailure, OracleDomain, OracleSpec, OracleType,
+    PredictionBasis, ProbeSkipReason, RoleErrorCost, TaskQuadrant, TauValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -470,6 +470,9 @@ pub struct TaskAttributionEvent {
     #[serde(default)]
     pub applied_optimizations: Vec<AppliedOptimization>,
     pub timestamp: DateTime<Utc>,
+    /// When the task passed through the HITL gate, this records the reviewer's decision.
+    #[serde(default)]
+    pub approval_decision: Option<crate::approval::ApprovalDecision>,
 }
 
 fn default_waste_ratio() -> f64 {
@@ -532,6 +535,111 @@ pub struct ConstraintFrontierEvent {
     /// Measures how much of the constraint Pareto frontier was covered by the ensemble.
     pub pareto_coverage: f64,
     pub timestamp: DateTime<Utc>,
+}
+
+/// Async Phase 6 oracle evaluation request.
+///
+/// Published to `h2ai.oracle.pending` (NATS core) immediately after task completion.
+/// Non-blocking — the orchestrator does not wait for the oracle result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OraclePendingEvent {
+    pub task_id: TaskId,
+    /// The winning merged output to evaluate.
+    pub winning_output: String,
+    pub q_confidence: f64,
+    /// Number of explorers used in the winning ensemble (for bandit arm key).
+    pub n_used: u32,
+    pub oracle_spec: OracleSpec,
+    pub domain: OracleDomain,
+}
+
+/// Oracle evaluation result returned by the oracle sidecar.
+///
+/// Published to `h2ai.oracle.results`. Consumed by `OracleAccumulator`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleResultEvent {
+    pub task_id: TaskId,
+    /// Echoed from [`OraclePendingEvent`] for correlation.
+    pub q_confidence: f64,
+    /// Echoed from [`OraclePendingEvent`] for bandit update.
+    pub n_used: u32,
+    /// `true` if all test cases passed.
+    pub passed: bool,
+    /// `pass_count / total_count` — partial-credit score ∈ [0, 1].
+    pub score: f64,
+    /// Nonconformity score: `|q_confidence − passed as f64|`.
+    pub residual: f64,
+    pub domain: OracleDomain,
+    pub oracle_type: OracleType,
+    pub duration_ms: u64,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted when ECE > 0.15 for 10 consecutive oracle observations.
+///
+/// Signals that the calibration residuals have drifted from the predicted confidence.
+/// Operators should inspect oracle quality and adapter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationDriftWarning {
+    pub n_observations: usize,
+    pub ece: f64,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted when oracle pass rate is suspiciously low (< 0.05) or high (> 0.97)
+/// for 20+ consecutive observations.
+///
+/// Likely indicates a broken oracle sidecar or trivially-passing test suite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleSuspectEvent {
+    pub pass_rate: f64,
+    pub n_observations: usize,
+    pub reason: String,
+    pub timestamp_ms: u64,
+}
+
+/// Risk level of a pending HITL approval request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+/// What caused the HITL approval gate to fire for a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalTrigger {
+    /// The `require_approval` flag in the task manifest was set to `true`.
+    ManifestFlag,
+    /// The system's `q_confidence` fell below the configured threshold.
+    LowConfidence,
+}
+
+/// Emitted when a task output is held pending human review before delivery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApprovalEvent {
+    pub task_id: TaskId,
+    pub proposed_output: String,
+    pub q_confidence: f64,
+    /// 0=Heuristic 1=Bootstrap 2=Conformal
+    pub prediction_basis: u8,
+    pub n_used: u32,
+    pub risk_level: ApprovalRiskLevel,
+    pub triggered_by: ApprovalTrigger,
+    pub timeout_at_ms: u64,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted when a human (or system timeout) resolves a pending approval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalResolvedEvent {
+    pub task_id: TaskId,
+    pub approved: bool,
+    pub operator_id: String,
+    pub reviewer_note: Option<String>,
+    pub decided_at_ms: u64,
 }
 
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
@@ -599,11 +707,31 @@ pub enum H2AIEvent {
     TaskComplexityAssessed(TaskComplexityAssessedEvent),
     /// Wraps [`ConstraintFrontierEvent`]: Pareto frontier coverage of constraint satisfaction matrix.
     ConstraintFrontier(ConstraintFrontierEvent),
+    /// Wraps [`OraclePendingEvent`]: Phase 6 oracle evaluation dispatched.
+    OraclePending(OraclePendingEvent),
+    /// Wraps [`OracleResultEvent`]: oracle sidecar returned a result.
+    OracleResult(OracleResultEvent),
+    /// Wraps [`CalibrationDriftWarning`]: ECE exceeded 0.15 threshold.
+    CalibrationDrift(CalibrationDriftWarning),
+    /// Wraps [`OracleSuspectEvent`]: oracle pass rate outside healthy range.
+    OracleSuspect(OracleSuspectEvent),
+    /// Task output is pending human approval before delivery.
+    PendingApproval(PendingApprovalEvent),
+    /// Human or system timeout decision on a pending approval.
+    ApprovalResolved(ApprovalResolvedEvent),
 }
 
 impl H2AIEvent {
     pub fn subject(&self, task_id: &TaskId) -> String {
-        format!("h2ai.tasks.{}", task_id)
+        match self {
+            H2AIEvent::PendingApproval(e) => {
+                format!("h2ai.tasks.{}.pending_approval", e.task_id)
+            }
+            H2AIEvent::ApprovalResolved(e) => {
+                format!("h2ai.tasks.{}.approval_resolved", e.task_id)
+            }
+            _ => format!("h2ai.tasks.{}", task_id),
+        }
     }
 }
 

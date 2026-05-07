@@ -288,6 +288,8 @@ async fn verification_json_schema_predicate_passes_valid_json() {
         severity: ConstraintSeverity::Hard { threshold: 0.5 },
         predicate: ConstraintPredicate::JsonSchema { schema },
         remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(TaskId::new(), r#"{"result": "ok"}"#);
@@ -321,6 +323,8 @@ async fn verification_length_range_predicate_rejects_long_output() {
             max_chars: Some(10),
         },
         remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(
@@ -355,6 +359,8 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
             timeout_secs: 1,
         },
         remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(TaskId::new(), "some output");

@@ -245,6 +245,10 @@ pub struct H2AIConfig {
     pub wasm_executor: Option<WasmExecutorConfig>,
     /// Phase 1.5 task complexity assessment and quadrant routing configuration.
     pub task_complexity: TaskComplexityConfig,
+    /// Human-in-the-loop approval gate configuration.
+    pub hitl: HitlConfig,
+    /// Constraint wiki configuration — tag routing, NATS KV storage.
+    pub constraint_wiki: ConstraintWikiConfig,
 }
 
 /// Configuration for the WebSearch executor (Google Custom Search API).
@@ -281,6 +285,36 @@ pub struct WasmExecutorConfig {
     pub interpreter_wasm_path: String,
     /// Computational fuel budget per script execution; traps safely when exhausted.
     pub fuel_budget: u64,
+}
+
+/// Configuration for the human-in-the-loop approval gate.
+///
+/// Controls when task outputs are held for human review before delivery to the client.
+/// All defaults are set in `reference.toml` under `[hitl]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HitlConfig {
+    /// When `false`, the HITL gate is completely bypassed (development mode).
+    pub enabled: bool,
+    /// q_confidence below this threshold routes the task to human review.
+    pub confidence_threshold: f64,
+    /// Maximum milliseconds a task may wait for human approval before auto-rejection.
+    pub timeout_ms: u64,
+}
+
+/// Configuration for the Constraint Wiki — tag-routed, NATS-backed constraint resolution.
+///
+/// When `enabled = false` (default), the system falls back to `corpus_path` flat-directory
+/// behavior — identical to pre-wiki operation. No migration required.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstraintWikiConfig {
+    /// When true, use NATS KV wiki index for tag-based constraint resolution.
+    /// When false, fall back to `corpus_path` flat-directory load (backward compat).
+    pub enabled: bool,
+    /// Filesystem path for flat-directory fallback.
+    pub corpus_path: Option<String>,
+    /// Maximum number of constraints resolved per task via tag lookup.
+    /// Explicit manifest.constraints IDs are always included regardless of this limit.
+    pub resolve_k: usize,
 }
 
 #[cfg(test)]
@@ -326,6 +360,58 @@ mod agent_config_tests {
     fn agent_max_tool_iterations_default_is_five() {
         let cfg = H2AIConfig::default();
         assert_eq!(cfg.agent_max_tool_iterations, 5);
+    }
+}
+
+#[cfg(test)]
+mod a2a_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn a2a_adapter_kind_deserializes_from_toml() {
+        use config::{Config, File, FileFormat};
+
+        let toml_str = r#"
+[adapter]
+A2a = { endpoint = "https://example.com", auth_scheme = "bearer", auth_token_env = "TOKEN_ENV", timeout_minutes = 10, poll_interval_ms = 2000, max_poll_interval_ms = 30000, agent_card_cache_ttl_s = 3600 }
+        "#;
+
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            adapter: AdapterKind,
+        }
+
+        let cfg = Config::builder()
+            .add_source(File::from_str(toml_str, FileFormat::Toml))
+            .build()
+            .expect("config builder failed");
+
+        let w: Wrapper = cfg
+            .try_deserialize()
+            .expect("should parse A2a AdapterKind from TOML");
+        assert!(matches!(w.adapter, AdapterKind::A2a { .. }));
+
+        // Verify field values
+        if let AdapterKind::A2a {
+            endpoint,
+            auth_scheme,
+            auth_token_env,
+            timeout_minutes,
+            poll_interval_ms,
+            max_poll_interval_ms,
+            agent_card_cache_ttl_s,
+        } = w.adapter
+        {
+            assert_eq!(endpoint, "https://example.com");
+            assert_eq!(auth_scheme, "bearer");
+            assert_eq!(auth_token_env, "TOKEN_ENV");
+            assert_eq!(timeout_minutes, 10);
+            assert_eq!(poll_interval_ms, 2000);
+            assert_eq!(max_poll_interval_ms, 30000);
+            assert_eq!(agent_card_cache_ttl_s, 3600);
+        } else {
+            panic!("Expected A2a variant");
+        }
     }
 }
 

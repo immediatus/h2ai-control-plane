@@ -7,6 +7,7 @@
 //! - [`ollama::OllamaAdapter`] — Ollama native `/api/chat`
 //! - [`factory`] — builds any adapter from `AdapterKind` config
 
+pub mod a2a;
 pub mod anthropic;
 pub mod cloud;
 pub mod factory;

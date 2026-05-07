@@ -1606,6 +1606,87 @@ impl ExecutionEngine {
         Err(EngineError::MaxRetriesExhausted)
     }
 
+    /// Resume execution from a persisted checkpoint.
+    ///
+    /// `Merging` checkpoint: resolved output already computed — reconstruct a minimal
+    /// `EngineOutput` and return it so the caller can publish events without re-running LLM.
+    ///
+    /// All earlier phases fall back to `run_offline` (restart from scratch).
+    pub async fn run_from_checkpoint(
+        input: EngineInput<'_>,
+        checkpoint: h2ai_types::checkpoint::TaskCheckpoint,
+    ) -> Result<EngineOutput, EngineError> {
+        let phase = crate::task_store::TaskPhase::try_from_name_str(&checkpoint.phase);
+
+        if let Some(crate::task_store::TaskPhase::Merging) = phase {
+            let resolved = checkpoint.resolved_output.ok_or_else(|| {
+                EngineError::Parse("Merging checkpoint missing resolved_output".into())
+            })?;
+
+            let task_id = input.task_id.clone();
+            input.store.mark_resolved(&task_id);
+
+            // Return minimal EngineOutput with saved resolved output.
+            // Aggregated fields (verification, attribution, etc.) are zeroed —
+            // the engine did not re-run so there are no new measurements.
+            Ok(EngineOutput {
+                task_id: task_id.clone(),
+                resolved_output: resolved,
+                selection_resolved: h2ai_types::events::SelectionResolvedEvent {
+                    task_id,
+                    valid_proposals: vec![],
+                    pruned_proposals: vec![],
+                    merge_strategy: h2ai_types::sizing::MergeStrategy::ScoreOrdered,
+                    timestamp: chrono::Utc::now(),
+                    merge_elapsed_secs: None,
+                    n_input_proposals: 0,
+                },
+                attribution: crate::attribution::HarnessAttribution {
+                    baseline_quality: 0.0,
+                    topology_gain: 0.0,
+                    verification_gain: 0.0,
+                    tao_gain: 0.0,
+                    q_confidence: 0.0,
+                    prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
+                    q_measured: None,
+                    rho_adjusted: 0.0,
+                    case_b_flag: false,
+                    synthesis_gain: 0.0,
+                },
+                attribution_interval: None,
+                verification_events: vec![],
+                talagrand: None,
+                suggested_next_params: None,
+                waste_ratio: 0.0,
+                applied_optimizations: vec![],
+                topology_retry_events: vec![],
+                mode_collapse_count: 0,
+                epistemic_yield: None,
+                task_quadrant: Some(TaskQuadrant::Precision),
+                complexity_event: h2ai_types::events::TaskComplexityAssessedEvent {
+                    task_id: input.task_id.clone(),
+                    tcc_structural: 0.0,
+                    tcc_empirical: None,
+                    tcc_effective: 0.0,
+                    n_eff_pool: None,
+                    task_quadrant: TaskQuadrant::Precision,
+                    probe_skipped: true,
+                    probe_skip_reason: h2ai_types::sizing::ProbeSkipReason::None,
+                    heavy_fraction: 0.0,
+                    tcc_mismatch: false,
+                    probe_cost_tokens: 0,
+                    n_informative_static: 0,
+                    timestamp: chrono::Utc::now(),
+                },
+                frontier_event: None,
+                adapter_correctness: vec![],
+            })
+        } else {
+            // Earlier phase or unknown phase — restart from scratch
+            Self::run_offline(input).await
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_optimizer(
         current_params: &mut OptimizerParams,

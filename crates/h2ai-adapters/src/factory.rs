@@ -1,3 +1,4 @@
+use crate::a2a::A2aExplorerAdapter;
 use crate::anthropic::AnthropicAdapter;
 use crate::cloud::CloudGenericAdapter;
 use crate::ollama::OllamaAdapter;
@@ -38,6 +39,24 @@ impl AdapterFactory {
                  Use AdapterKind::Ollama with a local Ollama server for local inference."
                     .into())
             }
+            AdapterKind::A2a {
+                endpoint,
+                auth_scheme,
+                auth_token_env,
+                timeout_minutes,
+                poll_interval_ms,
+                max_poll_interval_ms,
+                agent_card_cache_ttl_s,
+            } => A2aExplorerAdapter::new(
+                endpoint.clone(),
+                auth_scheme.clone(),
+                auth_token_env.clone(),
+                *timeout_minutes,
+                *poll_interval_ms,
+                *max_poll_interval_ms,
+                *agent_card_cache_ttl_s,
+            )
+            .map(|a| Arc::new(a) as Arc<dyn IComputeAdapter>),
         }
     }
 

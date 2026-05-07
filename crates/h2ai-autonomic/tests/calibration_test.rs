@@ -284,6 +284,8 @@ async fn calibration_non_empty_corpus_computes_hamming() {
             terms: vec!["jwt".into()],
         },
         remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
     }];
     let a = MockAdapter::new("jwt authentication token".into());
     let b = MockAdapter::new("session cookie storage".into());

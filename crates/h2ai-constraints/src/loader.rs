@@ -25,8 +25,10 @@ pub fn load_corpus(dir: impl AsRef<Path>) -> Result<Vec<ConstraintDoc>, std::io:
 }
 
 pub fn parse_constraint_doc(id: &str, content: &str) -> ConstraintDoc {
+    let (domains, mandatory_for_tags, content) = parse_frontmatter(content);
+    let content = content.to_string();
     let lower = content.to_lowercase();
-    let (section_text, severity) = find_constraint_section(content, &lower);
+    let (section_text, severity) = find_constraint_section(&content, &lower);
     let terms = tokenize_section(section_text);
     let predicate = ConstraintPredicate::VocabularyPresence {
         mode: VocabularyMode::AllOf,
@@ -39,7 +41,58 @@ pub fn parse_constraint_doc(id: &str, content: &str) -> ConstraintDoc {
         severity,
         predicate,
         remediation_hint: None,
+        domains,
+        mandatory_for_tags,
     }
+}
+
+/// Parse a simple YAML-style frontmatter block from the start of a markdown file.
+///
+/// Returns `(domains, mandatory_for_tags, body)` where `body` is the content after
+/// the closing `---`. Files without a `---` opener return empty vecs and the full content.
+fn parse_frontmatter(content: &str) -> (Vec<String>, Vec<String>, &str) {
+    let content = content.trim_start();
+    if !content.starts_with("---") {
+        return (vec![], vec![], content);
+    }
+    // Find the closing --- on its own line
+    let after_open = match content.find('\n') {
+        Some(i) => &content[i + 1..],
+        None => return (vec![], vec![], content),
+    };
+    let close = match after_open.find("\n---") {
+        Some(i) => i,
+        None => return (vec![], vec![], content),
+    };
+    let frontmatter = &after_open[..close];
+    let rest = &after_open[close + 4..]; // skip "\n---"
+    let body = rest.trim_start_matches('\n');
+
+    let domains = extract_yaml_list(frontmatter, "domains");
+    let mandatory_for_tags = extract_yaml_list(frontmatter, "mandatory_for_tags");
+    (domains, mandatory_for_tags, body)
+}
+
+/// Extract a YAML list from a frontmatter block:
+///   key:\n    - val1\n    - val2
+fn extract_yaml_list(block: &str, key: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut in_list = false;
+    for line in block.lines() {
+        let trimmed = line.trim();
+        if trimmed == format!("{key}:").as_str() {
+            in_list = true;
+            continue;
+        }
+        if in_list {
+            if let Some(val) = trimmed.strip_prefix("- ") {
+                result.push(val.trim().to_string());
+            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                break; // hit next key
+            }
+        }
+    }
+    result
 }
 
 fn find_constraint_section<'a>(content: &'a str, lower: &str) -> (&'a str, ConstraintSeverity) {

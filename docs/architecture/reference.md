@@ -16,6 +16,8 @@ The Axum router is wired in `crates/h2ai-api/src/routes/mod.rs`. Authentication 
 | `GET` | `/tasks/:task_id/events` | SSE stream of `H2AIEvent` for a task. |
 | `GET` | `/tasks/:task_id` | Current task status snapshot. |
 | `POST` | `/tasks/:task_id/merge` | Resolve a Merge Authority decision. |
+| `POST` | `/tasks/:task_id/approve` | Submit HITL approval decision (`approved`, `reviewer_note`, `operator_id`). |
+| `GET` | `/tasks/:task_id/approval` | Current `ApprovalRecord` for tasks in `AwaitingApproval` phase; 404 otherwise. |
 | `GET` | `/tasks/:task_id/recover` | Trigger snapshot+replay recovery for a task. |
 | `POST` | `/calibrate` | Start a calibration run. |
 | `GET` | `/calibrate/:cal_id/events` | SSE stream for an in-progress calibration. |
@@ -43,11 +45,15 @@ Submits a task manifest. Returns immediately with `task_id`. Progress is observe
     "review_gates": []
   },
   "constraints": ["ADR-001", "ADR-007"],
+  "constraint_tags": ["eu_data", "financial_report"],
+  "require_approval": false,
   "context": "optional"
 }
 ```
 
 `pareto_weights.{diversity, containment, throughput}` must sum to 1.0. `topology.kind` is `"auto"`, `"ensemble"`, or `"hierarchical_tree"`. When `explorers.roles[]` is non-empty the system always selects `TeamSwarmHybrid`. `explorers.count` is requested — the system reduces to `N_max` if the request exceeds the calibrated ceiling.
+
+`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5).
 
 **Response:** `202 Accepted` with `{"task_id": "...", "events_url": "/tasks/.../events"}`.
 
@@ -115,6 +121,8 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `SubtaskPlanReviewed` | `SubtaskPlanReviewedEvent` | planner |
 | `SubtaskStarted` | `SubtaskStartedEvent` | subtask |
 | `SubtaskCompleted` | `SubtaskCompletedEvent` | subtask |
+| `PendingApproval` | `PendingApprovalEvent` | post-merge (HITL gate) |
+| `ApprovalResolved` | `ApprovalResolvedEvent` | post-approval |
 
 ### Key payloads
 
@@ -234,7 +242,38 @@ struct TaskAttributionEvent {
     prediction_basis: PredictionBasis,              // Heuristic | Empirical
     waste_ratio: f64,                               // valid / total_evaluated
     applied_optimizations: Vec<AppliedOptimization>,
+    approval_decision: Option<ApprovalDecision>,    // set when HITL gate was triggered
     timestamp: DateTime<Utc>,
+}
+```
+
+#### PendingApprovalEvent
+
+Emitted when the HITL gate fires after merge. Streams immediately to all connected SSE clients.
+
+```rust
+struct PendingApprovalEvent {
+    task_id: TaskId,
+    proposed_output: String,
+    q_confidence: f64,
+    risk_level: ApprovalRiskLevel,   // Medium | High (Low is never assigned)
+    triggered_by: ApprovalTrigger,   // ManifestFlag | LowConfidence
+    timeout_at_ms: u64,
+    timestamp_ms: u64,
+}
+```
+
+#### ApprovalResolvedEvent
+
+Emitted by `POST /tasks/{id}/approve` after the CAS delete succeeds.
+
+```rust
+struct ApprovalResolvedEvent {
+    task_id: TaskId,
+    approved: bool,
+    operator_id: String,
+    reviewer_note: Option<String>,
+    decided_at_ms: u64,
 }
 ```
 
@@ -397,6 +436,61 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `payload_offload_threshold_bytes` | `524_288` | `system_context` above this bytes is offloaded to a content-addressed blob and replaced with a hash reference (`ContextPayload::Ref`). Default is half of the JetStream 1 MB message ceiling. |
 | `snapshot_interval_events` | `50` | Events between task snapshots. `0` disables. |
 
+#### KV / Object Store buckets
+
+| Bucket | Type | Key | TTL | Purpose |
+|---|---|---|---|---|
+| `H2AI_CALIBRATION` | KV | `current` | — | Latest `CalibrationCompletedEvent`. |
+| `H2AI_SNAPSHOTS` | KV | `{task_id}` | — | Periodic `TaskState` snapshots for fast replay. |
+| `H2AI_AGENT_MEMORY` | KV | `{session_id}` | — | Agent session memory (prior outputs). |
+| `H2AI_TASK_CHECKPOINTS` | KV | `{task_id}` | 24 h | zstd-compressed `TaskCheckpoint` (phase outputs for crash recovery). |
+| `H2AI_CHECKPOINT_PAYLOADS` | Object Store | SHA-256 hash | 24 h | Checkpoint payloads exceeding 800 KB (referenced by `TaskCheckpoint.object_store_ref`). |
+| `H2AI_APPROVALS` | KV | `{task_id}` | 1 h | `ApprovalRecord` for tasks parked at the HITL gate. |
+| `H2AI_CONSTRAINT_WIKI` | KV | `wiki_cache` | — | Serialised `WikiCache` (context_map + metas). Loaded at startup; `constraint_wiki.enabled = true` required. History=5. |
+| `H2AI_CONSTRAINT_PAYLOADS` | Object Store | `{id}@{version}` | — | Full predicate payloads for non-Static constraints (LlmJudge, Oracle). Fetched lazily at Phase 4. |
+
+`TaskCheckpoint` schema (written after each phase boundary):
+
+```rust
+struct TaskCheckpoint {
+    task_id: String,
+    phase: String,               // "ParallelGeneration" | "AuditorGate" | "Merging"
+    node_id: String,             // "hostname:PID" — owning node for split-brain detection
+    lease_seq: u64,              // NATS KV revision at last write (used for CAS claims)
+    proposals: Vec<String>,      // saved after ParallelGeneration
+    auditor_survivors: Vec<usize>, // saved after AuditorGate
+    resolved_output: Option<String>, // saved after Merging
+    manifest_json: String,
+    object_store_ref: Option<String>, // SHA-256 key in H2AI_CHECKPOINT_PAYLOADS
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    constraint_snapshot: Option<ConstraintSnapshot>, // None for pre-wiki tasks
+}
+
+struct ConstraintSnapshot {
+    wiki_revision: u64,          // NATS KV revision at task creation — audit of which wiki version was active
+    resolved_ids: Vec<String>,   // constraint IDs resolved by wiki lookup (tags + explicit IDs)
+    evaluated_ids: Vec<String>,  // constraint IDs that were actually evaluated against proposals
+    violation_ids: Vec<String>,  // constraint IDs that fired (failed Hard/Soft threshold); populated in Plan B
+}
+```
+
+### HITL
+
+| Field | Default | Purpose |
+|---|---|---|
+| `hitl.enabled` | `true` | Master switch; set `false` to bypass gate in dev/test. |
+| `hitl.confidence_threshold` | `0.50` | `q_confidence` below this triggers human review. |
+| `hitl.timeout_ms` | `1_800_000` | Review window length (30 minutes). After expiry the reaper auto-rejects. |
+
+### Constraint Wiki
+
+| Field | Default | Purpose |
+|---|---|---|
+| `constraint_wiki.enabled` | `false` | When `true`, corpus access routes through `NatsWikiConstraintSource` (NATS KV + Object Store). When `false`, falls back to `FsConstraintSource` (flat directory). |
+| `constraint_wiki.corpus_path` | `"/constraints"` | Filesystem path for `FsConstraintSource` (used when `enabled = false`). Ignored when wiki is enabled. |
+| `constraint_wiki.resolve_k` | `50` | Reserved: max constraints returned per `resolve_context` call (future Qdrant semantic search limit). |
+
 ### Scheduler
 
 | Field | Default | Purpose |
@@ -441,7 +535,9 @@ pub trait IComputeAdapter: Send + Sync + std::fmt::Debug {
 }
 ```
 
-Built-in implementations in `crates/h2ai-adapters`: `Anthropic`, `OpenAI`, `Gemini`, `Ollama`, `LlamaCpp` (over HTTP — local server or `host.docker.internal:8000`), `CloudGeneric` (OpenAI-compatible), `Mock`.
+Built-in implementations in `crates/h2ai-adapters`: `Anthropic`, `OpenAI`, `Gemini`, `Ollama`, `LlamaCpp` (over HTTP — local server or `host.docker.internal:8000`), `CloudGeneric` (OpenAI-compatible), `A2a`, `Mock`.
+
+**A2A Explorer Adapter** (`crates/h2ai-adapters/src/a2a.rs`): Client adapter for any [Agent2Agent (A2A)](https://a2aprotocol.ai) compatible remote agent. Adds a new diversity axis beyond model diversity: cross-framework N_eff gains. Delegates via JSON-RPC 2.0 polling; artifact text passes through a 4-stage extraction pipeline before entering the merge phase. Configured with `AdapterKind::A2a { ... }` — identical integration path as built-in adapters. Requires `endpoint`, `auth_scheme` (`"bearer"`, `"api_key"`, or `"none"`), `auth_token_env` (env var name), `timeout_minutes`, `poll_interval_ms`, `max_poll_interval_ms`, and `agent_card_cache_ttl_s`.
 
 `AdapterFactory::build(&AdapterKind)` returns `Arc<dyn IComputeAdapter>`. Local adapters that block must use `tokio::task::spawn_blocking` — CPU-bound inference must not block the async worker pool.
 
@@ -541,3 +637,16 @@ error_cost  = 1 − compliance                  (recorded on BranchPrunedEvent)
 - Always add `## Remediation` to Hard constraints — without it the MAPE-K loop cannot synthesise a targeted hint.
 - Deprecated constraints should remain in the corpus under a `deprecated/` subdirectory; they teach the auditor about explicitly reversed decisions.
 - A minimum viable corpus covers: authentication and session lifecycle, database access policy, service boundary rules (sync vs async), error handling and retries, sensitive-data handling.
+
+### Phase 4 Wiki Representation
+
+The typed constraint wiki system introduces three types for structured constraint delivery:
+- **`ConstraintMeta`**: Lightweight descriptor (~300 bytes) loaded at Phase 1 Bootstrap; includes id, summary, severity, predicate_kind, domains, and inline predicates for static evaluations.
+- **`ConstraintPayload`**: Full descriptor fetched on-demand during Phase 4; carries the complete predicate for LlmJudge and Oracle evaluations.
+- **`PredicateKind`**: Enum (Static | LlmJudge | Oracle) that gates lazy loading — Static predicates are inlined in ConstraintMeta; others are fetched from Predicate Store only when needed.
+
+### ConstraintSource Abstraction
+
+Corpus access is mediated by the `ConstraintSource` trait (`crates/h2ai-constraints/src/source.rs`); callers never invoke `load_corpus` directly.
+- **`FsConstraintSource`**: wraps `load_corpus` for backward compatibility with flat-directory corpora; falls back to all docs when tags are supplied but no frontmatter domain metadata is present.
+- **`NatsWikiConstraintSource`** (in `h2ai-api`): reads from NATS KV `H2AI_CONSTRAINT_WIKI` + Object Store; enables hot-reload without restart.

@@ -1,7 +1,9 @@
 use async_nats::jetstream::{self, kv, stream};
 use async_nats::Client;
+use h2ai_types::checkpoint::TaskCheckpoint;
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::TaskId;
+use h2ai_types::sizing::OracleObservation;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -105,6 +107,73 @@ impl NatsClient {
             bucket: "H2AI_ESTIMATOR".to_owned(),
             description: "TaoMultiplierEstimator EMA state — survives restarts".to_owned(),
             history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: rolling oracle calibration observations for conformal interval estimation
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_ORACLE_CALIBRATION".to_owned(),
+            description: "Rolling oracle calibration window — max 200 OracleObservation entries"
+                .to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: task phase checkpoints for crash-recovery (zstd-compressed, latest-only)
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_TASK_CHECKPOINTS".to_owned(),
+            description: "Task phase checkpoints — zstd-compressed, latest-only per task"
+                .to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            max_age: std::time::Duration::from_secs(86400), // 24h TTL
+            ..Default::default()
+        })
+        .await?;
+
+        // Object Store bucket: checkpoint payload overflow for entries > 800 KB
+        self.ensure_object_store(async_nats::jetstream::object_store::Config {
+            bucket: "H2AI_CHECKPOINT_PAYLOADS".to_owned(),
+            description: Some(
+                "Checkpoint payload overflow — delete before KV entry on GC".to_owned(),
+            ),
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: HITL approval records pending human decision
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_APPROVALS".to_owned(),
+            description: "HITL approval records awaiting human decision".to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            max_age: std::time::Duration::from_secs(3600), // 1h TTL — longer than max review timeout
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: compiled constraint wiki index (summaries, context maps, tag routing)
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_CONSTRAINT_WIKI".to_owned(),
+            description: "Compiled constraint wiki — tag mappings, summaries, relationships"
+                .to_owned(),
+            history: 5,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // Object Store: full constraint predicate payloads (LlmJudge rubrics, Oracle configs)
+        self.ensure_object_store(async_nats::jetstream::object_store::Config {
+            bucket: "H2AI_CONSTRAINT_PAYLOADS".to_owned(),
+            description: Some(
+                "Constraint predicate payloads — lazy-fetched during Phase 4 evaluation".to_owned(),
+            ),
             storage: stream::StorageType::File,
             ..Default::default()
         })
@@ -219,6 +288,45 @@ impl NatsClient {
                 Ok(Some(event))
             }
             Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Persist the rolling oracle calibration observations window.
+    ///
+    /// Replaces the existing entry wholesale. Callers are responsible for
+    /// enforcing the 200-observation FIFO cap before calling this.
+    pub async fn put_oracle_observations(
+        &self,
+        observations: &[OracleObservation],
+    ) -> Result<(), NatsError> {
+        let payload =
+            serde_json::to_vec(observations).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ORACLE_CALIBRATION")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put("observations", payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve the stored oracle calibration observations, or empty vec if absent.
+    pub async fn get_oracle_observations(&self) -> Result<Vec<OracleObservation>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ORACLE_CALIBRATION")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get("observations").await {
+            Ok(Some(entry)) => {
+                let obs = serde_json::from_slice::<Vec<OracleObservation>>(&entry)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(obs)
+            }
+            Ok(None) => Ok(vec![]),
             Err(e) => Err(NatsError::KvError(e.to_string())),
         }
     }
@@ -434,6 +542,361 @@ impl NatsClient {
                     .map(|_| ())
                     .map_err(|e| NatsError::KvError(e.to_string()))
             }
+        }
+    }
+
+    async fn ensure_object_store(
+        &self,
+        config: async_nats::jetstream::object_store::Config,
+    ) -> Result<(), NatsError> {
+        match self.jetstream.get_object_store(&config.bucket).await {
+            Ok(_) => Ok(()),
+            Err(get_err) => {
+                tracing::debug!(
+                    bucket = %config.bucket,
+                    error = %get_err,
+                    "Object Store bucket not found; attempting to create"
+                );
+                self.jetstream
+                    .create_object_store(config)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| NatsError::StreamError(e.to_string()))
+            }
+        }
+    }
+
+    /// Write a task checkpoint to NATS KV with zstd compression.
+    ///
+    /// Pass `expected_revision = None` for first write (unconditional).
+    /// Pass `Some(rev)` to use optimistic concurrency — fails if another node
+    /// has written since `rev`. Returns the new revision on success.
+    pub async fn put_task_checkpoint(
+        &self,
+        checkpoint: &TaskCheckpoint,
+        expected_revision: Option<u64>,
+    ) -> Result<u64, NatsError> {
+        let json =
+            serde_json::to_vec(checkpoint).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let compressed = zstd::encode_all(json.as_slice(), 3)
+            .map_err(|e| NatsError::Serialize(format!("zstd encode: {e}")))?;
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_TASK_CHECKPOINTS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let revision = match expected_revision {
+            None => kv
+                .put(&checkpoint.task_id, compressed.into())
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?,
+            Some(rev) => kv
+                .update(&checkpoint.task_id, compressed.into(), rev)
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?,
+        };
+        Ok(revision)
+    }
+
+    /// Load and decompress a checkpoint by task_id. Returns `None` if not found.
+    pub async fn get_task_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskCheckpoint>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_TASK_CHECKPOINTS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(task_id).await {
+            Ok(Some(bytes)) => {
+                let decompressed = zstd::decode_all(bytes.as_ref())
+                    .map_err(|e| NatsError::Serialize(format!("zstd decode: {e}")))?;
+                let checkpoint = serde_json::from_slice::<TaskCheckpoint>(&decompressed)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(checkpoint))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Load all in-flight checkpoints from the bucket.
+    /// Entries that fail to decompress or deserialize are skipped with a warning.
+    pub async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint> {
+        use futures::TryStreamExt;
+
+        let kv = match self.jetstream.get_key_value("H2AI_TASK_CHECKPOINTS").await {
+            Ok(kv) => kv,
+            Err(e) => {
+                tracing::warn!("list_task_checkpoints: KV open failed: {e}");
+                return vec![];
+            }
+        };
+        let keys: Vec<String> = match kv.keys().await {
+            Ok(stream) => stream.try_collect().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("list_task_checkpoints: keys() failed: {e}");
+                return vec![];
+            }
+        };
+        let mut result = Vec::with_capacity(keys.len());
+        for key in &keys {
+            match self.get_task_checkpoint(key).await {
+                Ok(Some(c)) => result.push(c),
+                Ok(None) => {}
+                Err(e) => tracing::warn!(task_id = %key, "corrupt checkpoint skipped: {e}"),
+            }
+        }
+        result
+    }
+
+    /// Delete a checkpoint, first cleaning up any Object Store overflow object.
+    ///
+    /// Always call this method instead of deleting the KV entry directly —
+    /// it prevents orphaned blobs in `H2AI_CHECKPOINT_PAYLOADS`.
+    pub async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), NatsError> {
+        // 1. Load to check for an Object Store reference
+        if let Some(checkpoint) = self.get_task_checkpoint(task_id).await? {
+            if let Some(obj_ref) = &checkpoint.object_store_ref {
+                match self
+                    .jetstream
+                    .get_object_store("H2AI_CHECKPOINT_PAYLOADS")
+                    .await
+                {
+                    Ok(store) => {
+                        if let Err(e) = store.delete(obj_ref).await {
+                            tracing::warn!(
+                                obj_ref = %obj_ref,
+                                "failed to delete checkpoint object — storage may leak: {e}"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!("failed to open H2AI_CHECKPOINT_PAYLOADS: {e}"),
+                }
+            }
+        }
+        // 2. Delete the KV entry
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_TASK_CHECKPOINTS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.delete(task_id)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    // ── approval records ────────────────────────────────────────────────────────────
+
+    /// Store an approval record pending human review.
+    pub async fn put_approval_record(
+        &self,
+        record: &h2ai_types::approval::ApprovalRecord,
+    ) -> Result<u64, NatsError> {
+        let payload =
+            serde_json::to_vec(record).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_APPROVALS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let rev = kv
+            .put(&record.task_id, payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(rev)
+    }
+
+    /// Load an approval record AND its current KV revision.
+    /// The revision is required for the CAS delete in the reaper.
+    pub async fn get_approval_record_with_revision(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<(h2ai_types::approval::ApprovalRecord, u64)>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_APPROVALS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.entry(task_id).await {
+            Ok(Some(entry)) => {
+                // Deleted/purged entries still return Some — treat them as not found.
+                if entry.operation != async_nats::jetstream::kv::Operation::Put {
+                    return Ok(None);
+                }
+                let revision = entry.revision;
+                let record =
+                    serde_json::from_slice::<h2ai_types::approval::ApprovalRecord>(&entry.value)
+                        .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some((record, revision)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// List all approval records with their revisions.
+    /// Used by the reaper to find expired records.
+    pub async fn list_approval_records_with_revision(
+        &self,
+    ) -> Vec<(h2ai_types::approval::ApprovalRecord, u64)> {
+        use futures::TryStreamExt;
+        let kv = match self.jetstream.get_key_value("H2AI_APPROVALS").await {
+            Ok(kv) => kv,
+            Err(e) => {
+                tracing::warn!("list_approval_records: KV open failed: {e}");
+                return vec![];
+            }
+        };
+        let keys: Vec<String> = match kv.keys().await {
+            Ok(stream) => stream.try_collect().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("list_approval_records: keys() failed: {e}");
+                return vec![];
+            }
+        };
+        let mut result = Vec::with_capacity(keys.len());
+        for key in &keys {
+            if let Ok(Some(pair)) = self.get_approval_record_with_revision(key).await {
+                result.push(pair);
+            }
+        }
+        result
+    }
+
+    /// Atomically delete the approval record only if the revision matches.
+    ///
+    /// Returns `Ok(())` only if this node won the CAS race.
+    /// Returns `Err` if another node already deleted or updated the record.
+    pub async fn delete_approval_record_if_revision(
+        &self,
+        task_id: &str,
+        expected_revision: u64,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_APPROVALS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        // Use update with empty bytes as the atomic claim — only succeeds if revision matches.
+        kv.update(task_id, vec![].into(), expected_revision)
+            .await
+            .map_err(|e| {
+                NatsError::KvError(format!("CAS delete failed (revision mismatch): {e}"))
+            })?;
+        // Clean up the tombstone entry
+        kv.delete(task_id)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Write the compiled WikiCache to NATS KV.
+    ///
+    /// Pass `expected_revision = Some(rev)` for optimistic CAS (prevents concurrent overwrites).
+    /// Pass `None` for an unconditional put (first write or forced refresh).
+    pub async fn put_wiki_cache(
+        &self,
+        cache: &h2ai_constraints::wiki::WikiCache,
+        expected_revision: Option<u64>,
+    ) -> Result<u64, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let bytes = serde_json::to_vec(cache).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let revision = match expected_revision {
+            Some(rev) => kv
+                .update("index", bytes.into(), rev)
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?,
+            None => kv
+                .put("index", bytes.into())
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?,
+        };
+        Ok(revision)
+    }
+
+    /// Read the compiled WikiCache from NATS KV.
+    ///
+    /// Returns `None` if the wiki has not been bootstrapped yet.
+    pub async fn get_wiki_cache(
+        &self,
+    ) -> Result<Option<(h2ai_constraints::wiki::WikiCache, u64)>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv
+            .entry("index")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(entry) => {
+                let revision = entry.revision;
+                let mut cache: h2ai_constraints::wiki::WikiCache =
+                    serde_json::from_slice(&entry.value)
+                        .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                cache.revision = revision;
+                Ok(Some((cache, revision)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Store a ConstraintPayload in the Object Store.
+    ///
+    /// Key format: `{id}@{version}` — e.g., `GDPR-DPA-001@v2`.
+    pub async fn put_constraint_payload(
+        &self,
+        payload: &h2ai_constraints::types::ConstraintPayload,
+    ) -> Result<(), NatsError> {
+        let os = self
+            .jetstream
+            .get_object_store("H2AI_CONSTRAINT_PAYLOADS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}@{}", payload.id, payload.version);
+        let bytes = serde_json::to_vec(payload).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        os.put(key.as_str(), &mut bytes.as_slice())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Fetch a ConstraintPayload from the Object Store by (id, version).
+    ///
+    /// Returns `None` if the payload does not exist.
+    pub async fn get_constraint_payload(
+        &self,
+        id: &str,
+        version: &str,
+    ) -> Result<Option<h2ai_constraints::types::ConstraintPayload>, NatsError> {
+        let os = self
+            .jetstream
+            .get_object_store("H2AI_CONSTRAINT_PAYLOADS")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{id}@{version}");
+        match os.get(&key).await {
+            Ok(mut obj) => {
+                use tokio::io::AsyncReadExt;
+                let mut buf = Vec::new();
+                obj.read_to_end(&mut buf)
+                    .await
+                    .map_err(|e| NatsError::KvError(e.to_string()))?;
+                let payload: h2ai_constraints::types::ConstraintPayload =
+                    serde_json::from_slice(&buf)
+                        .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(payload))
+            }
+            Err(e) if e.to_string().contains("not found") => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
         }
     }
 }

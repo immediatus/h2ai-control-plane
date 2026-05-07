@@ -8,7 +8,6 @@ pub enum ApiError {
     TaskNotFound(String),
     TaskAlreadyResolved(String),
     InvalidRequest(String),
-    Internal(String),
     NatsUnavailable(String),
     ExplorerBudgetExceeded {
         requested: usize,
@@ -50,10 +49,6 @@ impl IntoResponse for ApiError {
             ApiError::NatsUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "NatsUnavailable", "message": msg }),
-            ),
-            ApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": "InternalError", "message": msg }),
             ),
             ApiError::ExplorerBudgetExceeded { requested, n_max } => (
                 StatusCode::BAD_REQUEST,

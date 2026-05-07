@@ -16,6 +16,8 @@ pub enum TaskPhase {
     /// Phase 1.5: task complexity assessed, routing quadrant assigned.
     /// Uses value 9 to avoid reordering existing phase discriminants.
     ComplexityAssessed = 9,
+    /// Phase for crash-recovery: task is paused and awaiting human approval before resuming.
+    AwaitingApproval = 10,
 }
 
 impl TryFrom<u8> for TaskPhase {
@@ -31,6 +33,7 @@ impl TryFrom<u8> for TaskPhase {
             x if x == Self::Resolved as u8 => Ok(Self::Resolved),
             x if x == Self::Failed as u8 => Ok(Self::Failed),
             x if x == Self::ComplexityAssessed as u8 => Ok(Self::ComplexityAssessed),
+            x if x == Self::AwaitingApproval as u8 => Ok(Self::AwaitingApproval),
             other => Err(other),
         }
     }
@@ -48,6 +51,7 @@ impl TaskPhase {
             Self::Merging => "merging",
             Self::Resolved => "resolved",
             Self::Failed => "failed",
+            Self::AwaitingApproval => "awaiting_approval",
         }
     }
 
@@ -62,6 +66,23 @@ impl TaskPhase {
             Self::Merging => "Merging",
             Self::Resolved => "Resolved",
             Self::Failed => "Failed",
+            Self::AwaitingApproval => "AwaitingApproval",
+        }
+    }
+
+    pub fn try_from_name_str(s: &str) -> Option<Self> {
+        match s {
+            "Bootstrap" => Some(Self::Bootstrap),
+            "TopologyProvisioning" => Some(Self::Provisioning),
+            "MultiplicationCheck" => Some(Self::MultiplicationCheck),
+            "ParallelGeneration" => Some(Self::ParallelGeneration),
+            "AuditorGate" => Some(Self::AuditorGate),
+            "Merging" => Some(Self::Merging),
+            "Resolved" => Some(Self::Resolved),
+            "Failed" => Some(Self::Failed),
+            "ComplexityAssessment" => Some(Self::ComplexityAssessed),
+            "AwaitingApproval" => Some(Self::AwaitingApproval),
+            _ => None,
         }
     }
 }
@@ -150,6 +171,14 @@ impl TaskStore {
             entry.status = "failed".into();
             entry.phase = TaskPhase::Failed as u8;
             entry.phase_name = TaskPhase::Failed.name_str().into();
+        }
+    }
+
+    pub fn set_awaiting_approval(&self, id: &TaskId) {
+        if let Some(mut entry) = self.0.get_mut(&id.to_string()) {
+            entry.phase = TaskPhase::AwaitingApproval as u8;
+            entry.phase_name = TaskPhase::AwaitingApproval.name_str().into();
+            entry.status = TaskPhase::AwaitingApproval.status_str().into();
         }
     }
 }

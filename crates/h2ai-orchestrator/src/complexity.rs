@@ -463,6 +463,8 @@ mod tests {
                 terms: vec!["stateless".into()],
             },
             remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
         }
     }
 
@@ -524,6 +526,8 @@ mod tests {
             severity: ConstraintSeverity::Hard { threshold: 0.9 },
             predicate: pred,
             remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
         };
         let corpus = vec![
             make_hard(

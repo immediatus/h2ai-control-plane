@@ -774,7 +774,7 @@ h2ai-config         Layered config loading (reference.toml + env overrides). Sin
                     Includes WebSearchConfig, McpFilesystemConfig, WasmExecutorConfig.
 
 h2ai-adapters       Adapter trait + per-provider implementations (Anthropic, OpenAI, Gemini, Ollama,
-                    LlamaCpp, CloudGeneric, Mock, SequencedMockAdapter for TAO loop testing).
+                    LlamaCpp, CloudGeneric, A2a, Mock, SequencedMockAdapter for TAO loop testing).
                     Tokio-native via async-trait.
 
 h2ai-context        EmbeddingModel trait, fastembed wrapper, cosine_similarity utilities.
@@ -782,6 +782,10 @@ h2ai-context        EmbeddingModel trait, fastembed wrapper, cosine_similarity u
 
 h2ai-constraints    Constraint corpus parser (markdown ADR format), predicate types
                     (VocabularyPresence, AllOf, AnyOf, ...), severity weights.
+                    ConstraintSource trait — abstraction over corpus access.
+                    FsConstraintSource — wraps load_corpus for backward compat with flat directories.
+                    WikiCache — in-memory hot-path index (context_map, metas, revision).
+                    ConstraintMeta / ConstraintPayload / PredicateKind for wiki delivery.
 
 h2ai-autonomic      Calibration harness, epistemic diagnostics (compute_n_eff_cosine,
                     classify_failure_mode, synthesize_tombstone), ensemble calibration plumbing,
@@ -822,7 +826,11 @@ h2ai-agent          Edge agent binary.
                     HeartbeatTask — liveness signalling to h2ai.agent.heartbeat.
 
 h2ai-api            Axum HTTP server: POST /tasks, SSE event stream, calibration endpoints,
-                    health/ready/metrics, Merge Authority UI assets.
+                    health/ready/metrics, HITL approval gate (POST /approve, GET /approval),
+                    Merge Authority UI assets.
+                    NatsWikiConstraintSource — NATS-backed ConstraintSource (KV + Object Store).
+                    AppState::constraint_source() — returns the active source based on config.
+                    AppState::load_wiki_cache() — loads WikiCache from NATS KV at startup.
 ```
 
 ### Concrete request flow
@@ -859,7 +867,175 @@ Snapshot writes are triggered by `h2ai-state` every `snapshot_interval_events` e
 
 ---
 
-## 9. What H2AI does *not* do better
+## 9. Phase-output checkpointing
+
+Crash recovery from the event log alone is insufficient for long-running tasks: replaying every event from scratch re-invokes LLM calls and re-charges token budgets. Phase-output checkpointing gives the engine a richer recovery surface by persisting the *output* of each completed phase, not just the event sequence.
+
+### 9.1 TaskCheckpoint structure
+
+After each phase completes, `ExecutionEngine` writes a `TaskCheckpoint` to the `H2AI_TASK_CHECKPOINTS` NATS KV bucket. The checkpoint carries:
+
+- `task_id` and `phase` name — the identity key used for KV lookup.
+- `node_id` and `lease_seq` — used during multi-node recovery to detect stale owners.
+- `proposals`, `auditor_survivors`, `resolved_output` — phase-specific output, sufficient to resume from the *next* phase without re-invoking the adapter.
+- `manifest_json` — the full task manifest at checkpoint time.
+- `object_store_ref` — SHA-256 content address of the payload in the NATS Object Store, set when the checkpoint payload exceeds 800 KB.
+- `created_at_ms`, `updated_at_ms` — wall-clock timestamps for orphan detection.
+
+### 9.2 Storage format
+
+Payloads are serialised to JSON and then zstd-compressed at level 3 before writing to the KV bucket. Repetitive LLM-generated text compresses to 10–25% of its original size, keeping checkpoint payloads well below the JetStream 1 MB message ceiling. On read, `get_task_checkpoint` decompresses before deserialisation. When the *uncompressed* payload would exceed 800 KB, the raw bytes are written to the NATS Object Store and only the content-addressed reference is stored in the KV entry.
+
+### 9.3 Startup recovery
+
+On process start, `recover_in_flight_tasks()` (called by `h2ai-api` before the HTTP server accepts connections) scans `H2AI_TASK_CHECKPOINTS` for entries younger than `checkpoint_recovery_window_ms`. For each in-flight checkpoint it finds:
+
+1. Reads the full `TaskCheckpoint` from the KV bucket (or from the Object Store via `object_store_ref`).
+2. **Own-node tasks** (`checkpoint.node_id == local_node_id()`): spawned immediately — the owning node restarted, so there is no split-brain risk.
+3. **Foreign-node orphans** (`node_id` belongs to a different node): applies a random jitter delay of 0–1500 ms, then performs a CAS claim via `put_task_checkpoint(..., Some(checkpoint.lease_seq))`. If another pod wins the CAS first (revision changed), the claim returns an error and this node skips the task. This prevents thundering-herd duplicate recovery during rolling restarts.
+4. Spawns `ExecutionEngine::run_from_checkpoint(checkpoint)` as a new Tokio task for every successfully claimed checkpoint.
+
+### 9.4 run_from_checkpoint phase routing
+
+`run_from_checkpoint` inspects `checkpoint.phase`:
+
+- **`"Merging"` phase**: `resolved_output` is already present; the engine short-circuits all LLM calls and jumps directly to post-merge event publishing and `SelfOptimizer` hints. No adapters are invoked.
+- **Earlier phases** (`"ParallelGeneration"`, `"AuditorGate"`, etc.): the engine calls `run_offline` with the recovered proposals and survivors as seed state, resuming from the phase *following* the checkpoint.
+
+This means a crash in the merge phase costs zero extra LLM tokens on recovery; a crash earlier in the pipeline costs only the phases that had not yet checkpointed.
+
+### 9.5 HITL Approval Gate
+
+After the `Merging` phase completes (Phase 5 or 5a), the engine evaluates approval conditions. The gate is active only when `hitl.enabled = true` (default). When enabled, the engine checks:
+
+- If `oracle_spec.is_none()` — oracle tasks bypass the gate entirely (they always emit `MergeResolved` immediately).
+- **AND** either `q_confidence < hitl.confidence_threshold` (default 0.50) or `manifest.require_approval = true`.
+
+When the gate fires, the task is *parked*: instead of emitting `MergeResolved` and completing, the engine:
+
+1. **Checkpoint**: writes the current `TaskCheckpoint` to `H2AI_TASK_CHECKPOINTS` (see §9.1), capturing `resolved_output` and all phase state.
+2. **Record approval request**: writes an `ApprovalRecord` to the `H2AI_APPROVALS` NATS KV bucket, keyed by `task_id`, with:
+   - `task_id`, `resolved_output`, `q_confidence`, `triggered_by` (`ManifestFlag` | `LowConfidence`)
+   - `created_at_ms`, `timeout_at_ms` (now + `hitl.timeout_ms`, default 30 minutes)
+3. **Publish event**: emits `PendingApproval` SSE event (with `risk_level`, `triggered_by`, `timeout_at_ms`) to connected clients.
+4. **Phase update**: sets local `TaskStore` phase to `AwaitingApproval`.
+5. **Thread exit**: the ExecutionEngine's Tokio task terminates. The review window holds zero server resources.
+
+#### Approval endpoint and concurrent-write safety
+
+`POST /tasks/{id}/approve` accepts `{approved, reviewer_note, operator_id}`. The handler:
+
+1. Loads the `ApprovalRecord` from `H2AI_APPROVALS` **along with its KV revision**.
+2. Returns `410 Gone` if `timeout_at_ms` has passed.
+3. Atomically deletes the record via `delete_approval_record_if_revision(task_id, revision)` — a NATS KV CAS write. The first caller wins; subsequent callers (or concurrent nodes racing on the same task) receive a revision-mismatch error and a `409 Conflict`. This prevents double-approval in multi-node clusters.
+4. Publishes `ApprovalResolved` to JetStream.
+5. If `approved = true`: loads the checkpoint, calls `ExecutionEngine::finalize()`, publishes `MergeResolved` and closes normally.
+6. If `approved = false`: calls `mark_failed()`, publishes `TaskFailed`, then calls `delete_task_checkpoint()` (which also cleans up any Object Store blob — see §9.2).
+
+The `ApprovalDecision` (`operator_id`, `reviewer_note`, `decided_at_ms`) is appended to `TaskAttributionEvent` for permanent compliance audit trail.
+
+#### Cross-node TaskStore consistency
+
+`TaskStore` is in-memory per node. When the approval endpoint is served by a different node than the one that parked the task, the handling node publishes `ApprovalResolved` and `TaskFailed`/`TaskCompleted` to JetStream. Every node's event consumer loop (already subscribed to `h2ai.tasks.>` for SSE fan-out) handles these events and calls `mark_resolved` or `mark_failed` on its local store. JetStream at-least-once delivery bounds the inconsistency window to cluster delivery latency (typically < 100 ms).
+
+#### Background reaper
+
+A background task running every **60 seconds** in each control plane Pod scans `H2AI_APPROVALS` for expired records:
+
+```rust
+for (approval_record, revision) in scanned_records {
+    if now_ms > approval_record.timeout_at_ms {
+        // CAS delete: only one node in the cluster succeeds.
+        // Others receive a revision-mismatch error and skip silently.
+        match delete_approval_record_if_revision(task_id, revision) {
+            Ok(()) => auto_reject(task_id, operator_id = "system:timeout"),
+            Err(_) => {} // another node claimed this expiry — skip
+        }
+    }
+}
+```
+
+`auto_reject` follows the same rejection path as a human denial (publishes `TaskFailed`, calls `delete_task_checkpoint`). The `operator_id = "system:timeout"` field in `TaskAttributionEvent` distinguishes automatic expiry from explicit operator rejection.
+
+---
+
+## 10. A2A Explorer Adapter
+
+### 10.1 Diversity axis
+
+H2AI's existing diversity signals measure differences *within* the LLM world: Hamming CG captures constraint-profile independence, cosine N_eff captures semantic independence. Both are bounded by the homogeneity of the LLM model family. Cross-framework diversity — running a planning agent built with LangChain, a reasoning agent built with AutoGen, and an H2AI ensemble as explorer peers — is a new N_eff axis that existing adapters cannot provide.
+
+The `A2aExplorerAdapter` (`crates/h2ai-adapters/src/a2a.rs`) implements the `IComputeAdapter` trait and makes any [Agent2Agent (A2A)](https://a2aprotocol.ai) compatible remote agent a first-class ensemble participant. No changes to the orchestrator, planner, or calibration harness are required — the adapter is just another element in the `explorer_adapters` vector.
+
+### 10.2 Agent Card discovery and caching
+
+On first use (and after `agent_card_cache_ttl_s` seconds), the adapter fetches the remote agent's capability manifest:
+
+```
+GET https://{endpoint}/.well-known/agent.json
+```
+
+The parsed `AgentCard` is held in a `tokio::sync::RwLock<Option<CachedCard>>`. On a cache miss, the adapter upgrades to a write lock, performs a **double-checked lock** (re-checks whether another concurrent task already populated the cache), fetches if still empty, then releases back to a read lock. This prevents stampede fetches when multiple explorers share the same A2A endpoint.
+
+Cache invalidation: any `failed` or `rejected` poll response resets the cached entry to `None`, forcing a fresh fetch before the next attempt.
+
+### 10.3 Task delegation and polling
+
+The adapter delegates via JSON-RPC 2.0 over HTTPS:
+
+1. `POST /` with `method: "message/send"` — submits the task prompt, receives a remote `task_id`.
+2. `POST /` with `method: "tasks/get"` — polls for completion. Each poll request has a 15-second per-request timeout, strictly separate from the overall task deadline.
+3. The entire polling loop is wrapped in `tokio::time::timeout(timeout_minutes × 60s)` — the adapter returns `AdapterError::Timeout` if the deadline is reached regardless of task state.
+
+**Exponential backoff with ±20% jitter** prevents synchronised polls from concurrent adapters creating a thundering herd against external rate-limited gateways. Initial interval: `poll_interval_ms`; each poll multiplies by 1.5, capped at `max_poll_interval_ms`.
+
+Terminal state mapping:
+
+| A2A state | AdapterError |
+|---|---|
+| `completed` | — (proceed to extraction) |
+| `failed` | `Remote(reason)` |
+| `canceled` | `Cancelled` |
+| `rejected` | `Unavailable` (excluded from ensemble) |
+| `input_required` | `Timeout` (H2AI cannot provide interactive input) |
+| Agent Card unreachable | `Unavailable` |
+| Empty extraction | `EmptyOutput` |
+
+### 10.4 Artifact extraction pipeline
+
+External agents produce inconsistent artifact formatting. Raw text from a markdown-fenced output would corrupt the Condorcet synthesis if passed directly into the merge phase. The adapter runs a 4-stage pipeline, stopping at the first successful extraction:
+
+1. **Direct JSON**: if the expected format is JSON and the raw text parses, use it as-is.
+2. **Fence stripping**: extract text from ` ``` ` blocks. For JSON output, all blocks are collected and iterated **last-to-first** — LLMs typically emit the final, complete answer in the last block, with preamble or partial plans in earlier ones.
+3. **Preamble strip**: remove leading lines matching common preamble patterns (`"Here is the solution:"`, `"Based on the requirements:"`, etc.).
+4. **Raw fallback**: return trimmed raw text and let the verifier and auditor assess it.
+
+`token_cost: 0` is reported — A2A agents do not expose token cost.
+
+### 10.5 Authentication
+
+`auth_scheme` is `"bearer"`, `"api_key"`, or `"none"`. The `auth_token_env` env var is resolved **at adapter construction time** (fail-fast at server startup, not at first request). This follows the same startup-panic contract as `validate_tool_configs` for other tool executors.
+
+### 10.6 Configuration
+
+```toml
+[[adapter_profiles]]
+name = "specialist-planner"
+[adapter_profiles.kind.A2a]
+endpoint             = "https://my-specialist-agent.example.com"
+auth_scheme          = "bearer"
+auth_token_env       = "A2A_TOKEN"
+timeout_minutes      = 10
+poll_interval_ms     = 2000
+max_poll_interval_ms = 30000
+agent_card_cache_ttl_s = 3600
+```
+
+`AdapterFactory::build(&AdapterKind::A2a { .. })` produces an `Arc<dyn IComputeAdapter>`. The factory arm for `A2a` follows the same pattern as all built-in providers.
+
+---
+
+## 11. What H2AI does *not* do better
 
 The control plane is honest about its boundaries. The system does *not* compete with:
 

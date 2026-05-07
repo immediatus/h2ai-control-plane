@@ -116,6 +116,15 @@ pub enum AdapterKind {
         endpoint: String,
         model: String,
     },
+    A2a {
+        endpoint: String,
+        auth_scheme: String,    // "bearer", "api_key", "none"
+        auth_token_env: String, // env var name; empty string when auth_scheme = "none"
+        timeout_minutes: u64,
+        poll_interval_ms: u64,
+        max_poll_interval_ms: u64,
+        agent_card_cache_ttl_s: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

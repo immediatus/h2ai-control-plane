@@ -36,6 +36,7 @@ pub mod engine;
 pub mod error;
 pub mod error_class;
 pub mod nats_dispatch_adapter;
+pub mod oracle;
 pub mod output_schema;
 pub mod payload_store;
 pub mod pipeline;

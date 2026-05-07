@@ -1433,11 +1433,14 @@ dependencies = [
  "async-trait",
  "h2ai-config",
  "h2ai-types",
+ "rand",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 
@@ -1499,11 +1502,14 @@ dependencies = [
 name = "h2ai-constraints"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "jsonschema",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -1529,6 +1535,7 @@ version = "0.1.0"
 dependencies = [
  "async-nats",
  "async-stream",
+ "async-trait",
  "axum",
  "chrono",
  "dashmap",
@@ -1541,11 +1548,14 @@ dependencies = [
  "h2ai-orchestrator",
  "h2ai-state",
  "h2ai-types",
+ "hostname",
  "metrics",
  "metrics-exporter-prometheus",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
@@ -1553,6 +1563,21 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "h2ai-eval"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "futures",
+ "h2ai-tools",
+ "h2ai-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1618,6 +1643,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -1667,14 +1693,18 @@ dependencies = [
  "chrono",
  "futures",
  "h2ai-config",
+ "h2ai-constraints",
  "h2ai-context",
+ "h2ai-control-plane",
  "h2ai-nats",
+ "h2ai-orchestrator",
  "h2ai-types",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -1823,6 +1853,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
 ]
 
 [[package]]

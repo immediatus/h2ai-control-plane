@@ -21,6 +21,8 @@ pub enum AdapterFamily {
     Mistral,
     /// Local or self-hosted model (Ollama, llama.cpp, CloudGeneric endpoint, NATS dispatch).
     Local,
+    /// Remote A2A agent — cross-framework diversity axis.
+    A2a,
     /// Test double — exempt from multi-family enforcement.
     Mock,
 }
@@ -34,6 +36,7 @@ impl std::fmt::Display for AdapterFamily {
             AdapterFamily::Meta => "Meta",
             AdapterFamily::Mistral => "Mistral",
             AdapterFamily::Local => "Local",
+            AdapterFamily::A2a => "A2a",
             AdapterFamily::Mock => "Mock",
         };
         write!(f, "{s}")
@@ -48,6 +51,7 @@ impl From<&AdapterKind> for AdapterFamily {
             AdapterKind::Ollama { .. }
             | AdapterKind::CloudGeneric { .. }
             | AdapterKind::LocalLlamaCpp { .. } => AdapterFamily::Local,
+            AdapterKind::A2a { .. } => AdapterFamily::A2a,
         }
     }
 }
@@ -81,6 +85,14 @@ pub enum AdapterError {
     NetworkError(String),
     #[error("FFI error from llama.cpp: {0}")]
     FfiError(String),
+    #[error("remote A2A agent returned failure: {0}")]
+    Remote(String),
+    #[error("remote A2A agent cancelled the task")]
+    Cancelled,
+    #[error("adapter unavailable — agent card fetch failed or task rejected")]
+    Unavailable,
+    #[error("adapter returned empty output after extraction pipeline")]
+    EmptyOutput,
 }
 
 #[async_trait]
@@ -299,5 +311,10 @@ mod tests {
         assert_eq!(AdapterFamily::OpenAI.to_string(), "OpenAI");
         assert_eq!(AdapterFamily::Mock.to_string(), "Mock");
         assert_eq!(AdapterFamily::Local.to_string(), "Local");
+    }
+
+    #[test]
+    fn a2a_family_display() {
+        assert_eq!(AdapterFamily::A2a.to_string(), "A2a");
     }
 }

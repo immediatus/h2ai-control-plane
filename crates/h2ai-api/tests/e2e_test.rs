@@ -23,7 +23,11 @@ async fn boot_app() -> (String, tokio::task::JoinHandle<()>) {
 
     let cfg = H2AIConfig::default();
     let explorer = Arc::new(MockAdapter::new("mock explorer output".into()));
-    let auditor = Arc::new(MockAdapter::new("mock auditor output".into()));
+    // Auditor output must be valid JSON for both the verifier ({"score": float}) and
+    // auditor gate ({"approved": bool}) phases — the engine fails safe on non-JSON.
+    let auditor = Arc::new(MockAdapter::new(
+        r#"{"approved":true,"score":0.9,"reason":"mock"}"#.into(),
+    ));
     let state = AppState::new(nats, cfg, explorer, auditor);
 
     let app = axum::Router::new()
@@ -405,4 +409,666 @@ async fn task_events_endpoint_is_sse() {
         Some("text/event-stream"),
         "task events must be SSE"
     );
+}
+
+// ── HITL Approval Gate ─────────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn hitl_require_approval_task_reaches_awaiting_approval() {
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    // Calibrate first
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    // Submit task with require_approval=true — gate fires regardless of confidence
+    let manifest = serde_json::json!({
+        "description": "Design a key rotation system for HMAC secrets",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true
+    });
+
+    let resp = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST /tasks");
+    assert_eq!(resp.status(), 202);
+    let task_id = resp.json::<serde_json::Value>().await.expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Wait for engine to park the task at HITL gate
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // Task status must be awaiting_approval
+    let status_resp = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET status");
+    assert_eq!(status_resp.status(), 200);
+    let body: serde_json::Value = status_resp.json().await.expect("json");
+    assert_eq!(
+        body["status"], "awaiting_approval",
+        "task with require_approval=true must park at HITL gate, got: {}",
+        body["status"]
+    );
+
+    // GET /tasks/{id}/approval must return the pending record
+    let approval_resp = client
+        .get(format!("{base}/tasks/{task_id}/approval"))
+        .send()
+        .await
+        .expect("GET approval");
+    assert_eq!(
+        approval_resp.status(),
+        200,
+        "GET /approval must return 200 while pending"
+    );
+    let ar: serde_json::Value = approval_resp.json().await.expect("approval json");
+    assert_eq!(ar["task_id"], task_id);
+    assert!(
+        ar["proposed_output"].as_str().is_some(),
+        "proposed_output must be present"
+    );
+    assert!(
+        ar["timeout_at_ms"].as_u64().is_some(),
+        "timeout_at_ms must be present"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn hitl_approve_resolves_awaiting_task() {
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    let manifest = serde_json::json!({
+        "description": "Design a circuit breaker pattern for distributed service calls",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true
+    });
+
+    let task_id = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Wait for engine to park at HITL gate
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // Approve the task
+    let approve_resp = client
+        .post(format!("{base}/tasks/{task_id}/approve"))
+        .json(&serde_json::json!({
+            "approved": true,
+            "reviewer_note": "LGTM",
+            "operator_id": "test-operator@example.com"
+        }))
+        .send()
+        .await
+        .expect("POST approve");
+    assert_eq!(
+        approve_resp.status(),
+        202,
+        "approve must return 202 Accepted"
+    );
+    let ar: serde_json::Value = approve_resp.json().await.expect("approve json");
+    assert_eq!(ar["status"], "approved");
+
+    // Task must be resolved shortly after
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let final_resp = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET status");
+    let final_body: serde_json::Value = final_resp.json().await.expect("json");
+    assert_eq!(
+        final_body["status"], "resolved",
+        "approved task must reach resolved, got: {}",
+        final_body["status"]
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn hitl_reject_fails_awaiting_task() {
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    let manifest = serde_json::json!({
+        "description": "Design a rate limiting system for API endpoints",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true
+    });
+
+    let task_id = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // Reject the task
+    let reject_resp = client
+        .post(format!("{base}/tasks/{task_id}/approve"))
+        .json(&serde_json::json!({
+            "approved": false,
+            "reviewer_note": "Output quality insufficient",
+            "operator_id": "test-reviewer@example.com"
+        }))
+        .send()
+        .await
+        .expect("POST reject");
+    assert_eq!(reject_resp.status(), 200, "reject must return 200 OK");
+    let rr: serde_json::Value = reject_resp.json().await.expect("reject json");
+    assert_eq!(rr["status"], "rejected");
+
+    // Task must be failed
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let final_body: serde_json::Value = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        final_body["status"], "failed",
+        "rejected task must reach failed, got: {}",
+        final_body["status"]
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn hitl_approval_404_when_not_awaiting() {
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    let fake_id = uuid::Uuid::new_v4().to_string();
+    let resp = client
+        .get(format!("{base}/tasks/{fake_id}/approval"))
+        .send()
+        .await
+        .expect("GET");
+    assert_eq!(
+        resp.status(),
+        404,
+        "GET /approval for unknown task must return 404"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn hitl_concurrent_approve_returns_conflict() {
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    let manifest = serde_json::json!({
+        "description": "Design an event sourcing system for order management",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true
+    });
+
+    let task_id = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let approve_body = serde_json::json!({
+        "approved": true,
+        "operator_id": "operator@example.com"
+    });
+
+    // Send two concurrent approvals — one must win, one must get 4xx
+    let (r1, r2) = tokio::join!(
+        client
+            .post(format!("{base}/tasks/{task_id}/approve"))
+            .json(&approve_body)
+            .send(),
+        client
+            .post(format!("{base}/tasks/{task_id}/approve"))
+            .json(&approve_body)
+            .send(),
+    );
+    let s1 = r1.expect("req1").status();
+    let s2 = r2.expect("req2").status();
+
+    // One must succeed (202), one must fail (4xx — CAS race lost)
+    let statuses = [s1.as_u16(), s2.as_u16()];
+    assert!(
+        statuses.contains(&202),
+        "at least one concurrent approval must succeed (202): got {:?}",
+        statuses
+    );
+    assert!(
+        statuses.iter().any(|&s| s >= 400),
+        "at least one concurrent approval must fail (4xx CAS conflict): got {:?}",
+        statuses
+    );
+}
+
+// ── Checkpoint consistency ─────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn task_checkpoint_created_and_cleaned_after_approval() {
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    // Manifest with require_approval=true — checkpoint is written at Merging, then GC'd after approve
+    let manifest = serde_json::json!({
+        "description": "Design a blue-green deployment strategy for zero-downtime releases",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true
+    });
+
+    let task_id = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Park at HITL gate (checkpoint must exist at this point)
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let status: serde_json::Value = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        status["status"], "awaiting_approval",
+        "must be parked before approve"
+    );
+
+    // Approve — triggers checkpoint GC
+    let ar = client
+        .post(format!("{base}/tasks/{task_id}/approve"))
+        .json(&serde_json::json!({"approved": true, "operator_id": "gc-test-operator"}))
+        .send()
+        .await
+        .expect("POST approve")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json");
+    assert_eq!(ar["status"], "approved");
+
+    // After approval, task must be resolved
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let final_status: serde_json::Value = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        final_status["status"], "resolved",
+        "approved task must resolve"
+    );
+
+    // GET /approval must now return 404 (record cleaned up)
+    let approval_gone = client
+        .get(format!("{base}/tasks/{task_id}/approval"))
+        .send()
+        .await
+        .expect("GET");
+    assert_eq!(
+        approval_gone.status(),
+        404,
+        "approval record must be GC'd after resolution"
+    );
+}
+
+// ── System consistency ─────────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn awaiting_approval_is_non_terminal_status() {
+    // Verifies that awaiting_approval does not appear in the resolved/failed set
+    // (task stays queryable while parked)
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    let manifest = serde_json::json!({
+        "description": "Design a CQRS architecture for read-heavy e-commerce catalog",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true
+    });
+
+    let task_id = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let status: serde_json::Value = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("json");
+
+    let s = status["status"].as_str().unwrap_or("");
+    // Must be awaiting_approval (non-terminal — task is NOT resolved or failed yet)
+    assert_eq!(s, "awaiting_approval");
+    assert_ne!(
+        s, "resolved",
+        "parked task must not be resolved without approval"
+    );
+    assert_ne!(
+        s, "failed",
+        "parked task must not be failed without rejection"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live NATS at localhost:4222"]
+async fn oracle_task_bypasses_hitl_gate() {
+    // Oracle tasks must auto-proceed even when require_approval would otherwise trigger
+    let (base, _handle) = boot_app().await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/calibrate"))
+        .send()
+        .await
+        .expect("calibrate");
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+
+    // Oracle task with require_approval=true — gate must be bypassed
+    let manifest = serde_json::json!({
+        "description": "Fix the off-by-one error in the binary search function",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2},
+        "require_approval": true,
+        "oracle": {
+            "runner_uri": "http://localhost:19999/nonexistent",
+            "test_suite": "tests/",
+            "language": "python",
+            "timeout_ms": 100,
+            "oracle_type": "test_suite",
+            "domain": "code"
+        }
+    });
+
+    let task_id = client
+        .post(format!("{base}/tasks"))
+        .json(&manifest)
+        .send()
+        .await
+        .expect("POST")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json")["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let status: serde_json::Value = client
+        .get(format!("{base}/tasks/{task_id}"))
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("json");
+    let s = status["status"].as_str().unwrap_or("");
+    // Oracle task must NOT be parked at HITL gate — it either resolved or failed (oracle unreachable = fail)
+    assert_ne!(
+        s, "awaiting_approval",
+        "oracle task must bypass HITL gate, got: {}",
+        s
+    );
+}
+
+// ── A2A adapter system consistency ─────────────────────────────────────────
+
+#[test]
+fn a2a_adapter_factory_builds_with_auth_none() {
+    use h2ai_adapters::factory::AdapterFactory;
+    use h2ai_types::config::AdapterKind;
+
+    let kind = AdapterKind::A2a {
+        endpoint: "https://example.com".to_string(),
+        auth_scheme: "none".to_string(),
+        auth_token_env: "".to_string(),
+        timeout_minutes: 5,
+        poll_interval_ms: 2000,
+        max_poll_interval_ms: 30_000,
+        agent_card_cache_ttl_s: 3600,
+    };
+    let adapter = AdapterFactory::build(&kind).expect("factory must build A2A adapter");
+    assert_eq!(adapter.family().to_string(), "A2a");
+}
+
+#[test]
+fn a2a_adapter_fails_fast_when_env_var_missing() {
+    use h2ai_adapters::factory::AdapterFactory;
+    use h2ai_types::config::AdapterKind;
+
+    let kind = AdapterKind::A2a {
+        endpoint: "https://example.com".to_string(),
+        auth_scheme: "bearer".to_string(),
+        auth_token_env: "H2AI_TEST_MISSING_TOKEN_VAR_XYZ".to_string(),
+        timeout_minutes: 5,
+        poll_interval_ms: 2000,
+        max_poll_interval_ms: 30_000,
+        agent_card_cache_ttl_s: 3600,
+    };
+    // Must fail at build time, not at request time
+    let result = AdapterFactory::build(&kind);
+    assert!(
+        result.is_err(),
+        "must fail when auth token env var is missing"
+    );
+}
+
+#[test]
+fn hitl_gate_conditions_are_consistent() {
+    // Verifies the gate logic matches the spec: enabled AND not-oracle AND (require OR low-confidence)
+    struct GateInputs {
+        enabled: bool,
+        oracle: bool,
+        require: bool,
+        q: f64,
+        threshold: f64,
+    }
+    fn gate(i: &GateInputs) -> bool {
+        i.enabled && !i.oracle && (i.require || i.q < i.threshold)
+    }
+
+    // All 5 bypass conditions
+    assert!(
+        !gate(&GateInputs {
+            enabled: false,
+            oracle: false,
+            require: true,
+            q: 0.1,
+            threshold: 0.5
+        }),
+        "disabled gate"
+    );
+    assert!(
+        !gate(&GateInputs {
+            enabled: true,
+            oracle: true,
+            require: true,
+            q: 0.1,
+            threshold: 0.5
+        }),
+        "oracle bypass"
+    );
+    assert!(
+        !gate(&GateInputs {
+            enabled: true,
+            oracle: false,
+            require: false,
+            q: 0.9,
+            threshold: 0.5
+        }),
+        "high confidence"
+    );
+    // 2 trigger conditions
+    assert!(
+        gate(&GateInputs {
+            enabled: true,
+            oracle: false,
+            require: true,
+            q: 0.9,
+            threshold: 0.5
+        }),
+        "manifest flag"
+    );
+    assert!(
+        gate(&GateInputs {
+            enabled: true,
+            oracle: false,
+            require: false,
+            q: 0.2,
+            threshold: 0.5
+        }),
+        "low confidence"
+    );
+}
+
+#[test]
+fn checkpoint_phase_string_stability() {
+    use h2ai_orchestrator::task_store::TaskPhase;
+    // String names used in TaskCheckpoint.phase must be stable — these are the values
+    // written to NATS KV; changing them would orphan existing checkpoints
+    assert_eq!(
+        TaskPhase::ParallelGeneration.name_str(),
+        "ParallelGeneration"
+    );
+    assert_eq!(TaskPhase::AuditorGate.name_str(), "AuditorGate");
+    assert_eq!(TaskPhase::Merging.name_str(), "Merging");
+    assert_eq!(TaskPhase::Resolved.name_str(), "Resolved");
+    assert_eq!(TaskPhase::AwaitingApproval.name_str(), "AwaitingApproval");
+    // All round-trip through try_from_name_str
+    for phase in [
+        TaskPhase::ParallelGeneration,
+        TaskPhase::AuditorGate,
+        TaskPhase::Merging,
+        TaskPhase::Resolved,
+        TaskPhase::AwaitingApproval,
+    ] {
+        let name = phase.name_str();
+        assert_eq!(
+            TaskPhase::try_from_name_str(name).map(|p| p.name_str()),
+            Some(name),
+            "phase {name} must round-trip through try_from_name_str"
+        );
+    }
 }

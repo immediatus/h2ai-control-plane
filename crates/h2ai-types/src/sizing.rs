@@ -819,6 +819,66 @@ pub enum ProbeSkipReason {
     AmbiguousBandProbeDeferred,
 }
 
+/// Geographic/semantic domain of an oracle evaluation.
+///
+/// Used to stratify calibration residuals per-domain when n_domain ≥ 15.
+/// Falls back to pooled residuals with a 20% width penalty when sparse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleDomain {
+    Code,
+    Factual,
+    Reasoning,
+    Unknown,
+}
+
+/// Mechanism used to evaluate oracle correctness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleType {
+    TestSuite,
+    ReferenceAnswer,
+    Symbolic,
+}
+
+/// Configuration for the Phase 6 async oracle evaluation.
+///
+/// Carried on `TaskManifest::oracle`. When `None`, Phase 6 is skipped and
+/// the system stays on bootstrap intervals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleSpec {
+    /// HTTP endpoint of the oracle sidecar. Example: "http://oracle-sidecar:9090"
+    pub runner_uri: String,
+    /// Path to the test suite directory or file (absolute or relative to sidecar cwd).
+    pub test_suite: String,
+    /// Language runtime to use: "python", "javascript", etc.
+    pub language: String,
+    /// Maximum milliseconds before the sidecar kills the test process.
+    pub timeout_ms: u64,
+    /// Reference output for oracle validity pre-check. When `Some`, the operator
+    /// can call `POST /oracle/validate` to verify the test suite works before submitting.
+    pub reference_output: Option<String>,
+    pub oracle_type: OracleType,
+    pub domain: OracleDomain,
+}
+
+/// A single oracle evaluation result stored in the rolling calibration window.
+///
+/// `residual = |q_confidence − y_oracle as f64|` — the nonconformity score for
+/// split-conformal calibration on binary outcomes (Angelopoulos & Bates 2023).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleObservation {
+    pub task_id: String,
+    pub q_confidence: f64,
+    /// `true` = oracle passed (all tests passed).
+    pub y_oracle: bool,
+    /// `|q_confidence − y_oracle as f64|` — nonconformity score.
+    pub residual: f64,
+    pub domain: OracleDomain,
+    pub oracle_type: OracleType,
+    pub timestamp_ms: u64,
+}
+
 #[cfg(test)]
 mod context_aware_tests {
     use super::*;

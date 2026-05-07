@@ -20,6 +20,8 @@
 
 pub mod adapter;
 pub mod agent;
+pub mod approval;
+pub mod checkpoint;
 pub mod config;
 pub mod events;
 pub mod identity;

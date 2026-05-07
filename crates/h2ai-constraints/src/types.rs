@@ -104,6 +104,14 @@ pub struct ConstraintDoc {
     pub severity: ConstraintSeverity,
     pub predicate: ConstraintPredicate,
     pub remediation_hint: Option<String>,
+    /// Domain tags for wiki context routing (e.g. "eu_data", "financial_report").
+    /// Parsed from YAML frontmatter in the constraint .md file.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Force-inject this constraint when task_tags contain any of these values.
+    /// Parsed from YAML frontmatter in the constraint .md file.
+    #[serde(default)]
+    pub mandatory_for_tags: Vec<String>,
 }
 
 impl ConstraintDoc {
@@ -215,4 +223,90 @@ pub fn aggregate_compliance_score(results: &[ComplianceResult]) -> f64 {
         return 1.0;
     }
     weighted_sum / total_weight
+}
+
+/// Evaluation tier for Phase 4 lazy loading — determines whether a payload fetch is needed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredicateKind {
+    /// Pure-Rust evaluation; predicate is inlined in `ConstraintMeta`.
+    Static,
+    /// Requires an LLM call with the rubric text; payload fetched from Predicate Store.
+    LlmJudge,
+    /// Requires an HTTP call to a test runner; payload fetched from Predicate Store.
+    Oracle,
+}
+
+/// Lightweight constraint descriptor — loaded at Phase 1 Bootstrap.
+///
+/// ~300 bytes per entry; the entire wiki index fits in memory (30 MB for 100K constraints).
+/// Used for: system_context injection (summary), Phase 4 routing (predicate_kind),
+/// tag-based applicability resolution (mandatory_for_tags, domains).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConstraintMeta {
+    pub id: String,
+    /// 2–3 sentence synthesis of regulatory intent; injected into system_context (~50 tokens).
+    pub summary: String,
+    pub severity: ConstraintSeverity,
+    pub predicate_kind: PredicateKind,
+    pub domains: Vec<String>,
+    /// Force-inject this constraint when any of these tags appear in task_tags.
+    pub mandatory_for_tags: Vec<String>,
+    /// Version pin for the Predicate Store entry; stored in ConstraintSnapshot for audit.
+    pub payload_version: String,
+    /// For Static predicates: full predicate inlined here; no Predicate Store fetch needed.
+    #[serde(default)]
+    pub inline_predicate: Option<ConstraintPredicate>,
+    /// Provenance: source document path or URI (e.g. "nist-800-53/AC-2", "internal/policy-42").
+    /// Used by the synthesis agent for staleness detection and audit.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Unix epoch ms when this wiki entry was last synthesized/updated.
+    /// Set by the synthesis agent; used for cache freshness and audit trails.
+    #[serde(default)]
+    pub last_updated_ms: Option<u64>,
+}
+
+impl ConstraintMeta {
+    /// Build a ConstraintMeta from a ConstraintDoc for backward compatibility.
+    ///
+    /// Static predicates are inlined; LlmJudge and Oracle are left for lazy fetch.
+    pub fn from_doc(doc: &ConstraintDoc) -> Self {
+        let kind = match doc.tier() {
+            ConstraintTier::Heavy => PredicateKind::Oracle,
+            ConstraintTier::Light => PredicateKind::LlmJudge,
+            ConstraintTier::Static => PredicateKind::Static,
+        };
+        let inline = if kind == PredicateKind::Static {
+            Some(doc.predicate.clone())
+        } else {
+            None
+        };
+        Self {
+            id: doc.id.clone(),
+            summary: if doc.description.is_empty() {
+                format!("Constraint {}: enforce compliance", doc.id)
+            } else {
+                doc.description.clone()
+            },
+            severity: doc.severity.clone(),
+            predicate_kind: kind,
+            domains: doc.domains.clone(),
+            mandatory_for_tags: doc.mandatory_for_tags.clone(),
+            payload_version: "v1".to_string(),
+            inline_predicate: inline,
+            source: Some(doc.source_file.clone()),
+            last_updated_ms: None,
+        }
+    }
+}
+
+/// Full constraint descriptor — fetched from the Predicate Store on demand during Phase 4.
+///
+/// Never preloaded. Fetched at most once per (constraint, proposal) pair.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConstraintPayload {
+    pub id: String,
+    pub version: String,
+    pub predicate: ConstraintPredicate,
 }

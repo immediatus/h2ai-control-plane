@@ -1,3 +1,50 @@
+#[cfg(test)]
+mod oracle_types_tests {
+    use h2ai_types::sizing::{OracleDomain, OracleObservation, OracleSpec, OracleType};
+
+    #[test]
+    fn oracle_domain_serde_roundtrip() {
+        let d = OracleDomain::Code;
+        let s = serde_json::to_string(&d).unwrap();
+        let back: OracleDomain = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, OracleDomain::Code));
+    }
+
+    #[test]
+    fn oracle_spec_serde_roundtrip() {
+        let spec = OracleSpec {
+            runner_uri: "http://localhost:9090".into(),
+            test_suite: "tests/".into(),
+            language: "python".into(),
+            timeout_ms: 5000,
+            reference_output: None,
+            oracle_type: OracleType::TestSuite,
+            domain: OracleDomain::Code,
+        };
+        let s = serde_json::to_string(&spec).unwrap();
+        let back: OracleSpec = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.runner_uri, "http://localhost:9090");
+        assert_eq!(back.timeout_ms, 5000);
+        assert!(matches!(back.oracle_type, OracleType::TestSuite));
+    }
+
+    #[test]
+    fn oracle_observation_residual_is_abs_error() {
+        // residual = |q_confidence - y_oracle as f64|
+        let residual = (0.8_f64 - 1.0_f64).abs();
+        let obs = OracleObservation {
+            task_id: "t1".into(),
+            q_confidence: 0.8,
+            y_oracle: true,
+            residual,
+            domain: OracleDomain::Code,
+            oracle_type: OracleType::TestSuite,
+            timestamp_ms: 0,
+        };
+        assert!((obs.residual - 0.2).abs() < 1e-9);
+    }
+}
+
 use chrono::Utc;
 use h2ai_types::config::{AdapterKind, AuditorConfig, ExplorerConfig, ParetoWeights, TopologyKind};
 use h2ai_types::events::*;
@@ -430,4 +477,175 @@ fn h2ai_event_serde_preserves_variant_tag() {
     assert!(json.contains("\"event_type\":\"ZeroSurvival\""));
     let back: H2AIEvent = serde_json::from_str(&json).unwrap();
     assert!(matches!(back, H2AIEvent::ZeroSurvival(_)));
+}
+
+#[cfg(test)]
+mod oracle_event_tests {
+    use h2ai_types::events::{
+        CalibrationDriftWarning, H2AIEvent, OraclePendingEvent, OracleResultEvent,
+        OracleSuspectEvent,
+    };
+    use h2ai_types::sizing::{OracleDomain, OracleSpec, OracleType};
+
+    fn make_oracle_spec() -> OracleSpec {
+        OracleSpec {
+            runner_uri: "http://localhost:9090".into(),
+            test_suite: "tests/".into(),
+            language: "python".into(),
+            timeout_ms: 5000,
+            reference_output: None,
+            oracle_type: OracleType::TestSuite,
+            domain: OracleDomain::Code,
+        }
+    }
+
+    #[test]
+    fn oracle_pending_event_serde_roundtrip() {
+        use h2ai_types::identity::TaskId;
+        let ev = OraclePendingEvent {
+            task_id: TaskId::new(),
+            winning_output: "print('hello')".into(),
+            q_confidence: 0.85,
+            n_used: 3,
+            oracle_spec: make_oracle_spec(),
+            domain: OracleDomain::Code,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OraclePendingEvent = serde_json::from_str(&json).unwrap();
+        assert!((back.q_confidence - 0.85).abs() < 1e-9);
+        assert_eq!(back.n_used, 3);
+    }
+
+    #[test]
+    fn oracle_result_event_residual_formula() {
+        use h2ai_types::identity::TaskId;
+        // residual = |q_confidence - passed as f64|
+        // q=0.8, passed=true (1.0) → residual = 0.2
+        let ev = OracleResultEvent {
+            task_id: TaskId::new(),
+            q_confidence: 0.8,
+            n_used: 3,
+            passed: true,
+            score: 1.0,
+            residual: (0.8_f64 - 1.0_f64).abs(),
+            domain: OracleDomain::Code,
+            oracle_type: OracleType::TestSuite,
+            duration_ms: 250,
+            timestamp_ms: 0,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OracleResultEvent = serde_json::from_str(&json).unwrap();
+        assert!((back.residual - 0.2).abs() < 1e-9);
+        assert!(back.passed);
+    }
+
+    #[test]
+    fn calibration_drift_warning_serde_roundtrip() {
+        let w = CalibrationDriftWarning {
+            n_observations: 10,
+            ece: 0.18,
+            timestamp_ms: 1000,
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let back: CalibrationDriftWarning = serde_json::from_str(&json).unwrap();
+        assert!((back.ece - 0.18).abs() < 1e-9);
+    }
+
+    #[test]
+    fn oracle_suspect_event_serde_roundtrip() {
+        let ev = OracleSuspectEvent {
+            pass_rate: 0.02,
+            n_observations: 25,
+            reason: "pass rate < 0.05".into(),
+            timestamp_ms: 2000,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: OracleSuspectEvent = serde_json::from_str(&json).unwrap();
+        assert!((back.pass_rate - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn h2ai_event_oracle_variants_serde() {
+        use h2ai_types::identity::TaskId;
+        let ev = H2AIEvent::OraclePending(OraclePendingEvent {
+            task_id: TaskId::new(),
+            winning_output: "output".into(),
+            q_confidence: 0.9,
+            n_used: 2,
+            oracle_spec: make_oracle_spec(),
+            domain: OracleDomain::Factual,
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("OraclePending"));
+        let back: H2AIEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, H2AIEvent::OraclePending(_)));
+    }
+}
+
+#[cfg(test)]
+mod manifest_oracle_tests {
+    use h2ai_types::manifest::TaskManifest;
+    use h2ai_types::sizing::{OracleDomain, OracleSpec, OracleType};
+
+    #[test]
+    fn task_manifest_oracle_defaults_to_none() {
+        // Old serialized manifests without `oracle` field must still deserialize
+        let json = r#"{
+            "description": "test task",
+            "pareto_weights": {"throughput": 1.0, "containment": 0.0, "diversity": 0.0},
+            "topology": {},
+            "explorers": {"count": 2},
+            "constraints": [],
+            "context": null
+        }"#;
+        let manifest: TaskManifest = serde_json::from_str(json).unwrap();
+        assert!(
+            manifest.oracle.is_none(),
+            "oracle must default to None for backward compat"
+        );
+    }
+
+    #[test]
+    fn task_manifest_oracle_roundtrip() {
+        use h2ai_types::config::ParetoWeights;
+        use h2ai_types::manifest::{ExplorerRequest, TopologyRequest};
+        let manifest = TaskManifest {
+            description: "code task".into(),
+            pareto_weights: ParetoWeights {
+                throughput: 1.0,
+                containment: 0.0,
+                diversity: 0.0,
+            },
+            topology: TopologyRequest {
+                kind: "auto".into(),
+                branching_factor: None,
+            },
+            explorers: ExplorerRequest {
+                count: 2,
+                tau_min: None,
+                tau_max: None,
+                roles: vec![],
+                review_gates: vec![],
+                slot_configs: vec![],
+            },
+            constraints: vec![],
+            context: None,
+            require_approval: false,
+            constraint_tags: vec![],
+            oracle: Some(OracleSpec {
+                runner_uri: "http://localhost:9090".into(),
+                test_suite: "tests/".into(),
+                language: "python".into(),
+                timeout_ms: 5000,
+                reference_output: None,
+                oracle_type: OracleType::TestSuite,
+                domain: OracleDomain::Code,
+            }),
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let back: TaskManifest = serde_json::from_str(&json).unwrap();
+        let spec = back.oracle.unwrap();
+        assert_eq!(spec.language, "python");
+        assert!(matches!(spec.oracle_type, OracleType::TestSuite));
+    }
 }

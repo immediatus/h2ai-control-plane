@@ -20,3 +20,16 @@ fn task_manifest_deserialises_from_api_shape() {
     assert_eq!(m.topology.kind, "ensemble");
     assert_eq!(m.explorers.count, 4);
 }
+
+#[test]
+fn task_manifest_oracle_field_accessible() {
+    // Verify oracle field exists and defaults to None — compile-time guard for GAP-E1 Phase 6.
+    let raw = json!({
+        "description": "test",
+        "pareto_weights": {"diversity": 0.4, "containment": 0.3, "throughput": 0.3},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2, "tau_min": 0.2, "tau_max": 0.9}
+    });
+    let m: TaskManifest = serde_json::from_value(raw).unwrap();
+    assert!(m.oracle.is_none());
+}

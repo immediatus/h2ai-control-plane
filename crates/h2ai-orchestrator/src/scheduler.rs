@@ -163,5 +163,8 @@ fn build_subtask_manifest(
         explorers: parent.explorers.clone(),
         constraints: parent.constraints.clone(),
         context,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: parent.constraint_tags.clone(),
     }
 }
