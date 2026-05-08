@@ -9,7 +9,7 @@ H2AI Control Plane is configured entirely via environment variables. All variabl
 | Variable | Default | Description |
 |---|---|---|
 | `H2AI_PLAN` | `local` | Deployment plan hint (`local`, `server`, `cloud`). Affects default log verbosity and startup checks. |
-| `H2AI_LISTEN_ADDR` | `0.0.0.0:8080` | HTTP bind address for the axum API gateway and Merge Authority UI. |
+| `H2AI_LISTEN_ADDR` | `127.0.0.1:8080` | HTTP bind address for the axum API gateway and Merge Authority UI. |
 | `H2AI_METRICS_ADDR` | `0.0.0.0:9090` | Prometheus `/metrics` bind address. Set to empty string to disable. |
 
 ---

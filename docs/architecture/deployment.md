@@ -257,7 +257,7 @@ All three plans expose the same observability surface. The difference is where i
 | `H2AI_MAX_BLOCKING_THREADS` | `4` | Tokio blocking pool size for llama.cpp FFI |
 | `H2AI_MAX_RETRIES` | `3` | MAPE-K retry limit before TaskFailedEvent |
 | `H2AI_CALIBRATION_TASKS` | `3` | Number of representative tasks for calibration harness |
-| `H2AI_LISTEN_ADDR` | `0.0.0.0:8080` | HTTP bind address for axum gateway |
+| `H2AI_LISTEN_ADDR` | `127.0.0.1:8080` | HTTP bind address for axum gateway |
 | `H2AI_METRICS_ADDR` | `0.0.0.0:9090` | Prometheus metrics bind address |
 | `H2AI_OTEL_ENDPOINT` | _(unset)_ | OpenTelemetry collector endpoint (disables tracing if unset) |
 | `H2AI_J_EFF_THRESHOLD` | `0.4` | Minimum J_eff before ContextUnderflowError |

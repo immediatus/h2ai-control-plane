@@ -65,7 +65,7 @@ fn build_adapter(kind: &AdapterKind) -> Arc<dyn IComputeAdapter> {
 
 #[tokio::main]
 async fn main() {
-    let listen_addr = env::var("H2AI_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let listen_addr = env::var("H2AI_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
 
     let cfg = {
         use std::path::Path;
