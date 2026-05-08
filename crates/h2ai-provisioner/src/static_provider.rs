@@ -11,7 +11,10 @@ pub struct StaticProvider {
 
 impl StaticProvider {
     pub fn new(max_task_load: usize) -> Self {
-        Self { max_task_load, nats: None }
+        Self {
+            max_task_load,
+            nats: None,
+        }
     }
 
     pub fn with_nats(mut self, nats: async_nats::Client) -> Self {
