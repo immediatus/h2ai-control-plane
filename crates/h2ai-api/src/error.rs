@@ -3,14 +3,12 @@ use axum::response::{IntoResponse, Json, Response};
 use serde_json::json;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ApiError {
     ContextUnderflow { j_eff: f64, threshold: f64 },
     CalibrationRequired,
     TaskNotFound(String),
     TaskAlreadyResolved(String),
     InvalidRequest(String),
-    Internal(String),
     NatsUnavailable(String),
 }
 
@@ -48,10 +46,6 @@ impl IntoResponse for ApiError {
             ApiError::NatsUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "NatsUnavailable", "message": msg }),
-            ),
-            ApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": "InternalError", "message": msg }),
             ),
         };
         (status, Json(body)).into_response()
