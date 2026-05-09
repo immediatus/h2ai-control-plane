@@ -18,3 +18,8 @@ criteria:
   fail: |
     The proposal does not address idempotency at all, or uses a non-atomic check-then-act
     pattern (check key in one step, deduct in a separate step with no atomicity guarantee).
+  checks:
+    - Does the proposal pre-allocate budget via Redis atomic check-and-set before serving requests?
+    - Is the idempotency check atomic (Lua script or single Redis command — not a read-then-write sequence)?
+    - Does the proposal set a TTL (≤30s) on idempotency keys to prevent unbounded Redis growth?
+    - Is CockroachDB read absent from the critical request path for budget enforcement?

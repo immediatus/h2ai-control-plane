@@ -170,6 +170,34 @@ fn suggest_uses_n_optimal_as_target_not_max_ceiling() {
 }
 
 #[test]
+fn suggest_lowers_threshold_on_zero_survival() {
+    // When filter_ratio == 0 (all proposals failed), the optimizer must lower the
+    // verify_threshold even though predict_q returns the same value for both params.
+    // This is the ZeroSurvival path: threshold is the only knob to unblock proposals.
+    let current = OptimizerParams {
+        n_agents: 2,
+        max_turns: 4,
+        verify_threshold: 0.45,
+    };
+    let cfg = cfg();
+    let suggestion = SelfOptimizer::suggest(SuggestInput {
+        current: &current,
+        history: &[],
+        n_max_ceiling: 4,
+        n_optimal: None,
+        p_mean: P_MEAN,
+        rho_mean: RHO_MEAN,
+        filter_ratio: 0.0, // ZeroSurvival
+        cfg: &cfg,
+    });
+    assert!(
+        suggestion.verify_threshold < current.verify_threshold,
+        "must lower threshold on zero-survival; got {:.3}",
+        suggestion.verify_threshold
+    );
+}
+
+#[test]
 fn quality_is_monotone_in_suggested_direction() {
     let mut current = OptimizerParams {
         n_agents: 1,

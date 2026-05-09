@@ -2,7 +2,35 @@
 
 H2AI Control Plane is a Rust runtime that coordinates pools of LLM adapters as an *adversarial committee*: independent generators, an independent verifier, and an independent auditor produce a resolved output that is more reliable than any single adapter. The runtime treats this committee as a physical system — an ensemble whose throughput, diversity, and quality are computable, calibrated, and bounded.
 
-This document is the system-level map: phases, components, wire protocol, and enterprise deployment. The math is in [`math.md`](math.md). The HTTP/event/config surface is in [`reference.md`](reference.md). Operational details are in [`operations.md`](operations.md). Open questions are in [`research-state.md`](research-state.md).
+This document is the system-level map: phases, components, wire protocol, and enterprise deployment. The math is in [`math.md`](math.md). The HTTP/event/config surface is in [`reference.md`](reference.md). Operational details are in [`operations.md`](operations.md). Open questions are in [`research-state.md`](research-state.md). Open research gaps are in [`gaps.md`](gaps.md).
+
+---
+
+## The Epistemological Architecture
+
+H2AI is an **epistemic control plane**. Its job is not to run LLM inference — it is to coordinate the acquisition, validation, and grounding of knowledge about a problem. The output of a successful task is not a string; it is a belief that has survived four nested epistemological tests.
+
+Every task maps to a **knowledge graph**: nodes are beliefs (claims about the problem domain), edges are relationships (support, contradiction, derivation, grounding). The system's goal is to bring this graph to coherent, grounded closure. The four nested loops each test a different property of closure:
+
+| Loop | Scope | Mechanism | Stops when |
+|------|-------|-----------|-----------|
+| **TAO** (Thought–Action–Observation) | Within one agent | Iterative tool-call reasoning | Agent exhausts productive reasoning paths — last iteration issues no tool call |
+| **MAPE-K** (Monitor–Analyse–Plan–Execute) | Across the committee | ZeroSurvival → topology repair → retry | Knowledge graph reaches coherent closure — all proposals pass audit |
+| **Calibration** | Across tasks | USL fitting, CG measurement, confidence intervals | Meta-beliefs about agent quality are stable — `(α, β, CG)` confidence widths drop below precision threshold |
+| **Oracle / Grounding** | Across reality | Human approval gate or automated oracle | Load-bearing claims have been verified against external truth |
+
+**Why four loops, not one?** Each loop operates at a different time-scale and tests a different epistemic property:
+
+- The TAO loop tests **completeness** within a single reasoning chain: has the agent gathered all evidence its tools can provide?
+- The MAPE-K loop tests **coherence** across the committee: do the surviving beliefs form a consistent set, compatible with the constraint corpus?
+- The calibration loop tests **meta-accuracy**: are the system's beliefs about its own agents correct? A committee sized by wrong priors produces wrong N_max.
+- The oracle loop tests **grounding**: does the coherent belief set correspond to something true in the world?
+
+A system that only has the first two loops is a sophisticated coherence engine. It can produce internally consistent, constraint-compliant outputs that are confidently wrong. The calibration and oracle loops are what prevent this: calibration corrects the system's self-model over time; the oracle gates outputs on external truth verification.
+
+The stopping criteria are epistemic, not mechanical. The system does not stop because it reached a retry limit — it stops because it has acquired enough knowledge. This is the architectural difference between H2AI and a pipeline with retries.
+
+> **Current state:** TAO and MAPE-K loops are fully implemented. Phase 0 Epistemic Decomposition (Path C, always-on) derives motivated committee roles from the task — GAP-A5 closed. Calibration labels its source (`Measured`/`PartialFit`/`SyntheticPriors`) on `CalibrationCompletedEvent` and `TaskAttributionEvent`, surfaced as a Prometheus gauge and startup warning — GAP-D4 closed. The rubric is withheld from the explorer's context (`include_rubric=false`); the adversarial verifier activates when `rejection_criteria` is present (always true for Path C output) — GAP-A4 architectural fix done. `CoherenceState` (uncovered constraint domains + active contradiction pairs between surviving proposals) is computed per MAPE-K wave and emitted as `CoherenceIncomplete` at task close — observability complete, but `is_closed()` is not yet a loop exit gate. The oracle loop exists as a human approval gate; automated oracle integration is open (GAP-E1).
 
 ---
 
@@ -73,6 +101,22 @@ C4Container
 
 A task moves through six phases. Each phase emits one or more events, and every retry restarts at Phase 2.
 
+### Phase 0 — Epistemic Decomposition
+
+Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motivated committee from the task description and constraint corpus. **This phase always runs.** Operator-supplied `slot_configs` are appended to the result as additive context, not as a bypass.
+
+**Path C (production, always):** A pre-dispatch LLM call to the auditor adapter (most capable, τ=0.1) asks: *"What are the N most cognitively distinct expert perspectives needed to solve this problem?"* The structured JSON response is parsed into `Vec<ExplorerSlotConfig>` — each slot has a motivated `role_frame`, `cot_style`, `focus_mandate` (what constraint domains this slot owns), and `rejection_criteria` (the specific failure mode to look for). The count of slots is the motivated N. Returns `Result<Vec<ExplorerSlotConfig>, DecompositionError>` — **failure causes `TaskFailed`; there is no silent fallback.**
+
+**Operator context (additive):** If the manifest carries `slot_configs`, they are appended to the Path C result after the LLM response is parsed, then the combined set is re-pruned by orthogonality. They do not bypass decomposition.
+
+**Orthogonality pruning:** If the produced N exceeds the USL budget ceiling `N_max`, `prune_by_orthogonality()` drops the slot with the highest mean cosine similarity to all retained peers — the least independent perspective — until `len ≤ N_max`. Never pads to fill the budget.
+
+**Context injection:** The engine prepends `[MANDATE]: {focus_mandate}` and `[FIND]: {rejection_criteria}` before each agent's system context when those fields are non-empty.
+
+**Adversarial verifier selection:** After slot configs are fixed, `tasks.rs` checks whether any slot has non-empty `rejection_criteria`. If true, `VerificationConfig` is set to use `ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT` (hostile-reviewer framing) instead of the standard rubric-compliance prompt. Since Path C always populates `rejection_criteria`, the adversarial verifier is the default in production.
+
+`n_eff_cosine_roles` is logged per task as a trace event.
+
 ### Phase 1 — Bootstrap
 
 The orchestrator compiles the task description and the active constraint corpus into an immutable `system_context`. The `J_eff` gate enforces a minimum context-fill fraction; tasks below the threshold are rejected with `ContextUnderflow` rather than run with insufficient grounding. Emits `TaskBootstrapped`.
@@ -129,6 +173,10 @@ N explorers run their TAO (Thought–Action–Observation) loops in parallel thr
 
 A dedicated verification adapter (LLM-as-Judge) scores every proposal against the constraint corpus. Each scoring emits `VerificationScored {score, reason, passed}`. Proposals that fail verification become `BranchPruned` with their `violated_constraints` recorded.
 
+**Rubric independence:** The explorer's `system_context` is compiled with `include_rubric=false` (the production default in `compiler::compile`). `LlmJudge` constraint rubrics and their IDs are **withheld** from the explorer — the verifier retains them via `ConstraintPredicate::LlmJudge` and uses them for scoring, but the explorer must reason from the task description and domain expertise alone. This prevents the verifier from simply confirming that the explorer followed instructions it was already given.
+
+**Adversarial verifier:** When any explorer slot carries non-empty `rejection_criteria`, verification uses `ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT` — a hostile-reviewer framing that asks the verifier to find the single most likely silent failure rather than checking rubric compliance. Since Path C always populates `rejection_criteria`, this is the default in production.
+
 ### Phase 4 — Auditor Gate
 
 A separate auditor adapter (typically a stronger reasoning model than the verifier) is the final non-negotiable gate. Its output is required to be JSON `{approved, reason}`. Non-JSON output is treated as rejection (fail-safe). Rejected proposals become additional `BranchPruned` events.
@@ -151,6 +199,19 @@ Emits `SelectionResolved` and either `MergeResolved` (success) or `ZeroSurvival`
 ### Phase 5a — Synthesis (optional)
 
 When `synthesis_enabled` and at least `synthesis_min_proposals` have survived audit, the synthesis adapter performs a critique→synthesis→re-verify pass over the candidate set. The re-verified score is compared against `max(individual_scores)`; the difference is recorded as `synthesis_gain` on `HarnessAttribution`. If synthesis improves the maximum, its output replaces the merge result.
+
+### Coherence State (per-wave)
+
+After each verification round (`all_pruned.extend()`), the engine computes `wave_coherence: CoherenceState` with two closure dimensions:
+
+- **`uncovered_domains`:** constraint domains where any pruned proposal had violations. Derived from `BranchPrunedEvent.violated_constraints` mapped through the constraint corpus domain tags.
+- **`active_contradictions`:** pairs of surviving proposals that score on opposite sides of the 0.5 threshold on any constraint in the same domain. Derived from the Phase 4.5 static-constraint satisfaction matrix.
+
+`is_closed()` returns `true` only when both fields are empty. `wave_coherence` is reused at all exit paths (synthesis bypass, `MergeOutcome::Resolved`) without recomputation. It is traced per-wave at `h2ai.coherence` level.
+
+At task close (in `tasks.rs`), if `!output.coherence_state.is_closed()`, a `CoherenceIncomplete` event is published to NATS before `MergeResolved`, carrying the `uncovered_domains` list and retry count. Callers can use this to know exactly which constraint areas the output does not cover.
+
+> **Current gap:** `is_closed()` drives observability and the `CoherenceIncomplete` event but does not yet gate the retry loop. Wiring it as an early exit condition (when coherent, stop retrying) is the remaining step for GAP-D1 closure.
 
 ### MAPE-K loop on zero survival
 
@@ -799,6 +860,9 @@ h2ai-nats           NATS JetStream client, stream/KV creation, event publish/sub
 h2ai-orchestrator   ExecutionEngine — the 6-phase MAPE-K loop. MergeEngine. Verification phase.
                     Synthesis phase. RetryPolicy, MultiplicationChecker, SelfOptimizer.
                     CompoundTaskEngine — PlanningEngine + PlanReviewer + SchedulingEngine (Kahn waves).
+                    decomposition — Phase 0 epistemic decomposition: DECOMPOSITION_SYSTEM_PROMPT,
+                    parse_decomposition_response, prune_by_orthogonality, compute_role_diversity,
+                    corpus_fallback (domain-tag → slot templates), run_decomposition_agent.
 
 h2ai-planner        Pareto-weighted topology selection, role assignment, τ spread, role error costs.
 

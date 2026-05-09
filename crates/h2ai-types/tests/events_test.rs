@@ -90,6 +90,7 @@ fn calibration_completed_event_serde_round_trip() {
         n_max_hi: 0.0,
         n_eff_cosine_prior: 0.0,
         calibration_quality: Default::default(),
+        calibration_source: Default::default(),
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -266,6 +267,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             n_max_hi: 0.0,
             n_eff_cosine_prior: 0.0,
             calibration_quality: Default::default(),
+            calibration_source: Default::default(),
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
@@ -582,6 +584,60 @@ mod oracle_event_tests {
     }
 }
 
+#[test]
+fn coherence_incomplete_event_carries_active_contradictions() {
+    let ev = CoherenceIncompleteEvent {
+        task_id: task_id(),
+        uncovered_domains: vec!["security".to_string()],
+        active_contradictions: vec![(
+            "id-a".to_string(),
+            "id-b".to_string(),
+            "security".to_string(),
+        )],
+        retries: 2,
+        timestamp: Utc::now(),
+    };
+    assert_eq!(ev.active_contradictions.len(), 1);
+    assert_eq!(ev.active_contradictions[0].2, "security");
+    // Round-trip through serde_json — tuples serialise as JSON arrays
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: CoherenceIncompleteEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.active_contradictions, ev.active_contradictions);
+}
+
+#[test]
+fn coherence_incomplete_event_deserializes_without_contradictions_field() {
+    // Old clients don't send active_contradictions — #[serde(default)] handles it
+    let json = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000000",
+        "uncovered_domains": ["auth"],
+        "retries": 1,
+        "timestamp": "2026-01-01T00:00:00Z"
+    }"#;
+    let ev: CoherenceIncompleteEvent = serde_json::from_str(json).unwrap();
+    assert!(ev.active_contradictions.is_empty());
+}
+
+#[test]
+fn verifier_comparison_event_roundtrips_json() {
+    use h2ai_types::events::VerifierComparisonEvent;
+    use h2ai_types::identity::ExplorerId;
+    let ev = VerifierComparisonEvent {
+        task_id: task_id(),
+        explorer_id: ExplorerId::new(),
+        standard_score: 0.72,
+        adversarial_score: 0.45,
+        standard_passed: true,
+        adversarial_passed: false,
+        verifier_kind: "llmjudge".to_string(),
+        timestamp: Utc::now(),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: VerifierComparisonEvent = serde_json::from_str(&json).unwrap();
+    assert!((back.standard_score - 0.72).abs() < 1e-6);
+    assert!(!back.adversarial_passed);
+}
+
 #[cfg(test)]
 mod manifest_oracle_tests {
     use h2ai_types::manifest::TaskManifest;
@@ -632,6 +688,7 @@ mod manifest_oracle_tests {
             context: None,
             require_approval: false,
             constraint_tags: vec![],
+            measure_verifier_ab: false,
             oracle: Some(OracleSpec {
                 runner_uri: "http://localhost:9090".into(),
                 test_suite: "tests/".into(),

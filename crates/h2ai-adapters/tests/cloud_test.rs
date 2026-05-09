@@ -21,6 +21,20 @@ fn ok_body(content: &str, total_tokens: u64) -> serde_json::Value {
     })
 }
 
+fn reasoning_body(reasoning_content: &str, total_tokens: u64) -> serde_json::Value {
+    serde_json::json!({
+        "choices": [{"message": {"content": "", "reasoning_content": reasoning_content}}],
+        "usage": {"total_tokens": total_tokens}
+    })
+}
+
+fn reasoning_body_no_content_key(reasoning_content: &str, total_tokens: u64) -> serde_json::Value {
+    serde_json::json!({
+        "choices": [{"message": {"reasoning_content": reasoning_content}}],
+        "usage": {"total_tokens": total_tokens}
+    })
+}
+
 #[tokio::test]
 async fn cloud_adapter_returns_parsed_content_and_token_count() {
     let server = MockServer::start().await;
@@ -62,6 +76,72 @@ async fn cloud_adapter_returns_network_error_when_env_var_missing() {
     );
     let result = adapter.execute(request()).await;
     assert!(matches!(result, Err(AdapterError::NetworkError(_))));
+}
+
+/// Reasoning models (DeepSeek R1, Qwen3, etc.) leave `content` as an empty string and place
+/// their output in `reasoning_content`. The adapter must fall back to `reasoning_content`
+/// when `content` is absent or empty.
+#[tokio::test]
+async fn cloud_adapter_uses_reasoning_content_when_content_is_empty_string() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(reasoning_body("chain-of-thought answer", 77)),
+        )
+        .mount(&server)
+        .await;
+
+    unsafe { std::env::set_var("H2AI_TEST_KEY_REASONING_1", "sk-test-r1") };
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_1".into());
+    let resp = adapter.execute(request()).await.unwrap();
+
+    assert_eq!(resp.output, "chain-of-thought answer");
+    assert_eq!(resp.token_cost, 77);
+}
+
+#[tokio::test]
+async fn cloud_adapter_uses_reasoning_content_when_content_key_absent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(reasoning_body_no_content_key(
+                "answer without content key",
+                55,
+            )),
+        )
+        .mount(&server)
+        .await;
+
+    unsafe { std::env::set_var("H2AI_TEST_KEY_REASONING_2", "sk-test-r2") };
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_2".into());
+    let resp = adapter.execute(request()).await.unwrap();
+
+    assert_eq!(resp.output, "answer without content key");
+    assert_eq!(resp.token_cost, 55);
+}
+
+#[tokio::test]
+async fn cloud_adapter_prefers_content_over_reasoning_content_when_both_present() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {
+                "content": "final answer",
+                "reasoning_content": "intermediate thinking"
+            }}],
+            "usage": {"total_tokens": 99}
+        })))
+        .mount(&server)
+        .await;
+
+    unsafe { std::env::set_var("H2AI_TEST_KEY_REASONING_3", "sk-test-r3") };
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_3".into());
+    let resp = adapter.execute(request()).await.unwrap();
+
+    assert_eq!(resp.output, "final answer");
 }
 
 #[tokio::test]

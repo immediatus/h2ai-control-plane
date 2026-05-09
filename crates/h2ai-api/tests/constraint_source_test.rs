@@ -1,11 +1,11 @@
-use h2ai_constraints::source::{ConstraintSource, FsConstraintSource};
+use h2ai_constraints::source::FsConstraintStore;
 use h2ai_constraints::types::{ConstraintMeta, ConstraintSeverity, PredicateKind};
 use h2ai_constraints::wiki::WikiCache;
 use std::fs;
 use tempfile::TempDir;
 
 #[test]
-fn nats_wiki_source_resolve_uses_wiki_cache() {
+fn wiki_cache_resolve_returns_matching_ids() {
     let mut cache = WikiCache::default();
     cache
         .context_map
@@ -34,8 +34,9 @@ fn nats_wiki_source_resolve_uses_wiki_cache() {
 }
 
 #[tokio::test]
-async fn reconstruct_docs_from_static_metas() {
-    use h2ai_api::constraint_source::reconstruct_docs;
+async fn fs_constraint_resolver_loads_and_resolves_by_id() {
+    use h2ai_constraints::resolver::ConstraintResolver;
+    use std::sync::Arc;
 
     let dir = TempDir::new().unwrap();
     fs::write(
@@ -43,12 +44,11 @@ async fn reconstruct_docs_from_static_metas() {
         "id: ADR-001\ntitle: Cite Source\nseverity: hard\ncriteria:\n  pass: Cites a source reference\n  fail: No source cited\n",
     )
     .unwrap();
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source
-        .resolve_context(&[], &["ADR-001".to_string()], "")
-        .await;
 
-    let docs = reconstruct_docs(metas, &source).await;
+    let (index, store) = FsConstraintStore::load(dir.path()).unwrap();
+    let resolver = ConstraintResolver::new(Arc::new(index), Arc::new(store));
+    let docs = resolver.resolve(&["ADR-001".to_string()], &[], "").await;
+
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "ADR-001");
 }

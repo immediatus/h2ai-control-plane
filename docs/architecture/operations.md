@@ -135,9 +135,22 @@ jetstream { store_dir: "/data/jetstream"; max_memory_store: 8GB; max_file_store:
 
 ## 3. Calibration workflow
 
-Calibration measures α, β₀, CG, and the cosine N_eff prior across the configured adapter pool. It must run before any task submission and must be repeated whenever the pool changes.
+Calibration measures α, β₀, CG, and the cosine N_eff prior across the configured adapter pool. It runs automatically at server startup and must be repeated whenever the pool changes.
 
-### Triggering
+### Startup behaviour
+
+The server runs calibration synchronously before opening its HTTP listener. The startup log emits:
+
+```
+INFO: running startup calibration…
+INFO: startup calibration complete — ready to accept tasks.
+```
+
+If the LLM is unreachable, a previously persisted calibration (loaded from NATS KV) is used as a fallback.
+
+### Manual re-triggering
+
+Use `POST /calibrate` to force a fresh calibration without restarting the server — for example after swapping an adapter model or adding capacity:
 
 ```bash
 curl -X POST http://localhost:8080/calibrate

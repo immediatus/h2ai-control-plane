@@ -1503,6 +1503,7 @@ name = "h2ai-constraints"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "jsonschema",
  "regex",
  "serde",
@@ -1548,7 +1549,9 @@ dependencies = [
  "h2ai-constraints",
  "h2ai-context",
  "h2ai-orchestrator",
+ "h2ai-provisioner",
  "h2ai-state",
+ "h2ai-tools",
  "h2ai-types",
  "hostname",
  "metrics",

@@ -1,7 +1,9 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::types::ConstraintDoc;
+use h2ai_constraints::types::{
+    ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
+};
 
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
@@ -115,6 +117,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let adapter2 = mock_adapter2();
@@ -200,6 +203,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -275,6 +279,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -350,6 +355,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -424,6 +430,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let input = EngineInput {
@@ -517,6 +524,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -595,6 +603,7 @@ async fn engine_output_contains_suggested_next_params() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let input = EngineInput {
@@ -656,10 +665,55 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         synthesis_min_proposals: 2,
         ..H2AIConfig::default()
     };
-    let corpus = vec![ConstraintDoc::new_llm_judge(
-        "ADR-001",
-        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
-    )];
+    // ADR-001: LlmJudge (Light tier) — used for auditing/verification, not satisfaction matrix.
+    //
+    // Two Static-tier Soft constraints are added to create a genuine contradiction so coherence
+    // stays open and synthesis is NOT bypassed by the is_closed() guard:
+    //
+    // SIG-BASE: VocabularyPresence AllOf ["stateless", "adr-001"]
+    //   Both explorer outputs contain these terms → score 1.0 for both.
+    //   Ensures both proposals PASS verification (combined soft aggregate ≥ 0.45).
+    //
+    // SIG-JWT: VocabularyPresence AllOf ["jwt"]
+    //   explorer1 contains "jwt" → score 1.0  (satisfies constraint, ≥ 0.5 threshold)
+    //   explorer2 does NOT contain "jwt" → score 0.0  (fails matrix threshold)
+    //   This divergence creates a contradiction in the "token-format" domain.
+    //
+    // Combined aggregate for explorer2: (1.0*0.5 + 0.0*0.5) / 1.0 = 0.5 ≥ 0.45 → passes.
+    let corpus = vec![
+        ConstraintDoc::new_llm_judge(
+            "ADR-001",
+            "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
+        ),
+        ConstraintDoc {
+            id: "SIG-BASE".to_string(),
+            source_file: "SIG-BASE.yaml".into(),
+            description: "Solution must be stateless and reference ADR-001".into(),
+            severity: ConstraintSeverity::Soft { weight: 0.5 },
+            predicate: ConstraintPredicate::VocabularyPresence {
+                mode: VocabularyMode::AllOf,
+                terms: vec!["stateless".to_string(), "adr-001".to_string()],
+            },
+            remediation_hint: None,
+            domains: vec!["architecture".to_string()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+        ConstraintDoc {
+            id: "SIG-JWT".to_string(),
+            source_file: "SIG-JWT.yaml".into(),
+            description: "JWT token format must be used".into(),
+            severity: ConstraintSeverity::Soft { weight: 0.5 },
+            predicate: ConstraintPredicate::VocabularyPresence {
+                mode: VocabularyMode::AllOf,
+                terms: vec!["jwt".to_string()],
+            },
+            remediation_hint: None,
+            domains: vec!["token-format".to_string()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+    ];
     let manifest = TaskManifest {
         description: "Propose stateless auth with ADR-001 compliance".into(),
         pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
@@ -675,11 +729,12 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
             review_gates: vec![],
             slot_configs: vec![],
         },
-        constraints: vec!["ADR-001".into()],
+        constraints: vec!["ADR-001".into(), "SIG-BASE".into(), "SIG-JWT".into()],
         context: None,
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let valid_critique = r#"{"proposal_critiques":[{"proposal_id":"p1","strengths":["s1"],"weaknesses":[],"verdict":"partial"},{"proposal_id":"p2","strengths":["s2"],"weaknesses":[],"verdict":"strong"}],"contradictions":[],"synthesis_guidance":"Use p2."}"#;
@@ -791,6 +846,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -956,6 +1012,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let input = EngineInput {
@@ -1040,6 +1097,7 @@ async fn engine_bypasses_family_conflict_gate_when_allow_single_family() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let input = EngineInput {
@@ -1083,4 +1141,198 @@ async fn engine_bypasses_family_conflict_gate_when_allow_single_family() {
             "gate fired despite allow_single_family=true: {msg}"
         );
     }
+}
+
+/// Records system_context of every execute() call for later assertion.
+#[derive(Debug, Clone)]
+struct CapturingAdapter {
+    response_sequence: Arc<std::sync::Mutex<Vec<String>>>,
+    captured_contexts: Arc<std::sync::Mutex<Vec<String>>>,
+    kind: AdapterKind,
+}
+
+impl CapturingAdapter {
+    fn new(responses: Vec<String>) -> Self {
+        Self {
+            response_sequence: Arc::new(std::sync::Mutex::new(responses)),
+            captured_contexts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://capturing".into(),
+                api_key_env: "NONE".into(),
+            },
+        }
+    }
+
+    fn captured_contexts(&self) -> Vec<String> {
+        self.captured_contexts.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl IComputeAdapter for CapturingAdapter {
+    async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        self.captured_contexts
+            .lock()
+            .unwrap()
+            .push(req.system_context.clone());
+        let output = {
+            let mut seq = self.response_sequence.lock().unwrap();
+            if seq.is_empty() {
+                "fallback proposal".to_string()
+            } else {
+                seq.remove(0)
+            }
+        };
+        Ok(ComputeResponse {
+            output,
+            token_cost: 10,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+        })
+    }
+
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
+
+#[tokio::test]
+async fn engine_hint_injected_into_explorer_on_retry() {
+    // Constraint has a remediation_hint that should appear in the explorer's
+    // system_context during the second generation iteration.
+    let hint_text = "Use TTL-based caches with no node affinity required.";
+
+    let corpus = vec![h2ai_constraints::types::ConstraintDoc {
+        id: "C-HINT".into(),
+        source_file: "C-HINT.yaml".into(),
+        description: "Stateless caching rule".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.45 },
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "The proposal must use TTL-based caches with no node affinity.".into(),
+        },
+        remediation_hint: Some(hint_text.into()),
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    }];
+
+    // Explorer: two proposals (one per iteration), content doesn't matter
+    let explorer = CapturingAdapter::new(vec![
+        "proposal iteration 0".into(),
+        "proposal iteration 1".into(),
+    ]);
+
+    // Verifier: returns 0.0 on first call (iter 0 fails), 0.9 on second (iter 1 passes)
+    let verifier = SequencedAdapter::new(vec![
+        r#"{"score": 0.0, "reason": "missing TTL cache"}"#.into(),
+        r#"{"score": 0.9, "reason": "compliant"}"#.into(),
+    ]);
+
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let cal = calibration().await;
+    let store = TaskStore::new();
+    // shadow_mode = true keeps Phase 1.5 purely observational so the Precision quadrant
+    // does not force 2-3 explorers per iteration. With shadow_mode = false and a single
+    // LlmJudge constraint the engine routes Precision and overrides count to clamp(2,3),
+    // which consumes all verifier responses in one iteration and prevents the retry path.
+    #[allow(clippy::field_reassign_with_default)]
+    let cfg = {
+        let mut c = H2AIConfig::default();
+        c.max_autonomic_retries = 3;
+        c.allow_single_family = true;
+        c.task_complexity.shadow_mode = true;
+        c
+    };
+
+    let manifest = TaskManifest {
+        description: "Propose a stateless caching strategy".into(),
+        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 1,
+            tau_min: Some(0.5),
+            tau_max: Some(0.5),
+            roles: vec![],
+            review_gates: vec![],
+            slot_configs: vec![],
+        },
+        constraints: vec!["C-HINT".into()],
+        context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
+        measure_verifier_ab: false,
+    };
+
+    let registry = AdapterRegistry::new(
+        Arc::new(MockAdapter::new("ignored".into())) as Arc<dyn IComputeAdapter>
+    );
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&explorer as &dyn h2ai_types::adapter::IComputeAdapter],
+        verification_adapter: &verifier as &dyn h2ai_types::adapter::IComputeAdapter,
+        auditor_adapter: &auditor as &dyn h2ai_types::adapter::IComputeAdapter,
+        auditor_config: AuditorConfig {
+            adapter: AdapterKind::CloudGeneric {
+                endpoint: "mock".into(),
+                api_key_env: "NONE".into(),
+            },
+            ..Default::default()
+        },
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+    };
+
+    let result = ExecutionEngine::run_offline(input).await;
+    assert!(
+        result.is_ok(),
+        "engine must resolve on second iteration; err: {:?}",
+        result.err()
+    );
+
+    let contexts = explorer.captured_contexts();
+    assert!(
+        contexts.len() >= 2,
+        "expected at least 2 explorer calls (one per iteration), got {}",
+        contexts.len()
+    );
+
+    // Static remediation hint from the constraint doc is injected by the compiler
+    // into every iteration's system context (not only on retry).
+    let first_iter_ctx = &contexts[0];
+    assert!(
+        first_iter_ctx.contains(hint_text),
+        "first iteration must contain static remediation hint from compiler;\n\
+        hint: {hint_text}\n\
+        context snippet: {}",
+        &first_iter_ctx[..first_iter_ctx.len().min(500)]
+    );
+
+    // The SECOND iteration must additionally contain the dynamic CONSTRAINT FEEDBACK
+    // block produced by RetryWithHints — this is the per-failure remediation injected
+    // by the engine after the verifier rejects the first proposal.
+    let second_iter_ctx = &contexts[1];
+    assert!(
+        second_iter_ctx.contains("CONSTRAINT FEEDBACK"),
+        "second iteration explorer context must contain dynamic constraint feedback block;\n\
+        context snippet: {}",
+        &second_iter_ctx[..second_iter_ctx.len().min(500)]
+    );
 }

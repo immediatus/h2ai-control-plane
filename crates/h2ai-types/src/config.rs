@@ -151,7 +151,7 @@ impl Default for AuditorConfig {
                 api_key_env: String::new(),
             },
             tau: TauValue::new(0.1).unwrap(),
-            max_tokens: 256,
+            max_tokens: 4096,
             prompt_template: crate::prompts::AUDITOR_PROMPT_TEMPLATE.into(),
         }
     }
@@ -183,7 +183,7 @@ impl Default for TaoConfig {
             observation_fail_schema: crate::prompts::TAO_OBSERVATION_FAIL_SCHEMA.into(),
             retry_instruction: crate::prompts::TAO_RETRY_INSTRUCTION.into(),
             repetition_threshold: 0.92,
-            per_turn_timeout_secs: 120,
+            per_turn_timeout_secs: 600,
         }
     }
 }
@@ -202,6 +202,10 @@ pub struct VerificationConfig {
     pub evaluator_system_prompt: String,
     pub evaluator_tau: TauValue,
     pub evaluator_max_tokens: u64,
+    /// When true, run both standard and adversarial verifiers and emit VerifierComparisonEvent.
+    /// Does not affect pruning decisions. Off by default; enable only for measurement runs.
+    #[serde(default)]
+    pub record_adversarial_comparison: bool,
 }
 
 impl Default for VerificationConfig {
@@ -211,7 +215,8 @@ impl Default for VerificationConfig {
             rubric: crate::prompts::COT_RUBRIC.into(),
             evaluator_system_prompt: crate::prompts::EVALUATOR_SYSTEM_PROMPT.into(),
             evaluator_tau: TauValue::new(0.1).unwrap(),
-            evaluator_max_tokens: 512,
+            evaluator_max_tokens: 8192,
+            record_adversarial_comparison: false,
         }
     }
 }

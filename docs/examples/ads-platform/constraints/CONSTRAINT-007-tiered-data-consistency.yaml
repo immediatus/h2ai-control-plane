@@ -21,3 +21,8 @@ criteria:
     The proposal explicitly serves advertiser budget balances from a cache (L1 or L2), or
     explicitly uses plain wall-clock timestamps for billing events where ordering must be
     globally consistent.
+  checks:
+    - Does the proposal bypass cache for budget checks (reads directly from the authoritative store)?
+    - Is the configuration cache TTL ≤5 seconds?
+    - Is the ML feature cache TTL ≤5 minutes?
+    - Does the proposal use Hybrid Logical Clocks (HLC) for billing event ordering (not wall-clock time)?

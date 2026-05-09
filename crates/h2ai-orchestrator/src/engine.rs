@@ -164,6 +164,10 @@ pub struct EngineOutput {
     /// `true` = proposal passed verification (score ≥ verify_threshold).
     /// Used for H1 (ρ_actual) empirical measurement in the GAP-A1 experiment.
     pub adapter_correctness: Vec<(h2ai_types::identity::ExplorerId, bool)>,
+    /// Domain-level coherence state from all pruned proposals across all MAPE-K waves.
+    pub coherence_state: crate::coherence::CoherenceState,
+    /// Comparison events from dual-run verifier (populated only when `record_adversarial_comparison` is set).
+    pub comparison_events: Vec<h2ai_types::events::VerifierComparisonEvent>,
 }
 
 #[derive(serde::Deserialize)]
@@ -197,7 +201,14 @@ impl ExecutionEngine {
 
         // ── Phase 1: Bootstrap ──────────────────────────────────────────────
         let description = &input.manifest.description;
-        let compiled = compiler::compile(description, &input.constraint_corpus);
+        // include_rubric=false: first-attempt context withholds LlmJudge rubric — explorer
+        // reasons from domain expertise and the constraint requirement summary injected by
+        // the compiler. The verifier retains the full rubric via ConstraintPredicate::LlmJudge.
+        //
+        // include_rubric=true: retry context exposes the full rubric so the model has all
+        // information needed to address specific failing checks after the first attempt failed.
+        let compiled = compiler::compile(description, &input.constraint_corpus, false);
+        let compiled_with_rubric = compiler::compile(description, &input.constraint_corpus, true);
 
         let adr_keywords: Vec<String> = input
             .constraint_corpus
@@ -205,13 +216,13 @@ impl ExecutionEngine {
             .flat_map(|d: &ConstraintDoc| d.vocabulary().into_iter())
             .chain(input.manifest.constraints.iter().cloned())
             .collect();
-        let system_context = compact(
-            &compiled.system_context,
-            &CompactionConfig {
-                max_tokens: input.cfg.max_context_tokens.unwrap_or(usize::MAX / 4),
-                preserve_keywords: adr_keywords,
-            },
-        );
+        let compaction_cfg = CompactionConfig {
+            max_tokens: input.cfg.max_context_tokens.unwrap_or(usize::MAX / 4),
+            preserve_keywords: adr_keywords,
+        };
+        let system_context = compact(&compiled.system_context, &compaction_cfg);
+        let system_context_with_rubric =
+            compact(&compiled_with_rubric.system_context, &compaction_cfg);
 
         let _bootstrapped = TaskBootstrappedEvent {
             task_id: task_id.clone(),
@@ -251,9 +262,9 @@ impl ExecutionEngine {
         // ── Phase 1.5: Task Complexity Assessment ──────────────────────────
         // Classifies the task into a routing quadrant (Precision / Coverage /
         // Complex / Degenerate) using corpus metadata and calibration state.
-        // In shadow_mode (default: true) this is purely observational — the
-        // quadrant does not change topology selection downstream. Disarm via
-        // cfg.task_complexity.shadow_mode = false after GAP-A1 experiment.
+        // In shadow_mode this is purely observational — the quadrant does not
+        // change topology selection downstream. shadow_mode = false is the
+        // production default (armed after GAP-A1; see reference.toml).
         let probe_adapter = input.explorer_adapters.first().copied();
         let complexity_assessment = assess_task_complexity(
             &input.constraint_corpus,
@@ -326,9 +337,13 @@ impl ExecutionEngine {
         let mut tau_values_tried: Vec<Vec<f64>> = Vec::new();
         let mut quality_history: Vec<QualityMeasurement> = Vec::new();
         let mut all_verification_events: Vec<VerificationScoredEvent> = Vec::new();
+        let mut all_comparison_events: Vec<h2ai_types::events::VerifierComparisonEvent> =
+            Vec::new();
         let mut last_multiplication_failure: Option<MultiplicationConditionFailure> = None;
+        let task_eval_cache = crate::verification::new_eval_cache();
         let mut adapter_rotation_offset: usize = 0;
         let mut pending_tombstone: Option<String> = None;
+        let mut retry_context: Option<String> = None;
         let mut topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent> =
             Vec::new();
         let mut mode_collapse_count: usize = 0;
@@ -542,8 +557,24 @@ impl ExecutionEngine {
                         );
                         continue;
                     }
-                    RetryAction::RetryWithHints { topology, .. } => {
+                    RetryAction::RetryWithHints { topology, hints } => {
                         force_topology = Some(topology);
+                        if !hints.is_empty() {
+                            let attempts_remaining =
+                                input.cfg.max_autonomic_retries.saturating_sub(retry_count);
+                            let hint_lines = hints
+                                .iter()
+                                .map(|h| format!("• {h}"))
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            retry_context = Some(format!(
+                                "{system_context_with_rubric}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
+                                The following constraints were violated. Fix ALL of these in your next response:\n\n\
+                                {hint_lines}\n\n\
+                                {attempts_remaining} retry attempt(s) remaining.\n\
+                                ---"
+                            ));
+                        }
                         Self::apply_optimizer(
                             &mut current_params,
                             &mut tao_config,
@@ -607,8 +638,24 @@ impl ExecutionEngine {
                             tau_reduction_factor *= tau_factor;
                             continue;
                         }
-                        RetryAction::RetryWithHints { topology, .. } => {
+                        RetryAction::RetryWithHints { topology, hints } => {
                             force_topology = Some(topology);
+                            if !hints.is_empty() {
+                                let attempts_remaining =
+                                    input.cfg.max_autonomic_retries.saturating_sub(retry_count);
+                                let hint_lines = hints
+                                    .iter()
+                                    .map(|h| format!("• {h}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n");
+                                retry_context = Some(format!(
+                                    "{system_context_with_rubric}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
+                                    The following constraints were violated. Fix ALL of these in your next response:\n\n\
+                                    {hint_lines}\n\n\
+                                    {attempts_remaining} retry attempt(s) remaining.\n\
+                                    ---"
+                                ));
+                            }
                             continue;
                         }
                         RetryAction::Fail(_) => {
@@ -643,24 +690,15 @@ impl ExecutionEngine {
                         + 'f,
                 >,
             >;
-            // Phase 1.5 Complex override (non-shadow): inject structural CoT diversity
-            // into every slot when the manifest provides no explicit slot_configs.
-            // StepByStep/DevilsAdvocate/FirstPrinciples/BackwardChaining ensure
-            // independent reasoning paths, reducing correlated-hallucination risk
-            // for high-TCC tasks where the solution space is multi-dimensional.
-            let complex_slot_configs_owned;
+            // slot_configs are always populated by Phase 0 decomposition before EngineInput
+            // is constructed. No fallback needed here.
             let effective_slot_configs: &[h2ai_types::manifest::ExplorerSlotConfig] =
-                if !input.cfg.task_complexity.shadow_mode
-                    && assessed_quadrant == TaskQuadrant::Complex
-                    && input.manifest.explorers.slot_configs.is_empty()
-                {
-                    complex_slot_configs_owned =
-                        h2ai_types::manifest::ExplorerSlotConfig::diverse_defaults();
-                    &complex_slot_configs_owned
-                } else {
-                    &input.manifest.explorers.slot_configs
-                };
+                &input.manifest.explorers.slot_configs;
 
+            let active_ctx: String = retry_context
+                .as_deref()
+                .unwrap_or(&system_context)
+                .to_owned();
             let futures_vec: Vec<ExplorerFuture<'_>> = provisioned
                 .explorer_configs
                 .iter()
@@ -669,7 +707,7 @@ impl ExecutionEngine {
                     let (slot_task, slot_system_ctx) = {
                         let configs = effective_slot_configs;
                         if configs.is_empty() {
-                            (input.manifest.description.clone(), system_context.clone())
+                            (input.manifest.description.clone(), active_ctx.clone())
                         } else {
                             let sc = &configs[idx % configs.len()];
                             let cot = sc.cot_style.instruction();
@@ -678,10 +716,30 @@ impl ExecutionEngine {
                             } else {
                                 format!("{}\n\n{}", cot, input.manifest.description)
                             };
-                            let ctx = if sc.role_frame.is_empty() {
-                                system_context.clone()
+                            let mut preamble = String::new();
+                            if !sc.role_frame.is_empty() {
+                                preamble.push_str(&sc.role_frame);
+                            }
+                            if !sc.focus_mandate.is_empty() {
+                                if !preamble.is_empty() {
+                                    preamble.push_str("\n\n");
+                                }
+                                preamble.push_str("[MANDATE]: ");
+                                preamble.push_str(&sc.focus_mandate);
+                            }
+                            if !sc.rejection_criteria.is_empty() {
+                                if !preamble.is_empty() {
+                                    preamble.push_str("\n\n");
+                                }
+                                preamble.push_str(
+                                    "[AFTER WRITING YOUR PROPOSAL, IDENTIFY THE BIGGEST RISK]: ",
+                                );
+                                preamble.push_str(&sc.rejection_criteria);
+                            }
+                            let ctx = if preamble.is_empty() {
+                                active_ctx.clone()
                             } else {
-                                format!("{}\n\n{}", sc.role_frame, system_context)
+                                format!("{}\n\n{}", preamble, active_ctx)
                             };
                             (task, ctx)
                         }
@@ -834,8 +892,10 @@ impl ExecutionEngine {
                 constraint_corpus: &input.constraint_corpus,
                 evaluator: input.verification_adapter,
                 config: verification_config.clone(),
+                eval_cache: std::sync::Arc::clone(&task_eval_cache),
             })
             .await;
+            all_comparison_events.extend(ver_out.comparison_events.iter().cloned());
 
             // Diversity gate: post-verification — check constraint-satisfaction profile entropy.
             // Collapsed fingerprints signal collective hallucination; trigger MAPE-K retry.
@@ -895,8 +955,24 @@ impl ExecutionEngine {
                         );
                         continue;
                     }
-                    RetryAction::RetryWithHints { topology, .. } => {
+                    RetryAction::RetryWithHints { topology, hints } => {
                         force_topology = Some(topology);
+                        if !hints.is_empty() {
+                            let attempts_remaining =
+                                input.cfg.max_autonomic_retries.saturating_sub(retry_count);
+                            let hint_lines = hints
+                                .iter()
+                                .map(|h| format!("• {h}"))
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            retry_context = Some(format!(
+                                "{system_context_with_rubric}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
+                                The following constraints were violated. Fix ALL of these in your next response:\n\n\
+                                {hint_lines}\n\n\
+                                {attempts_remaining} retry attempt(s) remaining.\n\
+                                ---"
+                            ));
+                        }
                         Self::apply_optimizer(
                             &mut current_params,
                             &mut tao_config,
@@ -918,7 +994,7 @@ impl ExecutionEngine {
             }
 
             let mut proposals: Vec<ProposalEvent> = Vec::new();
-            for (prop, results) in ver_out.passed {
+            for (prop, results, any_cache_hit) in ver_out.passed {
                 let score = h2ai_constraints::types::aggregate_compliance_score(&results);
                 iteration_verification_events.push(VerificationScoredEvent {
                     task_id: task_id.clone(),
@@ -926,12 +1002,13 @@ impl ExecutionEngine {
                     score,
                     reason: String::new(),
                     passed: true,
+                    cache_hit: any_cache_hit,
                     timestamp: Utc::now(),
                 });
                 input.store.record_validation(&task_id, true);
                 proposals.push(prop);
             }
-            for (prop, results, violations) in ver_out.failed {
+            for (prop, results, violations, any_cache_hit) in ver_out.failed {
                 let hard_gate = results.iter().all(|r| r.hard_passes());
                 let soft = h2ai_constraints::types::aggregate_compliance_score(&results);
                 let compliance = if hard_gate { soft } else { 0.0 };
@@ -946,6 +1023,7 @@ impl ExecutionEngine {
                         .collect::<Vec<_>>()
                         .join(", "),
                     passed: false,
+                    cache_hit: any_cache_hit,
                     timestamp: Utc::now(),
                 });
                 let error_cost = RoleErrorCost::new((1.0 - compliance).clamp(0.0, 1.0)).unwrap();
@@ -1181,13 +1259,53 @@ impl ExecutionEngine {
             all_pruned.extend(pruned.iter().cloned());
             tau_values_tried.push(tau_values);
 
+            // Coherence state after this wave — uncovered domains (from pruned) plus active
+            // contradictions (from surviving proposals' satisfaction matrix when available).
+            // Computed once here; all success and failure paths reuse it.
+            let wave_coherence = {
+                let base = crate::coherence::CoherenceState::from_pruned(
+                    &input.constraint_corpus,
+                    &all_pruned,
+                );
+                if let Some(ref fe) = frontier_event {
+                    base.with_contradictions(
+                        &input.constraint_corpus,
+                        &fe.explorer_ids,
+                        &fe.satisfaction_matrix,
+                        &fe.constraint_ids,
+                    )
+                } else {
+                    base
+                }
+            };
+            tracing::trace!(
+                target: "h2ai.coherence",
+                retry = retry_count,
+                uncovered_domains = ?wave_coherence.uncovered_domains,
+                active_contradictions = wave_coherence.active_contradictions.len(),
+                is_closed = wave_coherence.is_closed(),
+                "coherence state after wave"
+            );
+
             // ── Phase 5a: Synthesis (optional, replaces selection on success) ───────
             // Complex quadrant forces synthesis regardless of synthesis_enabled flag —
             // the task geometry demands cross-proposal reconciliation.
             let synthesis_forced = !input.cfg.task_complexity.shadow_mode
                 && assessed_quadrant == TaskQuadrant::Complex;
-            let synthesis_output: Option<(String, f64)> = if (input.cfg.synthesis_enabled
-                || synthesis_forced)
+            // When coherence is closed, all surviving proposals agree on every constraint domain.
+            // Synthesis would reconcile nothing. Even in the Complex quadrant, coherence closure
+            // implies structural agreement — synthesis adds no epistemic signal.
+            let synthesis_bypass = wave_coherence.is_closed();
+            if synthesis_bypass && (input.cfg.synthesis_enabled || synthesis_forced) {
+                tracing::debug!(
+                    target: "h2ai.coherence",
+                    retry = retry_count,
+                    n_candidates = synthesis_candidates.len(),
+                    "synthesis bypassed: coherence closed, proposals already agree"
+                );
+            }
+            let synthesis_output: Option<(String, f64)> = if !synthesis_bypass
+                && (input.cfg.synthesis_enabled || synthesis_forced)
                 && synthesis_candidates.len() >= input.cfg.synthesis_min_proposals
             {
                 if let Some(synth_adapter) = input.synthesis_adapter {
@@ -1226,8 +1344,10 @@ impl ExecutionEngine {
                                 constraint_corpus: &input.constraint_corpus,
                                 evaluator: input.verification_adapter,
                                 config: verification_config.clone(),
+                                eval_cache: std::sync::Arc::clone(&task_eval_cache),
                             })
                             .await;
+                            all_comparison_events.extend(re_ver.comparison_events.iter().cloned());
 
                             if !re_ver.passed.is_empty() {
                                 // Compute synthesis_gain: Q(synthesis) - max(Q(individuals))
@@ -1246,7 +1366,7 @@ impl ExecutionEngine {
                                 let synth_score = re_ver
                                     .passed
                                     .first()
-                                    .map(|(_, results)| {
+                                    .map(|(_, results, _)| {
                                         h2ai_constraints::types::aggregate_compliance_score(results)
                                     })
                                     .unwrap_or(0.0);
@@ -1351,6 +1471,8 @@ impl ExecutionEngine {
                     complexity_event: complexity_event_for_output.clone(),
                     frontier_event: frontier_event.clone(),
                     adapter_correctness: adapter_correctness.clone(),
+                    coherence_state: wave_coherence,
+                    comparison_events: all_comparison_events.clone(),
                 });
             }
 
@@ -1498,9 +1620,31 @@ impl ExecutionEngine {
                         complexity_event: complexity_event_for_output.clone(),
                         frontier_event: frontier_event.clone(),
                         adapter_correctness: adapter_correctness.clone(),
+                        coherence_state: wave_coherence,
+                        comparison_events: all_comparison_events.clone(),
                     });
                 }
                 MergeOutcome::ZeroSurvival(mut zero_event) => {
+                    // GAP-A4 #4: coherence-closed early exit.
+                    // If is_closed() AND proposals survived verification (synthesis_candidates
+                    // non-empty), the auditor is the blocker — constraint coverage is complete
+                    // and retrying cannot improve it. Skip further retries.
+                    // Guard: when synthesis_candidates is empty (all proposals verifier-rejected),
+                    // is_closed() is vacuously true (no domains were tracked) and the verifier
+                    // may accept a better proposal on retry.
+                    if wave_coherence.is_closed() && !synthesis_candidates.is_empty() {
+                        tracing::info!(
+                            target: "h2ai.coherence",
+                            retry = retry_count,
+                            uncovered_domains = ?wave_coherence.uncovered_domains,
+                            active_contradictions = wave_coherence.active_contradictions.len(),
+                            "coherence closed at ZeroSurvival — auditor is the blocker, \
+                             constraint coverage complete; skipping further retries"
+                        );
+                        input.store.mark_failed(&task_id);
+                        return Err(EngineError::MaxRetriesExhausted);
+                    }
+
                     // Compute epistemic diagnostics synchronously on the MAPE-K path.
                     let detected_failure_mode = if let Some(model) = input.embedding_model {
                         let n_eff = h2ai_autonomic::epistemic::compute_n_eff_cosine(
@@ -1579,8 +1723,24 @@ impl ExecutionEngine {
                                 input.cfg,
                             );
                         }
-                        RetryAction::RetryWithHints { topology, .. } => {
+                        RetryAction::RetryWithHints { topology, hints } => {
                             force_topology = Some(topology);
+                            if !hints.is_empty() {
+                                let attempts_remaining =
+                                    input.cfg.max_autonomic_retries.saturating_sub(retry_count);
+                                let hint_lines = hints
+                                    .iter()
+                                    .map(|h| format!("• {h}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n");
+                                retry_context = Some(format!(
+                                    "{system_context_with_rubric}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
+                                    The following constraints were violated. Fix ALL of these in your next response:\n\n\
+                                    {hint_lines}\n\n\
+                                    {attempts_remaining} retry attempt(s) remaining.\n\
+                                    ---"
+                                ));
+                            }
                             Self::apply_optimizer(
                                 &mut current_params,
                                 &mut tao_config,
@@ -1680,6 +1840,8 @@ impl ExecutionEngine {
                 },
                 frontier_event: None,
                 adapter_correctness: vec![],
+                coherence_state: crate::coherence::CoherenceState::default(),
+                comparison_events: vec![],
             })
         } else {
             // Earlier phase or unknown phase — restart from scratch

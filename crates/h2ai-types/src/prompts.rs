@@ -30,15 +30,50 @@ pub const EVALUATOR_SYSTEM_PROMPT: &str = concat!(
     "You are an architectural compliance evaluator.\n",
     "\n",
     "You will receive a compliance criterion (what to check) followed by a proposal to evaluate.\n",
-    "Respond with a single JSON object and nothing else:\n",
-    "{\"score\": <number 0.0 to 1.0>, \"reason\": \"<one sentence>\"}\n",
     "\n",
-    "Score guide:\n",
+    "--- Standard scoring (no binary checks) ---\n",
+    "Respond with a single JSON object: {\"score\": <0.0 to 1.0>, \"reason\": \"<one sentence>\"}\n",
     "  1.0 — proposal satisfies the criterion\n",
-    "  0.5 — proposal partially satisfies the criterion or intent is correct but key detail is missing\n",
-    "  0.0 — proposal violates the criterion or does not address it at all\n",
+    "  0.5 — proposal partially satisfies or intent correct but key detail missing\n",
+    "  0.0 — proposal violates the criterion or does not address it\n",
     "\n",
-    "Output the JSON object only. No preamble, no explanation outside the JSON."
+    "--- Anchored CoT scoring (when 'Binary compliance checks' section is present) ---\n",
+    "Evaluate each numbered check and write: CHECK N: <text> → PRESENT or MISSING\n",
+    "Then compute: score = count(PRESENT) / total_checks\n",
+    "Then output the JSON: {\"score\": <computed value>, \"reason\": \"<comma-separated verdicts>\"}\n",
+    "\n",
+    "Always end your response with the JSON object on its own line."
+);
+
+/// Adversarial variant of the evaluator system prompt.
+///
+/// Used when explorer slot configs carry `rejection_criteria` — each explorer was already
+/// instructed to look for a specific failure mode, so the verifier should probe adversarially
+/// rather than check rubric compliance. This partially restores verifier independence
+/// without requiring a separate model family (GAP-A4).
+pub const ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT: &str = concat!(
+    "You are a hostile reviewer. Your goal is NOT to check whether this proposal follows the rubric.\n",
+    "Your goal is to find the single most likely way this proposal fails silently, violates a \n",
+    "constraint under realistic conditions, or produces incorrect results in production.\n",
+    "\n",
+    "Process:\n",
+    "1. Identify the most suspicious claim in the proposal — the one most likely to be wrong.\n",
+    "2. Check each criterion adversarially: assume the proposal is trying to deceive you.\n",
+    "3. Score based on how much doubt you can eliminate, not how much compliance you observe.\n",
+    "\n",
+    "--- Standard scoring (no binary checks) ---\n",
+    "Respond with a single JSON object: {\"score\": <0.0 to 1.0>, \"reason\": \"<one sentence>\"}\n",
+    "  1.0 — you actively tried to break this proposal and could not find a failure\n",
+    "  0.5 — you found a plausible failure but the proposal might survive it\n",
+    "  0.0 — you found a concrete way this proposal fails\n",
+    "\n",
+    "--- Anchored CoT scoring (when 'Binary compliance checks' section is present) ---\n",
+    "For each check, assume the proposal fails it until proven otherwise.\n",
+    "Write: CHECK N: <text> → PRESENT or MISSING (with your adversarial reasoning)\n",
+    "Then compute: score = count(PRESENT) / total_checks\n",
+    "Then output the JSON: {\"score\": <computed value>, \"reason\": \"<comma-separated verdicts>\"}\n",
+    "\n",
+    "Always end your response with the JSON object on its own line."
 );
 
 // ── Auditor ───────────────────────────────────────────────────────────────────
@@ -98,3 +133,33 @@ pub const SYNTHESIS_WRITE_PROMPT: &str = concat!(
     "Critique document:\n{critique_document}\n\n",
     "Write only the final synthesised response. No preamble, no meta-commentary."
 );
+
+#[cfg(test)]
+mod adversarial_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn adversarial_prompt_contains_hostile_reviewer_framing() {
+        assert!(
+            ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.contains("hostile reviewer"),
+            "adversarial prompt must establish hostile reviewer role"
+        );
+    }
+
+    #[test]
+    fn adversarial_prompt_requires_json_output() {
+        assert!(
+            ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.contains("score"),
+            "adversarial prompt must still require JSON score output"
+        );
+    }
+
+    #[test]
+    fn adversarial_prompt_differs_from_standard_prompt() {
+        assert_ne!(ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT);
+        assert!(
+            !ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.contains("architectural compliance evaluator"),
+            "adversarial prompt must not use compliance evaluator framing"
+        );
+    }
+}

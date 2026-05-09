@@ -50,7 +50,12 @@ struct Choice {
 
 #[derive(Deserialize)]
 struct Message {
+    #[serde(default)]
     content: String,
+    /// Thinking/reasoning models (DeepSeek R1, Qwen3, etc.) place their chain-of-thought
+    /// here and leave `content` empty. Use as output when `content` is absent.
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -99,7 +104,13 @@ impl IComputeAdapter for CloudGenericAdapter {
                 .choices
                 .into_iter()
                 .next()
-                .map(|c| c.message.content)
+                .map(|c| {
+                    if c.message.content.is_empty() {
+                        c.message.reasoning_content.unwrap_or_default()
+                    } else {
+                        c.message.content
+                    }
+                })
                 .unwrap_or_default(),
             token_cost: chat.usage.total_tokens,
             adapter_kind: self.kind.clone(),

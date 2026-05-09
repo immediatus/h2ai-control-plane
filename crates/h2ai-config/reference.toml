@@ -54,10 +54,18 @@ cost_synthesizer = 0.1
 # ── Token budgets ─────────────────────────────────────────────────────────────
 
 # Maximum tokens per explorer generation call.
-explorer_max_tokens = 1024
+# Reasoning models spend most of their budget on internal CoT before writing
+# the visible response — 8192 gives enough room for both.
+explorer_max_tokens = 8192
+
+# Maximum tokens per evaluator verification call.
+# Reasoning models (chain-of-thought) consume tokens internally before writing
+# the compliance check output — 8192 gives sufficient budget for both.
+evaluator_max_tokens = 8192
 
 # Maximum tokens per calibration probe call.
-calibration_max_tokens = 256
+# Small but enough for the short probe response; reasoning overhead included.
+calibration_max_tokens = 4096
 
 # Maximum tokens kept after context compaction.
 # Comment out or omit to disable the limit.
@@ -287,10 +295,10 @@ synthesis_min_proposals = 2
 synthesis_tau = 0.2
 
 # Max tokens for the critique call (Stage 1).
-synthesis_critique_max_tokens = 1024
+synthesis_critique_max_tokens = 8192
 
 # Max tokens for the synthesis call (Stage 2).
-synthesis_max_tokens = 2048
+synthesis_max_tokens = 8192
 
 # ── Shell Tool ────────────────────────────────────────────────────────────────
 
@@ -369,7 +377,7 @@ n_eff_complex_threshold = 1.3
 # ── Probe-path parameters (used when TCC_structural is in the ambiguous band) ─────────────────
 
 # Max tokens per probe completion. Probe outputs are structure assessments, not full answers.
-probe_max_tokens = 512
+probe_max_tokens = 4096
 
 # Temperature for probe completions. Mid-range τ produces varied but coherent outputs.
 probe_tau = 0.5

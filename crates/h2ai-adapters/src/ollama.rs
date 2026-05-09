@@ -25,6 +25,33 @@ impl OllamaAdapter {
     }
 }
 
+/// Translate tau into Ollama `options` sampling parameters.
+///
+/// Mirrors the OpenAI adapter's three-regime strategy; Ollama uses the same
+/// parameter names inside its `options` block.
+fn sampling_options(tau: f64) -> serde_json::Value {
+    if tau < 0.35 {
+        serde_json::json!({
+            "temperature": tau,
+            "top_k": 20, "top_p": 0.85, "min_p": 0.05,
+            "repeat_penalty": 1.1, "repeat_last_n": 64
+        })
+    } else if tau <= 0.65 {
+        serde_json::json!({
+            "temperature": tau,
+            "top_k": 40, "top_p": 0.95, "min_p": 0.03,
+            "repeat_penalty": 1.05, "repeat_last_n": 64
+        })
+    } else {
+        serde_json::json!({
+            "temperature": tau,
+            "top_k": 0,
+            "mirostat": 2, "mirostat_tau": 5.0, "mirostat_eta": 0.1,
+            "repeat_penalty": 1.1, "repeat_last_n": 64
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct OllamaResponse {
     message: OllamaMessage,
@@ -51,9 +78,7 @@ impl IComputeAdapter for OllamaAdapter {
                 {"role": "system", "content": req.system_context},
                 {"role": "user",   "content": req.task}
             ],
-            "options": {
-                "temperature": req.tau.value()
-            }
+            "options": sampling_options(req.tau.value())
         });
 
         let http_resp = self

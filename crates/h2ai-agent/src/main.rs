@@ -1,11 +1,54 @@
+use h2ai_adapters::factory::AdapterFactory;
+use h2ai_adapters::mock::MockAdapter;
 use h2ai_agent::dispatch;
 use h2ai_agent::heartbeat::HeartbeatTask;
 use h2ai_config::H2AIConfig;
-use h2ai_types::agent::{AgentDescriptor, CostTier};
+use h2ai_types::adapter::IComputeAdapter;
+use h2ai_types::agent::{AgentDescriptor, AgentTool, CostTier};
+use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::AgentId;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
+
+pub fn agent_tools() -> Vec<AgentTool> {
+    vec![AgentTool::Shell, AgentTool::FileSystem]
+}
+
+fn build_adapter() -> Arc<dyn IComputeAdapter> {
+    let provider = std::env::var("H2AI_EXPLORER_PROVIDER")
+        .unwrap_or_default()
+        .to_lowercase();
+    let model = std::env::var("H2AI_EXPLORER_MODEL").unwrap_or_else(|_| "gpt-4o".into());
+    let api_key_env =
+        std::env::var("H2AI_EXPLORER_API_KEY_ENV").unwrap_or_else(|_| "OPENAI_API_KEY".into());
+    let endpoint = std::env::var("H2AI_EXPLORER_ENDPOINT").ok();
+
+    let kind = match provider.as_str() {
+        "anthropic" => AdapterKind::Anthropic { api_key_env, model },
+        "openai" => AdapterKind::OpenAI { api_key_env, model },
+        "ollama" => AdapterKind::Ollama {
+            endpoint: endpoint.unwrap_or_else(|| "http://localhost:11434".into()),
+            model,
+        },
+        "cloudgeneric" | "cloud" => AdapterKind::CloudGeneric {
+            endpoint: endpoint.unwrap_or_else(|| "http://localhost:8000/v1".into()),
+            api_key_env,
+        },
+        _ => {
+            eprintln!("WARN: H2AI_EXPLORER_PROVIDER not set or unknown — using MockAdapter");
+            return Arc::new(MockAdapter::new(String::new()));
+        }
+    };
+
+    match AdapterFactory::build(&kind) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("WARN: adapter build failed ({e}) — falling back to MockAdapter");
+            Arc::new(MockAdapter::new(String::new()))
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,17 +67,16 @@ async fn main() -> anyhow::Result<()> {
         AgentId::from(agent_id_str)
     };
 
-    let model = std::env::var("H2AI_EXPLORER_MODEL").unwrap_or_else(|_| "mock".into());
+    let model = std::env::var("H2AI_EXPLORER_MODEL").unwrap_or_else(|_| "local".into());
     let descriptor = AgentDescriptor {
         model: model.clone(),
-        tools: vec![],
+        tools: agent_tools(),
         cost_tier: CostTier::Mid,
     };
 
     let client = async_nats::connect(&nats_url).await?;
     tracing::info!(agent_id = %agent_id, model = %model, "h2ai-agent connected to NATS");
 
-    // Shared active task counter (heartbeat reports it, dispatch increments/decrements it)
     let active_tasks = Arc::new(AtomicU32::new(0));
 
     let hb_task = HeartbeatTask::new(
@@ -46,9 +88,18 @@ async fn main() -> anyhow::Result<()> {
     );
     let _hb_handle = hb_task.start();
 
-    // Build a mock adapter for now (Task 6 can wire real adapters)
-    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
-        Arc::new(h2ai_adapters::mock::MockAdapter::new(String::new()));
-
+    let adapter = build_adapter();
     dispatch::run(client, agent_id, adapter, active_tasks, cfg).await
+}
+
+#[cfg(test)]
+mod tests {
+    use h2ai_types::agent::AgentTool;
+
+    #[test]
+    fn agent_tools_list_is_complete() {
+        let tools = crate::agent_tools();
+        assert!(tools.contains(&AgentTool::Shell));
+        assert!(tools.contains(&AgentTool::FileSystem));
+    }
 }

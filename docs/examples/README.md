@@ -62,11 +62,8 @@ cd deploy/local && docker compose up -d
 # Copy the constraint corpus into the configured corpus_path
 cp -r docs/examples/ads-platform/constraints/* /path/to/constraints/
 
-# Run calibration (wait for CalibrationCompletedEvent in the SSE stream)
-CAL=$(curl -s -X POST http://localhost:8080/calibrate | jq -r .calibration_id)
-curl -sN "http://localhost:8080/calibrate/$CAL/events"
-
 # Submit each task and observe the SSE stream
+# (calibration runs automatically at server startup)
 for task in docs/examples/ads-platform/tasks/*.json; do
   echo "=== Submitting $(basename $task) ==="
   RESP=$(curl -s -X POST http://localhost:8080/tasks \

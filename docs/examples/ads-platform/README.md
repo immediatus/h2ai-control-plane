@@ -2,7 +2,7 @@
 
 This example is derived from the blog series **"Architecting Real-Time Ads Platform"** by Yuriy Polyulya. The series documents architectural decisions for a system serving 400M+ DAU at 1M+ QPS with 150ms P95 latency.
 
-The constraint documents here capture the actual decisions and their rationale from the series. They are structured in `ConstraintDoc` format so that H2AI Control Plane can use them as the Dark Knowledge corpus for integration testing.
+The constraint documents here capture the actual decisions and their rationale from the series. They are structured in `ConstraintDoc` YAML format so that H2AI Control Plane can use them as the Dark Knowledge corpus for integration testing.
 
 ## System summary
 
@@ -27,54 +27,56 @@ A real-time advertising platform with the following characteristics:
 
 ## Constraint corpus
 
-| Constraint | Decision | Key constraints |
-|---|---|---|
-| [CONSTRAINT-001](constraints/CONSTRAINT-001-stateless-request-services.md) | All request services are stateless | No per-user state across requests; no sticky sessions; L1 cache TTL ≤60s |
-| [CONSTRAINT-002](constraints/CONSTRAINT-002-service-communication-protocols.md) | gRPC internal, REST external | No REST between internal services; no gRPC for external; no async on critical path |
-| [CONSTRAINT-003](constraints/CONSTRAINT-003-rtb-timeout-strategy.md) | Adaptive per-DSP timeouts via HdrHistogram | T_global=100ms; no exact-percentile substitutes; in-process only; ≥100 samples before activation |
-| [CONSTRAINT-004](constraints/CONSTRAINT-004-budget-pacing-idempotency.md) | Pre-allocation + Redis atomic check-and-set | No CockroachDB reads on critical path; atomic Lua only; TTL=30s on idempotency keys |
-| [CONSTRAINT-005](constraints/CONSTRAINT-005-immutable-financial-audit-log.md) | Dual-ledger: operational (CockroachDB) + immutable (Kafka → ClickHouse) | Every billing event to Kafka; no ClickHouse mutations; 7-year retention |
-| [CONSTRAINT-006](constraints/CONSTRAINT-006-java-zgc-runtime.md) | Java 21 + Generational ZGC, 32GB heap | No G1GC; heap exactly 32GB; virtual threads required; separate gRPC thread pool |
-| [CONSTRAINT-007](constraints/CONSTRAINT-007-tiered-data-consistency.md) | Different consistency per data type | Budget checks bypass cache; config TTL ≤5s; ML features TTL ≤5min; HLC for billing |
+All constraints are in YAML format and loaded automatically when `constraint_wiki.enabled = true` in `h2ai.toml`.
+
+### Platform constraints
+
+| ID | Title | Domains | Key rule |
+|---|---|---|---|
+| [CONSTRAINT-001](constraints/CONSTRAINT-001-stateless-request-services.yaml) | Stateless Request-Handling Services | availability, scalability | No per-user state; no sticky sessions; L1 cache TTL ≤60s |
+| [CONSTRAINT-002](constraints/CONSTRAINT-002-service-communication-protocols.yaml) | Service Communication Protocols | performance, consistency | gRPC internal, REST external; no async on critical path |
+| [CONSTRAINT-003](constraints/CONSTRAINT-003-rtb-timeout-strategy.yaml) | RTB Timeout Strategy | latency, availability | T_global=100ms; HdrHistogram P95; ≥100 samples before activation |
+| [CONSTRAINT-004](constraints/CONSTRAINT-004-budget-pacing-idempotency.yaml) | Budget Pacing Idempotency | financial-accuracy, consistency | Pre-allocation + Redis atomic CAS; no CockroachDB on critical path |
+| [CONSTRAINT-005](constraints/CONSTRAINT-005-immutable-financial-audit-log.yaml) | Immutable Financial Audit Log | compliance, durability | Every billing event to Kafka; no ClickHouse mutations; 7-year retention |
+| [CONSTRAINT-006](constraints/CONSTRAINT-006-java-zgc-runtime.yaml) | Java ZGC Runtime | performance, reliability | Java 21 + Generational ZGC; 32GB heap exactly; virtual threads required |
+| [CONSTRAINT-007](constraints/CONSTRAINT-007-tiered-data-consistency.yaml) | Tiered Data Consistency | consistency, performance | Budget checks bypass cache; config TTL ≤5s; HLC for billing |
+
+### Framework implementation constraints
+
+These constraints were used to guide H2AI's own evaluation cache implementation and serve as a self-referential test of the framework.
+
+| ID | Title | Domains | Key rule |
+|---|---|---|---|
+| [CONSTRAINT-CACHE-1](constraints/CONSTRAINT-CACHE-1-similarity-function.yaml) | Similarity Function | performance, correctness | Use `repetition::similarity` (Jaccard); no cosine/embedding on hot path |
+| [CONSTRAINT-CACHE-2](constraints/CONSTRAINT-CACHE-2-concurrent-map.yaml) | Concurrent Map | performance, correctness | DashMap, not `Arc<Mutex<HashMap>>`; no blocking across `.await` |
+| [CONSTRAINT-CACHE-3](constraints/CONSTRAINT-CACHE-3-task-scoped-lifetime.yaml) | Task-Scoped Lifetime | correctness, memory | Per-task cache; no global/static storage; drop on task completion |
+| [CONSTRAINT-CACHE-4](constraints/CONSTRAINT-CACHE-4-typed-telemetry.yaml) | Typed Telemetry | observability | Cache hits → `VerificationScoredEvent` field; not log-only |
 
 ## Task manifests
 
-| Task | Tests | Expected behavior |
+| Task | Constraints exercised | Expected behavior |
 |---|---|---|
-| [task-dsp-onboarding.json](tasks/task-dsp-onboarding.json) | CONSTRAINT-003 timeout constraints | Proposals raising T_global or activating before 100 samples are pruned |
-| [task-budget-enforcement-crash-recovery.json](tasks/task-budget-enforcement-crash-recovery.json) | CONSTRAINT-004 + CONSTRAINT-005 idempotency | Proposals using non-atomic check-then-act or missing Kafka publish are pruned |
+| [task-dsp-onboarding.json](tasks/task-dsp-onboarding.json) | CONSTRAINT-003 | Proposals raising T_global or activating before 100 samples are pruned |
+| [task-budget-enforcement-crash-recovery.json](tasks/task-budget-enforcement-crash-recovery.json) | CONSTRAINT-004 + CONSTRAINT-005 | Proposals using non-atomic check-then-act or missing Kafka publish are pruned |
 | [task-ml-feature-latency.json](tasks/task-ml-feature-latency.json) | CONSTRAINT-001 + CONSTRAINT-006 + CONSTRAINT-007 | Proposals touching heap size, caching budget data, or using platform threads are pruned |
 
-## Evaluation results
-
-`results/` stores pipeline run artifacts for incremental improvement tracking. Each run produces:
-
-- **Proposal text files** (`task-{name}-{date}.txt`) — raw LLM output from the winning proposal after MAPE-K convergence
-- **Evaluation document** (`evaluation-{date}.md`) — human quality assessment with scores, strengths, weaknesses, and issues fixed during that run
-
-| Run | Model | Scores | Notes |
-|---|---|---|---|
-| [2026-05-08 v3](results/evaluation-2026-05-08-v3.md) | Local 11B via llama.cpp | Budget 7/10, DSP 7/10, ML 7/10 | YAML-only corpus, rubric injected into system context. ML improved 6→7: virtual threads and HLC now appear in proposals. |
-
-## Running as integration tests
+## Running the e2e test
 
 ```bash
-# Copy constraint corpus into the configured path
-cp -r docs/examples/ads-platform/constraints/ /path/to/constraints/
+# 1. Start NATS with JetStream (if not already running)
+/tmp/nats-server -js -p 4222 &
 
-# Run calibration
-curl -X POST http://localhost:8080/calibrate
+# 2. Start the API server with the local config
+H2AI_CONFIG=h2ai.toml cargo run --release --bin h2ai-control-plane
+# Calibration runs automatically at startup — wait for "startup calibration complete" log line.
 
-# Submit each task and verify outcomes
-for task in docs/examples/ads-platform/tasks/*.json; do
-  echo "Submitting $task..."
-  curl -s -X POST http://localhost:8080/tasks \
-    -H "Content-Type: application/json" \
-    -d @"$task" | jq .
-done
+# 3. Submit a task and stream events
+curl -s -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d @docs/examples/ads-platform/tasks/task-dsp-onboarding.json | jq .
 
-# Or run the integration test suite
-cargo nextest run --test integration -- --test-threads=1
+# 4. Stream the task events (replace TASK_ID)
+curl -N http://localhost:8080/tasks/TASK_ID/events
 ```
 
 ## Source series

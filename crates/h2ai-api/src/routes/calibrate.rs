@@ -12,6 +12,117 @@ use h2ai_types::manifest::CalibrationAccepted;
 use serde_json::{json, Value};
 use std::convert::Infallible;
 
+/// Core calibration runner shared by the HTTP route (via spawn) and startup eager calibration.
+///
+/// Runs `CalibrationHarness`, stores the result in `state.calibration` and NATS, and
+/// optionally publishes a NATS SSE event when `notify_cal_id` is `Some` (HTTP path only).
+pub(crate) async fn run_calibration_core(
+    state: AppState,
+    single_family_warning: bool,
+    explorer_verification_family_match: bool,
+    adapter_families: Vec<String>,
+    notify_cal_id: Option<TaskId>,
+) {
+    let m = state.cfg.calibration_adapter_count.max(1);
+    let prompts = vec![
+        "Describe a stateless auth approach".into(),
+        "Explain CQRS and event sourcing".into(),
+        "What is a good API boundary?".into(),
+    ];
+    let pool: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = {
+        use std::collections::HashSet;
+        let candidates = [
+            state.explorer_adapter.as_ref(),
+            state.explorer2_adapter.as_ref(),
+            state.verification_adapter.as_ref(),
+        ];
+        let mut seen: HashSet<*const dyn h2ai_types::adapter::IComputeAdapter> = HashSet::new();
+        let mut distinct = Vec::new();
+        for a in candidates {
+            let ptr = a as *const dyn h2ai_types::adapter::IComputeAdapter;
+            if seen.insert(ptr) {
+                distinct.push(a);
+            }
+        }
+        distinct
+    };
+    let n_distinct = pool.len();
+    if n_distinct < 3 {
+        tracing::warn!(
+            n_distinct,
+            "fewer than 3 distinct adapters configured; USL fit will use config fallback values"
+        );
+    }
+    let cal_id = notify_cal_id.clone().unwrap_or_default();
+    let adapter_refs: Vec<&dyn h2ai_types::adapter::IComputeAdapter> =
+        pool.into_iter().cycle().take(m).collect();
+
+    let result = CalibrationHarness::run(CalibrationInput {
+        calibration_id: cal_id.clone(),
+        task_prompts: prompts,
+        adapters: adapter_refs,
+        cfg: &state.cfg,
+        constraint_corpus: &[],
+        embedding_model: state.embedding_model.as_deref(),
+    })
+    .await;
+
+    match result {
+        Ok(mut event) => {
+            event.adapter_families = adapter_families;
+            event.explorer_verification_family_match = explorer_verification_family_match;
+            event.single_family_warning = single_family_warning;
+            {
+                let mut cal = state.calibration.write().await;
+                *cal = Some(event.clone());
+            }
+            {
+                let mut metrics = state.metrics.write().await;
+                metrics.n_eff_prior = event.n_eff_cosine_prior;
+                metrics.calibration_source_label = match event.calibration_source {
+                    h2ai_types::events::CalibrationSource::Measured => "measured",
+                    h2ai_types::events::CalibrationSource::PartialFit => "partial_fit",
+                    h2ai_types::events::CalibrationSource::SyntheticPriors => "synthetic_priors",
+                }
+                .to_string();
+            }
+            if let Err(e) = state.nats.put_calibration(&event).await {
+                tracing::error!("failed to persist calibration: {e}");
+            }
+            if notify_cal_id.is_some() {
+                let ev = H2AIEvent::CalibrationCompleted(event);
+                let subject = format!("h2ai.calibration.{cal_id}");
+                if let Err(e) = state.nats.publish_to(&subject, &ev).await {
+                    tracing::error!("failed to publish calibration event: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            let is_network = e.to_string().contains("network error")
+                || e.to_string().contains("connection refused")
+                || e.to_string().contains("timed out");
+            if is_network {
+                tracing::warn!("calibration skipped — LLM adapter unreachable: {e}");
+            } else {
+                tracing::error!("calibration failed: {e}");
+            }
+            if let Some(cid) = notify_cal_id {
+                let subject = format!("h2ai.calibration.{cid}");
+                let _ = state
+                    .nats
+                    .publish_to(
+                        &subject,
+                        &H2AIEvent::CalibrationFailed {
+                            calibration_id: cid.to_string(),
+                            reason: e.to_string(),
+                        },
+                    )
+                    .await;
+            }
+        }
+    }
+}
+
 pub async fn start_calibration(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -61,99 +172,13 @@ pub async fn start_calibration(
         && state.explorer_adapter.family() != AdapterFamily::Mock;
     // ──────────────────────────────────────────────────────────────────────────
 
-    let state_clone = state.clone();
-    let cal_id_clone = cal_id.clone();
-    tokio::spawn(async move {
-        let prompts = vec![
-            "Describe a stateless auth approach".into(),
-            "Explain CQRS and event sourcing".into(),
-            "What is a good API boundary?".into(),
-        ];
-        // Cycle all distinct configured adapters so CG_mean reflects inter-adapter
-        // coordination cost, not just within-adapter temperature variance.
-        let pool: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = {
-            use std::collections::HashSet;
-            let candidates = [
-                state_clone.explorer_adapter.as_ref(),
-                state_clone.explorer2_adapter.as_ref(),
-                state_clone.verification_adapter.as_ref(),
-            ];
-            let mut seen: HashSet<*const dyn h2ai_types::adapter::IComputeAdapter> = HashSet::new();
-            let mut distinct = Vec::new();
-            for a in candidates {
-                let ptr = a as *const dyn h2ai_types::adapter::IComputeAdapter;
-                if seen.insert(ptr) {
-                    distinct.push(a);
-                }
-            }
-            distinct
-        };
-        let n_distinct = pool.len();
-        let adapter_refs: Vec<&dyn h2ai_types::adapter::IComputeAdapter> =
-            pool.into_iter().cycle().take(m).collect();
-        if n_distinct < 3 {
-            tracing::warn!(
-                n_distinct,
-                "fewer than 3 distinct adapters configured; USL fit will use config fallback values"
-            );
-        }
-
-        let result = CalibrationHarness::run(CalibrationInput {
-            calibration_id: cal_id_clone.clone(),
-            task_prompts: prompts,
-            adapters: adapter_refs,
-            cfg: &state_clone.cfg,
-            constraint_corpus: &[],
-            embedding_model: state_clone.embedding_model.as_deref(),
-        })
-        .await;
-
-        match result {
-            Ok(mut event) => {
-                event.adapter_families = adapter_families;
-                event.explorer_verification_family_match = explorer_verification_family_match;
-                event.single_family_warning = single_family_warning;
-                let mut cal = state_clone.calibration.write().await;
-                *cal = Some(event.clone());
-                drop(cal);
-                // Update Prometheus n_eff_prior gauge
-                {
-                    let mut metrics = state_clone.metrics.write().await;
-                    metrics.n_eff_prior = event.n_eff_cosine_prior;
-                }
-                if let Err(e) = state_clone.nats.put_calibration(&event).await {
-                    tracing::error!("failed to persist calibration: {e}");
-                }
-                let ev = H2AIEvent::CalibrationCompleted(event);
-                let subject = format!("h2ai.calibration.{cal_id_clone}");
-                if let Err(e) = state_clone.nats.publish_to(&subject, &ev).await {
-                    tracing::error!("failed to publish calibration event: {e}");
-                }
-            }
-            Err(e) => {
-                let is_network = e.to_string().contains("network error")
-                    || e.to_string().contains("connection refused")
-                    || e.to_string().contains("timed out");
-                if is_network {
-                    tracing::warn!("calibration skipped — LLM adapter unreachable: {e}");
-                } else {
-                    tracing::error!("calibration failed: {e}");
-                }
-                // Publish a sentinel event so SSE subscribers know calibration did not complete.
-                let subject = format!("h2ai.calibration.{cal_id_clone}");
-                let _ = state_clone
-                    .nats
-                    .publish_to(
-                        &subject,
-                        &H2AIEvent::CalibrationFailed {
-                            calibration_id: cal_id_clone.to_string(),
-                            reason: e.to_string(),
-                        },
-                    )
-                    .await;
-            }
-        }
-    });
+    tokio::spawn(run_calibration_core(
+        state.clone(),
+        single_family_warning,
+        explorer_verification_family_match,
+        adapter_families,
+        Some(cal_id.clone()),
+    ));
 
     let response = CalibrationAccepted {
         calibration_id: cal_id_str,

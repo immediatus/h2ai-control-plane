@@ -1,13 +1,15 @@
-use crate::constraint_source::NatsWikiConstraintSource;
+use crate::constraint_source::{NatsConstraintIndex, NatsConstraintStore};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::source::{ConstraintSource, FsConstraintSource};
-use h2ai_constraints::wiki::WikiCache;
+use h2ai_constraints::resolver::ConstraintResolver;
+use h2ai_constraints::source::{FsConstraintIndex, FsConstraintStore};
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_orchestrator::bandit::BanditState;
+use h2ai_orchestrator::payload_store::{MemoryPayloadStore, PayloadStore};
 use h2ai_orchestrator::self_optimizer::TauSpreadEstimator;
 use h2ai_orchestrator::session_journal::SessionJournal;
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::TaskStore;
+use h2ai_provisioner::provider::AgentProvider;
 use h2ai_state::nats::NatsClient;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::events::CalibrationCompletedEvent;
@@ -60,10 +62,12 @@ pub struct AppState {
     pub bandit_state: Arc<RwLock<BanditState>>,
     /// In-memory Prometheus metrics state.
     pub metrics: std::sync::Arc<tokio::sync::RwLock<crate::metrics::MetricsState>>,
-    /// In-memory constraint wiki index; loaded from NATS KV at startup.
-    /// Analogue of `calibration` — small, in-memory, NATS-backed, refreshed via KV watch.
-    /// When `cfg.constraint_wiki.enabled = false`, this holds an empty WikiCache.
-    pub wiki_cache: Arc<RwLock<WikiCache>>,
+    /// When `Some`, `tasks.rs` builds a `NatsDispatchConfig` so explorer slots are
+    /// dispatched to TaoAgent via NATS instead of calling LLM adapters directly.
+    pub agent_provider: Option<Arc<dyn AgentProvider>>,
+    /// Content-addressed store for large task-context offloading.
+    /// Passed through to `NatsDispatchConfig::payload_store`.
+    pub payload_store: Arc<dyn PayloadStore>,
 }
 
 impl AppState {
@@ -113,7 +117,8 @@ impl AppState {
             metrics: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::metrics::MetricsState::default(),
             )),
-            wiki_cache: Arc::new(RwLock::new(WikiCache::default())),
+            agent_provider: None,
+            payload_store: Arc::new(MemoryPayloadStore::new()),
         }
     }
 
@@ -132,6 +137,28 @@ impl AppState {
     /// here to ensure the calibration sees genuine cross-adapter round-trip cost.
     pub fn with_explorer2(mut self, adapter: Arc<dyn IComputeAdapter>) -> Self {
         self.explorer2_adapter = adapter;
+        self
+    }
+
+    /// Override the agent provider used for NATS-based explorer dispatch.
+    ///
+    /// When `None` (the default), explorer slots call the in-process LLM adapter directly.
+    /// When `Some`, each explorer slot is dispatched via NATS to a TaoAgent process;
+    /// `tasks.rs` builds a `NatsDispatchConfig` from this provider at task submission time.
+    /// Must be set before the server starts accepting requests.
+    pub fn with_agent_provider(mut self, provider: Arc<dyn AgentProvider>) -> Self {
+        self.agent_provider = Some(provider);
+        self
+    }
+
+    /// Override the content-addressed payload store used for large context offloading.
+    ///
+    /// Defaults to `MemoryPayloadStore` (in-process, zero-dependency). Supply a
+    /// NATS-backed or object-store-backed implementation in production when contexts
+    /// exceed the inline threshold and must survive process restarts.
+    #[allow(dead_code)]
+    pub fn with_payload_store(mut self, store: Arc<dyn PayloadStore>) -> Self {
+        self.payload_store = store;
         self
     }
 
@@ -196,38 +223,52 @@ impl AppState {
         }
     }
 
-    /// Load WikiCache from NATS KV into the in-memory field.
+    /// Restore persisted calibration from NATS KV into the in-memory field.
     ///
-    /// Called once at startup after NATS infrastructure is ready.
-    /// No-op when wiki is disabled in config.
-    pub async fn load_wiki_cache(&self) {
-        if !self.cfg.constraint_wiki.enabled {
-            return;
-        }
-        match self.nats.get_wiki_cache().await {
-            Ok(Some((cache, _))) => {
-                *self.wiki_cache.write().await = cache;
-                tracing::info!("constraint wiki cache loaded from NATS KV");
+    /// Called once at startup. When calibration exists in NATS the server can accept
+    /// tasks immediately without requiring a POST /calibrate. When nothing is stored
+    /// the field stays `None` and the caller should run eager calibration before opening
+    /// for traffic.
+    pub async fn load_calibration(&self) {
+        match self.nats.get_calibration().await {
+            Ok(Some(cal)) => {
+                let label = match cal.calibration_source {
+                    h2ai_types::events::CalibrationSource::Measured => "measured",
+                    h2ai_types::events::CalibrationSource::PartialFit => "partial_fit",
+                    h2ai_types::events::CalibrationSource::SyntheticPriors => "synthetic_priors",
+                };
+                {
+                    let mut metrics = self.metrics.write().await;
+                    metrics.calibration_source_label = label.to_string();
+                }
+                if cal.calibration_source == h2ai_types::events::CalibrationSource::SyntheticPriors
+                {
+                    tracing::warn!(
+                        target: "h2ai.calibration",
+                        "stored calibration uses SyntheticPriors — N_max based on config defaults. \
+                         Run POST /calibrate to replace with real measurements."
+                    );
+                }
+                *self.calibration.write().await = Some(cal);
+                tracing::info!(target: "h2ai.calibration", "calibration restored from NATS KV");
             }
-            Ok(None) => {
-                tracing::warn!("H2AI_CONSTRAINT_WIKI KV is empty — wiki not bootstrapped yet");
-            }
+            Ok(None) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "failed to load wiki cache; using empty cache");
+                tracing::warn!(target: "h2ai.calibration", error = %e, "failed to load calibration from NATS")
             }
         }
     }
 
-    /// Build the appropriate ConstraintSource for the current config.
+    /// Build a per-request [`ConstraintResolver`] for the current config.
     ///
-    /// When `constraint_wiki.enabled = true`: NatsWikiConstraintSource (NATS KV + Object Store).
-    /// When `constraint_wiki.enabled = false`: FsConstraintSource (flat directory, backward compat).
-    pub fn constraint_source(&self) -> Arc<dyn ConstraintSource> {
+    /// When `constraint_wiki.enabled = true`: NATS-backed lazy resolver (never bulk-loads).
+    /// When `constraint_wiki.enabled = false`: FS-backed resolver loaded from `corpus_path`.
+    pub fn constraint_resolver(&self) -> ConstraintResolver {
         if self.cfg.constraint_wiki.enabled {
-            Arc::new(NatsWikiConstraintSource::new(
-                self.wiki_cache.clone(),
-                self.nats.clone(),
-            ))
+            ConstraintResolver::new(
+                Arc::new(NatsConstraintIndex::new(self.nats.clone())),
+                Arc::new(NatsConstraintStore::new(self.nats.clone())),
+            )
         } else {
             let corpus_path = self
                 .cfg
@@ -235,14 +276,16 @@ impl AppState {
                 .corpus_path
                 .clone()
                 .unwrap_or_else(|| "/constraints".to_string());
-            let source = FsConstraintSource::load(&corpus_path).unwrap_or_else(|e| {
+            let (index, store) = FsConstraintStore::load(&corpus_path).unwrap_or_else(|e| {
                 tracing::warn!(
                     error = %e,
                     "constraint corpus load failed at path {corpus_path}; using empty corpus"
                 );
-                FsConstraintSource::from_docs(vec![])
+                let store = FsConstraintStore::from_docs(vec![]);
+                let index = FsConstraintIndex::from_docs(&[]);
+                (index, store)
             });
-            Arc::new(source)
+            ConstraintResolver::new(Arc::new(index), Arc::new(store))
         }
     }
 }

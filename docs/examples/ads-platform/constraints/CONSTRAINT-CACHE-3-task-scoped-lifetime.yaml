@@ -1,0 +1,18 @@
+id: CONSTRAINT-CACHE-3
+title: "Evaluation Cache — Per-task lifetime, not global static"
+severity: hard
+threshold: 0.45
+domains:
+  - correctness
+  - memory
+remediation_hint: |
+  Instantiate the cache inside the per-task engine execution (e.g., in ExecutionEngine::run),
+  pass it through the VerificationPhase as a parameter or shared reference, and let it drop
+  when the task completes. Do NOT store it in a lazy_static, OnceLock, or any global —
+  that leaks memory across tasks and causes cache poisoning between unrelated task executions.
+criteria:
+  pass: "The cache is created per-task and dropped when the task's verification phase completes."
+  fail: "The cache uses lazy_static, OnceLock, static variables, or any global storage that persists beyond a single task."
+  checks:
+    - Is the cache instantiated inside the per-task execution path (not at module or process initialization)?
+    - Does the cache lifetime match the task lifetime (allocated on task start, dropped on task end)?

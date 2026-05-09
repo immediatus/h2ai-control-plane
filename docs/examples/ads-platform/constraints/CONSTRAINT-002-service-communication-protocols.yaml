@@ -16,3 +16,8 @@ criteria:
   fail: |
     The proposal routes internal service calls over REST/JSON instead of a binary RPC
     protocol, or proposes gRPC for external public-facing endpoints.
+  checks:
+    - Does the proposal use gRPC (not REST) for all internal service-to-service calls?
+    - Does the proposal use REST (not gRPC) for all external-facing interfaces?
+    - Is no asynchronous messaging (Kafka, queues) on the synchronous critical request path?
+    - Does the proposal prohibit REST between internal services explicitly?

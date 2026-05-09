@@ -1,6 +1,8 @@
-use h2ai_constraints::source::{ConstraintSource, FsConstraintSource};
+use h2ai_constraints::resolver::ConstraintResolver;
+use h2ai_constraints::source::FsConstraintStore;
 use h2ai_constraints::types::ConstraintPredicate;
 use std::fs;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn write_yaml(dir: &TempDir, name: &str, content: &str) {
@@ -13,6 +15,11 @@ fn simple_yaml(id: &str, pass: &str) -> String {
     )
 }
 
+fn make_resolver(dir: &TempDir) -> ConstraintResolver {
+    let (index, store) = FsConstraintStore::load(dir.path()).unwrap();
+    ConstraintResolver::new(Arc::new(index), Arc::new(store))
+}
+
 #[tokio::test]
 async fn fs_source_resolve_by_explicit_id() {
     let dir = TempDir::new().unwrap();
@@ -22,12 +29,10 @@ async fn fs_source_resolve_by_explicit_id() {
         &simple_yaml("ADR-001", "Cites a source reference"),
     );
 
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source
-        .resolve_context(&[], &["ADR-001".to_string()], "")
-        .await;
-    assert_eq!(metas.len(), 1);
-    assert_eq!(metas[0].id, "ADR-001");
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&["ADR-001".to_string()], &[], "").await;
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "ADR-001");
 }
 
 #[tokio::test]
@@ -39,44 +44,36 @@ async fn fs_source_resolve_by_tag() {
         "id: GDPR-001\ntitle: Data Minimization\nseverity: hard\ndomains:\n  - eu_data\ncriteria:\n  pass: Minimizes personal data\n  fail: Over-collects\n",
     );
 
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source
-        .resolve_context(&["eu_data".to_string()], &[], "")
-        .await;
-    assert_eq!(metas.len(), 1);
-    assert_eq!(metas[0].id, "GDPR-001");
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&[], &["eu_data".to_string()], "").await;
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "GDPR-001");
 }
 
 #[tokio::test]
-async fn fs_source_empty_tags_and_ids_returns_all_docs() {
+async fn fs_source_empty_filters_returns_empty() {
     let dir = TempDir::new().unwrap();
     write_yaml(&dir, "ADR-001", &simple_yaml("ADR-001", "Rule one"));
     write_yaml(&dir, "ADR-002", &simple_yaml("ADR-002", "Rule two"));
 
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source.resolve_context(&[], &[], "").await;
-    assert_eq!(
-        metas.len(),
-        2,
-        "all docs returned when no tags and no explicit ids"
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&[], &[], "").await;
+    assert!(
+        docs.is_empty(),
+        "no filters → resolver returns nothing (caller must provide criteria)"
     );
 }
 
 #[tokio::test]
-async fn fs_source_tags_with_no_domain_metadata_falls_back_to_all_docs() {
+async fn fs_source_unknown_tag_returns_empty() {
     let dir = TempDir::new().unwrap();
-    // File has no domains — context_map will be empty
     write_yaml(&dir, "ADR-001", &simple_yaml("ADR-001", "Rule one"));
 
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    // Tags provided but no domain metadata — must fall back to all docs
-    let metas = source
-        .resolve_context(&["eu_data".to_string()], &[], "")
-        .await;
-    assert_eq!(
-        metas.len(),
-        1,
-        "falls back to all docs when context_map has no entry for tag"
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&[], &["eu_data".to_string()], "").await;
+    assert!(
+        docs.is_empty(),
+        "tag with no domain metadata match returns empty"
     );
 }
 
@@ -95,15 +92,15 @@ async fn fs_source_tags_and_bm25_union() {
     )
     .unwrap();
 
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source
-        .resolve_context(
-            &["billing".to_string()],
+    let resolver = make_resolver(&dir);
+    let docs = resolver
+        .resolve(
             &[],
+            &["billing".to_string()],
             "stateless service request handling",
         )
         .await;
-    let ids: std::collections::HashSet<&str> = metas.iter().map(|m| m.id.as_str()).collect();
+    let ids: std::collections::HashSet<&str> = docs.iter().map(|d| d.id.as_str()).collect();
     assert!(
         ids.contains("C-TAG"),
         "tag-matched constraint must be present"
@@ -123,11 +120,12 @@ async fn fs_source_load_payload_llm_judge() {
         "id: ADR-002\ntitle: Auth Token\nseverity: hard\ncriteria:\n  pass: Uses JWT authentication token\n  fail: Uses sessions\n",
     );
 
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let payload = source.load_payload("ADR-002", "v1").await.unwrap();
-    assert_eq!(payload.id, "ADR-002");
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&["ADR-002".to_string()], &[], "").await;
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "ADR-002");
     assert!(matches!(
-        payload.predicate,
+        docs[0].predicate,
         ConstraintPredicate::LlmJudge { .. }
     ));
 }
@@ -135,17 +133,62 @@ async fn fs_source_load_payload_llm_judge() {
 #[tokio::test]
 async fn fs_source_unknown_id_returns_empty() {
     let dir = TempDir::new().unwrap();
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source
-        .resolve_context(&[], &["NONEXISTENT".to_string()], "")
+    let resolver = make_resolver(&dir);
+    let docs = resolver
+        .resolve(&["NONEXISTENT".to_string()], &[], "")
         .await;
-    assert!(metas.is_empty());
+    assert!(docs.is_empty());
 }
 
 #[tokio::test]
-async fn fs_source_load_payload_missing_returns_error() {
+async fn fs_source_checks_embedded_in_rubric() {
     let dir = TempDir::new().unwrap();
-    let source = FsConstraintSource::load(dir.path()).unwrap();
-    let result = source.load_payload("GHOST", "v1").await;
-    assert!(result.is_err());
+    fs::write(
+        dir.path().join("C-CHECKS.yaml"),
+        "id: C-CHECKS\ntitle: RTB Timeout\nseverity: hard\ncriteria:\n  pass: All four behaviors present.\n  fail: Raises global deadline.\n  checks:\n    - Does the proposal track latency per-DSP locally?\n    - Is T_global kept at 100ms or below?\n",
+    )
+    .unwrap();
+
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&["C-CHECKS".to_string()], &[], "").await;
+    assert_eq!(docs.len(), 1);
+    let rubric = match &docs[0].predicate {
+        ConstraintPredicate::LlmJudge { rubric } => rubric.clone(),
+        _ => panic!("expected LlmJudge predicate"),
+    };
+    assert!(
+        rubric.contains("Binary compliance checks"),
+        "rubric must embed the binary checks section; got: {rubric}"
+    );
+    assert!(
+        rubric.contains("Track latency per-DSP locally")
+            || rubric.contains("track latency per-DSP locally"),
+        "first check question must appear in rubric"
+    );
+    assert!(
+        rubric.contains("Score = number of checks marked PRESENT"),
+        "arithmetic scoring instruction must appear in rubric"
+    );
+}
+
+#[tokio::test]
+async fn fs_source_no_checks_rubric_unaffected() {
+    let dir = TempDir::new().unwrap();
+    write_yaml(
+        &dir,
+        "C-PLAIN",
+        &simple_yaml("C-PLAIN", "Must be stateless"),
+    );
+
+    let resolver = make_resolver(&dir);
+    let docs = resolver.resolve(&["C-PLAIN".to_string()], &[], "").await;
+    assert_eq!(docs.len(), 1);
+    let rubric = match &docs[0].predicate {
+        ConstraintPredicate::LlmJudge { rubric } => rubric.clone(),
+        _ => panic!("expected LlmJudge predicate"),
+    };
+    assert!(
+        !rubric.contains("Binary compliance checks"),
+        "rubric without checks must not contain binary checks section"
+    );
 }

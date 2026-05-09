@@ -57,39 +57,19 @@ impl CotStyle {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExplorerSlotConfig {
     /// Role framing injected at the start of the system context for this slot.
-    /// Example: `"You are a skeptical senior engineer reviewing a proposed solution."`
     #[serde(default)]
     pub role_frame: String,
     /// CoT instruction style prepended to the task description.
     #[serde(default)]
     pub cot_style: CotStyle,
-}
-
-impl ExplorerSlotConfig {
-    /// Returns a set of four structurally diverse slot configs for N≤4 ensembles.
-    ///
-    /// Covers the four most decorrelated reasoning strategies. For N>4, configs
-    /// repeat modulo 4 — diversity saturates at 4 distinct strategies.
-    pub fn diverse_defaults() -> Vec<ExplorerSlotConfig> {
-        vec![
-            ExplorerSlotConfig {
-                role_frame: String::new(),
-                cot_style: CotStyle::StepByStep,
-            },
-            ExplorerSlotConfig {
-                role_frame: String::new(),
-                cot_style: CotStyle::DevilsAdvocate,
-            },
-            ExplorerSlotConfig {
-                role_frame: String::new(),
-                cot_style: CotStyle::FirstPrinciples,
-            },
-            ExplorerSlotConfig {
-                role_frame: String::new(),
-                cot_style: CotStyle::BackwardChaining,
-            },
-        ]
-    }
+    /// What constraint domains this slot is responsible for covering.
+    /// Injected as "[MANDATE]: ..." after role_frame when non-empty.
+    #[serde(default)]
+    pub focus_mandate: String,
+    /// The specific failure mode this slot should actively try to find.
+    /// Injected as "[FIND]: ..." after role_frame when non-empty.
+    #[serde(default)]
+    pub rejection_criteria: String,
 }
 
 /// POST /tasks request body
@@ -116,6 +96,12 @@ pub struct TaskManifest {
     /// always included regardless of tags.
     #[serde(default)]
     pub constraint_tags: Vec<String>,
+    /// When `true`, run both standard and adversarial verifiers and emit
+    /// `VerifierComparisonEvent` for every scored proposal. Does NOT affect
+    /// pruning decisions — the standard score always wins. Off by default;
+    /// enable only for A/B measurement runs.
+    #[serde(default)]
+    pub measure_verifier_ab: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,10 +134,10 @@ pub struct ExplorerRequest {
     pub roles: Vec<RoleSpec>,
     #[serde(default)]
     pub review_gates: Vec<ReviewGate>,
-    /// Per-slot prompt strategy overrides. Slot `i` uses `slot_configs[i % len]`.
-    /// When empty, all slots use default framing (no role_frame, no CoT prefix).
-    /// Populate with `ExplorerSlotConfig::diverse_defaults()` to activate
-    /// structural prompt diversity for correlated-hallucination mitigation.
+    /// Additional slots appended to the LLM-derived decomposition result.
+    /// When non-empty, these slots are merged with the decomposition output and the
+    /// combined set is pruned by orthogonality to N_max. They add operator context —
+    /// they do NOT bypass decomposition. Leave empty unless adding task-specific experts.
     #[serde(default)]
     pub slot_configs: Vec<ExplorerSlotConfig>,
 }

@@ -17,3 +17,8 @@ criteria:
   fail: |
     The primary fix is to increase heap size, or to use a GC algorithm that pauses all threads
     proportional to heap size, without acknowledging the fundamental pause-time problem.
+  checks:
+    - Does the proposal specify Java 21 (not an earlier version)?
+    - Does the proposal use Generational ZGC (not G1GC or other collectors) as the garbage collector?
+    - Is the JVM heap size specified as ≥16GB (32GB recommended for this system)?
+    - Does the proposal use virtual threads (Project Loom) for concurrency rather than platform threads?

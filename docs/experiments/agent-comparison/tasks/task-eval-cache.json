@@ -1,0 +1,25 @@
+{
+  "description": "Implement a per-task evaluation cache in the H2AI constraint verification pipeline. The cache must:\n(1) Be per-task (created fresh per task, not global static).\n(2) Key on constraint_id — separate score lists per constraint.\n(3) Use text-based Jaccard/token-overlap similarity (call repetition::similarity from crates/h2ai-orchestrator/src/repetition.rs) to compare proposals, reuse the cached score when similarity > 0.85.\n(4) Use Arc<DashMap<...>> (dashmap crate is already in Cargo.toml) — not Mutex<HashMap>.\n(5) Expose cache hits as a structured field (cache_hit: bool) on VerificationScoredEvent in crates/h2ai-types/src/events.rs.\n(6) Include unit tests; run `cargo nextest run` to verify all tests pass.\n\nIMPORTANT: You must write Rust code directly to the source files using your FileSystem tool. Do NOT describe the changes — make them. The files to edit are listed in the context below. After editing, run `cargo build` and `cargo nextest run` using your Shell tool to verify the implementation compiles and tests pass.",
+  "context": "Files to modify:\n- crates/h2ai-orchestrator/src/verification.rs: add EvalCache type (Arc<DashMap<String, Vec<(String, f64)>>>), new_eval_cache() constructor, CACHE_SIMILARITY_THRESHOLD const (0.85). In eval_all(), before each LlmJudge call, check the cache keyed by constraint_id using repetition::similarity against stored entries. On cache miss, call LlmJudge and store the result. Add cache: &EvalCache parameter to eval_all(). Add eval_cache: EvalCache field to VerificationInput.\n- crates/h2ai-types/src/events.rs: add `#[serde(default)] pub cache_hit: bool` to VerificationScoredEvent.\n- crates/h2ai-orchestrator/src/engine.rs: create one eval_cache per task with new_eval_cache() before the retry loop; pass Arc::clone(&task_eval_cache) as eval_cache in VerificationInput; populate cache_hit on VerificationScoredEvent.\n- crates/h2ai-orchestrator/tests/verification_test.rs: update all VerificationInput constructions to include eval_cache; add two new tests for cache hit and cache miss scenarios.\nDependency already in Cargo.toml: dashmap = \"6\"",
+  "pareto_weights": {
+    "diversity": 0.3,
+    "containment": 0.5,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.2,
+    "tau_max": 0.8
+  },
+  "constraints": [
+    "CONSTRAINT-CACHE-1",
+    "CONSTRAINT-CACHE-2",
+    "CONSTRAINT-CACHE-3",
+    "CONSTRAINT-CACHE-4"
+  ],
+  "_experiment": {
+    "hypothesis": "Claude Code and OpenHands will produce implementations that compile and pass tests but violate CACHE-2 (Mutex not DashMap) and CACHE-4 (log lines not typed events). H2AI's MAPE-K retry loop will catch these via the verifier and produce a compliant implementation.",
+    "scoring_script": "docs/experiments/agent-comparison/scripts/score.sh",
+    "constraint_corpus_path": "docs/experiments/agent-comparison/constraints"
+  }
+}

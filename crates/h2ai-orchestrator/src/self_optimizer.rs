@@ -124,14 +124,22 @@ impl SelfOptimizer {
         }
 
         // Option B: tighten verify_threshold
+        // When filter_ratio == 0 (ZeroSurvival — no proposal survived), predict_q returns
+        // the same value for any threshold because the model doesn't see the threshold as an
+        // input. Force a reduction: lowering the threshold is the only knob that can let
+        // proposals through without a full topology change.
+        let zero_survival = filter_ratio < 1e-9;
         if current.verify_threshold > cfg.optimizer_threshold_floor {
             let candidate = OptimizerParams {
                 verify_threshold: (current.verify_threshold - cfg.optimizer_threshold_step)
                     .max(cfg.optimizer_threshold_floor),
                 ..current.clone()
             };
-            let candidate_q = Self::predict_q(&candidate, p_mean, rho_mean, filter_ratio, tpf);
-            if candidate_q > current_q && !Self::already_tried(&candidate, history) {
+            let should_lower = zero_survival || {
+                let candidate_q = Self::predict_q(&candidate, p_mean, rho_mean, filter_ratio, tpf);
+                candidate_q > current_q
+            };
+            if should_lower && !Self::already_tried(&candidate, history) {
                 return candidate;
             }
         }

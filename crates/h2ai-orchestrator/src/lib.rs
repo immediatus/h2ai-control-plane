@@ -28,8 +28,10 @@
 
 pub mod attribution;
 pub mod bandit;
+pub mod coherence;
 pub mod complexity;
 pub mod compound;
+pub mod decomposition;
 pub mod diagnostics;
 pub mod diversity;
 pub mod engine;

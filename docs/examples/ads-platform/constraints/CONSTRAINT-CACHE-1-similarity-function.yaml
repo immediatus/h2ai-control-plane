@@ -1,0 +1,19 @@
+id: CONSTRAINT-CACHE-1
+title: "Evaluation Cache — Similarity via repetition::similarity, not cosine embeddings"
+severity: hard
+threshold: 0.45
+domains:
+  - performance
+  - correctness
+remediation_hint: |
+  Use the existing `repetition::similarity(a, b)` function from `crates/h2ai-orchestrator/src/repetition.rs`
+  for text comparison. It computes token-overlap Jaccard similarity. Do NOT use cosine similarity of
+  embeddings — no embedding model is available at verification time, making cosine similarity
+  unavailable on the hot path.
+criteria:
+  pass: "The cache uses token-overlap similarity (repetition::similarity or equivalent Jaccard) to compare proposal texts."
+  fail: "The cache uses embedding cosine similarity, exact string equality only, or no text comparison at all."
+  checks:
+    - Does the cache use a token-overlap or Jaccard similarity metric (not cosine of embeddings)?
+    - Is the similarity threshold configurable (not hardcoded to a magic number)?
+    - Does the implementation import or call the existing repetition module rather than reimplementing similarity from scratch?

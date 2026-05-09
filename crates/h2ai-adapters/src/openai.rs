@@ -36,6 +36,32 @@ impl OpenAIAdapter {
     }
 }
 
+/// Translate tau into llama.cpp-compatible sampling parameters.
+///
+/// Three regimes keyed on tau (temperature):
+/// - Low  (< 0.35): tight top_k=20, conservative nucleus — deterministic quality
+/// - Mid  (0.35–0.65): standard top_k=40, balanced nucleus
+/// - High (> 0.65): top_k disabled, Mirostat 2.0 — coherent high-entropy diversity
+fn sampling_extras(tau: f64) -> serde_json::Value {
+    if tau < 0.35 {
+        serde_json::json!({
+            "top_k": 20, "top_p": 0.85, "min_p": 0.05,
+            "repeat_penalty": 1.1, "repeat_last_n": 64
+        })
+    } else if tau <= 0.65 {
+        serde_json::json!({
+            "top_k": 40, "top_p": 0.95, "min_p": 0.03,
+            "repeat_penalty": 1.05, "repeat_last_n": 64
+        })
+    } else {
+        serde_json::json!({
+            "top_k": 0,
+            "mirostat": 2, "mirostat_tau": 5.0, "mirostat_eta": 0.1,
+            "repeat_penalty": 1.1, "repeat_last_n": 64
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
@@ -63,7 +89,7 @@ impl IComputeAdapter for OpenAIAdapter {
         let api_key = self.api_key()?;
         let url = format!("{}/chat/completions", self.endpoint.trim_end_matches('/'));
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model(),
             "messages": [
                 {"role": "system", "content": req.system_context},
@@ -72,6 +98,11 @@ impl IComputeAdapter for OpenAIAdapter {
             "temperature": req.tau.value(),
             "max_tokens":  req.max_tokens
         });
+
+        let extras = sampling_extras(req.tau.value());
+        body.as_object_mut()
+            .unwrap()
+            .extend(extras.as_object().unwrap().clone());
 
         let http_resp = self
             .client
@@ -113,5 +144,31 @@ impl IComputeAdapter for OpenAIAdapter {
 
     fn kind(&self) -> &AdapterKind {
         &self.kind
+    }
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use super::sampling_extras;
+
+    #[test]
+    fn low_tau_uses_tight_top_k() {
+        let v = sampling_extras(0.2);
+        assert_eq!(v["top_k"], 20);
+        assert!(v.get("mirostat").is_none());
+    }
+
+    #[test]
+    fn mid_tau_uses_standard_top_k() {
+        let v = sampling_extras(0.5);
+        assert_eq!(v["top_k"], 40);
+        assert!(v.get("mirostat").is_none());
+    }
+
+    #[test]
+    fn high_tau_uses_mirostat() {
+        let v = sampling_extras(0.8);
+        assert_eq!(v["top_k"], 0);
+        assert_eq!(v["mirostat"], 2);
     }
 }

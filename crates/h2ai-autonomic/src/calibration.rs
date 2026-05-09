@@ -5,7 +5,7 @@ use h2ai_constraints::eval::eval_sync;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
 use h2ai_context::embedding::{cosine_similarity, semantic_jaccard, EmbeddingModel};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
-use h2ai_types::events::{CalibrationCompletedEvent, CgMode};
+use h2ai_types::events::{CalibrationCompletedEvent, CalibrationSource, CgMode};
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::{
     tau_alignment, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
@@ -255,6 +255,14 @@ impl CalibrationHarness {
         };
         // ─────────────────────────────────────────────────────────────────────
 
+        let usl_from_fallback = m < 3;
+        let cg_from_fallback = adapter_outputs.len() < 2;
+        let calibration_source = match (usl_from_fallback, cg_from_fallback) {
+            (false, false) => CalibrationSource::Measured,
+            (true, true) => CalibrationSource::SyntheticPriors,
+            _ => CalibrationSource::PartialFit,
+        };
+
         let cc = CoherencyCoefficients::new_with_timestamps(
             alpha,
             beta_base,
@@ -281,6 +289,7 @@ impl CalibrationHarness {
             n_max_hi,
             n_eff_cosine_prior,
             calibration_quality: Default::default(),
+            calibration_source,
         })
     }
 

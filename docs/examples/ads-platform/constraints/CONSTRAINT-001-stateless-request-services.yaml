@@ -19,3 +19,8 @@ criteria:
     The proposal requires requests from the same user to always reach the same node
     (sticky sessions), or stores session state that would break if the user's request hit a
     different node on retry.
+  checks:
+    - Does the proposal avoid sticky sessions (requests from the same user can reach any node)?
+    - Does the proposal store no per-user SESSION state (auth tokens, preferences) in any in-process store?
+    - Is any in-process caching TTL-based with no node affinity required?
+    - Can any node serve any user request on retry without loss of correctness?

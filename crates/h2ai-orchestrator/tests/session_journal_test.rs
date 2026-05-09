@@ -90,6 +90,7 @@ fn apply_verification_scored_passed_increments_valid() {
             score: 0.9,
             reason: "good".into(),
             passed: true,
+            cache_hit: false,
             timestamp: Utc::now(),
         }),
     );
@@ -112,6 +113,7 @@ fn apply_verification_scored_failed_increments_pruned() {
             score: 0.1,
             reason: "bad".into(),
             passed: false,
+            cache_hit: false,
             timestamp: Utc::now(),
         }),
     );

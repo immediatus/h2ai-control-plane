@@ -4,6 +4,29 @@ use h2ai_types::manifest::{
 };
 
 #[test]
+fn explorer_slot_config_new_fields_default_empty() {
+    let slot: ExplorerSlotConfig =
+        serde_json::from_str(r#"{"cot_style": "step_by_step"}"#).unwrap();
+    assert!(slot.focus_mandate.is_empty());
+    assert!(slot.rejection_criteria.is_empty());
+}
+
+#[test]
+fn explorer_slot_config_new_fields_round_trip() {
+    let slot = ExplorerSlotConfig {
+        role_frame: "You are a security engineer.".into(),
+        cot_style: CotStyle::DevilsAdvocate,
+        focus_mandate: "Responsible for CONSTRAINT-001 and CONSTRAINT-002.".into(),
+        rejection_criteria: "Find: the most likely way an attacker exploits this.".into(),
+    };
+    let json = serde_json::to_string(&slot).unwrap();
+    let back: ExplorerSlotConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.role_frame, slot.role_frame);
+    assert_eq!(back.focus_mandate, slot.focus_mandate);
+    assert_eq!(back.rejection_criteria, slot.rejection_criteria);
+}
+
+#[test]
 fn task_manifest_roundtrip() {
     let m = TaskManifest {
         description: "auth token rotation".into(),
@@ -25,6 +48,7 @@ fn task_manifest_roundtrip() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let json = serde_json::to_string(&m).unwrap();
     let back: TaskManifest = serde_json::from_str(&json).unwrap();
@@ -89,23 +113,6 @@ fn cot_style_roundtrips_json() {
 }
 
 #[test]
-fn explorer_slot_config_diverse_defaults_has_four_entries() {
-    let defaults = ExplorerSlotConfig::diverse_defaults();
-    assert_eq!(defaults.len(), 4);
-    // All four CoT styles are distinct — no two slots share a strategy
-    let styles: Vec<_> = defaults.iter().map(|c| &c.cot_style).collect();
-    let unique: std::collections::HashSet<_> = styles
-        .iter()
-        .map(|s| serde_json::to_string(s).unwrap())
-        .collect();
-    assert_eq!(
-        unique.len(),
-        4,
-        "all four default slot strategies must be distinct"
-    );
-}
-
-#[test]
 fn manifest_with_slot_configs_roundtrips_json() {
     let m = TaskManifest {
         description: "auth token rotation".into(),
@@ -120,17 +127,31 @@ fn manifest_with_slot_configs_roundtrips_json() {
             tau_max: Some(0.8),
             roles: vec![],
             review_gates: vec![],
-            slot_configs: ExplorerSlotConfig::diverse_defaults(),
+            slot_configs: vec![
+                ExplorerSlotConfig {
+                    role_frame: "You are a systems architect.".into(),
+                    cot_style: CotStyle::FirstPrinciples,
+                    focus_mandate: String::new(),
+                    rejection_criteria: "Irreversible technical debt.".into(),
+                },
+                ExplorerSlotConfig {
+                    role_frame: "You are a security engineer.".into(),
+                    cot_style: CotStyle::DevilsAdvocate,
+                    focus_mandate: String::new(),
+                    rejection_criteria: "Attacker exploit path.".into(),
+                },
+            ],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
     let json = serde_json::to_string(&m).unwrap();
     let back: TaskManifest = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.explorers.slot_configs.len(), 4);
+    assert_eq!(back.explorers.slot_configs.len(), 2);
     assert_eq!(
         back.explorers.slot_configs[1].cot_style,
         CotStyle::DevilsAdvocate

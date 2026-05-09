@@ -1,0 +1,18 @@
+id: CONSTRAINT-CACHE-2
+title: "Evaluation Cache — Concurrent map, not blocking Mutex"
+severity: hard
+threshold: 0.45
+domains:
+  - performance
+  - correctness
+remediation_hint: |
+  Use `DashMap` (already a dependency: `dashmap = "6"` in Cargo.toml) for the cache store.
+  Do NOT use `Arc<Mutex<HashMap>>` — the async executor (Tokio) uses cooperative multitasking;
+  holding a blocking Mutex across an `.await` point stalls the entire thread, defeating parallelism.
+  DashMap provides lock-free concurrent reads and fine-grained shard locking for writes.
+criteria:
+  pass: "The cache uses a concurrent data structure (DashMap or equivalent) that does not block the Tokio executor."
+  fail: "The cache uses std::sync::Mutex or RwLock that would block across .await points in the async path."
+  checks:
+    - Does the implementation use DashMap or another non-blocking concurrent map (not std::sync::Mutex)?
+    - Is the cache structure safe for concurrent reads from multiple explorer tasks without locking the executor?

@@ -64,6 +64,10 @@ pub struct Criteria {
     pub partial: Option<String>,
     /// What causes a 0.0 score.
     pub fail: String,
+    /// Binary yes/no questions for Anchored CoT scoring.
+    /// Score = count(PRESENT) / count(total). Overrides the 1.0/0.5/0.0 guide.
+    #[serde(default)]
+    pub checks: Vec<String>,
 }
 
 fn default_severity() -> SeverityKind {
@@ -91,6 +95,16 @@ impl ConstraintYaml {
         }
         if let Some(hint) = &self.remediation_hint {
             rubric.push_str(&format!("\n\nRemediation hint: {hint}"));
+        }
+        if !self.criteria.checks.is_empty() {
+            rubric.push_str("\n\nBinary compliance checks — evaluate each in order:");
+            for (i, check) in self.criteria.checks.iter().enumerate() {
+                rubric.push_str(&format!("\n{}. {}", i + 1, check));
+            }
+            rubric.push_str(&format!(
+                "\n\nScore = number of checks marked PRESENT divided by {} (total checks). Ignore the Pass/Partial/Fail guide above when binary checks are listed — compute score arithmetically.",
+                self.criteria.checks.len()
+            ));
         }
         rubric
     }

@@ -1,0 +1,17 @@
+id: CONSTRAINT-CACHE-4
+title: "Evaluation Cache — Cache hits surface as typed VerificationScoredEvent, not log lines"
+severity: hard
+threshold: 0.45
+domains:
+  - observability
+remediation_hint: |
+  When a cache hit occurs, emit a `VerificationScoredEvent` with a `cache_hit: true` field
+  (add the field to the existing struct in h2ai-types) — do not use `tracing::debug!` or
+  `tracing::info!` alone. Typed events flow through the SSE stream to API consumers;
+  log lines are invisible to the framework's own telemetry pipeline.
+criteria:
+  pass: "Cache hits are surfaced via a structured field on VerificationScoredEvent or an equivalent typed event — not only via log macros."
+  fail: "Cache hits are only logged with tracing::debug!/info! and not surfaced in any typed event the SSE stream carries."
+  checks:
+    - "Does the implementation add a structured field (e.g., cache_hit: bool) to VerificationScoredEvent or emit a distinct typed event for cache hits?"
+    - "Is the cache hit observable via the /tasks/{id}/events SSE stream (not only in server logs)?"

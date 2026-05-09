@@ -1,8 +1,11 @@
 pub mod complexity;
 pub mod eval;
+pub mod index;
 pub mod loader;
+pub mod resolver;
 pub mod retrieval;
 pub mod source;
+pub mod store;
 pub mod types;
 pub mod wiki;
 pub mod yaml;

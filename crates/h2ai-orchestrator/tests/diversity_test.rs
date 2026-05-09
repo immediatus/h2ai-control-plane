@@ -36,7 +36,7 @@ fn proposal() -> ProposalEvent {
 
 #[test]
 fn single_proposal_is_always_diverse() {
-    let passed = vec![(proposal(), vec![make_result(1.0, true)])];
+    let passed = vec![(proposal(), vec![make_result(1.0, true)], false)];
     assert!(matches!(
         DiversityGuard::check(&passed, 0.15),
         DiversityResult::Diverse
@@ -46,7 +46,10 @@ fn single_proposal_is_always_diverse() {
 #[test]
 fn identical_profiles_collapse() {
     let results = vec![make_result(1.0, true), make_result(1.0, true)];
-    let passed = vec![(proposal(), results.clone()), (proposal(), results)];
+    let passed = vec![
+        (proposal(), results.clone(), false),
+        (proposal(), results, false),
+    ];
     assert!(matches!(
         DiversityGuard::check(&passed, 0.15),
         DiversityResult::Collapsed
@@ -83,7 +86,10 @@ fn opposite_profiles_are_diverse() {
             remediation_hint: None,
         },
     ];
-    let passed = vec![(proposal(), results_a), (proposal(), results_b)];
+    let passed = vec![
+        (proposal(), results_a, false),
+        (proposal(), results_b, false),
+    ];
     assert!(matches!(
         DiversityGuard::check(&passed, 0.15),
         DiversityResult::Diverse
@@ -92,7 +98,7 @@ fn opposite_profiles_are_diverse() {
 
 #[test]
 fn empty_fingerprints_fail_open() {
-    let passed = vec![(proposal(), vec![]), (proposal(), vec![])];
+    let passed = vec![(proposal(), vec![], false), (proposal(), vec![], false)];
     assert!(matches!(
         DiversityGuard::check(&passed, 0.15),
         DiversityResult::Diverse
@@ -101,7 +107,7 @@ fn empty_fingerprints_fail_open() {
 
 #[test]
 fn fewer_than_two_proposals_is_always_diverse() {
-    let passed: Vec<(ProposalEvent, Vec<ComplianceResult>)> = vec![];
+    let passed: Vec<(ProposalEvent, Vec<ComplianceResult>, bool)> = vec![];
     assert!(matches!(
         DiversityGuard::check(&passed, 0.15),
         DiversityResult::Diverse
@@ -113,7 +119,7 @@ fn mismatched_fingerprint_lengths_fail_open() {
     // One proposal has 2 constraints, other has 1 — corpus inconsistency → Diverse
     let short = vec![make_result(1.0, true)];
     let long = vec![make_result(1.0, true), make_result(1.0, true)];
-    let passed = vec![(proposal(), short), (proposal(), long)];
+    let passed = vec![(proposal(), short, false), (proposal(), long, false)];
     assert!(matches!(
         DiversityGuard::check(&passed, 0.15),
         DiversityResult::Diverse

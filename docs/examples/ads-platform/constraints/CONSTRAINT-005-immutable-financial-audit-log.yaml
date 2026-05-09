@@ -17,3 +17,8 @@ criteria:
   fail: |
     Financial events are written only to a mutable store (regular DB with UPDATE/DELETE),
     to application log files, or to in-memory structures — or audit logging is not mentioned.
+  checks:
+    - Does every billing event get published to Kafka before acknowledging the spend?
+    - Is the ClickHouse audit table append-only (no UPDATE or DELETE mutations permitted)?
+    - Does the proposal maintain a 7-year retention policy for the immutable audit trail?
+    - "Does the proposal use a dual-ledger model: CockroachDB for operational state, ClickHouse for immutable audit?"

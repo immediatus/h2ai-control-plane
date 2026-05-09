@@ -157,12 +157,23 @@ impl NatsClient {
         })
         .await?;
 
-        // KV bucket: compiled constraint wiki index (summaries, context maps, tag routing)
+        // KV bucket: compact tag→[constraint_id] index (small, cacheable with TTL)
         self.ensure_kv_bucket(kv::Config {
             bucket: "H2AI_CONSTRAINT_WIKI".to_owned(),
-            description: "Compiled constraint wiki — tag mappings, summaries, relationships"
+            description: "Compact constraint tag index — tag→[id] map, lazy-loaded per request"
                 .to_owned(),
             history: 5,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: individual constraint metas — one entry per constraint, fetched on demand
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_CONSTRAINT_META".to_owned(),
+            description: "Per-constraint metadata — fetched lazily by ID, never bulk-loaded"
+                .to_owned(),
+            history: 3,
             storage: stream::StorageType::File,
             ..Default::default()
         })
@@ -847,6 +858,120 @@ impl NatsClient {
             }
             None => Ok(None),
         }
+    }
+
+    /// Store the compact tag→[constraint_id] index in NATS KV.
+    ///
+    /// Key: "tag_index". Much smaller than the full WikiCache blob.
+    pub async fn put_tag_index(
+        &self,
+        index: &std::collections::HashMap<String, Vec<String>>,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let bytes = serde_json::to_vec(index).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        kv.put("tag_index", bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Fetch the compact tag→[constraint_id] index from NATS KV.
+    pub async fn get_tag_index(
+        &self,
+    ) -> Result<Option<std::collections::HashMap<String, Vec<String>>>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv
+            .entry("tag_index")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(entry) => {
+                let index = serde_json::from_slice(&entry.value)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(index))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Store a single ConstraintMeta by ID. Key = constraint ID.
+    pub async fn put_constraint_meta(
+        &self,
+        meta: &h2ai_constraints::types::ConstraintMeta,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_META")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let bytes = serde_json::to_vec(meta).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        kv.put(&meta.id, bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Fetch a single ConstraintMeta by ID. Returns `None` if not found.
+    pub async fn get_constraint_meta(
+        &self,
+        id: &str,
+    ) -> Result<Option<h2ai_constraints::types::ConstraintMeta>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_META")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv
+            .entry(id)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(entry) => {
+                let meta = serde_json::from_slice(&entry.value)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(meta))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch multiple ConstraintMeta by ID in parallel. Missing IDs are silently skipped.
+    pub async fn get_constraint_metas(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<h2ai_constraints::types::ConstraintMeta>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_CONSTRAINT_META")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let kv = std::sync::Arc::new(kv);
+        let futures: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let kv = kv.clone();
+                let id = id.clone();
+                async move {
+                    match kv.entry(&id).await {
+                        Ok(Some(entry)) => serde_json::from_slice::<
+                            h2ai_constraints::types::ConstraintMeta,
+                        >(&entry.value)
+                        .ok(),
+                        _ => None,
+                    }
+                }
+            })
+            .collect();
+        let results = futures::future::join_all(futures).await;
+        Ok(results.into_iter().flatten().collect())
     }
 
     /// Store a ConstraintPayload in the Object Store.

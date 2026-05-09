@@ -391,3 +391,46 @@ async fn n_eff_cosine_prior_fallback_without_embedding_model() {
         result.n_eff_cosine_prior
     );
 }
+
+#[tokio::test]
+async fn calibration_source_is_synthetic_priors_with_single_adapter() {
+    use h2ai_types::events::CalibrationSource;
+
+    let cfg = H2AIConfig::default();
+    let adapter = mock_adapter();
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
+        task_prompts: vec!["test prompt".into()],
+        constraint_corpus: &[],
+        embedding_model: None,
+        cfg: &cfg,
+    };
+    let result = CalibrationHarness::run(input).await.unwrap();
+    assert_eq!(
+        result.calibration_source,
+        CalibrationSource::SyntheticPriors
+    );
+}
+
+#[tokio::test]
+async fn calibration_source_is_partial_fit_with_two_adapters() {
+    use h2ai_types::events::CalibrationSource;
+
+    let cfg = H2AIConfig::default();
+    let adapter1 = mock_adapter();
+    let adapter2 = mock_adapter();
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        adapters: vec![
+            &adapter1 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &adapter2 as &dyn h2ai_types::adapter::IComputeAdapter,
+        ],
+        task_prompts: vec!["test prompt".into()],
+        constraint_corpus: &[],
+        embedding_model: None,
+        cfg: &cfg,
+    };
+    let result = CalibrationHarness::run(input).await.unwrap();
+    assert_eq!(result.calibration_source, CalibrationSource::PartialFit);
+}

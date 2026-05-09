@@ -166,5 +166,6 @@ fn build_subtask_manifest(
         oracle: None,
         require_approval: false,
         constraint_tags: parent.constraint_tags.clone(),
+        measure_verifier_ab: parent.measure_verifier_ab,
     }
 }

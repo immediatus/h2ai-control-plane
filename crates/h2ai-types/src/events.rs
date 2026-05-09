@@ -36,6 +36,23 @@ pub enum CgMode {
     EmbeddingCosine,
 }
 
+/// Whether the calibration was derived from real adapter measurements or synthetic priors.
+///
+/// Used to signal downstream consumers (e.g. Phase 1.5 routing) how much to trust
+/// the calibration coefficients. `Measured` requires at least 3 adapters for USL fit
+/// and at least 2 for CG pairwise samples. `PartialFit` means one of the two conditions
+/// was met. `SyntheticPriors` means neither was met (M < 3 and < 2 adapter outputs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CalibrationSource {
+    /// Calibration is fully empirically grounded: USL fit from ≥3 adapters and pairwise CG from ≥2.
+    #[default]
+    Measured,
+    /// One of USL fit or CG pairwise sample was empirical; the other fell back to config defaults.
+    PartialFit,
+    /// Both USL parameters and CG came from config synthetic priors (M < 3 and < 2 adapter outputs).
+    SyntheticPriors,
+}
+
 /// Classifies why all proposals were pruned in a MAPE-K zero-survival wave.
 ///
 /// Computed synchronously from cosine N_eff before re-provisioning.
@@ -117,6 +134,11 @@ pub struct CalibrationCompletedEvent {
     /// Defaults to `Domain` so existing serialised events deserialise correctly.
     #[serde(default)]
     pub calibration_quality: CalibrationQuality,
+    /// Fine-grained source classification: whether USL fit and CG pairwise samples were
+    /// measured from real adapters or fell back to synthetic config priors.
+    /// Defaults to `Measured` so existing serialised events deserialise correctly.
+    #[serde(default)]
+    pub calibration_source: CalibrationSource,
 }
 
 /// Point-in-time snapshot of a task's in-memory state for crash-recovery replay optimization.
@@ -323,6 +345,42 @@ pub struct TaskFailedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted alongside `MergeResolved` when the resolved output does not cover all
+/// constraint domains — some domain had violations that no surviving proposal fixed.
+///
+/// Non-blocking (task still succeeds). `uncovered_domains` identifies which areas
+/// of the constraint space were not closed by the surviving ensemble.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoherenceIncompleteEvent {
+    pub task_id: TaskId,
+    pub uncovered_domains: Vec<String>,
+    /// Surviving proposal pairs that score on opposite sides of 0.5 for the same constraint domain.
+    /// Each entry is `(explorer_a_id, explorer_b_id, domain)`. Absent in payloads from older
+    /// producers (handled by `#[serde(default)]`); empty when no contradictions were detected.
+    #[serde(default)]
+    pub active_contradictions: Vec<(String, String, String)>,
+    pub retries: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when `record_adversarial_comparison` is enabled in `VerificationConfig`.
+///
+/// Records both standard and adversarial verifier scores for the same proposal.
+/// Does NOT affect pruning decisions — the configured verifier score drives those.
+/// Correlate with `OracleResultEvent` by `task_id` for offline A/B analysis (GAP-A4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifierComparisonEvent {
+    pub task_id: TaskId,
+    pub explorer_id: ExplorerId,
+    pub standard_score: f64,
+    pub adversarial_score: f64,
+    pub standard_passed: bool,
+    pub adversarial_passed: bool,
+    /// Human-readable label for the verifier configuration used. Currently always "llmjudge".
+    pub verifier_kind: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Emitted when a review gate fires and routes a proposal to a reviewer explorer for approval.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewGateTriggeredEvent {
@@ -373,6 +431,10 @@ pub struct VerificationScoredEvent {
     pub score: f64,
     pub reason: String,
     pub passed: bool,
+    /// True when the score was reused from a similar proposal via the per-task eval cache,
+    /// avoiding a redundant LLM call. False for freshly computed scores.
+    #[serde(default)]
+    pub cache_hit: bool,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -473,6 +535,10 @@ pub struct TaskAttributionEvent {
     /// When the task passed through the HITL gate, this records the reviewer's decision.
     #[serde(default)]
     pub approval_decision: Option<crate::approval::ApprovalDecision>,
+    /// CalibrationSource active during this task's execution.
+    /// `#[serde(default)]` preserves backwards compatibility with older stored events.
+    #[serde(default)]
+    pub calibration_source: CalibrationSource,
 }
 
 fn default_waste_ratio() -> f64 {
@@ -687,6 +753,8 @@ pub enum H2AIEvent {
     MergeResolved(MergeResolvedEvent),
     /// Wraps [`TaskFailedEvent`]: MAPE-K loop exhausted retries without resolving.
     TaskFailed(TaskFailedEvent),
+    /// Wraps [`CoherenceIncompleteEvent`]: resolved output has uncovered constraint domains.
+    CoherenceIncomplete(CoherenceIncompleteEvent),
     /// Wraps [`TaoIterationEvent`]: one TAO loop turn completed with its observation and pass/fail status.
     TaoIteration(TaoIterationEvent),
     /// Wraps [`VerificationScoredEvent`]: LLM-as-Judge assigned a compliance score to a proposal.
@@ -719,6 +787,8 @@ pub enum H2AIEvent {
     PendingApproval(PendingApprovalEvent),
     /// Human or system timeout decision on a pending approval.
     ApprovalResolved(ApprovalResolvedEvent),
+    /// Wraps [`VerifierComparisonEvent`]: dual-run verifier comparison data point.
+    VerifierComparison(VerifierComparisonEvent),
 }
 
 impl H2AIEvent {
@@ -769,6 +839,14 @@ mod bivariate_types_tests {
         let ev: ZeroSurvivalEvent = serde_json::from_str(json).unwrap();
         assert!(ev.n_eff_cosine_actual.is_none());
         assert!(ev.failure_mode.is_none());
+    }
+
+    #[test]
+    fn task_attribution_event_calibration_source_defaults_on_old_json() {
+        // Old events without calibration_source field must deserialise to Measured (default)
+        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000000","q_confidence":0.8,"prediction_basis":"Heuristic","waste_ratio":1.0,"applied_optimizations":[],"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let ev: TaskAttributionEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.calibration_source, CalibrationSource::Measured);
     }
 
     #[test]

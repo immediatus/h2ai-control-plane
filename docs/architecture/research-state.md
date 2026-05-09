@@ -36,10 +36,14 @@ If every tool call during the TAO loop requires a NATS round-trip between the ed
 
 H2AI Control Plane orchestrates pools of LLM adapters as an *adversarial committee*. The runtime claims:
 
+- **Committee composition is epistemically motivated.** Phase 0 (Path C) derives `Vec<ExplorerSlotConfig>` from the task description via LLM decomposition. Each slot carries a `role_frame`, `cot_style`, `focus_mandate` (constraint domains owned), and `rejection_criteria` (specific failure mode to probe). N = count of genuinely orthogonal roles, capped by USL N_max.
 - The reliability of an N-adapter committee is bounded by **two diversity signals** that must both be measured: Hamming Common Ground on constraint behaviour, and cosine N_eff on semantic embedding.
 - The throughput-vs-coordination trade-off is captured by USL (Gunther 1993) with a CG-coupled coherency cost: `β_eff = β₀ × (1 − CG_mean)`, `N_max = round(√((1 − α) / β_eff))`.
 - The quality of the committee is bounded by a correlation-corrected Condorcet Jury Theorem (Nitzan & Paroush 1982; Ladha 1992): `Q(N, p, ρ) = p + (Q_ind(N, p) − p)(1 − ρ)`.
+- **Verification is structurally independent.** Explorer context is compiled with `include_rubric=false` — LlmJudge rubrics are withheld from the explorer and retained only by the verifier. The verifier uses `ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT` (hostile-reviewer framing) by default.
 - Failures are classifiable: post-zero-survival, the cosine N_eff distinguishes `ConstrainedExploration` (diverse generation rejected by constraints) from `ModeCollapse` (correlated hallucination). MAPE-K routes each to a different intervention (tombstone vs adapter rotation).
+- **Coherence state is tracked per-wave.** `CoherenceState { uncovered_domains, active_contradictions }` is computed after each verification round. `CoherenceIncomplete` is emitted when the task closes without epistemic closure. The loop exit gate on `is_closed()` is pending.
+- **Calibration is labelled.** `CalibrationSource::Measured / PartialFit / SyntheticPriors` on every `CalibrationCompletedEvent` and `TaskAttributionEvent`. Prometheus gauge and startup warning surface the label.
 - Every successful task produces a confidence decomposition `q_confidence ≈ baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain` (`crates/h2ai-orchestrator/src/attribution.rs`). This is a self-confidence score, not oracle-grounded quality.
 
 The differentiating claim is not the math itself — most components have decades of literature behind them. It is that all four signals (USL, CJT, eigenvalue diversity, Talagrand calibration) are tracked together, calibrated together, and used together to bound a single committee-execution loop.
@@ -111,7 +115,8 @@ The `OutlierResistant{f}` (Krum) breakdown-point proof assumes Byzantine faults 
 - `single_family_warning` on `CalibrationCompletedEvent` flags monoculture pools.
 - `allow_single_family = false` (default) refuses to calibrate a monoculture pool.
 - Phase 2.6 cosine-N_eff guard rejects pools with `n_eff_cosine_prior < 1.0 + diversity_threshold`.
-- `ExplorerSlotConfig` (when populated) forces distinct CoT strategies (`StepByStep`, `DevilsAdvocate`, `FirstPrinciples`, `BackwardChaining`) per slot, reducing simultaneous-failure probability for same-family pools.
+- Phase 0 decomposition (Path C, always-on) populates `rejection_criteria` and `focus_mandate` on every slot — each explorer is given a domain-specific failure mode to probe, reducing the probability that all agents share the same false confidence. The adversarial verifier then applies hostile-reviewer scoring.
+- `ExplorerSlotConfig` carries distinct `role_frame` strings (via Path C) and distinct `cot_style` values per slot, activating different domain reasoning priors.
 
 These are mitigations, not solutions. The Byzantine guarantee remains conditioned on independent faults.
 
@@ -121,7 +126,17 @@ The `ProposalSet` CRDT merge picks a winning proposal and discards the rest. It 
 
 ### 3.6 Verification circularity
 
-Phase 3.5 uses a verification adapter (LLM-as-Judge) and Phase 4 uses an auditor adapter. Both are LLMs. Their biases (self-preference, length bias, position bias — Zheng et al. 2023; arXiv 2410.02736; arXiv 2410.21819) propagate through the entire decomposition. `synthesis_gain` is measured by the same verifier, so a verifier blind spot inflates the individual scores and the synthesis score equally. The system flags `explorer_verification_family_match` to surface judge-bias risk; it does not eliminate it. Without a Tier 1 oracle (test execution, fact-check API, domain-specific verifier), the "provable quality" framing is aspirational.
+Phase 3.5 uses a verification adapter (LLM-as-Judge) and Phase 4 uses an auditor adapter. Both are LLMs. Their biases (self-preference, length bias, position bias — Zheng et al. 2023; arXiv 2410.02736; arXiv 2410.21819) propagate through the entire decomposition. `synthesis_gain` is measured by the same verifier, so a verifier blind spot inflates the individual scores and the synthesis score equally.
+
+**Architectural mitigations now in place (GAP-A4, 2026-05-09):**
+
+- **Rubric separation.** `compiler::compile(manifest, corpus, include_rubric=false)` is the production call. `LlmJudge` rubric text is withheld from the explorer's `system_context`; the verifier retains it via `ConstraintPredicate::LlmJudge`. The explorer must produce proposals from task description and domain expertise, not from rubric scaffolding. This restores structural verifier independence: the verifier is judging proposals against criteria the explorer did not receive.
+
+- **Adversarial verifier framing.** `ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT` replaces the standard rubric-compliance prompt when any explorer slot carries `rejection_criteria` (the default for Path C decomposition). The verifier is instructed to find the single most likely silent failure mode rather than checking criterion adherence.
+
+- **`CoherenceState` per-wave.** `uncovered_domains` and `active_contradictions` are computed and traced after each verification round. `CoherenceIncomplete` is emitted at task close when `!is_closed()`.
+
+**Remaining limitation.** The rubric-separation fix is structurally sound but empirically unvalidated — whether explorers produce genuinely different output when rubric scaffolding is absent depends on model capability. The adversarial verifier framing does not eliminate judge bias; it changes its direction (from "is this compliant?" to "where does this fail?"). Without a Tier 1 oracle, `synthesis_gain` still conflates verifier-preference gain with actual quality improvement. The `explorer_verification_family_match` gate addresses monoculture bias; it does not address cross-provider training-data overlap.
 
 ### 3.7 The proxy chain
 

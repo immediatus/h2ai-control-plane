@@ -176,6 +176,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let input = EngineInput {

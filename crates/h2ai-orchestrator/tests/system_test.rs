@@ -126,6 +126,7 @@ fn default_manifest(count: usize) -> TaskManifest {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     }
 }
 
@@ -382,6 +383,7 @@ async fn system_resolves_conflict_via_bft_consensus() {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     };
 
     let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(

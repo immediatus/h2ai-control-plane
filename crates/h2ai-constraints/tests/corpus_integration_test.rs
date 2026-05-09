@@ -1,15 +1,14 @@
 /// End-to-end integration tests that load the real ads-platform constraint corpus
 /// from `docs/examples/ads-platform/constraints/` and verify the full pipeline:
 /// YAML loading, BM25 retrieval, domain navigation, relation graph, and payload fetch.
-///
-/// These tests act as a quality gate — if the corpus data or parsing breaks, they fail.
-use h2ai_constraints::source::{ConstraintSource, FsConstraintSource};
+use h2ai_constraints::resolver::ConstraintResolver;
+use h2ai_constraints::source::FsConstraintStore;
 use h2ai_constraints::types::ConstraintPredicate;
 use h2ai_constraints::wiki::WikiCache;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn corpus_dir() -> PathBuf {
-    // Locate ads-platform corpus relative to the workspace root.
     let manifest = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest)
         .join("../../docs/examples/ads-platform/constraints")
@@ -17,16 +16,29 @@ fn corpus_dir() -> PathBuf {
         .expect("ads-platform constraints directory must exist")
 }
 
+fn load_corpus() -> (FsConstraintStore, WikiCache) {
+    let (index, store) = FsConstraintStore::load(corpus_dir()).expect("corpus must load");
+    let cache = WikiCache::from_docs(&store.all_docs_sorted());
+    let _ = index; // index used via resolver in resolver tests
+    (store, cache)
+}
+
+fn make_resolver() -> ConstraintResolver {
+    let (index, store) = FsConstraintStore::load(corpus_dir()).expect("corpus must load");
+    ConstraintResolver::new(Arc::new(index), Arc::new(store))
+}
+
 // ── Loading ──────────────────────────────────────────────────────────────────
 
 #[test]
-fn corpus_loads_all_seven_yaml_constraints() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load without error");
-    let docs = source.all_docs();
+fn corpus_loads_all_yaml_constraints() {
+    let (store, _) = load_corpus();
+    let docs = store.all_docs_sorted();
+    // 7 original ads-platform constraints + 4 CACHE constraints added for agent-comparison experiment
     assert_eq!(
         docs.len(),
-        7,
-        "ads-platform corpus must contain exactly 7 constraints; got {}: {:?}",
+        11,
+        "ads-platform corpus must contain exactly 11 constraints; got {}: {:?}",
         docs.len(),
         docs.iter().map(|d| &d.id).collect::<Vec<_>>()
     );
@@ -34,9 +46,8 @@ fn corpus_loads_all_seven_yaml_constraints() {
 
 #[test]
 fn corpus_all_constraints_have_llm_judge_predicate() {
-    // All ads-platform constraints are YAML with `criteria` — must produce LlmJudge, never VocabularyPresence.
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    for doc in source.all_docs() {
+    let (store, _) = load_corpus();
+    for doc in store.all_docs_sorted() {
         assert!(
             matches!(doc.predicate, ConstraintPredicate::LlmJudge { .. }),
             "constraint {} must have LlmJudge predicate (loaded from YAML criteria); got non-LlmJudge",
@@ -47,9 +58,8 @@ fn corpus_all_constraints_have_llm_judge_predicate() {
 
 #[test]
 fn corpus_rubrics_include_domain_context() {
-    // Every constraint has domains — build_rubric() must append them.
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    for doc in source.all_docs() {
+    let (store, _) = load_corpus();
+    for doc in store.all_docs_sorted() {
         if let ConstraintPredicate::LlmJudge { rubric } = &doc.predicate {
             assert!(
                 rubric.contains("Domain:"),
@@ -63,9 +73,8 @@ fn corpus_rubrics_include_domain_context() {
 
 #[test]
 fn corpus_rubrics_include_remediation_hint() {
-    // All 7 YAML constraints now carry remediation_hint — must appear in rubric.
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    for doc in source.all_docs() {
+    let (store, _) = load_corpus();
+    for doc in store.all_docs_sorted() {
         if let ConstraintPredicate::LlmJudge { rubric } = &doc.predicate {
             assert!(
                 rubric.contains("Remediation hint:"),
@@ -79,9 +88,9 @@ fn corpus_rubrics_include_remediation_hint() {
 
 #[test]
 fn corpus_all_expected_ids_present() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let ids: std::collections::HashSet<&str> =
-        source.all_docs().iter().map(|d| d.id.as_str()).collect();
+    let (store, _) = load_corpus();
+    let ids: std::collections::HashSet<String> =
+        store.all_docs_sorted().into_iter().map(|d| d.id).collect();
     for expected in [
         "CONSTRAINT-001",
         "CONSTRAINT-002",
@@ -99,9 +108,7 @@ fn corpus_all_expected_ids_present() {
 
 #[test]
 fn navigate_by_domain_billing_returns_constraints_004_005_007() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let billing = cache.navigate_by_domain("billing");
     let ids: std::collections::HashSet<&str> = billing.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -120,9 +127,7 @@ fn navigate_by_domain_billing_returns_constraints_004_005_007() {
 
 #[test]
 fn navigate_by_domain_latency_returns_constraints_002_003_006() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let latency = cache.navigate_by_domain("latency");
     let ids: std::collections::HashSet<&str> = latency.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -143,9 +148,7 @@ fn navigate_by_domain_latency_returns_constraints_002_003_006() {
 
 #[test]
 fn navigate_related_004_reaches_005_and_007() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let related = cache.navigate_related("CONSTRAINT-004");
     let ids: std::collections::HashSet<&str> = related.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -160,9 +163,7 @@ fn navigate_related_004_reaches_005_and_007() {
 
 #[test]
 fn navigate_related_003_reaches_006() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let related = cache.navigate_related("CONSTRAINT-003");
     let ids: std::collections::HashSet<&str> = related.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -175,9 +176,7 @@ fn navigate_related_003_reaches_006() {
 
 #[test]
 fn bm25_query_budget_idempotency_ranks_004_first() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let hits = cache.search("budget idempotency atomic redis debit duplicate", 3);
     assert!(
         !hits.is_empty(),
@@ -192,9 +191,7 @@ fn bm25_query_budget_idempotency_ranks_004_first() {
 
 #[test]
 fn bm25_query_grpc_protobuf_ranks_002_first() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let hits = cache.search("grpc protobuf internal service communication binary", 3);
     assert!(!hits.is_empty(), "BM25 must return results for gRPC query");
     assert_eq!(
@@ -206,9 +203,7 @@ fn bm25_query_grpc_protobuf_ranks_002_first() {
 
 #[test]
 fn bm25_query_kafka_audit_log_ranks_005_first() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let hits = cache.search("kafka clickhouse immutable audit log financial billing", 3);
     assert!(
         !hits.is_empty(),
@@ -223,9 +218,7 @@ fn bm25_query_kafka_audit_log_ranks_005_first() {
 
 #[test]
 fn bm25_query_zgc_virtual_threads_ranks_006_first() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let cache = WikiCache::from_docs(source.all_docs());
-
+    let (_, cache) = load_corpus();
     let hits = cache.search("zgc virtual threads garbage collection heap pause java", 3);
     assert!(!hits.is_empty(), "BM25 must return results for ZGC query");
     assert_eq!(
@@ -235,15 +228,13 @@ fn bm25_query_zgc_virtual_threads_ranks_006_first() {
     );
 }
 
-// ── Source resolution (two-stage: tag + BM25) ────────────────────────────────
+// ── Resolver (tag + BM25) ────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn source_resolve_by_billing_tag_returns_billing_constraints() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let metas = source
-        .resolve_context(&["billing".to_string()], &[], "")
-        .await;
-    let ids: std::collections::HashSet<&str> = metas.iter().map(|m| m.id.as_str()).collect();
+    let resolver = make_resolver();
+    let docs = resolver.resolve(&[], &["billing".to_string()], "").await;
+    let ids: std::collections::HashSet<&str> = docs.iter().map(|d| d.id.as_str()).collect();
     assert!(
         ids.contains("CONSTRAINT-004"),
         "billing tag must resolve 004"
@@ -260,16 +251,15 @@ async fn source_resolve_by_billing_tag_returns_billing_constraints() {
 
 #[tokio::test]
 async fn source_resolve_semantic_union_merges_tag_and_bm25() {
-    // billing tag → 004, 005, 007; "stateless sticky session" BM25 → 001; both must appear.
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let metas = source
-        .resolve_context(
-            &["billing".to_string()],
+    let resolver = make_resolver();
+    let docs = resolver
+        .resolve(
             &[],
+            &["billing".to_string()],
             "stateless sticky session node affinity",
         )
         .await;
-    let ids: std::collections::HashSet<&str> = metas.iter().map(|m| m.id.as_str()).collect();
+    let ids: std::collections::HashSet<&str> = docs.iter().map(|d| d.id.as_str()).collect();
     assert!(
         ids.contains("CONSTRAINT-004"),
         "tag union must include 004 (billing)"
@@ -282,13 +272,17 @@ async fn source_resolve_semantic_union_merges_tag_and_bm25() {
 
 #[tokio::test]
 async fn source_load_payload_returns_llm_judge_with_remediation() {
-    let source = FsConstraintSource::load(corpus_dir()).expect("corpus must load");
-    let payload = source
-        .load_payload("CONSTRAINT-004", "v1")
-        .await
-        .expect("payload fetch must succeed for known constraint");
-    assert_eq!(payload.id, "CONSTRAINT-004");
-    if let ConstraintPredicate::LlmJudge { rubric } = &payload.predicate {
+    let resolver = make_resolver();
+    let docs = resolver
+        .resolve(&["CONSTRAINT-004".to_string()], &[], "")
+        .await;
+    assert_eq!(
+        docs.len(),
+        1,
+        "must resolve exactly one doc for explicit ID"
+    );
+    assert_eq!(docs[0].id, "CONSTRAINT-004");
+    if let ConstraintPredicate::LlmJudge { rubric } = &docs[0].predicate {
         assert!(
             rubric.contains("Remediation hint:"),
             "fetched rubric must include remediation hint"

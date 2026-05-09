@@ -1,4 +1,3 @@
-use crate::constraint_source::reconstruct_docs;
 use crate::{error::ApiError, state::AppState};
 use axum::{
     extract::{Path, State},
@@ -6,15 +5,23 @@ use axum::{
     response::sse::Event,
     response::{IntoResponse, Json, Sse},
 };
-use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
+use h2ai_orchestrator::decomposition::{
+    compute_role_diversity, prune_by_orthogonality, run_decomposition_agent,
+};
+use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine, NatsDispatchConfig};
+use h2ai_types::agent::{AgentDescriptor, AgentTool, CostTier, TaskRequirements};
 use h2ai_types::checkpoint::ConstraintSnapshot;
 use h2ai_types::config::{TaoConfig, VerificationConfig};
-use h2ai_types::events::{H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent};
+use h2ai_types::events::{
+    CoherenceIncompleteEvent, H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent,
+};
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
+use h2ai_types::prompts::ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT;
 use h2ai_types::sizing::TaskQuadrant;
 use serde_json::{json, Value};
 use std::convert::Infallible;
+use std::time::Duration;
 
 /// Accept a [`TaskManifest`] and begin async execution, returning `202 Accepted` immediately.
 ///
@@ -54,15 +61,14 @@ pub async fn submit_task(
         cal.clone().ok_or(ApiError::CalibrationRequired)?
     };
 
-    let source = state.constraint_source();
+    let resolver = state.constraint_resolver();
     let task_tags = manifest.constraint_tags.clone();
     let explicit_ids = manifest.constraints.clone();
-    let metas = source
-        .resolve_context(&task_tags, &explicit_ids, &manifest.description)
+    let corpus = resolver
+        .resolve(&explicit_ids, &task_tags, &manifest.description)
         .await;
-    let wiki_revision = source.revision();
-    let resolved_ids: Vec<String> = metas.iter().map(|m| m.id.clone()).collect();
-    let corpus = reconstruct_docs(metas, source.as_ref()).await;
+    let wiki_revision = 0u64;
+    let resolved_ids: Vec<String> = corpus.iter().map(|d| d.id.clone()).collect();
 
     let topology_kind_str = manifest.topology.kind.clone();
     let n_max = calibration.coefficients.n_max();
@@ -126,9 +132,121 @@ pub async fn submit_task(
         // Pre-serialize manifest for checkpoint (manifest_clone is moved into input below).
         let manifest_json_for_checkpoint =
             serde_json::to_string(&manifest_clone).unwrap_or_default();
+        let nats_dispatch =
+            state_clone
+                .agent_provider
+                .as_ref()
+                .map(|provider| NatsDispatchConfig {
+                    nats: state_clone.nats.clone(),
+                    provider: std::sync::Arc::clone(provider),
+                    agent_descriptor: AgentDescriptor {
+                        model: std::env::var("H2AI_AGENT_MODEL").unwrap_or_else(|_| "local".into()),
+                        tools: vec![AgentTool::Shell, AgentTool::FileSystem],
+                        cost_tier: CostTier::Mid,
+                    },
+                    task_requirements: TaskRequirements {
+                        max_cost_tier: CostTier::High,
+                        required_tools: vec![AgentTool::Shell, AgentTool::FileSystem],
+                    },
+                    task_timeout: Duration::from_secs(
+                        std::env::var("H2AI_AGENT_TIMEOUT_SECS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(120),
+                    ),
+                    payload_store: state_clone.payload_store.clone(),
+                    offload_threshold_bytes: 8 * 1024,
+                });
+        // Phase 0: LLM decomposition always runs.
+        // Operator slot_configs (if any) are appended after and the combined set is
+        // pruned to N_max by orthogonality — they add context, not bypass decomposition.
+        let n_max = calibration_clone.coefficients.n_max() as usize;
+        // Quality-driven target: one slot per constraint domain + one integration slot.
+        // n_max (USL throughput ceiling) is the hard cap; n_target drives the prompt.
+        let n_domains = corpus
+            .iter()
+            .flat_map(|d| d.domains.iter())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let n_target = (n_domains + 1).max(2).min(n_max.max(1));
+        let slot_configs = match run_decomposition_agent(
+            &manifest_clone.description,
+            &corpus,
+            &manifest_clone.pareto_weights,
+            n_target,
+            n_max.max(1),
+            auditor.as_ref(),
+            state_clone.embedding_model.as_deref(),
+        )
+        .await
+        {
+            Ok(mut slots) => {
+                // Append operator-specified extra slots, then re-prune.
+                let operator_extra = manifest_clone.explorers.slot_configs.clone();
+                if !operator_extra.is_empty() {
+                    slots.extend(operator_extra);
+                    if let Some(model) = state_clone.embedding_model.as_deref() {
+                        slots = prune_by_orthogonality(slots, n_max.max(1), model);
+                    } else {
+                        slots.truncate(n_max.max(1));
+                    }
+                }
+                let role_diversity =
+                    compute_role_diversity(&slots, state_clone.embedding_model.as_deref());
+                eprintln!(
+                    "INFO: decomposition produced {} slots, n_eff_cosine_roles={:.3}{}",
+                    slots.len(),
+                    role_diversity,
+                    if state_clone.embedding_model.is_none() { " (no embedding model — metric blind)" } else { "" },
+                );
+                for (i, s) in slots.iter().enumerate() {
+                    eprintln!(
+                        "INFO:   slot[{i}] cot={:?} mandate={:?} role={:?}",
+                        s.cot_style,
+                        s.focus_mandate.chars().take(60).collect::<String>(),
+                        s.role_frame.chars().take(120).collect::<String>(),
+                    );
+                }
+                slots
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "h2ai.decomposition",
+                    error = %e,
+                    "decomposition failed — task cannot proceed without an epistemic committee"
+                );
+                let failed_ev = H2AIEvent::TaskFailed(TaskFailedEvent {
+                    task_id: task_id_clone.clone(),
+                    pruned_events: vec![],
+                    topologies_tried: vec![],
+                    tau_values_tried: vec![],
+                    multiplication_condition_failure: None,
+                    timestamp: chrono::Utc::now(),
+                });
+                if let Err(pub_err) = state_clone
+                    .nats
+                    .publish_event(&task_id_clone, &failed_ev)
+                    .await
+                {
+                    tracing::warn!(
+                        "failed to publish TaskFailedEvent after decomposition failure: {pub_err}"
+                    );
+                }
+                state_clone.store.mark_failed(&task_id_clone);
+                return;
+            }
+        };
+        let use_adversarial_verifier = slot_configs
+            .iter()
+            .any(|s| !s.rejection_criteria.is_empty());
+        let calibration_source_for_attr = calibration_clone.calibration_source;
         let input = EngineInput {
             task_id: task_id_clone,
-            manifest: manifest_clone,
+            manifest: {
+                let mut m = manifest_clone.clone();
+                m.explorers.slot_configs = slot_configs;
+                m
+            },
             calibration: calibration_clone,
             explorer_adapters: vec![explorer.as_ref(), explorer2.as_ref(), explorer.as_ref()],
             verification_adapter: verifier.as_ref(),
@@ -138,11 +256,22 @@ pub async fn submit_task(
                 ..Default::default()
             },
             tao_config: TaoConfig::default(),
-            verification_config: VerificationConfig::default(),
+            verification_config: if use_adversarial_verifier {
+                VerificationConfig {
+                    evaluator_system_prompt: ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.into(),
+                    record_adversarial_comparison: manifest_clone.measure_verifier_ab,
+                    ..VerificationConfig::default()
+                }
+            } else {
+                VerificationConfig {
+                    record_adversarial_comparison: manifest_clone.measure_verifier_ab,
+                    ..VerificationConfig::default()
+                }
+            },
             constraint_corpus: corpus,
             cfg: &state_clone.cfg,
             store: store_clone,
-            nats_dispatch: None,
+            nats_dispatch,
             registry: &registry,
             embedding_model: state_clone.embedding_model.as_deref(),
             tao_multiplier,
@@ -389,6 +518,7 @@ pub async fn submit_task(
                     applied_optimizations: output.applied_optimizations,
                     timestamp: chrono::Utc::now(),
                     approval_decision: None,
+                    calibration_source: calibration_source_for_attr,
                 });
                 match state_clone
                     .nats
@@ -401,6 +531,37 @@ pub async fn submit_task(
                         }
                     }
                     Err(e) => tracing::warn!("failed to publish TaskAttributionEvent: {e}"),
+                }
+                for comp_ev in &output.comparison_events {
+                    let ev = H2AIEvent::VerifierComparison(comp_ev.clone());
+                    if let Err(e) = state_clone
+                        .nats
+                        .publish_event_seq(&output.task_id, &ev)
+                        .await
+                    {
+                        tracing::warn!("failed to publish VerifierComparisonEvent: {e}");
+                    }
+                }
+                if !output.coherence_state.is_closed() {
+                    let coh_ev = H2AIEvent::CoherenceIncomplete(CoherenceIncompleteEvent {
+                        task_id: output.task_id.clone(),
+                        uncovered_domains: output.coherence_state.uncovered_domains.clone(),
+                        active_contradictions: output
+                            .coherence_state
+                            .active_contradictions
+                            .iter()
+                            .map(|(a, b, d)| (a.to_string(), b.to_string(), d.clone()))
+                            .collect(),
+                        retries: output.topology_retry_events.len() as u32,
+                        timestamp: chrono::Utc::now(),
+                    });
+                    if let Err(e) = state_clone
+                        .nats
+                        .publish_event_seq(&output.task_id, &coh_ev)
+                        .await
+                    {
+                        tracing::warn!("failed to publish CoherenceIncompleteEvent: {e}");
+                    }
                 }
                 // Publish MergeResolved so SSE clients receive the terminal event and close.
                 let merge_ev = H2AIEvent::MergeResolved(MergeResolvedEvent {

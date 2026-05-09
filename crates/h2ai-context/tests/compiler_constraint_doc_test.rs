@@ -8,7 +8,7 @@ fn compile_accepts_constraint_docs() {
         "ADR-001",
         "Personal data minimization — proposals must store minimum data required and must cite a GDPR legal basis.",
     );
-    let result = compile("use personal data minimization techniques", &[doc]);
+    let result = compile("use personal data minimization techniques", &[doc], true);
     assert!(result.system_context.contains("ADR-001"));
 }
 
@@ -18,7 +18,7 @@ fn compile_system_context_contains_constraint_id() {
         "GDPR-001",
         "Personal data privacy — proposals must not collect data beyond what the stated purpose requires.",
     );
-    let result = compile("handle personal data carefully", &[doc]);
+    let result = compile("handle personal data carefully", &[doc], true);
     assert!(
         result.system_context.contains("GDPR-001"),
         "system context must include constraint id"

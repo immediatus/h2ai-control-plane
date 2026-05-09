@@ -30,6 +30,7 @@ fn manifest() -> TaskManifest {
         oracle: None,
         require_approval: false,
         constraint_tags: vec![],
+        measure_verifier_ab: false,
     }
 }
 

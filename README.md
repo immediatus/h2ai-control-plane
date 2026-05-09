@@ -138,6 +138,31 @@ helm install h2ai h2ai/h2ai-control-plane \
 
 ---
 
+## The Epistemological Architecture
+
+Every problem submitted to H2AI is, at its core, a **team knowledge acquisition problem**. The system's job is not to produce text — it is to build a knowledge graph whose nodes are beliefs about the problem domain and whose edges are support, contradiction, derivation, and grounding relationships. When that graph reaches coherent closure, the system stops.
+
+This framing maps directly to four nested control loops, each with an epistemic stopping criterion rather than a mechanical one:
+
+| Loop | Scope | Stops when |
+|------|-------|-----------|
+| **TAO** (Thought–Action–Observation) | Within one agent | The agent has exhausted productive reasoning paths — no tool call changes the belief set |
+| **MAPE-K** (Monitor–Analyse–Plan–Execute) | Across the committee | The knowledge graph has reached coherent closure — surviving proposals are consistent with the constraint corpus |
+| **Calibration** | Across tasks | Calibration confidence intervals are tight enough — α, β, CG priors are stable across the adapter pool |
+| **Oracle / Grounding** | Across reality | External truth has verified the claims that are load-bearing for the output — human or automated oracle confirms the result |
+
+These loops are **not** a retry policy or a pipeline stage. They are four nested epistemological systems operating at different time-scales. The TAO loop refines a belief within a single agent-turn. The MAPE-K loop detects when the committee's collective knowledge has failed coherence and repairs it by restructuring the generation. The calibration loop updates the system's **meta-beliefs** — its beliefs about its own agent quality — so that future committees are better sized and composed. The grounding loop connects the entire system to external reality, preventing the ensemble from converging on a coherent but wrong answer.
+
+The stopping criteria are what distinguish this from a retry loop: the system stops not when it has run a fixed number of iterations, but when it has **acquired enough knowledge**. Each loop has a precise definition of "enough":
+- TAO: `tool_calls_made == 0` on the last iteration (no new evidence to gather)
+- MAPE-K: `ZeroSurvival` not triggered — all proposals passed audit
+- Calibration: confidence interval width on `(α, β, CG)` drops below the configured precision threshold
+- Oracle: `q_confidence ≥ approval_threshold` or human operator provides explicit approval signal
+
+This architecture is why H2AI is described as an **epistemic control plane** rather than an orchestration framework. Orchestration coordinates processes. H2AI coordinates the acquisition, validation, and grounding of knowledge.
+
+---
+
 ## How It Works
 
 ### 1. Calibration — measure the physics before spawning anything

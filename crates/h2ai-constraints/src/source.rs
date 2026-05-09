@@ -1,7 +1,10 @@
+use crate::index::ConstraintIndex;
 use crate::loader::load_corpus;
-use crate::types::{ConstraintDoc, ConstraintMeta, ConstraintPayload};
-use crate::wiki::WikiCache;
+use crate::retrieval::ConstraintRetriever;
+use crate::store::ConstraintStore;
+use crate::types::{ConstraintDoc, ConstraintMeta};
 use async_trait::async_trait;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 
@@ -15,129 +18,120 @@ pub enum ConstraintError {
     Deserialize(String),
 }
 
-/// Abstraction over constraint corpus access.
+/// Filesystem-backed `ConstraintIndex` + `ConstraintStore`.
 ///
-/// `FsConstraintSource` wraps the existing flat-directory behavior (backward compat).
-/// `NatsWikiConstraintSource` (in h2ai-api) reads from NATS KV + Object Store.
-#[async_trait]
-pub trait ConstraintSource: Send + Sync {
-    /// Phase 1: resolve applicable ConstraintMeta for given task context.
-    ///
-    /// Resolution order:
-    /// 1. Explicit IDs (`explicit_ids`) — always included, O(1) lookup
-    /// 2. Tag intersection (`task_tags`) — domain/mandatory_for_tags index
-    /// 3. BM25 semantic fallback — when tags match nothing, use `query_text`
-    ///    to surface the most relevant constraints by keyword similarity
-    async fn resolve_context(
-        &self,
-        task_tags: &[String],
-        explicit_ids: &[String],
-        query_text: &str,
-    ) -> Vec<ConstraintMeta>;
-
-    /// Phase 4: fetch full predicate payload for a specific constraint on demand.
-    async fn load_payload(
-        &self,
-        id: &str,
-        version: &str,
-    ) -> Result<ConstraintPayload, ConstraintError>;
-
-    /// NATS KV revision at cache load time — stored in ConstraintSnapshot for audit.
-    fn revision(&self) -> u64;
+/// Loads all docs from a directory once at construction (small local corpus only).
+/// For large corpora use the NATS-backed implementations in `h2ai-api`.
+pub struct FsConstraintIndex {
+    /// tag/domain → constraint IDs
+    tag_map: HashMap<String, Vec<String>>,
+    /// all known IDs (for find_by_ids validation)
+    all_ids: HashSet<String>,
+    retriever: ConstraintRetriever,
 }
 
-/// Filesystem-backed source wrapping the existing `load_corpus` behavior.
-pub struct FsConstraintSource {
-    cache: WikiCache,
-    docs: Vec<ConstraintDoc>,
-}
-
-impl FsConstraintSource {
-    pub fn load(dir: impl AsRef<Path>) -> Result<Self, std::io::Error> {
-        let docs = load_corpus(dir)?;
-        let cache = WikiCache::from_docs(&docs);
-        Ok(Self { cache, docs })
-    }
-
-    pub fn from_docs(docs: Vec<ConstraintDoc>) -> Self {
-        let cache = WikiCache::from_docs(&docs);
-        Self { cache, docs }
-    }
-
-    pub fn all_docs(&self) -> &[ConstraintDoc] {
-        &self.docs
-    }
-}
-
-#[async_trait]
-impl ConstraintSource for FsConstraintSource {
-    /// Resolve applicable constraints using two-stage strategy:
-    ///
-    /// 1. **Explicit IDs** — fast-path: return exactly what was requested; O(1) lookup
-    /// 2. **Tags ∪ BM25** — union of tag intersection and semantic search; ensures
-    ///    domain-mandatory constraints (tags) are never missed while BM25 surfaces
-    ///    semantically relevant constraints the tags didn't cover
-    async fn resolve_context(
-        &self,
-        task_tags: &[String],
-        explicit_ids: &[String],
-        query_text: &str,
-    ) -> Vec<ConstraintMeta> {
-        // Fast path: explicit IDs always win — return exactly what was requested.
-        if !explicit_ids.is_empty() {
-            return self.cache.resolve(&[], explicit_ids);
-        }
-
-        // Union: tag-based resolution ∪ BM25 semantic search.
-        // Tags ensure mandatory domain constraints (billing, GDPR) are always included.
-        // BM25 surfaces additional relevant constraints the task implies but didn't tag.
-        if !task_tags.is_empty() || !query_text.is_empty() {
-            let resolved = self
-                .cache
-                .resolve_with_semantic(task_tags, &[], query_text, 20);
-            if !resolved.is_empty() {
-                return resolved;
+impl FsConstraintIndex {
+    pub fn from_docs(docs: &[ConstraintDoc]) -> Self {
+        let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
+        let mut all_ids = HashSet::new();
+        for doc in docs {
+            all_ids.insert(doc.id.clone());
+            for domain in &doc.domains {
+                tag_map
+                    .entry(domain.clone())
+                    .or_default()
+                    .push(doc.id.clone());
+            }
+            for tag in &doc.mandatory_for_tags {
+                tag_map.entry(tag.clone()).or_default().push(doc.id.clone());
             }
         }
-
-        // Final fallback: corpus empty or no terms matched — return all.
-        self.docs.iter().map(ConstraintMeta::from_doc).collect()
-    }
-
-    async fn load_payload(
-        &self,
-        id: &str,
-        _version: &str,
-    ) -> Result<ConstraintPayload, ConstraintError> {
-        // FsConstraintSource holds the full ConstraintDoc in memory, so it can serve
-        // any predicate tier including LlmJudge — no external fetch required.
-        // load_corpus() deduplicates by ID (YAML preferred over MD), so there is at
-        // most one doc per ID in self.docs.
-        if let Some(doc) = self.docs.iter().find(|d| d.id == id) {
-            return Ok(ConstraintPayload {
-                id: id.to_string(),
-                version: "v1".to_string(),
-                predicate: doc.predicate.clone(),
-            });
+        Self {
+            tag_map,
+            all_ids,
+            retriever: ConstraintRetriever::from_docs(docs),
         }
-        // Fall back to meta inline_predicate for any cache-only entries.
-        let meta = self
-            .cache
-            .metas
-            .get(id)
-            .ok_or_else(|| ConstraintError::NotFound(id.to_string()))?;
-        let predicate = meta
-            .inline_predicate
-            .clone()
-            .ok_or_else(|| ConstraintError::NotFound(id.to_string()))?;
-        Ok(ConstraintPayload {
-            id: id.to_string(),
-            version: meta.payload_version.clone(),
-            predicate,
-        })
+    }
+}
+
+#[async_trait]
+impl ConstraintIndex for FsConstraintIndex {
+    async fn find_by_ids(&self, ids: &[String]) -> Vec<String> {
+        ids.iter()
+            .filter(|id| self.all_ids.contains(*id))
+            .cloned()
+            .collect()
     }
 
-    fn revision(&self) -> u64 {
-        self.cache.revision
+    async fn find_by_tags(&self, tags: &[String]) -> Vec<String> {
+        let mut ids: HashSet<String> = HashSet::new();
+        for tag in tags {
+            if let Some(tag_ids) = self.tag_map.get(tag.as_str()) {
+                ids.extend(tag_ids.iter().cloned());
+            }
+        }
+        ids.into_iter().collect()
     }
+
+    async fn search(&self, query: &str, top_k: usize) -> Vec<String> {
+        self.retriever
+            .query(query, top_k)
+            .into_iter()
+            .map(|c| c.id)
+            .collect()
+    }
+}
+
+/// Filesystem-backed `ConstraintStore`.
+///
+/// Keeps all docs in memory — suitable only for small local corpora.
+pub struct FsConstraintStore {
+    docs: HashMap<String, ConstraintDoc>,
+}
+
+impl FsConstraintStore {
+    pub fn from_docs(docs: Vec<ConstraintDoc>) -> Self {
+        Self {
+            docs: docs.into_iter().map(|d| (d.id.clone(), d)).collect(),
+        }
+    }
+
+    /// Load a corpus directory and build both index and store.
+    pub fn load(dir: impl AsRef<Path>) -> Result<(FsConstraintIndex, Self), std::io::Error> {
+        let docs = load_corpus(dir)?;
+        let index = FsConstraintIndex::from_docs(&docs);
+        let store = Self::from_docs(docs);
+        Ok((index, store))
+    }
+
+    /// Expose all docs (e.g. for decomposition agent's corpus parameter).
+    pub fn all_docs(&self) -> Vec<&ConstraintDoc> {
+        self.docs.values().collect()
+    }
+
+    /// Return all docs as a sorted vec for deterministic ordering.
+    pub fn all_docs_sorted(&self) -> Vec<ConstraintDoc> {
+        let mut v: Vec<ConstraintDoc> = self.docs.values().cloned().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+}
+
+#[async_trait]
+impl ConstraintStore for FsConstraintStore {
+    async fn load(&self, id: &str) -> Result<ConstraintDoc, ConstraintError> {
+        self.docs
+            .get(id)
+            .cloned()
+            .ok_or_else(|| ConstraintError::NotFound(id.to_string()))
+    }
+}
+
+/// Build a `ConstraintMeta` vec from a store (used by decomposition agent).
+pub fn metas_from_store(store: &FsConstraintStore) -> Vec<ConstraintMeta> {
+    store
+        .all_docs_sorted()
+        .into_iter()
+        .map(|d| ConstraintMeta::from_doc(&d))
+        .collect()
 }

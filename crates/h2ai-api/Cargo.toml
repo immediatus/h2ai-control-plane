@@ -23,6 +23,8 @@ h2ai-constraints  = { path = "../h2ai-constraints" }
 h2ai-adapters     = { path = "../h2ai-adapters" }
 h2ai-config       = { path = "../h2ai-config" }
 h2ai-orchestrator = { path = "../h2ai-orchestrator" }
+h2ai-provisioner  = { path = "../h2ai-provisioner" }
+h2ai-tools        = { path = "../h2ai-tools" }
 async-trait       = { workspace = true }
 axum              = { workspace = true }
 tokio             = { workspace = true }

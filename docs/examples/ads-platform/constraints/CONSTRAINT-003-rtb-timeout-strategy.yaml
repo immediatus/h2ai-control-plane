@@ -18,3 +18,8 @@ criteria:
   fail: |
     The proposal raises the global RTB deadline to accommodate the slow DSP, or blocks the entire
     auction waiting for the slow DSP's response.
+  checks:
+    - Does the proposal track per-DSP latency histograms locally inside each Ad Server instance (no cross-instance coordination)?
+    - Is the global RTB deadline (T_global) kept fixed at ≤100ms and never raised for slow DSPs?
+    - Does the proposal require a cold-start warm-up period (≥100 samples) before activating adaptive per-DSP timeouts?
+    - When a DSP times out, does the auction proceed immediately with bids already received (no blocking wait)?

@@ -327,8 +327,8 @@ mod synthesis_config_tests {
         assert!(cfg.synthesis_enabled);
         assert_eq!(cfg.synthesis_min_proposals, 2);
         assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
-        assert_eq!(cfg.synthesis_critique_max_tokens, 1024);
-        assert_eq!(cfg.synthesis_max_tokens, 2048);
+        assert_eq!(cfg.synthesis_critique_max_tokens, 8192);
+        assert_eq!(cfg.synthesis_max_tokens, 8192);
     }
 
     #[test]

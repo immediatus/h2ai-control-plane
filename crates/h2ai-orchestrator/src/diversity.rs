@@ -20,7 +20,7 @@ impl DiversityGuard {
     /// Fails open (returns `Diverse`) when fewer than 2 proposals, any fingerprint is
     /// empty, or fingerprint lengths are inconsistent (constraint corpus changed mid-run).
     pub fn check(
-        passed: &[(ProposalEvent, Vec<ComplianceResult>)],
+        passed: &[(ProposalEvent, Vec<ComplianceResult>, bool)],
         threshold: f64,
     ) -> DiversityResult {
         if passed.len() < 2 {
@@ -29,7 +29,7 @@ impl DiversityGuard {
 
         let fingerprints: Vec<SatisfactionFingerprint> = passed
             .iter()
-            .map(|(_, results)| results.iter().map(|r| r.hard_passes()).collect())
+            .map(|(_, results, _)| results.iter().map(|r| r.hard_passes()).collect())
             .collect();
 
         let len = fingerprints[0].len();

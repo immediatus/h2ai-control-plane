@@ -1,4 +1,3 @@
-use crate::constraint_source::reconstruct_docs;
 use crate::state::AppState;
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::{TaskPhase, TaskState};
@@ -134,14 +133,13 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             }
         };
 
-        // --- Load constraint corpus via wiki-aware source ---
-        let source = state.constraint_source();
+        // --- Load constraint corpus ---
+        let resolver = state.constraint_resolver();
         let task_tags = manifest.constraint_tags.clone();
         let explicit_ids = manifest.constraints.clone();
-        let metas = source
-            .resolve_context(&task_tags, &explicit_ids, &manifest.description)
+        let corpus = resolver
+            .resolve(&explicit_ids, &task_tags, &manifest.description)
             .await;
-        let corpus = reconstruct_docs(metas, source.as_ref()).await;
 
         // --- Snapshot tao_multiplier before building input ---
         let tao_multiplier = state.tao_multiplier_estimator.read().await.multiplier();

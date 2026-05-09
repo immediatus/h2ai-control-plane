@@ -35,6 +35,9 @@ pub struct MetricsState {
     pub oracle_tasks_total: u64,
     /// Cumulative count of resolved tasks that carried an OracleSpec.
     pub oracle_tasks_with_spec: u64,
+    /// Current calibration source label: "measured", "partial_fit", or "synthetic_priors".
+    /// Empty string when no calibration has run yet (renders all gauges as 0).
+    pub calibration_source_label: String,
 }
 
 impl MetricsState {
@@ -83,7 +86,12 @@ impl MetricsState {
              h2ai_oracle_tasks_total {oracle_tasks_total}\n\
              # HELP h2ai_oracle_tasks_with_spec_total Tasks that carried an OracleSpec\n\
              # TYPE h2ai_oracle_tasks_with_spec_total counter\n\
-             h2ai_oracle_tasks_with_spec_total {oracle_tasks_with_spec}\n",
+             h2ai_oracle_tasks_with_spec_total {oracle_tasks_with_spec}\n\
+             # HELP h2ai_calibration_source Current calibration source (1 = active variant)\n\
+             # TYPE h2ai_calibration_source gauge\n\
+             h2ai_calibration_source{{source=\"measured\"}} {cal_src_measured}\n\
+             h2ai_calibration_source{{source=\"partial_fit\"}} {cal_src_partial}\n\
+             h2ai_calibration_source{{source=\"synthetic_priors\"}} {cal_src_synthetic}\n",
             n_eff_prior = self.n_eff_prior,
             n_eff_actual = self.n_eff_actual,
             epistemic_yield_ratio = self.epistemic_yield_ratio,
@@ -101,6 +109,9 @@ impl MetricsState {
             oracle_basis = self.oracle_calibration_basis,
             oracle_tasks_total = self.oracle_tasks_total,
             oracle_tasks_with_spec = self.oracle_tasks_with_spec,
+            cal_src_measured = if self.calibration_source_label == "measured" { 1 } else { 0 },
+            cal_src_partial = if self.calibration_source_label == "partial_fit" { 1 } else { 0 },
+            cal_src_synthetic = if self.calibration_source_label == "synthetic_priors" { 1 } else { 0 },
         )
     }
 }
@@ -129,6 +140,7 @@ mod metrics_tests {
             oracle_calibration_basis: 0,
             oracle_tasks_total: 0,
             oracle_tasks_with_spec: 0,
+            calibration_source_label: String::new(),
         };
         let text = m.to_prometheus_text();
         assert!(text.contains("h2ai_n_eff_prior 2.5"));
@@ -142,6 +154,41 @@ mod metrics_tests {
         assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="coverage"} 42"#));
         assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="complex"} 5"#));
         assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="degenerate"} 1"#));
+    }
+
+    #[test]
+    fn metrics_state_renders_calibration_source_measured() {
+        let m = MetricsState {
+            calibration_source_label: "measured".to_string(),
+            ..Default::default()
+        };
+        let text = m.to_prometheus_text();
+        assert!(text.contains(r#"h2ai_calibration_source{source="measured"} 1"#));
+        assert!(text.contains(r#"h2ai_calibration_source{source="partial_fit"} 0"#));
+        assert!(text.contains(r#"h2ai_calibration_source{source="synthetic_priors"} 0"#));
+    }
+
+    #[test]
+    fn metrics_state_renders_calibration_source_synthetic() {
+        let m = MetricsState {
+            calibration_source_label: "synthetic_priors".to_string(),
+            ..Default::default()
+        };
+        let text = m.to_prometheus_text();
+        assert!(text.contains(r#"h2ai_calibration_source{source="measured"} 0"#));
+        assert!(text.contains(r#"h2ai_calibration_source{source="synthetic_priors"} 1"#));
+    }
+
+    #[test]
+    fn metrics_state_renders_calibration_source_partial_fit() {
+        let m = MetricsState {
+            calibration_source_label: "partial_fit".to_string(),
+            ..Default::default()
+        };
+        let text = m.to_prometheus_text();
+        assert!(text.contains(r#"h2ai_calibration_source{source="measured"} 0"#));
+        assert!(text.contains(r#"h2ai_calibration_source{source="partial_fit"} 1"#));
+        assert!(text.contains(r#"h2ai_calibration_source{source="synthetic_priors"} 0"#));
     }
 
     #[test]
@@ -164,6 +211,7 @@ mod metrics_tests {
             oracle_calibration_basis: 2,
             oracle_tasks_total: 0,
             oracle_tasks_with_spec: 0,
+            calibration_source_label: String::new(),
         };
         let text = m.to_prometheus_text();
         assert!(text.contains("h2ai_oracle_ece_gauge 0.08"));

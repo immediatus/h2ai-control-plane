@@ -449,6 +449,7 @@ mod tests {
             n_max_hi: 0.0,
             n_eff_cosine_prior: 0.0,
             calibration_quality: CalibrationQuality::Domain,
+            calibration_source: Default::default(),
         }
     }
 

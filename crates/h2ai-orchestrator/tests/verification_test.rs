@@ -1,11 +1,12 @@
 use chrono::Utc;
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_constraints::types::aggregate_compliance_score;
-use h2ai_orchestrator::verification::{VerificationInput, VerificationPhase};
+use h2ai_orchestrator::verification::{new_eval_cache, VerificationInput, VerificationPhase};
 use h2ai_types::config::{AdapterKind, VerificationConfig};
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::TauValue;
+use std::sync::Arc;
 
 fn make_proposal(task_id: TaskId, text: &str) -> ProposalEvent {
     ProposalEvent {
@@ -36,12 +37,13 @@ async fn verification_passes_high_score() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
     assert_eq!(out.passed.len(), 1, "expected 1 passed proposal");
     assert_eq!(out.failed.len(), 0, "expected 0 failed proposals");
-    let (_, results) = &out.passed[0];
+    let (_, results, _) = &out.passed[0];
     assert_eq!(
         results.len(),
         1,
@@ -70,12 +72,13 @@ async fn verification_fails_low_score() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config,
+        eval_cache: new_eval_cache(),
     })
     .await;
 
     assert_eq!(out.passed.len(), 0, "expected 0 passed proposals");
     assert_eq!(out.failed.len(), 1, "expected 1 failed proposal");
-    let (_, results, violations) = &out.failed[0];
+    let (_, results, violations, _) = &out.failed[0];
     assert_eq!(results.len(), 1, "expected 1 compliance result");
     assert!(
         (results[0].score - 0.3).abs() < 1e-9,
@@ -100,12 +103,13 @@ async fn verification_parallel_multiple_proposals() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
     assert_eq!(out.passed.len(), 4, "expected all 4 proposals to pass");
     assert_eq!(out.failed.len(), 0, "expected 0 failed proposals");
-    for (_, results) in &out.passed {
+    for (_, results, _) in &out.passed {
         assert_eq!(results.len(), 1);
         assert!(
             (results[0].score - 0.85).abs() < 1e-9,
@@ -130,6 +134,7 @@ async fn verification_parse_error_neutral_score() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
@@ -139,7 +144,7 @@ async fn verification_parse_error_neutral_score() {
         "neutral parse-error score (0.7) should pass threshold (0.45)"
     );
     assert_eq!(out.failed.len(), 0);
-    let (_, results) = &out.passed[0];
+    let (_, results, _) = &out.passed[0];
     assert_eq!(results.len(), 1);
     assert!(
         (results[0].score - 0.7).abs() < 1e-9,
@@ -160,6 +165,7 @@ async fn verification_evaluator_empty_output_neutral_score() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
@@ -169,7 +175,7 @@ async fn verification_evaluator_empty_output_neutral_score() {
         "neutral empty-output score (0.7) should pass threshold (0.45)"
     );
     assert_eq!(out.failed.len(), 0);
-    let (_, results) = &out.passed[0];
+    let (_, results, _) = &out.passed[0];
     assert!(
         (results[0].score - 0.7).abs() < 1e-9,
         "expected 0.7 neutral, got {}",
@@ -196,6 +202,7 @@ async fn verification_score_exactly_at_threshold_passes() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config,
+        eval_cache: new_eval_cache(),
     })
     .await;
     assert_eq!(out.passed.len(), 1, "score exactly at threshold must pass");
@@ -210,6 +217,7 @@ async fn verification_empty_proposals_returns_empty_output() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
     assert!(out.passed.is_empty());
@@ -226,10 +234,11 @@ async fn verification_score_clamped_above_one() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
     assert_eq!(out.passed.len(), 1, "clamped score must still pass");
-    let (_, results) = &out.passed[0];
+    let (_, results, _) = &out.passed[0];
     assert!(
         (results[0].score - 1.0).abs() < 1e-9,
         "score 2.5 must be clamped to 1.0, got {}",
@@ -261,6 +270,7 @@ async fn verification_all_proposals_fail_below_threshold() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config,
+        eval_cache: new_eval_cache(),
     })
     .await;
     assert_eq!(out.passed.len(), 0, "all below hard threshold must fail");
@@ -278,10 +288,11 @@ async fn verification_aggregate_score_used_for_passed() {
         constraint_corpus: &[],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
     assert_eq!(out.passed.len(), 1);
-    let (_, results) = &out.passed[0];
+    let (_, results, _) = &out.passed[0];
     let agg = aggregate_compliance_score(results);
     // No Soft constraints → aggregate returns 1.0
     assert!(
@@ -313,6 +324,7 @@ async fn verification_json_schema_predicate_passes_valid_json() {
         constraint_corpus: &[doc],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
@@ -352,6 +364,7 @@ async fn verification_length_range_predicate_rejects_long_output() {
         constraint_corpus: &[doc],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
@@ -386,6 +399,7 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
         constraint_corpus: &[doc],
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
     })
     .await;
 
@@ -395,4 +409,133 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
         "unreachable oracle must fail the constraint"
     );
     assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn eval_cache_reuses_score_for_similar_proposals() {
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc as StdArc;
+
+    // Count how many times the evaluator is called.
+    // With 2 nearly-identical proposals and 1 constraint, the second should be a cache hit.
+    let call_count = StdArc::new(AtomicU32::new(0));
+    let call_count_clone = StdArc::clone(&call_count);
+
+    // Use a MockAdapter-compatible string — the mock always returns the same response.
+    // We use the default MockAdapter since it doesn't provide call counting, so instead
+    // we verify the cache hit flag on the output.
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    drop(call_count_clone); // unused in this simplified form
+
+    let doc = ConstraintDoc {
+        id: "test_constraint".into(),
+        source_file: "test".into(),
+        description: "test".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.45 },
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "Is this a good proposal?".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let cache = new_eval_cache();
+    let task_id = TaskId::new();
+
+    // First proposal: unique text — cache miss, calls LLM.
+    let first = VerificationPhase::run(VerificationInput {
+        proposals: vec![make_proposal(task_id.clone(), "The cache should use DashMap for concurrent access and repetition::similarity for text comparison.")],
+        constraint_corpus: std::slice::from_ref(&doc),
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: Arc::clone(&cache),
+    })
+    .await;
+    assert_eq!(first.passed.len(), 1);
+    let (_, _, first_cache_hit) = &first.passed[0];
+    assert!(!first_cache_hit, "first proposal should not be a cache hit");
+
+    // Second proposal: nearly identical text (>0.85 similarity) — should be a cache hit.
+    let second = VerificationPhase::run(VerificationInput {
+        proposals: vec![make_proposal(task_id.clone(), "The cache should use DashMap for concurrent access and repetition::similarity for text comparison!")],
+        constraint_corpus: std::slice::from_ref(&doc),
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: Arc::clone(&cache),
+    })
+    .await;
+    assert_eq!(second.passed.len(), 1);
+    let (_, _, second_cache_hit) = &second.passed[0];
+    assert!(
+        *second_cache_hit,
+        "second similar proposal should be a cache hit"
+    );
+    drop(call_count);
+}
+
+#[tokio::test]
+async fn eval_cache_does_not_reuse_for_dissimilar_proposals() {
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+
+    let doc = ConstraintDoc {
+        id: "test_constraint".into(),
+        source_file: "test".into(),
+        description: "test".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.45 },
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "Is this a good proposal?".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let cache = new_eval_cache();
+    let task_id = TaskId::new();
+
+    // First proposal.
+    let first = VerificationPhase::run(VerificationInput {
+        proposals: vec![make_proposal(
+            task_id.clone(),
+            "Implementation using DashMap and token-overlap similarity for the evaluation cache.",
+        )],
+        constraint_corpus: std::slice::from_ref(&doc),
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: Arc::clone(&cache),
+    })
+    .await;
+    assert_eq!(first.passed.len(), 1);
+
+    // Second proposal: completely different text — should NOT be a cache hit.
+    let second = VerificationPhase::run(VerificationInput {
+        proposals: vec![make_proposal(
+            task_id.clone(),
+            "A completely different approach using global variables and cosine embeddings.",
+        )],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: Arc::clone(&cache),
+    })
+    .await;
+    assert_eq!(second.passed.len(), 1);
+    let (_, _, second_cache_hit) = &second.passed[0];
+    assert!(
+        !second_cache_hit,
+        "dissimilar proposal should not be a cache hit"
+    );
+}
+
+#[test]
+fn record_adversarial_comparison_defaults_false() {
+    use h2ai_types::config::VerificationConfig;
+    let cfg = VerificationConfig::default();
+    assert!(!cfg.record_adversarial_comparison);
 }
