@@ -19,6 +19,7 @@ fn nats_wiki_source_resolve_uses_wiki_cache() {
             predicate_kind: PredicateKind::LlmJudge,
             domains: vec!["eu_data".into()],
             mandatory_for_tags: vec![],
+            related_to: vec![],
             payload_version: "v1".into(),
             inline_predicate: None,
             source: None,
@@ -37,9 +38,15 @@ async fn reconstruct_docs_from_static_metas() {
     use h2ai_api::constraint_source::reconstruct_docs;
 
     let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("ADR-001.md"), "## Constraints\ncite source").unwrap();
+    fs::write(
+        dir.path().join("ADR-001.yaml"),
+        "id: ADR-001\ntitle: Cite Source\nseverity: hard\ncriteria:\n  pass: Cites a source reference\n  fail: No source cited\n",
+    )
+    .unwrap();
     let source = FsConstraintSource::load(dir.path()).unwrap();
-    let metas = source.resolve_context(&[], &["ADR-001".to_string()]).await;
+    let metas = source
+        .resolve_context(&[], &["ADR-001".to_string()], "")
+        .await;
 
     let docs = reconstruct_docs(metas, &source).await;
     assert_eq!(docs.len(), 1);

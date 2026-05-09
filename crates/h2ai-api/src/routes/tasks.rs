@@ -57,7 +57,9 @@ pub async fn submit_task(
     let source = state.constraint_source();
     let task_tags = manifest.constraint_tags.clone();
     let explicit_ids = manifest.constraints.clone();
-    let metas = source.resolve_context(&task_tags, &explicit_ids).await;
+    let metas = source
+        .resolve_context(&task_tags, &explicit_ids, &manifest.description)
+        .await;
     let wiki_revision = source.revision();
     let resolved_ids: Vec<String> = metas.iter().map(|m| m.id.clone()).collect();
     let corpus = reconstruct_docs(metas, source.as_ref()).await;

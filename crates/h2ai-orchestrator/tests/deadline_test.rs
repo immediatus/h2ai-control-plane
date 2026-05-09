@@ -1,7 +1,8 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::loader::parse_constraint_doc;
+use h2ai_constraints::types::ConstraintDoc;
+
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
@@ -34,9 +35,9 @@ async fn make_engine_input<'a>(
     .await
     .unwrap();
 
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
 
     let manifest = TaskManifest {

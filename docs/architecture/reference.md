@@ -418,6 +418,8 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | Field | Default | Purpose |
 |---|---|---|
 | `agent_max_tool_iterations` | `5` | Maximum tool-call turns the TAO agent may execute per wave. Prevents runaway tool loops. |
+| `tao.per_turn_timeout_secs` | `120` | Per-turn adapter call timeout in seconds. Increase for slow local models. Cloud models typically need 30s; 11B local models generating 1024-token responses need ≥120s. |
+| `tao.repetition_threshold` | `0.92` | Token-overlap similarity threshold above which two consecutive responses are considered stuck (loop detected). Range [0.0, 1.0]. |
 
 ### Token budgets and concurrency
 

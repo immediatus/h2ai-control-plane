@@ -55,7 +55,9 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | Safety is probabilistic | "Don't do X" in the prompt | Topological interlocks — invalid output cannot reach the human by graph construction |
 | More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates; `constraint_error_cost = 1 − compliance` |
+| Constraint corpus is static and fragile | Bulk file reload loses history | Constraint Wiki (`H2AI_CONSTRAINT_WIKI` KV) — hot-reload via NATS KV watch; `ConstraintSource` trait decouples corpus access from storage; `ConstraintSnapshot` in every checkpoint records which wiki revision was active |
 | Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
+| Low-confidence outputs reach callers silently | Every output looks the same | HITL Approval Gate — `q_confidence < threshold` or `require_approval = true` parks the output in `H2AI_APPROVALS` KV; `PendingApprovalEvent` streams immediately; 30-minute reaper auto-rejects expired records |
 | Edge agent secrets leak | Long-lived API keys in containers | Scoped NATS NKeys per task_id — token expires when task closes |
 | Shell injection via LLM output | `sh -c <llm_string>` executes metacharacters | `ShellExecutor` uses JSON contract + `Command::new(cmd).args(args)` — no shell interpreter; PGID-scoped process group kill on timeout |
 | Hardened wave still has full tooling | One tool policy for all waves | `WaveMode` (Normal/Hardened) on `TaskPayload`; `ToolRegistry::for_wave()` selects a reduced allowlist for `ConstrainedExploration` and `ModeCollapse` retries |
@@ -92,12 +94,14 @@ curl -X POST http://localhost:8080/calibrate
 # Task 1 — pure reasoning (no tools)
 # 3 pure LLM explorers reason in parallel about the architecture decision.
 # c_i ≈ 0.1 (text output, discard at zero cost) → CRDT merge.
+# CONSTRAINT-004 and CONSTRAINT-005 are loaded from the corpus; others are skipped.
 curl -X POST http://localhost:8080/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Design a budget enforcement mechanism that prevents double-billing during server restarts",
     "pareto_weights": {"diversity": 0.5, "containment": 0.4, "throughput": 0.1},
-    "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.85}
+    "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.85},
+    "constraints": ["CONSTRAINT-004", "CONSTRAINT-005"]
   }'
 
 # Task 2 — code generation (containment-weighted, tight τ band)
@@ -106,7 +110,8 @@ curl -X POST http://localhost:8080/tasks \
   -d '{
     "description": "Write and test a Redis Lua script for atomic budget check-and-decrement with 30s TTL idempotency",
     "pareto_weights": {"diversity": 0.3, "containment": 0.6, "throughput": 0.1},
-    "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.5}
+    "explorers": {"count": 3, "tau_min": 0.2, "tau_max": 0.5},
+    "constraints": ["CONSTRAINT-004"]
   }'
 
 # Stream events in real time
@@ -290,6 +295,9 @@ MergeResolvedEvent                 → human O(1) decision, task closed
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
 TaoIterationEvent                  → TAO loop turn result: tool_calls[] (tool, input_json, output, iteration) + total_token_cost
 VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5)
+TaskAttributionEvent               → q_confidence decomposition: baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain
+PendingApprovalEvent               → HITL gate fired; proposed_output held for review; risk_level (Medium|High); timeout_at_ms
+ApprovalResolvedEvent              → operator submitted POST /tasks/{id}/approve; approved bool + operator_id recorded
 ```
 
 **Compound task events** (subject `h2ai.tasks.{task_id}`):

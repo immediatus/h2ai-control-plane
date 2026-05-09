@@ -12,6 +12,7 @@ fn constraint_meta_roundtrip_json() {
         predicate_kind: PredicateKind::Static,
         domains: vec!["internal".into()],
         mandatory_for_tags: vec!["audit".into()],
+        related_to: vec!["ADR-002".into()],
         payload_version: "v1".into(),
         inline_predicate: Some(ConstraintPredicate::VocabularyPresence {
             mode: VocabularyMode::AnyOf,
@@ -27,6 +28,7 @@ fn constraint_meta_roundtrip_json() {
     assert!(back.inline_predicate.is_some());
     assert_eq!(back.source.as_deref(), Some("internal/policy-42"));
     assert_eq!(back.last_updated_ms, Some(1_700_000_000_000));
+    assert_eq!(back.related_to, vec!["ADR-002"]);
 }
 
 #[test]
@@ -36,6 +38,10 @@ fn constraint_meta_source_defaults_to_none() {
     let meta: ConstraintMeta = serde_json::from_str(json).unwrap();
     assert!(meta.source.is_none());
     assert!(meta.last_updated_ms.is_none());
+    assert!(
+        meta.related_to.is_empty(),
+        "related_to must default to empty"
+    );
 }
 
 #[test]
@@ -71,6 +77,7 @@ fn predicate_kind_from_tier_static() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert_eq!(meta.predicate_kind, PredicateKind::Static);
@@ -79,7 +86,7 @@ fn predicate_kind_from_tier_static() {
 
 #[test]
 fn predicate_kind_from_tier_llm_judge() {
-    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate};
+    use h2ai_constraints::types::ConstraintDoc;
     let doc = ConstraintDoc {
         id: "LJ-001".into(),
         source_file: "lj.md".into(),
@@ -91,10 +98,10 @@ fn predicate_kind_from_tier_llm_judge() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert_eq!(meta.predicate_kind, PredicateKind::LlmJudge);
-    // LlmJudge predicates must NOT be inlined — they require a Predicate Store fetch.
     assert!(
         meta.inline_predicate.is_none(),
         "LlmJudge must not be inlined"
@@ -103,7 +110,7 @@ fn predicate_kind_from_tier_llm_judge() {
 
 #[test]
 fn predicate_kind_from_tier_oracle() {
-    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate};
+    use h2ai_constraints::types::ConstraintDoc;
     let doc = ConstraintDoc {
         id: "ORC-001".into(),
         source_file: "orc.md".into(),
@@ -117,10 +124,10 @@ fn predicate_kind_from_tier_oracle() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert_eq!(meta.predicate_kind, PredicateKind::Oracle);
-    // Oracle predicates must NOT be inlined — they require a Predicate Store fetch.
     assert!(
         meta.inline_predicate.is_none(),
         "Oracle must not be inlined"
@@ -144,6 +151,7 @@ fn wiki_cache_resolves_by_tag() {
             predicate_kind: PredicateKind::Static,
             domains: vec!["eu_data".into()],
             mandatory_for_tags: vec![],
+            related_to: vec![],
             payload_version: "v1".into(),
             inline_predicate: None,
             source: None,
@@ -159,6 +167,7 @@ fn wiki_cache_resolves_by_tag() {
             predicate_kind: PredicateKind::LlmJudge,
             domains: vec!["eu_data".into()],
             mandatory_for_tags: vec![],
+            related_to: vec![],
             payload_version: "v1".into(),
             inline_predicate: None,
             source: None,
@@ -184,6 +193,7 @@ fn wiki_cache_explicit_ids_override() {
             predicate_kind: PredicateKind::Static,
             domains: vec![],
             mandatory_for_tags: vec![],
+            related_to: vec![],
             payload_version: "v1".into(),
             inline_predicate: None,
             source: None,
@@ -213,6 +223,7 @@ fn wiki_cache_deduplicates_tag_and_explicit() {
             predicate_kind: PredicateKind::Static,
             domains: vec!["internal".into()],
             mandatory_for_tags: vec![],
+            related_to: vec![],
             payload_version: "v1".into(),
             inline_predicate: None,
             source: None,
@@ -220,14 +231,13 @@ fn wiki_cache_deduplicates_tag_and_explicit() {
         },
     );
 
-    // ADR-001 matched by both tag and explicit — should appear once.
     let resolved = cache.resolve(&["internal".to_string()], &["ADR-001".to_string()]);
     assert_eq!(resolved.len(), 1);
 }
 
 #[test]
 fn wiki_cache_from_docs_builds_index() {
-    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, VocabularyMode};
+    use h2ai_constraints::types::ConstraintDoc;
     use h2ai_constraints::wiki::WikiCache;
 
     let doc = ConstraintDoc {
@@ -242,10 +252,10 @@ fn wiki_cache_from_docs_builds_index() {
         remediation_hint: None,
         domains: vec!["internal".into()],
         mandatory_for_tags: vec!["audit".into()],
+        related_to: vec![],
     };
     let cache = WikiCache::from_docs(&[doc]);
     assert!(cache.metas.contains_key("ADR-X"));
-    // Verify context_map is populated from domains and mandatory_for_tags
     assert!(
         cache.context_map.contains_key("internal"),
         "domain 'internal' must be in context_map"
@@ -256,4 +266,194 @@ fn wiki_cache_from_docs_builds_index() {
     );
     assert_eq!(cache.context_map["internal"], vec!["ADR-X"]);
     assert_eq!(cache.context_map["audit"], vec!["ADR-X"]);
+}
+
+// ── New tests: relation graph navigation ─────────────────────────────────────
+
+fn make_doc(
+    id: &str,
+    domains: &[&str],
+    related_to: &[&str],
+) -> h2ai_constraints::types::ConstraintDoc {
+    h2ai_constraints::types::ConstraintDoc {
+        id: id.into(),
+        source_file: format!("{id}.yaml"),
+        description: format!("Constraint {id}"),
+        severity: ConstraintSeverity::Advisory,
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: format!("{id} rubric text for retrieval"),
+        },
+        remediation_hint: None,
+        domains: domains.iter().map(|s| s.to_string()).collect(),
+        mandatory_for_tags: vec![],
+        related_to: related_to.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+#[test]
+fn navigate_related_returns_declared_relations() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![
+        make_doc("C-001", &["billing"], &["C-002", "C-003"]),
+        make_doc("C-002", &["billing"], &[]),
+        make_doc("C-003", &["compliance"], &[]),
+    ];
+    let cache = WikiCache::from_docs(&docs);
+
+    let related = cache.navigate_related("C-001");
+    let ids: std::collections::HashSet<&str> = related.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.contains("C-002"), "C-002 must be in related");
+    assert!(ids.contains("C-003"), "C-003 must be in related");
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn navigate_related_returns_empty_for_no_relations() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![make_doc("C-001", &["billing"], &[])];
+    let cache = WikiCache::from_docs(&docs);
+    assert!(cache.navigate_related("C-001").is_empty());
+    assert!(cache.navigate_related("UNKNOWN").is_empty());
+}
+
+#[test]
+fn navigate_by_domain_returns_domain_constraints() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![
+        make_doc("C-001", &["billing"], &[]),
+        make_doc("C-002", &["billing", "compliance"], &[]),
+        make_doc("C-003", &["latency"], &[]),
+    ];
+    let cache = WikiCache::from_docs(&docs);
+
+    let billing = cache.navigate_by_domain("billing");
+    let ids: std::collections::HashSet<&str> = billing.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.contains("C-001"));
+    assert!(ids.contains("C-002"));
+    assert!(!ids.contains("C-003"));
+}
+
+#[test]
+fn navigate_by_domain_unknown_returns_empty() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![make_doc("C-001", &["billing"], &[])];
+    let cache = WikiCache::from_docs(&docs);
+    assert!(cache.navigate_by_domain("nonexistent").is_empty());
+}
+
+// ── New tests: BM25 semantic search ─────────────────────────────────────────
+
+#[test]
+fn wiki_search_returns_relevant_results() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    // Override make_doc defaults with content-rich descriptions for BM25 relevance:
+    let docs_rich = vec![
+        h2ai_constraints::types::ConstraintDoc {
+            id: "C-BUD".into(),
+            source_file: "c-bud.yaml".into(),
+            description: "Budget idempotency atomic redis lua debit constraint".into(),
+            severity: ConstraintSeverity::Advisory,
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "idempotency key atomic check budget deduction redis lua".into(),
+            },
+            remediation_hint: None,
+            domains: vec!["billing".into()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+        h2ai_constraints::types::ConstraintDoc {
+            id: "C-GRP".into(),
+            source_file: "c-grp.yaml".into(),
+            description: "gRPC protobuf internal service protocol constraint".into(),
+            severity: ConstraintSeverity::Advisory,
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "grpc protobuf binary internal service communication".into(),
+            },
+            remediation_hint: None,
+            domains: vec!["communication".into()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+    ];
+    let cache = WikiCache::from_docs(&docs_rich);
+
+    let hits = cache.search("atomic idempotency budget redis deduction", 3);
+    assert!(
+        !hits.is_empty(),
+        "BM25 search must return results for relevant query"
+    );
+    assert_eq!(
+        hits[0].id, "C-BUD",
+        "budget constraint must rank first for budget query"
+    );
+}
+
+#[test]
+fn wiki_search_returns_empty_for_stopword_only_query() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![make_doc("C-001", &["billing"], &[])];
+    let cache = WikiCache::from_docs(&docs);
+    let hits = cache.search("the and for with", 5);
+    assert!(
+        hits.is_empty(),
+        "stop-words-only query must return no results"
+    );
+}
+
+#[test]
+fn wiki_resolve_with_semantic_merges_tag_and_bm25() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![
+        h2ai_constraints::types::ConstraintDoc {
+            id: "C-TAG".into(),
+            source_file: "c-tag.yaml".into(),
+            description: "Tag-based mandatory constraint".into(),
+            severity: ConstraintSeverity::Hard { threshold: 0.45 },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "unrelated rubric topic".into(),
+            },
+            remediation_hint: None,
+            domains: vec!["billing".into()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+        h2ai_constraints::types::ConstraintDoc {
+            id: "C-SEM".into(),
+            source_file: "c-sem.yaml".into(),
+            description: "Semantic-only constraint for stateless service design".into(),
+            severity: ConstraintSeverity::Advisory,
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "stateless request service ttl cache eviction sticky session".into(),
+            },
+            remediation_hint: None,
+            domains: vec!["availability".into()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+    ];
+    let cache = WikiCache::from_docs(&docs);
+
+    // billing tag → C-TAG; "stateless" text → C-SEM; result must contain both
+    let resolved = cache.resolve_with_semantic(
+        &["billing".to_string()],
+        &[],
+        "stateless service cache eviction",
+        5,
+    );
+    let ids: std::collections::HashSet<&str> = resolved.iter().map(|m| m.id.as_str()).collect();
+    assert!(
+        ids.contains("C-TAG"),
+        "tag-matched constraint must be included"
+    );
+    assert!(
+        ids.contains("C-SEM"),
+        "semantically-matched constraint must be included"
+    );
 }

@@ -11,7 +11,7 @@ This directory contains reference projects that demonstrate H2AI Control Plane e
 
 Every engineering team carries vast tacit knowledge: "we don't store sessions because of a compliance requirement," "payment retries happen async because synchronous calls caused duplicate charges," "service A must not query service B's database — that's what caused the Q3 incident." This knowledge lives in engineers' heads, in Slack threads, in post-mortems — not in any artifact an AI agent can read.
 
-H2AI calls this the **Dark Knowledge Gap** (`J_eff`). When you submit a task, the Dark Knowledge Compiler measures the Jaccard overlap between what you explicitly provided and what the task actually requires. When the gap is large, agents hallucinate architectural decisions — and the Auditor rejects their proposals.
+H2AI calls this the **Dark Knowledge Gap** (`J_eff`). When you submit a task, the Dark Knowledge Compiler measures the vocabulary overlap between what you explicitly provided and what the task actually requires. When the gap is large, agents hallucinate architectural decisions — and the Auditor rejects their proposals.
 
 Constraint documents are the mechanism by which Dark Knowledge becomes explicit context. A well-written `## Constraints` section teaches the Auditor exactly what to reject.
 
@@ -53,30 +53,37 @@ Derived from the blog series *"Architecting Real-Time Ads Platform"* by Yuriy Po
 
 ---
 
-## Running as integration tests
+## Running the examples manually
 
 ```bash
-# Start the stack
+# Start the stack (or use the devcontainer — NATS starts automatically)
 cd deploy/local && docker compose up -d
 
-# Load the constraint corpus
-export CORPUS_PATH=docs/examples/ads-platform/constraints
-docker compose exec h2ai \
-  sh -c "cp -r /workspace/$CORPUS_PATH/* /constraints/ && kill -HUP 1"
+# Copy the constraint corpus into the configured corpus_path
+cp -r docs/examples/ads-platform/constraints/* /path/to/constraints/
 
-# Run calibration
-curl -X POST http://localhost:8080/calibrate
-# Wait for CalibrationCompletedEvent...
+# Run calibration (wait for CalibrationCompletedEvent in the SSE stream)
+CAL=$(curl -s -X POST http://localhost:8080/calibrate | jq -r .calibration_id)
+curl -sN "http://localhost:8080/calibrate/$CAL/events"
 
-# Run the integration test suite (reads task manifests from docs/examples/)
-cargo nextest run --test integration -- --test-threads=1
+# Submit each task and observe the SSE stream
+for task in docs/examples/ads-platform/tasks/*.json; do
+  echo "=== Submitting $(basename $task) ==="
+  RESP=$(curl -s -X POST http://localhost:8080/tasks \
+    -H "Content-Type: application/json" -d @"$task")
+  TASK_ID=$(echo "$RESP" | jq -r .task_id)
+  echo "task_id: $TASK_ID"
+  curl -sN "http://localhost:8080/tasks/$TASK_ID/events" | head -100
+done
 ```
 
-The integration test harness (`tests/integration/`) reads the `_expected` block from each task manifest JSON and asserts:
-- `j_eff` is at or above `j_eff_min`
-- Number of valid proposals is at or above `valid_proposals_min`
-- Each entry in `should_prune` produces a `BranchPrunedEvent` citing the specified constraint
-- The task reaches `SelectionResolvedEvent` (not `TaskFailedEvent`)
+The `_expected` block in each manifest documents the observable system behaviour:
+- `j_eff_min` — minimum Dark Knowledge coverage fraction expected
+- `valid_proposals_min` — minimum proposals that should survive the Auditor gate
+- `should_prune` — proposals the Auditor should reject, and which constraint they violate
+- `should_pass` — a characterisation of a valid surviving proposal
+
+These are human-readable contracts. A future integration test harness will assert them against live SSE streams.
 
 ---
 

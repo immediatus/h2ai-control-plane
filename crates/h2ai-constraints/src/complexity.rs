@@ -157,6 +157,7 @@ mod tests {
             remediation_hint: None,
             domains: vec![],
             mandatory_for_tags: vec![],
+            related_to: vec![],
         }
     }
 

@@ -45,6 +45,17 @@ A real-time advertising platform with the following characteristics:
 | [task-budget-enforcement-crash-recovery.json](tasks/task-budget-enforcement-crash-recovery.json) | CONSTRAINT-004 + CONSTRAINT-005 idempotency | Proposals using non-atomic check-then-act or missing Kafka publish are pruned |
 | [task-ml-feature-latency.json](tasks/task-ml-feature-latency.json) | CONSTRAINT-001 + CONSTRAINT-006 + CONSTRAINT-007 | Proposals touching heap size, caching budget data, or using platform threads are pruned |
 
+## Evaluation results
+
+`results/` stores pipeline run artifacts for incremental improvement tracking. Each run produces:
+
+- **Proposal text files** (`task-{name}-{date}.txt`) — raw LLM output from the winning proposal after MAPE-K convergence
+- **Evaluation document** (`evaluation-{date}.md`) — human quality assessment with scores, strengths, weaknesses, and issues fixed during that run
+
+| Run | Model | Scores | Notes |
+|---|---|---|---|
+| [2026-05-08 v3](results/evaluation-2026-05-08-v3.md) | Local 11B via llama.cpp | Budget 7/10, DSP 7/10, ML 7/10 | YAML-only corpus, rubric injected into system context. ML improved 6→7: virtual threads and HLC now appear in proposals. |
+
 ## Running as integration tests
 
 ```bash

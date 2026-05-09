@@ -50,3 +50,19 @@ Request-handling service instances are interchangeable. Any instance can handle 
 
 - Series: "Architecting Real-Time Ads Platform", Part 1 — Stateless Design Philosophy
 - Latency budget: 150ms P95 end-to-end; storage tier latency budget ≤10ms for profile + feature reads
+
+## Key Terms
+- stateless, ttl, cache, eviction, request, per-request
+
+## Semantic Rules
+Does the proposal keep request-handling services stateless?
+
+Pass (1.0): The proposal does not introduce sticky sessions, does not store per-user SESSION state
+(auth tokens, shopping cart, user preferences) in any in-process store, and any in-process
+caching is TTL-based so any node can serve any user interchangeably.
+Note: shared read-through caches keyed by user_id (e.g. ML feature caches with TTL eviction)
+are acceptable — they do not create sticky sessions because no user affinity is required.
+
+Fail (0.0): The proposal requires requests from the same user to always reach the same node
+(sticky sessions), or stores session state that would break if the user's request hit a
+different node on retry.

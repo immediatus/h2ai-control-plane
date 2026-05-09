@@ -15,6 +15,7 @@
 use h2ai_adapters::openai::OpenAIAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
+use h2ai_constraints::types::ConstraintDoc;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::CoherencyCoefficients;
@@ -167,8 +168,6 @@ async fn calibration_no_corpus_fallback_cg_invariants_hold() {
 #[tokio::test]
 #[ignore = "requires llama.server at LLAMACPP_BASE_URL"]
 async fn calibration_with_corpus_measures_real_cg() {
-    use h2ai_constraints::loader::parse_constraint_doc;
-
     if !is_reachable().await {
         eprintln!(
             "SKIP: llama.server not reachable at {}",
@@ -183,14 +182,11 @@ async fn calibration_with_corpus_measures_real_cg() {
 
     // Two constraints the model will sometimes satisfy — creates measurable diversity
     let corpus = vec![
-        parse_constraint_doc(
+        ConstraintDoc::new_llm_judge(
             "stateless",
-            "## Hard Constraints\nThe solution must be stateless and must not use server-side sessions.",
+            "The solution must be stateless and must not use server-side sessions.",
         ),
-        parse_constraint_doc(
-            "jwt",
-            "## Soft Constraints\nPrefer JWT tokens. Mention JWT explicitly.",
-        ),
+        ConstraintDoc::new_soft_llm_judge("jwt", "Prefer JWT tokens. Mention JWT explicitly."),
     ];
 
     let event = match CalibrationHarness::run(CalibrationInput {

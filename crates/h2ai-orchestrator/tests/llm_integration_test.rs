@@ -11,7 +11,8 @@ use h2ai_adapters::mock::MockAdapter;
 use h2ai_adapters::openai::OpenAIAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::loader::parse_constraint_doc;
+use h2ai_constraints::types::ConstraintDoc;
+
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::{TaskState, TaskStore};
@@ -65,9 +66,9 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
     }
 
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "stateless",
-        "## Hard Constraints\nMust be stateless. No server-side sessions.",
+        "The solution must be stateless. No server-side sessions permitted. Authentication must not rely on any per-request mutable state.",
     )];
 
     // ── Step 1: Calibrate with real LLM ─────────────────────────────────────

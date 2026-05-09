@@ -51,3 +51,21 @@ Every operation that affects advertiser billing publishes an event to Kafka `fin
 - Series: Part 3 — Immutable Financial Audit Log: Compliance Architecture
 - Compliance: SOX (Sarbanes-Oxley) tamper-evidence requirement
 - Compliance: Tax record retention — 7 years minimum
+
+## Key Terms
+- kafka, clickhouse, financial, append, billing, audit, immutable, event, mergetree
+
+## Semantic Rules
+Does the proposal capture all billing events in an immutable, append-only audit log?
+
+Pass (1.0): Financial/billing events are written to a storage system where records cannot be
+modified or deleted after write — an event stream, append-only ledger, or immutable columnar
+store (Kafka → ClickHouse, or equivalent). The audit record is durable and tamper-evident.
+
+Partial (0.5): The proposal mentions audit logging but it is not clearly immutable or append-only
+(e.g. logs to a relational DB without append-only guarantees).
+
+Fail (0.0): Financial events are written only to a mutable store (regular DB with UPDATE/DELETE),
+to application log files, or to in-memory structures — or audit logging is not mentioned.
+
+

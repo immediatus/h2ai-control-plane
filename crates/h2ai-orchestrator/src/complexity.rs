@@ -465,6 +465,7 @@ mod tests {
             remediation_hint: None,
             domains: vec![],
             mandatory_for_tags: vec![],
+            related_to: vec![],
         }
     }
 
@@ -528,6 +529,7 @@ mod tests {
             remediation_hint: None,
             domains: vec![],
             mandatory_for_tags: vec![],
+            related_to: vec![],
         };
         let corpus = vec![
             make_hard(

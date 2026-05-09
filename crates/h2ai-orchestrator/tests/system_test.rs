@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::loader::parse_constraint_doc;
+
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::{TaskPhase, TaskStore};
@@ -83,9 +83,9 @@ impl IComputeAdapter for TokenCostAdapter {
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
 fn constraint_corpus() -> Vec<ConstraintDoc> {
-    vec![parse_constraint_doc(
+    vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )]
 }
 

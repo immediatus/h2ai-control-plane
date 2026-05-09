@@ -63,3 +63,15 @@ The 150ms P95 budget does not accommodate message queue hops. Each hop adds mini
 - Series: "Architecting Real-Time Ads Platform", Part 1 — Communication Architecture
 - Series: Part 5 — gRPC Configuration, Linkerd service mesh
 - Latency budget: service-to-service calls ≤10ms; JSON serialization overhead 2–5ms per call
+
+## Key Terms
+- grpc, protobuf, internal service, protocol
+
+## Semantic Rules
+Does the proposal use the correct protocol for each communication boundary?
+
+Pass (1.0): Internal service-to-service communication uses gRPC with binary serialization (protobuf
+or equivalent); external client-facing APIs use REST/JSON.
+
+Fail (0.0): The proposal routes internal service calls over REST/JSON instead of a binary RPC
+protocol, or proposes gRPC for external public-facing endpoints.

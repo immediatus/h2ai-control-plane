@@ -62,3 +62,20 @@ Schema changes to strongly-consistent stores (CockroachDB) follow the expand-con
 - Series: Part 3 — Distributed Caching Architecture; Budget Pacing
 - Series: Part 4 — Schema Evolution: Zero-Downtime Data Migration
 - Financial accuracy: ≤1% budget overspend (drives strong consistency for budgets)
+
+## Key Terms
+- hlc, hybrid logical clock, linearizable, strong consistency, bypass cache, direct redis, kafka, billing
+
+## Semantic Rules
+Does the proposal violate budget or billing consistency requirements?
+
+Pass (1.0): Either —
+- The proposal does not modify the budget checking or billing data paths at all (focused on a
+  different subsystem such as ML feature caching), so consistency is not affected; OR
+- The proposal reads budget data directly from the authoritative source (Redis atomic counters
+  or equivalent) without serving it from any cache, AND any billing event timestamps use
+  causally-ordered or monotonic ordering (not plain wall-clock timestamps that can skew across nodes).
+
+Fail (0.0): The proposal explicitly serves advertiser budget balances from a cache (L1 or L2),
+or explicitly uses plain wall-clock timestamps for billing events where ordering must be
+globally consistent.

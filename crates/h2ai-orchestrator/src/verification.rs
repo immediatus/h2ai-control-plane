@@ -1,13 +1,15 @@
 use futures::future::join_all;
 use h2ai_constraints::eval::eval_sync;
 use h2ai_constraints::types::{
-    aggregate_compliance_score, ComplianceResult, ConstraintDoc, ConstraintPredicate,
+    aggregate_compliance_score, ComplianceResult, CompositeOp, ConstraintDoc, ConstraintPredicate,
     ConstraintSeverity,
 };
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{ConstraintViolation, ProposalEvent};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 /// One `bool` per constraint in the corpus: `true` = hard gate passed.
@@ -163,17 +165,9 @@ impl VerificationPhase {
         }
 
         let futs = corpus.iter().map(|doc| async move {
-            let score = match &doc.predicate {
-                ConstraintPredicate::LlmJudge { rubric: r } => {
-                    Self::llm_score_raw(r, output, evaluator, sp, tau, max_tokens).await
-                }
-                ConstraintPredicate::OracleExecution {
-                    test_runner_uri,
-                    test_suite,
-                    timeout_secs,
-                } => Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
-                other => eval_sync(other, output),
-            };
+            let score =
+                Self::eval_predicate_async(&doc.predicate, output, evaluator, sp, tau, max_tokens)
+                    .await;
             ComplianceResult {
                 constraint_id: doc.id.clone(),
                 score,
@@ -182,6 +176,112 @@ impl VerificationPhase {
             }
         });
         join_all(futs).await
+    }
+
+    /// Evaluate any predicate, including Composite trees that contain LlmJudge children.
+    /// Returns a score in [0.0, 1.0]. Uses Box::pin for recursive async support.
+    ///
+    /// For `Composite { And, children }`, static children are evaluated first. If any
+    /// returns 0.0 (hard failure — e.g. NegativeKeyword found a prohibited term), heavy
+    /// children (LlmJudge, Oracle) are skipped entirely. This avoids spurious LLM calls
+    /// when a proposal already fails on fast deterministic checks.
+    fn eval_predicate_async<'a>(
+        pred: &'a ConstraintPredicate,
+        output: &'a str,
+        evaluator: &'a dyn IComputeAdapter,
+        sp: &'a str,
+        tau: h2ai_types::sizing::TauValue,
+        max_tokens: u64,
+    ) -> Pin<Box<dyn Future<Output = f64> + Send + 'a>> {
+        Box::pin(async move {
+            match pred {
+                ConstraintPredicate::LlmJudge { rubric } => {
+                    // Apply a per-call timeout so slow local models don't stall verification.
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(90),
+                        Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens),
+                    )
+                    .await
+                    {
+                        Ok(score) => score,
+                        Err(_) => {
+                            tracing::warn!(
+                                target: "h2ai.verification",
+                                "LlmJudge timed out (90s); skipping — score defaults to 0.5"
+                            );
+                            0.5
+                        }
+                    }
+                }
+                ConstraintPredicate::OracleExecution {
+                    test_runner_uri,
+                    test_suite,
+                    timeout_secs,
+                } => Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
+                ConstraintPredicate::Composite { op, children } => {
+                    match op {
+                        CompositeOp::And => {
+                            // Evaluate static children first; short-circuit if any hits 0.0.
+                            let mut min_score = 1.0_f64;
+                            let mut deferred = Vec::new();
+                            for child in children {
+                                match child {
+                                    ConstraintPredicate::LlmJudge { .. }
+                                    | ConstraintPredicate::OracleExecution { .. } => {
+                                        deferred.push(child);
+                                    }
+                                    other => {
+                                        let s = eval_sync(other, output);
+                                        min_score = min_score.min(s);
+                                        if min_score <= 0.0 {
+                                            return 0.0; // hard failure on static check
+                                        }
+                                    }
+                                }
+                            }
+                            // Only call LlmJudge if static predicates all passed.
+                            for child in deferred {
+                                let s = Self::eval_predicate_async(
+                                    child, output, evaluator, sp, tau, max_tokens,
+                                )
+                                .await;
+                                min_score = min_score.min(s);
+                                if min_score <= 0.0 {
+                                    return 0.0;
+                                }
+                            }
+                            min_score
+                        }
+                        CompositeOp::Or => {
+                            let mut max_score = 0.0_f64;
+                            for child in children {
+                                let s = Self::eval_predicate_async(
+                                    child, output, evaluator, sp, tau, max_tokens,
+                                )
+                                .await;
+                                max_score = max_score.max(s);
+                                if max_score >= 1.0 {
+                                    return 1.0;
+                                }
+                            }
+                            max_score
+                        }
+                        CompositeOp::Not => {
+                            let s = if let Some(child) = children.first() {
+                                Self::eval_predicate_async(
+                                    child, output, evaluator, sp, tau, max_tokens,
+                                )
+                                .await
+                            } else {
+                                0.0
+                            };
+                            1.0 - s
+                        }
+                    }
+                }
+                other => eval_sync(other, output),
+            }
+        })
     }
 
     async fn eval_oracle(
@@ -268,7 +368,10 @@ impl VerificationPhase {
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
     ) -> f64 {
-        let prompt = format!("{rubric}\n\nProposal:\n{output}");
+        // Separate criterion (what to check) from the proposal (what to score).
+        // The JSON response format is owned by EVALUATOR_SYSTEM_PROMPT — rubrics must
+        // not repeat it; they contain only behavioral pass/fail criteria.
+        let prompt = format!("Criterion:\n{rubric}\n\nProposal:\n{output}");
         let req = ComputeRequest {
             system_context: sp.to_owned(),
             task: prompt,
@@ -278,9 +381,20 @@ impl VerificationPhase {
         match evaluator.execute(req).await {
             Ok(resp) => match extract_json_object::<ScoreResponse>(&resp.output) {
                 Some(s) => s.score.clamp(0.0, 1.0),
-                None => 0.0,
+                // JSON parse failure: model did not emit a score object.
+                // Fall back to neutral (0.7) so static predicates remain the actual gate.
+                None => {
+                    tracing::debug!(
+                        target: "h2ai.verification",
+                        "LlmJudge response did not contain JSON score object; using neutral 0.7"
+                    );
+                    0.7
+                }
             },
-            Err(_) => 0.0,
+            Err(e) => {
+                tracing::warn!(target: "h2ai.verification", error = %e, "LlmJudge execute error; using neutral 0.7");
+                0.7
+            }
         }
     }
 }

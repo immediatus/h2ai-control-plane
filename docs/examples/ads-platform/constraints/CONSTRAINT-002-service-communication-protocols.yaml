@@ -1,0 +1,18 @@
+id: CONSTRAINT-002
+title: "Service Communication Protocols — gRPC Internal, REST External"
+severity: hard
+domains:
+  - communication
+  - latency
+related_to:
+  - CONSTRAINT-001  # stateless services require protocol-level connection reuse (gRPC/HTTP2)
+  - CONSTRAINT-003  # RTB fanout protocol determines per-DSP timeout feasibility
+remediation_hint: "Route all internal service-to-service calls via gRPC/protobuf. Reserve REST/JSON for external public-facing API gateways only. Use HTTP/2 multiplexing to avoid connection-per-request overhead internally."
+criteria:
+  pass: |
+    Internal service-to-service communication uses gRPC with binary serialization (protobuf
+    or equivalent); external client-facing APIs use REST/JSON.
+  partial: "The proposal uses gRPC for most internal communication but some internal service paths still use REST/JSON, or the internal-vs-external protocol boundary is ambiguous for specific components."
+  fail: |
+    The proposal routes internal service calls over REST/JSON instead of a binary RPC
+    protocol, or proposes gRPC for external public-facing endpoints.

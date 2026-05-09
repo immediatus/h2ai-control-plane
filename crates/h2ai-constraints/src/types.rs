@@ -112,6 +112,10 @@ pub struct ConstraintDoc {
     /// Parsed from YAML frontmatter in the constraint .md file.
     #[serde(default)]
     pub mandatory_for_tags: Vec<String>,
+    /// Explicit cross-references to related constraint IDs.
+    /// Used for wiki graph navigation and retrieval context expansion.
+    #[serde(default)]
+    pub related_to: Vec<String>,
 }
 
 impl ConstraintDoc {
@@ -140,6 +144,40 @@ impl ConstraintDoc {
     /// A task manifest that uses these terms is likely proposing constraint-violating behaviour.
     pub fn negative_vocabulary(&self) -> HashSet<String> {
         collect_negative_vocabulary(&self.predicate)
+    }
+
+    /// Build a minimal Hard LlmJudge constraint — use in tests instead of markdown parsing.
+    pub fn new_llm_judge(id: &str, rubric: &str) -> Self {
+        ConstraintDoc {
+            id: id.to_owned(),
+            source_file: format!("{id}.yaml"),
+            description: String::new(),
+            severity: ConstraintSeverity::Hard { threshold: 0.45 },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: rubric.to_owned(),
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        }
+    }
+
+    /// Build a Soft LlmJudge constraint — use in tests for soft-gate scenarios.
+    pub fn new_soft_llm_judge(id: &str, rubric: &str) -> Self {
+        ConstraintDoc {
+            id: id.to_owned(),
+            source_file: format!("{id}.yaml"),
+            description: String::new(),
+            severity: ConstraintSeverity::Soft { weight: 1.0 },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: rubric.to_owned(),
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        }
     }
 }
 
@@ -252,6 +290,10 @@ pub struct ConstraintMeta {
     pub domains: Vec<String>,
     /// Force-inject this constraint when any of these tags appear in task_tags.
     pub mandatory_for_tags: Vec<String>,
+    /// Explicit cross-references to related constraint IDs.
+    /// Populated from the YAML `related_to` field; used for wiki graph traversal.
+    #[serde(default)]
+    pub related_to: Vec<String>,
     /// Version pin for the Predicate Store entry; stored in ConstraintSnapshot for audit.
     pub payload_version: String,
     /// For Static predicates: full predicate inlined here; no Predicate Store fetch needed.
@@ -293,6 +335,7 @@ impl ConstraintMeta {
             predicate_kind: kind,
             domains: doc.domains.clone(),
             mandatory_for_tags: doc.mandatory_for_tags.clone(),
+            related_to: doc.related_to.clone(),
             payload_version: "v1".to_string(),
             inline_predicate: inline,
             source: Some(doc.source_file.clone()),

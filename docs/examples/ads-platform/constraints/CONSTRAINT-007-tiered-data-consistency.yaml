@@ -1,0 +1,23 @@
+id: CONSTRAINT-007
+title: "Tiered Data Consistency — Different Consistency Models per Data Type"
+severity: hard
+domains:
+  - consistency
+  - billing
+related_to:
+  - CONSTRAINT-004  # budget counter reads must bypass cache (strong consistency requirement)
+  - CONSTRAINT-005  # billing event ordering requires HLC, not wall clock
+remediation_hint: "Read budget counters directly from Redis (DECRBY/GET on the authoritative counter key) — never serve from L1/L2 cache. Use a Hybrid Logical Clock (HLC) library for billing event timestamps to guarantee causal ordering across nodes without NTP skew."
+criteria:
+  pass: |
+    Either —
+    - The proposal does not modify the budget checking or billing data paths at all (focused on a
+      different subsystem such as ML feature caching), so consistency is not affected; OR
+    - The proposal reads budget data directly from the authoritative source (Redis atomic counters
+      or equivalent) without serving it from any cache, AND any billing event timestamps use
+      causally-ordered or monotonic ordering (not plain wall-clock timestamps that can skew across nodes).
+  partial: "The proposal avoids serving budget data from cache but uses wall-clock timestamps for billing events, or only one of the two requirements (cache bypass OR causally-ordered timestamps) is clearly satisfied."
+  fail: |
+    The proposal explicitly serves advertiser budget balances from a cache (L1 or L2), or
+    explicitly uses plain wall-clock timestamps for billing events where ordering must be
+    globally consistent.

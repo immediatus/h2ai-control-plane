@@ -165,10 +165,12 @@ pub struct TaoConfig {
     pub observation_fail_pattern: String,
     pub observation_fail_schema: String,
     pub retry_instruction: String,
-    /// Jaccard similarity threshold above which successive TAO turn outputs are
+    /// Token-overlap similarity threshold above which successive TAO turn outputs are
     /// considered a stuck repetition loop. When exceeded on a failed turn, the
     /// loop returns Err immediately. Set to a value > 1.0 to disable.
     pub repetition_threshold: f64,
+    /// Per-turn adapter call timeout in seconds. Increase for slow local models.
+    pub per_turn_timeout_secs: u64,
 }
 
 impl Default for TaoConfig {
@@ -181,6 +183,7 @@ impl Default for TaoConfig {
             observation_fail_schema: crate::prompts::TAO_OBSERVATION_FAIL_SCHEMA.into(),
             retry_instruction: crate::prompts::TAO_RETRY_INSTRUCTION.into(),
             repetition_threshold: 0.92,
+            per_turn_timeout_secs: 120,
         }
     }
 }

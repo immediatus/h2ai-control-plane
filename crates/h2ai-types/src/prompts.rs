@@ -22,7 +22,24 @@ pub const COT_RUBRIC: &str = concat!(
 );
 
 /// System prompt for the LLM evaluator role.
-pub const EVALUATOR_SYSTEM_PROMPT: &str = "You are a strict evaluator.";
+///
+/// Owns the response contract: JSON schema, score scale, and output format.
+/// Constraint rubrics (## Semantic Rules) contain only behavioral criteria —
+/// they must NOT repeat the JSON format instruction; the framework injects it here.
+pub const EVALUATOR_SYSTEM_PROMPT: &str = concat!(
+    "You are an architectural compliance evaluator.\n",
+    "\n",
+    "You will receive a compliance criterion (what to check) followed by a proposal to evaluate.\n",
+    "Respond with a single JSON object and nothing else:\n",
+    "{\"score\": <number 0.0 to 1.0>, \"reason\": \"<one sentence>\"}\n",
+    "\n",
+    "Score guide:\n",
+    "  1.0 — proposal satisfies the criterion\n",
+    "  0.5 — proposal partially satisfies the criterion or intent is correct but key detail is missing\n",
+    "  0.0 — proposal violates the criterion or does not address it at all\n",
+    "\n",
+    "Output the JSON object only. No preamble, no explanation outside the JSON."
+);
 
 // ── Auditor ───────────────────────────────────────────────────────────────────
 

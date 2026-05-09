@@ -13,7 +13,7 @@ fn identical_strings_score_one() {
 fn empty_strings_score_zero() {
     assert!(
         similarity("", "").abs() < 1e-9,
-        "two empty strings must score 0.0 (jaccard of empty sets)"
+        "two empty strings must score 0.0 (token overlap of empty sets)"
     );
 }
 
@@ -42,7 +42,7 @@ fn word_order_does_not_affect_similarity() {
     let b = "gamma alpha beta";
     assert!(
         (similarity(a, b) - 1.0).abs() < 1e-9,
-        "jaccard is order-independent: same tokens = 1.0, got {}",
+        "token overlap is order-independent: same tokens = 1.0, got {}",
         similarity(a, b)
     );
 }

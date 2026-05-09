@@ -69,3 +69,20 @@ A `timeout_revenue_loss` metric tracks bids that arrived after the per-DSP timeo
 - Series: "Architecting Real-Time Ads Platform", Part 2 — RTB Timeout Handling and Partial Auctions
 - Series: Part 1 — Latency Budget Decomposition (RTB budget: 100ms)
 - HdrHistogram: https://github.com/HdrHistogram/HdrHistogram
+
+## Key Terms
+- histogram, adaptive, timeout, latency, samples, metrics, window, per-dsp, dsp
+
+## Semantic Rules
+Does the proposal integrate a high-latency DSP without degrading the global RTB auction?
+Evaluate architectural behavior — not specific library names or threshold numbers.
+
+Pass (1.0): All four behaviors are present:
+- Global deadline preserved: high-latency DSPs receive a tighter per-DSP cutoff, not a raised global timeout.
+- Cold-start safety: adaptive per-DSP timeout has a warm-up period (enough observed traffic) before activating — a brand-new DSP starts at the safe global default.
+- Local latency tracking: latency state lives inside each Ad Server instance; no cross-instance coordination needed for timeout decisions.
+- Graceful partial auction: when a DSP times out, the auction proceeds immediately with bids already received.
+
+Partial (0.5): Direction is correct but one of the four behaviors above is unclear or missing.
+
+Fail (0.0): The proposal raises the global RTB deadline to accommodate the slow DSP, or blocks the entire auction waiting for the slow DSP's response.

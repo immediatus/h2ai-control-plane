@@ -97,6 +97,7 @@ impl ExplorerSlotConfig {
 pub struct TaskManifest {
     pub description: String,
     pub pareto_weights: ParetoWeights,
+    #[serde(default)]
     pub topology: TopologyRequest,
     pub explorers: ExplorerRequest,
     #[serde(default)]
@@ -123,6 +124,15 @@ pub struct TopologyRequest {
     #[serde(default = "default_topology_kind")]
     pub kind: String,
     pub branching_factor: Option<u8>,
+}
+
+impl Default for TopologyRequest {
+    fn default() -> Self {
+        Self {
+            kind: default_topology_kind(),
+            branching_factor: None,
+        }
+    }
 }
 
 fn default_topology_kind() -> String {

@@ -1,11 +1,12 @@
-use h2ai_constraints::loader::parse_constraint_doc;
+use h2ai_constraints::types::ConstraintDoc;
+
 use h2ai_context::compiler::compile;
 
 #[test]
 fn compile_accepts_constraint_docs() {
-    let doc = parse_constraint_doc(
+    let doc = ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "# ADR-001\n\n## Constraints\npersonal data minimization privacy gdpr\n",
+        "Personal data minimization — proposals must store minimum data required and must cite a GDPR legal basis.",
     );
     let result = compile("use personal data minimization techniques", &[doc]);
     assert!(result.system_context.contains("ADR-001"));
@@ -13,9 +14,9 @@ fn compile_accepts_constraint_docs() {
 
 #[test]
 fn compile_system_context_contains_constraint_id() {
-    let doc = parse_constraint_doc(
+    let doc = ConstraintDoc::new_llm_judge(
         "GDPR-001",
-        "# GDPR-001\n\n## Constraints\npersonal data privacy\n",
+        "Personal data privacy — proposals must not collect data beyond what the stated purpose requires.",
     );
     let result = compile("handle personal data carefully", &[doc]);
     assert!(

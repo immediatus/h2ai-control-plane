@@ -1,0 +1,19 @@
+id: CONSTRAINT-006
+title: "Java 21 + Generational ZGC for Request-Path Services"
+severity: hard
+domains:
+  - runtime
+  - latency
+related_to:
+  - CONSTRAINT-003  # GC pause budget ≤2ms P99.9 set to stay within RTB 100ms deadline
+remediation_hint: "Enable Generational ZGC with -XX:+UseZGC -XX:+ZGenerational on JDK 21+. Use virtual threads (Project Loom) for IO-bound concurrency — replace platform thread pools with Executors.newVirtualThreadPerTaskExecutor(). Do not increase heap size as a primary fix for GC pause problems."
+criteria:
+  pass: |
+    The proposal (1) recommends a low-pause GC designed for large heaps where pause times do not
+    scale with heap size (ZGC is the right algorithm — avoid those that stop all threads
+    proportionally to heap size), AND (2) improves concurrency via lightweight thread management
+    (virtual/green threads) rather than growing the heap or the thread pool.
+  partial: "The proposal recommends a low-pause GC or lightweight threads but also suggests increasing heap size or a high-pause GC as an equal alternative."
+  fail: |
+    The primary fix is to increase heap size, or to use a GC algorithm that pauses all threads
+    proportional to heap size, without acknowledging the fundamental pause-time problem.

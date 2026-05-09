@@ -60,3 +60,21 @@ With G1GC's 41–55ms pauses at P99.9, 410–550 requests would timeout per paus
 - Series: Part 1 — P99 Tail Latency Defense: The Unacceptable Tail
 - Netflix ZGC production report: JDK 21, March 2024
 - Latency budget: GC pause budget ≤2ms P99.9 to stay within 150ms P95 SLO
+
+## Key Terms
+- zgc, java 21, virtual threads, heap, generational, loom, 32gb
+
+## Semantic Rules
+Does the proposal fix JVM latency correctly without increasing heap size?
+Evaluate by direction — not by naming specific GC algorithms.
+
+Pass (1.0): The proposal (1) recommends a low-pause GC designed for large heaps where pause times
+do not scale with heap size (ZGC is the right algorithm — avoid those that stop all threads
+proportionally to heap size), AND (2) improves concurrency via lightweight thread management
+(virtual/green threads) rather than growing the heap or the thread pool.
+
+Partial (0.5): The proposal recommends a low-pause GC or lightweight threads but also suggests
+increasing heap size or a high-pause GC as an equal alternative.
+
+Fail (0.0): The primary fix is to increase heap size, or to use a GC algorithm that pauses all
+threads proportional to heap size, without acknowledging the fundamental pause-time problem.

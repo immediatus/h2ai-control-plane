@@ -208,10 +208,13 @@ impl TaoLoop {
         let mut turn1_output: Option<String> = None;
 
         for turn in 1..=input.config.max_turns {
-            let resp = timeout(Duration::from_secs(30), input.adapter.execute(req.clone()))
-                .await
-                .map_err(|_| EngineError::Adapter("TAO timeout".into()))?
-                .map_err(|e| EngineError::Adapter(e.to_string()))?;
+            let resp = timeout(
+                Duration::from_secs(input.config.per_turn_timeout_secs),
+                input.adapter.execute(req.clone()),
+            )
+            .await
+            .map_err(|_| EngineError::Adapter("TAO timeout".into()))?
+            .map_err(|e| EngineError::Adapter(e.to_string()))?;
 
             if turn == 1 {
                 turn1_output = Some(resp.output.clone());

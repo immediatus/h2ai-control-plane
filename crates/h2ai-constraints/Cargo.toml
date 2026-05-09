@@ -7,9 +7,11 @@ edition = "2021"
 async-trait = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
+serde_yaml  = { workspace = true }
 regex       = { workspace = true }
 jsonschema  = { version = "0.26", default-features = false }
 thiserror   = { workspace = true }
+tracing     = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

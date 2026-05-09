@@ -1,0 +1,21 @@
+id: CONSTRAINT-001
+title: "Stateless Request-Handling Services"
+severity: hard
+domains:
+  - availability
+  - scalability
+related_to:
+  - CONSTRAINT-002  # protocol choice (gRPC vs REST) affects whether services can be stateless
+remediation_hint: "Remove all per-user in-process state. Replace with TTL-based read-through caches (keyed by user_id with eviction) that require no node affinity — any node must be able to serve any user on retry."
+criteria:
+  pass: |
+    The proposal does not introduce sticky sessions, does not store per-user SESSION state
+    (auth tokens, shopping cart, user preferences) in any in-process store, and any in-process
+    caching is TTL-based so any node can serve any user interchangeably.
+    Note: shared read-through caches keyed by user_id (e.g. ML feature caches with TTL eviction)
+    are acceptable — they do not create sticky sessions because no user affinity is required.
+  partial: "The proposal avoids sticky sessions for most services but one component retains per-user in-process state without TTL, or the design is ambiguous about whether a specific in-process cache requires user affinity."
+  fail: |
+    The proposal requires requests from the same user to always reach the same node
+    (sticky sessions), or stores session state that would break if the user's request hit a
+    different node on retry.

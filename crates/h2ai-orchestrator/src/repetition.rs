@@ -8,7 +8,7 @@ fn tokenize(text: &str) -> HashSet<String> {
         .collect()
 }
 
-fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+fn token_overlap(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 0.0;
     }
@@ -17,9 +17,12 @@ fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     intersection / union
 }
 
-/// Jaccard word-token similarity between two strings. Range [0.0, 1.0].
+/// Token-overlap similarity between two strings. Range [0.0, 1.0].
 /// Two strings with identical token sets return 1.0 regardless of order.
 /// Both empty strings return 0.0 (no tokens in common or distinct).
+///
+/// Used in the TAO repetition guard to detect stuck output loops: when
+/// successive turns produce nearly identical token sets the loop aborts.
 pub fn similarity(a: &str, b: &str) -> f64 {
-    jaccard(&tokenize(a), &tokenize(b))
+    token_overlap(&tokenize(a), &tokenize(b))
 }

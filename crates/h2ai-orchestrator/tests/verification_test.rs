@@ -116,8 +116,12 @@ async fn verification_parallel_multiple_proposals() {
 }
 
 #[tokio::test]
-async fn verification_parse_error_fails_safe() {
-    // evaluator returns non-JSON — should score 0.0 and FAIL (fail-safe)
+async fn verification_parse_error_neutral_score() {
+    // When the evaluator returns non-JSON (e.g. model outputs prose), llm_score_raw
+    // returns 0.7 (neutral) rather than 0.0. Rationale: a malformed response means we
+    // failed to evaluate — not that the proposal is wrong. The 0.7 neutral score is above
+    // the default hard threshold (0.45), so the proposal passes. This is intentional:
+    // a formatting failure from a small model should not silently prune valid proposals.
     let evaluator = MockAdapter::new("not valid json".into());
     let proposal = make_proposal(TaskId::new(), "Some proposal");
 
@@ -129,20 +133,25 @@ async fn verification_parse_error_fails_safe() {
     })
     .await;
 
-    assert_eq!(out.passed.len(), 0, "parse error must NOT pass proposals");
-    assert_eq!(out.failed.len(), 1, "parse error must fail proposals");
-    let (_, results, _violations) = &out.failed[0];
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "neutral parse-error score (0.7) should pass threshold (0.45)"
+    );
+    assert_eq!(out.failed.len(), 0);
+    let (_, results) = &out.passed[0];
     assert_eq!(results.len(), 1);
     assert!(
-        (results[0].score - 0.0).abs() < 1e-9,
-        "expected fail-safe score 0.0, got {}",
+        (results[0].score - 0.7).abs() < 1e-9,
+        "expected neutral fallback score 0.7, got {}",
         results[0].score
     );
 }
 
 #[tokio::test]
-async fn verification_evaluator_error_fails_safe() {
-    // evaluator returns empty string (unparseable) — should score 0.0
+async fn verification_evaluator_empty_output_neutral_score() {
+    // Empty evaluator output (e.g. adapter timed out before writing) returns 0.7 neutral.
+    // Same reasoning as parse error: absence of evaluation evidence ≠ proposal failure.
     let evaluator = MockAdapter::new(String::new());
     let proposal = make_proposal(TaskId::new(), "Some proposal");
 
@@ -154,12 +163,16 @@ async fn verification_evaluator_error_fails_safe() {
     })
     .await;
 
-    assert_eq!(out.passed.len(), 0, "empty evaluator output must not pass");
-    assert_eq!(out.failed.len(), 1);
-    let (_, results, _violations) = &out.failed[0];
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "neutral empty-output score (0.7) should pass threshold (0.45)"
+    );
+    assert_eq!(out.failed.len(), 0);
+    let (_, results) = &out.passed[0];
     assert!(
-        (results[0].score).abs() < 1e-9,
-        "expected 0.0, got {}",
+        (results[0].score - 0.7).abs() < 1e-9,
+        "expected 0.7 neutral, got {}",
         results[0].score
     );
 }
@@ -290,6 +303,7 @@ async fn verification_json_schema_predicate_passes_valid_json() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(TaskId::new(), r#"{"result": "ok"}"#);
@@ -325,6 +339,7 @@ async fn verification_length_range_predicate_rejects_long_output() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(
@@ -361,6 +376,7 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(TaskId::new(), "some output");

@@ -27,8 +27,24 @@ impl ConstraintSource for NatsWikiConstraintSource {
         &self,
         task_tags: &[String],
         explicit_ids: &[String],
+        query_text: &str,
     ) -> Vec<ConstraintMeta> {
-        self.cache.read().await.resolve(task_tags, explicit_ids)
+        let cache = self.cache.read().await;
+        // Fast path: explicit IDs — always return exactly what was requested.
+        if !explicit_ids.is_empty() {
+            return cache.resolve(&[], explicit_ids);
+        }
+        // Union: tag-based resolution ∪ BM25 semantic search.
+        // Tags ensure mandatory domain constraints are never missed;
+        // BM25 surfaces additional relevant constraints the task implies but didn't tag.
+        if !task_tags.is_empty() || !query_text.is_empty() {
+            let resolved = cache.resolve_with_semantic(task_tags, &[], query_text, 20);
+            if !resolved.is_empty() {
+                return resolved;
+            }
+        }
+        // Return all metas for empty/unmatched context — NATS wiki is pre-filtered at load time.
+        cache.metas.values().cloned().collect()
     }
 
     async fn load_payload(
@@ -95,6 +111,7 @@ pub async fn reconstruct_docs(
             remediation_hint: None,
             domains: meta.domains,
             mandatory_for_tags: meta.mandatory_for_tags,
+            related_to: meta.related_to,
         });
     }
     docs

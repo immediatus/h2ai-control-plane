@@ -10,7 +10,7 @@ mod state;
 use axum::Router;
 use h2ai_adapters::factory::AdapterFactory;
 use h2ai_adapters::mock::MockAdapter;
-use h2ai_config::H2AIConfig;
+use h2ai_config::{AdapterProfile, H2AIConfig};
 use h2ai_state::nats::NatsClient;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::config::AdapterKind;
@@ -46,6 +46,26 @@ fn adapter_kind_from_env(prefix: &str) -> AdapterKind {
     }
 }
 
+/// Resolve adapter kind for a role: prefer env vars; fall back to the config's
+/// adapter_profiles (prefers a profile named "local", then the first profile).
+fn adapter_kind_for_role(prefix: &str, profiles: &[AdapterProfile]) -> AdapterKind {
+    let provider = env::var(format!("H2AI_{prefix}_PROVIDER"))
+        .unwrap_or_default()
+        .to_lowercase();
+    if !provider.is_empty() && provider != "mock" {
+        return adapter_kind_from_env(prefix);
+    }
+    // No explicit env var — use config adapter_profiles if available.
+    if let Some(profile) = profiles
+        .iter()
+        .find(|p| p.name == "local")
+        .or_else(|| profiles.first())
+    {
+        return profile.kind.clone();
+    }
+    adapter_kind_from_env(prefix)
+}
+
 fn adapter_family(kind: &AdapterKind) -> &'static str {
     match kind {
         AdapterKind::Anthropic { .. } => "anthropic",
@@ -71,6 +91,10 @@ fn build_adapter(kind: &AdapterKind) -> Arc<dyn IComputeAdapter> {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let listen_addr = env::var("H2AI_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
 
     let cfg = {
@@ -103,8 +127,9 @@ async fn main() {
         .await
         .expect("NATS infrastructure setup");
 
-    let explorer_kind = adapter_kind_from_env("EXPLORER");
-    let auditor_kind = adapter_kind_from_env("AUDITOR");
+    let profiles = &cfg.adapter_profiles;
+    let explorer_kind = adapter_kind_for_role("EXPLORER", profiles);
+    let auditor_kind = adapter_kind_for_role("AUDITOR", profiles);
     let explorer_adapter = build_adapter(&explorer_kind);
     let auditor_adapter = build_adapter(&auditor_kind);
 
@@ -115,7 +140,7 @@ async fn main() {
         if provider == "none" || provider.is_empty() {
             None
         } else {
-            Some(adapter_kind_from_env("SCORING"))
+            Some(adapter_kind_for_role("SCORING", profiles))
         }
     };
     let scoring_adapter: Option<Arc<dyn IComputeAdapter>> =
@@ -128,7 +153,7 @@ async fn main() {
         if provider == "same" || provider.is_empty() {
             None
         } else {
-            Some(adapter_kind_from_env("EXPLORER2"))
+            Some(adapter_kind_for_role("EXPLORER2", profiles))
         }
     };
     let explorer2_adapter: Arc<dyn IComputeAdapter> = explorer2_kind_opt

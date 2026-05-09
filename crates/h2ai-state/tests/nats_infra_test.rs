@@ -113,6 +113,7 @@ async fn wiki_kv_roundtrip() {
             predicate_kind: PredicateKind::Static,
             domains: vec!["test".into()],
             mandatory_for_tags: vec![],
+            related_to: vec![],
             payload_version: "v1".into(),
             inline_predicate: None,
             source: None,

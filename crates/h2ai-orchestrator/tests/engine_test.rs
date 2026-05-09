@@ -1,7 +1,8 @@
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::loader::parse_constraint_doc;
+use h2ai_constraints::types::ConstraintDoc;
+
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_types::adapter::{
@@ -89,9 +90,9 @@ async fn engine_runs_ensemble_to_semilattice() {
     let cal = calibration().await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
 
     let manifest = TaskManifest {
@@ -175,9 +176,9 @@ async fn engine_structured_auditor_approved_passes_proposal() {
     let cal = calibration().await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let manifest = TaskManifest {
         description: "Propose stateless auth with ADR-001 compliance".into(),
@@ -250,9 +251,9 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         max_autonomic_retries: 0,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let manifest = TaskManifest {
         description: "Propose stateless auth with ADR-001 compliance".into(),
@@ -325,9 +326,9 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         max_autonomic_retries: 0,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let manifest = TaskManifest {
         description: "Propose stateless auth with ADR-001 compliance".into(),
@@ -397,9 +398,9 @@ async fn engine_output_contains_talagrand_diagnostic() {
     let cal = calibration().await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
 
@@ -473,9 +474,9 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         krum_threshold: 0.5,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let manifest = TaskManifest {
         description: "Propose stateless auth with ADR-001 compliance".into(),
@@ -568,9 +569,9 @@ async fn engine_output_contains_suggested_next_params() {
     let cal = calibration().await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
 
@@ -655,9 +656,9 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         synthesis_min_proposals: 2,
         ..H2AIConfig::default()
     };
-    let corpus = vec![parse_constraint_doc(
+    let corpus = vec![ConstraintDoc::new_llm_judge(
         "ADR-001",
-        "## Constraints\nstateless auth\n",
+        "The solution must be stateless. No server-side sessions or shared mutable state permitted.",
     )];
     let manifest = TaskManifest {
         description: "Propose stateless auth with ADR-001 compliance".into(),

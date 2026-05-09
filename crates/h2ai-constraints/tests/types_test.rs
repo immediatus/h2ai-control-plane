@@ -17,6 +17,7 @@ fn constraint_doc_vocabulary_from_vocabulary_presence() {
         remediation_hint: Some("Include data minimization language.".into()),
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let vocab = doc.vocabulary();
     assert!(vocab.contains("personal"));
@@ -101,6 +102,7 @@ fn positive_vocabulary_excludes_negative_keyword_terms() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let pos = doc.positive_vocabulary();
     let neg = doc.negative_vocabulary();
@@ -143,6 +145,7 @@ fn negative_vocabulary_from_none_of_mode() {
         remediation_hint: None,
         domains: vec![],
         mandatory_for_tags: vec![],
+        related_to: vec![],
     };
     let neg = doc.negative_vocabulary();
     assert!(

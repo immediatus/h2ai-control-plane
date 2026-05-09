@@ -11,7 +11,7 @@
     "tau_max": 0.85
   },
   "constraints": [
-    "ADR-003"
+    "CONSTRAINT-003"
   ],
   "context": "BidStream P50=45ms, P99=320ms. Global RTB timeout is 100ms and cannot change. The adaptive per-DSP timeout mechanism (HdrHistogram-based) is already implemented. BidStream will initially have zero samples in the histogram — cold start handling applies. Revenue impact of missing BidStream bids must be tracked.",
 
@@ -21,15 +21,15 @@
     "should_prune": [
       {
         "description": "Proposal that raises the global RTB timeout to 350ms to accommodate BidStream P99",
-        "violates": "ADR-003 — T_global is 100ms and per-DSP timeouts must not exceed T_global"
+        "violates": "CONSTRAINT-003 — T_global is 100ms and per-DSP timeouts must not exceed T_global"
       },
       {
         "description": "Proposal that sets BidStream timeout based on fewer than 100 samples",
-        "violates": "ADR-003 — adaptive timeout must not activate until 100 samples collected"
+        "violates": "CONSTRAINT-003 — adaptive timeout must not activate until 100 samples collected"
       },
       {
         "description": "Proposal that stores DSP latency histograms in Redis for cross-instance sharing",
-        "violates": "ADR-003 — histogram data must be in-process per-instance, not external store"
+        "violates": "CONSTRAINT-003 — histogram data must be in-process per-instance, not external store"
       }
     ],
     "should_pass": [

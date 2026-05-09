@@ -73,3 +73,20 @@ With dynamic chunk sizing at <10% remaining: `A_new = B_remaining / (S × 10)` �
 - Series: "Architecting Real-Time Ads Platform", Part 3 — Budget Pacing: Distributed Spend Control
 - Series: Part 3 — Idempotency Protection: Defending Against Double-Debits
 - Financial accuracy requirement: ≤1% budget overspend
+
+## Key Terms
+- lua, atomic, idempotency, redis, kafka, clickhouse, campaign, transaction, single script
+
+## Semantic Rules
+Does the proposal prevent double-billing using idempotency?
+
+Pass (1.0): The proposal (1) introduces an idempotency key or token tied to each request to detect
+duplicates, AND (2) performs the idempotency check and the budget deduction atomically — no
+window exists between checking the key and debiting the budget where a race condition could
+cause a double-debit (e.g. single Lua script, MULTI/EXEC transaction, or equivalent).
+
+Partial (0.5): The proposal mentions idempotency but the atomicity of check + deduction is unclear
+or the mechanism has an obvious race window.
+
+Fail (0.0): The proposal does not address idempotency at all, or uses a non-atomic check-then-act
+pattern (check key in one step, deduct in a separate step with no atomicity guarantee).

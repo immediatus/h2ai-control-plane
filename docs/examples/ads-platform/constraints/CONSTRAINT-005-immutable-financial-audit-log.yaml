@@ -1,0 +1,19 @@
+id: CONSTRAINT-005
+title: "Dual-Ledger Architecture — Immutable Financial Audit Log"
+severity: hard
+domains:
+  - billing
+  - compliance
+related_to:
+  - CONSTRAINT-004  # budget deductions are the events that must reach the audit log
+  - CONSTRAINT-007  # billing event timestamps must use HLC (linearizable), not wall clock
+remediation_hint: "Publish billing events to Kafka before acknowledging the debit request (at-least-once guarantee). Project into ClickHouse or equivalent append-only columnar store for analytics. Never use UPDATE or DELETE on financial event records — treat the event log as the ledger of record."
+criteria:
+  pass: |
+    Financial/billing events are written to a storage system where records cannot be modified
+    or deleted after write — an event stream, append-only ledger, or immutable columnar store
+    (Kafka → ClickHouse, or equivalent). The audit record is durable and tamper-evident.
+  partial: "The proposal mentions audit logging but it is not clearly immutable or append-only (e.g. logs to a relational DB without append-only guarantees)."
+  fail: |
+    Financial events are written only to a mutable store (regular DB with UPDATE/DELETE),
+    to application log files, or to in-memory structures — or audit logging is not mentioned.
