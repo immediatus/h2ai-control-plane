@@ -10,7 +10,7 @@ use h2ai_autonomic::checker::MultiplicationChecker;
 use h2ai_autonomic::merger::{MergeEngine, MergeOutcome};
 use h2ai_autonomic::planner::{ProvisionInput, TopologyPlanner};
 use h2ai_autonomic::retry::{RetryAction, RetryPolicy};
-use h2ai_config::H2AIConfig;
+use h2ai_config::{FamilyConstraint, H2AIConfig};
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_context::compaction::{compact, CompactionConfig};
 use h2ai_context::compiler;
@@ -42,8 +42,12 @@ pub enum EngineError {
     MultiplicationConditionFailed(String),
     /// The MAPE-K autonomic retry loop hit `max_autonomic_retries` without resolving.
     /// Increasing the retry budget or investigating calibration data is recommended.
+    /// `partial_verification_events` carries any `VerificationScoredEvent`s collected before
+    /// failure so callers can still publish them (e.g. for SSE clients tracking Phase 3).
     #[error("max retries exhausted")]
-    MaxRetriesExhausted,
+    MaxRetriesExhausted {
+        partial_verification_events: Vec<VerificationScoredEvent>,
+    },
     /// An adapter call failed or timed out; the message contains the error detail.
     /// May be transient — retrying at the caller level is reasonable.
     #[error("adapter error: {0}")]
@@ -60,6 +64,18 @@ pub enum EngineError {
     /// Either reduce `f` or provision at least `2f + 3` explorers.
     #[error("insufficient quorum for OutlierResistant f={f}: need n ≥ {required}, got n={n}")]
     InsufficientQuorum { n: usize, f: usize, required: usize },
+}
+
+/// Context for the Phase 4 shadow auditor. Held in `EngineInput::shadow_audit_ctx`.
+///
+/// `None` = shadow mode off for this task. When `Some`, the engine runs a concurrent
+/// shadow audit call on every Phase 4 proposal and collects `ShadowAuditorResultEvent`s.
+/// When `promoted_domains` contains the task domain, both auditors must approve (AND vote).
+pub struct ShadowAuditCtx {
+    /// The shadow auditor adapter — must be from a different family than the primary.
+    pub adapter: std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    /// Domains currently in AND-vote mode, loaded from AppState at task dispatch.
+    pub promoted_domains: std::collections::HashSet<String>,
 }
 
 /// All inputs required to run the multi-phase execution pipeline for a single task.
@@ -111,6 +127,21 @@ pub struct EngineInput<'a> {
     /// When `Some`, the bandit selects `n_agents` and its posterior is updated on task completion.
     /// When `None`, N selection falls back to `n_optimal_hint` from EnsembleCalibration.
     pub bandit_state: Option<std::sync::Arc<tokio::sync::RwLock<crate::bandit::BanditState>>>,
+    /// Shadow auditor context for GAP-C2 disagreement measurement. `None` = shadow off.
+    pub shadow_audit_ctx: Option<ShadowAuditCtx>,
+    /// Optional researcher adapter for C1 grounding (proactive slot search + reactive retry).
+    /// Uses `Arc` so it can be called from async closures inside the MAPE-K loop.
+    /// When `None`, search-enabled slots and C1 retries fall back to hint-only.
+    pub researcher_adapter: Option<std::sync::Arc<dyn IComputeAdapter>>,
+    /// Current SRANI EMA midpoint (ema_cfi) loaded from NATS KV by tasks.rs.
+    /// When count < 5, the engine substitutes cfg.srani.cold_start_midpoint().
+    pub srani_ema_cfi: f64,
+    /// Number of tasks that have contributed a CFI observation to the EMA.
+    pub srani_count: usize,
+    /// Optional SRANI grounding chain. When `Some`, replaces the old negative-only hint
+    /// with a positive grounding context (spec anchor + LLM researcher / web search).
+    /// When `None`, falls back to `SpecAnchorGrounder` inline (zero I/O).
+    pub srani_grounding_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
 }
 
 /// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
@@ -128,6 +159,9 @@ pub struct EngineOutput {
     pub attribution_interval: Option<crate::attribution::AttributionInterval>,
     /// All verification scored events collected across every MAPE-K retry iteration.
     pub verification_events: Vec<VerificationScoredEvent>,
+    /// Explorer agents that terminated without producing usable output, across all MAPE-K waves.
+    /// Empty on clean runs. Published by the caller so SSE clients can detect silent failures.
+    pub failed_proposals: Vec<ProposalFailedEvent>,
     /// Rank-histogram calibration diagnostic built from this task's verification scores.
     /// `None` when no verification events were produced.
     /// Typically `Some(Insufficient)` state for a single task (< 20 runs needed for calibration).
@@ -168,13 +202,34 @@ pub struct EngineOutput {
     pub coherence_state: crate::coherence::CoherenceState,
     /// Comparison events from dual-run verifier (populated only when `record_adversarial_comparison` is set).
     pub comparison_events: Vec<h2ai_types::events::VerifierComparisonEvent>,
+    /// Shadow auditor outcome events collected across all MAPE-K waves.
+    /// Populated only when `shadow_audit_ctx` is `Some` in the corresponding `EngineInput`.
+    pub shadow_audit_events: Vec<h2ai_types::events::ShadowAuditorResultEvent>,
+    /// C1 correlated ensemble warnings emitted across all retry waves.
+    /// Non-empty when proposal CV dropped below `correlated_hallucination_cv_threshold`.
+    pub correlated_warnings: Vec<h2ai_types::events::CorrelatedEnsembleWarning>,
+    /// Researcher grounding events: proactive slot pre-steps + reactive C1 groundings.
+    pub researcher_grounding_events: Vec<h2ai_types::events::ResearcherGroundingEvent>,
+    /// C3 domain coverage degradation event. `Some` when coverage < threshold.
+    /// `None` when coverage is sufficient or corpus has no domain tags.
+    pub diversity_degraded_event: Option<h2ai_types::events::DiversityGuardDegradedEvent>,
+    /// SRANI correlated fabrication events — fired when CFI > warn_threshold.
+    pub srani_events: Vec<h2ai_types::events::CorrelatedFabricationEvent>,
+    /// EMA midpoint updated after absorbing this task's CFI observation.
+    /// Zero when no CFI was computed this task (proposals.len() < 2 or srani disabled).
+    pub srani_ema_cfi_updated: f64,
+    /// Count after this task's CFI observation (srani_count + 1 if CFI was computed, else unchanged).
+    pub srani_count_updated: usize,
 }
 
 #[derive(serde::Deserialize)]
 struct AuditResponse {
     approved: bool,
-    #[allow(dead_code)]
     reason: String,
+    /// Constraint IDs the auditor identified as violated. Populated by the adversarial
+    /// prompt template; empty when the auditor approves or uses a legacy prompt.
+    #[serde(default)]
+    violated: Vec<String>,
 }
 
 /// Stateless coordinator for the five-phase task execution pipeline.
@@ -243,20 +298,32 @@ impl ExecutionEngine {
         // explorer pool. Such a configuration invalidates Condorcet independence —
         // the verifier cannot detect its own blind spots.
         //
-        // Bypassed when `allow_single_family = true` (test/dev environments only).
-        if !input.cfg.allow_single_family && input.calibration.explorer_verification_family_match {
-            use h2ai_types::adapter::AdapterFamily;
-            let explorer_family = AdapterFamily::from(&explorer_adapter_kind).to_string();
-            let verifier_family =
-                AdapterFamily::from(input.verification_adapter.kind()).to_string();
-            input.store.mark_failed(&task_id);
-            return Err(EngineError::MultiplicationConditionFailed(
-                MultiplicationConditionFailure::VerifierExplorerFamilyConflict {
-                    explorer_family,
-                    verifier_family,
+        // Bypassed when `family_constraint = Disabled` (no check at all).
+        // With `SingleFamilyOk` the gate is skipped but a WARN is emitted at startup.
+        // With `RequireDiverse` the task fails when explorer/verifier share a family.
+        if input.calibration.explorer_verification_family_match {
+            match input.cfg.safety.family_constraint {
+                FamilyConstraint::RequireDiverse => {
+                    use h2ai_types::adapter::AdapterFamily;
+                    let explorer_family = AdapterFamily::from(&explorer_adapter_kind).to_string();
+                    let verifier_family =
+                        AdapterFamily::from(input.verification_adapter.kind()).to_string();
+                    input.store.mark_failed(&task_id);
+                    return Err(EngineError::MultiplicationConditionFailed(
+                        MultiplicationConditionFailure::VerifierExplorerFamilyConflict {
+                            explorer_family,
+                            verifier_family,
+                        }
+                        .to_string(),
+                    ));
                 }
-                .to_string(),
-            ));
+                FamilyConstraint::SingleFamilyOk => {
+                    tracing::warn!(
+                        "single-family adapter pool: correlated hallucination protection degraded"
+                    );
+                }
+                FamilyConstraint::Disabled => {}
+            }
         }
 
         // ── Phase 1.5: Task Complexity Assessment ──────────────────────────
@@ -304,12 +371,15 @@ impl ExecutionEngine {
         // When EnsembleCalibration is present use n_optimal (Condorcet-derived) as the
         // default ensemble size instead of the manifest count. n_max_ceiling (Amdahl) is
         // the hard ceiling regardless.
+        // Calibration may suggest n_optimal > manifest.count (calibration uses max_n=9).
+        // Treat manifest count as an explicit upper bound: the submitter chose it deliberately.
+        let manifest_count = input.manifest.explorers.count as u32;
         let n_optimal_hint = input
             .calibration
             .ensemble
             .as_ref()
-            .map(|ec| ec.n_optimal as u32)
-            .unwrap_or(input.manifest.explorers.count as u32);
+            .map(|ec| (ec.n_optimal as u32).min(manifest_count))
+            .unwrap_or(manifest_count);
         let bandit_n = if let Some(ref bandit_arc) = input.bandit_state {
             let bandit = bandit_arc.read().await;
             Some(bandit.select(input.cfg))
@@ -337,13 +407,25 @@ impl ExecutionEngine {
         let mut tau_values_tried: Vec<Vec<f64>> = Vec::new();
         let mut quality_history: Vec<QualityMeasurement> = Vec::new();
         let mut all_verification_events: Vec<VerificationScoredEvent> = Vec::new();
+        let mut all_failed_proposals: Vec<ProposalFailedEvent> = Vec::new();
         let mut all_comparison_events: Vec<h2ai_types::events::VerifierComparisonEvent> =
             Vec::new();
+        let mut all_shadow_audit_events: Vec<h2ai_types::events::ShadowAuditorResultEvent> =
+            Vec::new();
+        let mut all_correlated_warnings: Vec<h2ai_types::events::CorrelatedEnsembleWarning> =
+            Vec::new();
+        let mut all_researcher_grounding_events: Vec<h2ai_types::events::ResearcherGroundingEvent> =
+            Vec::new();
+        let mut all_srani_events: Vec<h2ai_types::events::CorrelatedFabricationEvent> = Vec::new();
+        let mut srani_ema_updated: f64 = input.srani_ema_cfi;
+        let mut srani_count_updated: usize = input.srani_count;
         let mut last_multiplication_failure: Option<MultiplicationConditionFailure> = None;
         let task_eval_cache = crate::verification::new_eval_cache();
         let mut adapter_rotation_offset: usize = 0;
         let mut pending_tombstone: Option<String> = None;
         let mut retry_context: Option<String> = None;
+        let mut srani_tier: usize = 0;
+        let mut srani_last_wave_fired: bool = false;
         let mut topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent> =
             Vec::new();
         let mut mode_collapse_count: usize = 0;
@@ -351,6 +433,47 @@ impl ExecutionEngine {
             .cfg
             .task_deadline_secs
             .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+
+        // ── GAP-C3: Domain Coverage Pre-check ──────────────────────────────────
+        // Slot domain assignments don't change between retries, so check once here.
+        // Fires DiversityGuardDegradedEvent when coverage < domain_coverage_threshold.
+        // Fails the task immediately when require_bivariate_cg = true.
+        let diversity_degraded_event_for_output: Option<
+            h2ai_types::events::DiversityGuardDegradedEvent,
+        > = {
+            let corpus_tags = crate::domain_coverage::corpus_domain_tags(&input.constraint_corpus);
+            let coverage_score = crate::domain_coverage::compute_coverage_score(
+                &input.manifest.explorers.slot_configs,
+                &corpus_tags,
+            );
+            if coverage_score < input.cfg.domain_coverage_threshold {
+                let slot_domains: Vec<String> = input
+                    .manifest
+                    .explorers
+                    .slot_configs
+                    .iter()
+                    .flat_map(|s| s.constraint_domains.iter().cloned())
+                    .collect();
+                if input.cfg.safety.require_bivariate_cg {
+                    input.store.mark_failed(&task_id);
+                    return Err(EngineError::MultiplicationConditionFailed(format!(
+                        "domain_coverage {coverage_score:.2} < threshold {:.2} (require_bivariate_cg=true)",
+                        input.cfg.domain_coverage_threshold
+                    )));
+                }
+                Some(h2ai_types::events::DiversityGuardDegradedEvent {
+                    task_id: task_id.clone(),
+                    reason: format!(
+                        "slot domain coverage {coverage_score:.2} below threshold {:.2}",
+                        input.cfg.domain_coverage_threshold
+                    ),
+                    coverage_score,
+                    slot_domains,
+                })
+            } else {
+                None
+            }
+        };
 
         for retry_count in 0..=input.cfg.max_autonomic_retries {
             if let Some(dl) = task_deadline {
@@ -376,7 +499,7 @@ impl ExecutionEngine {
                 let count = if precision_active {
                     // 2–3 slots: more than 1 provides synthesis benefit; cap at 3 to stay
                     // within the Self-MoA budget where within-family wins.
-                    (n_max_ceiling as usize).clamp(2, 3) as u32
+                    (n_max_ceiling as usize).clamp(2, input.cfg.precision_mode_max_slots) as u32
                 } else {
                     current_params.n_agents.max(1)
                 };
@@ -492,6 +615,15 @@ impl ExecutionEngine {
             let baseline_competence = p_mean;
             let error_correlation = rho_mean;
 
+            tracing::info!(
+                target: "h2ai.engine",
+                p_mean,
+                rho_mean,
+                cg_mean = input.calibration.coefficients.cg_mean(),
+                theta_coord = input.calibration.coordination_threshold.value(),
+                retry_count,
+                "multiplication check"
+            );
             if let Err(mc_event) = MultiplicationChecker::check(
                 &task_id,
                 &input.calibration.coefficients,
@@ -501,6 +633,11 @@ impl ExecutionEngine {
                 retry_count,
                 input.cfg,
             ) {
+                tracing::warn!(
+                    target: "h2ai.engine",
+                    failure = ?mc_event.failure,
+                    "multiplication condition failed"
+                );
                 last_multiplication_failure = Some(mc_event.failure.clone());
                 let tau_values: Vec<f64> = provisioned
                     .explorer_configs
@@ -588,22 +725,32 @@ impl ExecutionEngine {
                         );
                         continue;
                     }
-                    RetryAction::Fail(_) => {
+                    RetryAction::Fail(reason) => {
+                        tracing::warn!(
+                            target: "h2ai.engine",
+                            task_id = %task_id,
+                            retry_count,
+                            reason = ?reason,
+                            last_multiplication_failure = ?last_multiplication_failure,
+                            "retry policy decided Fail — giving up"
+                        );
                         input.store.mark_failed(&task_id);
-                        return Err(EngineError::MaxRetriesExhausted);
+                        return Err(EngineError::MaxRetriesExhausted {
+                            partial_verification_events: all_verification_events.clone(),
+                        });
                     }
                 }
             }
 
             // ── Phase 2.6: Pool Diversity Guard ────────────────────────────────
-            if input.cfg.diversity_threshold > 0.0 {
+            if input.cfg.safety.diversity_threshold > 0.0 {
                 let n_eff_prior = input.calibration.n_eff_cosine_prior;
-                let threshold = 1.0 + input.cfg.diversity_threshold;
+                let threshold = 1.0 + input.cfg.safety.diversity_threshold;
                 if n_eff_prior > 0.0 && n_eff_prior < threshold {
                     last_multiplication_failure = Some(
                         h2ai_types::sizing::MultiplicationConditionFailure::InsufficientPoolDiversity {
                             n_eff: n_eff_prior,
-                            threshold: input.cfg.diversity_threshold,
+                            threshold: input.cfg.safety.diversity_threshold,
                         },
                     );
                     let tau_values: Vec<f64> = provisioned
@@ -658,9 +805,18 @@ impl ExecutionEngine {
                             }
                             continue;
                         }
-                        RetryAction::Fail(_) => {
+                        RetryAction::Fail(reason) => {
+                            tracing::warn!(
+                                target: "h2ai.engine",
+                                task_id = %task_id,
+                                retry_count,
+                                reason = ?reason,
+                                "retry policy decided Fail (diversity check) — giving up"
+                            );
                             input.store.mark_failed(&task_id);
-                            return Err(EngineError::MaxRetriesExhausted);
+                            return Err(EngineError::MaxRetriesExhausted {
+                                partial_verification_events: all_verification_events.clone(),
+                            });
                         }
                     }
                 }
@@ -699,6 +855,49 @@ impl ExecutionEngine {
                 .as_deref()
                 .unwrap_or(&system_context)
                 .to_owned();
+
+            // ── Proactive Researcher Pre-pass (GAP-C1 proactive path) ──────────
+            // For slots with search_enabled=true, call the researcher adapter to fetch
+            // current state-of-the-art grounding before generating proposals.
+            let mut slot_groundings: Vec<Option<String>> =
+                vec![None; provisioned.explorer_configs.len()];
+            if let Some(ref researcher) = input.researcher_adapter {
+                for idx in 0..provisioned.explorer_configs.len() {
+                    let sc_opt = if effective_slot_configs.is_empty() {
+                        None
+                    } else {
+                        Some(&effective_slot_configs[idx % effective_slot_configs.len()])
+                    };
+                    if sc_opt.map(|sc| sc.search_enabled).unwrap_or(false) {
+                        let req = ComputeRequest {
+                            system_context: active_ctx.clone(),
+                            task: format!(
+                                "Search for current state-of-the-art evidence relevant to: {}. \
+                                 Return a concise grounding statement in 2-3 sentences that \
+                                 the explorer should treat as established fact.",
+                                input.manifest.description
+                            ),
+                            tau: TauValue::new(0.2).unwrap(),
+                            max_tokens: 512,
+                        };
+                        if let Ok(resp) = researcher.execute(req).await {
+                            all_researcher_grounding_events.push(
+                                h2ai_types::events::ResearcherGroundingEvent {
+                                    task_id: task_id.clone(),
+                                    shared_assumption: String::new(),
+                                    literature_summary: resp.output.clone(),
+                                    slot: Some(format!("slot_{idx}")),
+                                    source: h2ai_types::events::GroundingSource::LlmResearcher,
+                                },
+                            );
+                            slot_groundings[idx] =
+                                Some(format!("[STATE-OF-THE-ART]: {}", resp.output));
+                        }
+                    }
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────
+
             let futures_vec: Vec<ExplorerFuture<'_>> = provisioned
                 .explorer_configs
                 .iter()
@@ -736,10 +935,17 @@ impl ExecutionEngine {
                                 );
                                 preamble.push_str(&sc.rejection_criteria);
                             }
-                            let ctx = if preamble.is_empty() {
+                            let base_ctx = if preamble.is_empty() {
                                 active_ctx.clone()
                             } else {
                                 format!("{}\n\n{}", preamble, active_ctx)
+                            };
+                            let ctx = if let Some(grounding) =
+                                slot_groundings.get(idx).and_then(|g| g.as_ref())
+                            {
+                                format!("{}\n\n{}", grounding, base_ctx)
+                            } else {
+                                base_ctx
                             };
                             (task, ctx)
                         }
@@ -856,6 +1062,8 @@ impl ExecutionEngine {
                     }
                 }
             }
+            let failed_count = failed_proposals.len() as u32;
+            all_failed_proposals.append(&mut failed_proposals);
 
             // Capture raw texts for epistemic yield / FailureMode classification.
             let all_raw_texts_this_wave: Vec<String> =
@@ -872,7 +1080,7 @@ impl ExecutionEngine {
                 task_id: task_id.clone(),
                 total_explorers: explorer_count,
                 successful: proposals.len() as u32,
-                failed: failed_proposals.len() as u32,
+                failed: failed_count,
                 timestamp: Utc::now(),
             };
 
@@ -882,6 +1090,228 @@ impl ExecutionEngine {
                 .iter()
                 .map(|ec| ec.tau.value())
                 .collect();
+
+            // ── GAP-C1: Correlated Hallucination Detection ──────────────────
+            // Check CV of pairwise Jaccard distances on raw proposal texts.
+            // Low CV = proposals are semantically clustered → retry with grounding hint.
+            if input.cfg.correlated_hallucination_cv_threshold > 0.0 && proposals.len() >= 2 {
+                let proposal_texts: Vec<&str> =
+                    proposals.iter().map(|p| p.raw_output.as_str()).collect();
+                if let Some(signal) = crate::correlated_hallucination::compute_cv(&proposal_texts) {
+                    if signal.cv < input.cfg.correlated_hallucination_cv_threshold
+                        && signal.mean_jaccard_distance
+                            < input.cfg.correlated_hallucination_min_jaccard_floor
+                        && retry_count < input.cfg.max_autonomic_retries
+                    {
+                        all_correlated_warnings.push(
+                            h2ai_types::events::CorrelatedEnsembleWarning {
+                                task_id: task_id.clone(),
+                                cv: signal.cv,
+                                mean_jaccard_distance: signal.mean_jaccard_distance,
+                                retry_count,
+                            },
+                        );
+
+                        // Build grounding: call researcher (reactive path) if available
+                        let grounding_hint = if let Some(ref researcher) = input.researcher_adapter
+                        {
+                            let proposal_summary = proposals
+                                .iter()
+                                // 300-char cap: debug context only — enough for correlation diagnosis
+                                .map(|p| p.raw_output[..p.raw_output.len().min(300)].to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n---\n");
+                            let research_req = ComputeRequest {
+                                system_context: system_context.clone(),
+                                task: format!(
+                                    "These AI proposals may share a common assumption.\
+                                     \nPROPOSALS:\n{proposal_summary}\n\n\
+                                     Search for current state-of-the-art evidence that \
+                                     contradicts the shared assumption. Return JSON: \
+                                     {{\"shared_assumption\": \"...\", \
+                                       \"literature_summary\": \"...\", \
+                                       \"grounding_statement\": \"...\"}}",
+                                ),
+                                tau: TauValue::new(0.3).unwrap(),
+                                max_tokens: 1024,
+                            };
+                            match researcher.execute(research_req).await {
+                                Ok(resp) => {
+                                    #[derive(serde::Deserialize)]
+                                    struct ResearchResult {
+                                        shared_assumption: String,
+                                        literature_summary: String,
+                                        grounding_statement: String,
+                                    }
+                                    crate::verification::extract_json_object::<ResearchResult>(
+                                        &resp.output,
+                                    )
+                                    .map(|r| {
+                                        all_researcher_grounding_events
+                                            .push(h2ai_types::events::ResearcherGroundingEvent {
+                                            task_id: task_id.clone(),
+                                            shared_assumption: r.shared_assumption,
+                                            literature_summary: r.literature_summary.clone(),
+                                            slot: None,
+                                            source:
+                                                h2ai_types::events::GroundingSource::LlmResearcher,
+                                        });
+                                        format!(
+                                            "[EXTERNAL GROUNDING]: {}\n\
+                                             Find the assumption all current proposals share \
+                                             and propose a solution that contradicts it.",
+                                            r.grounding_statement
+                                        )
+                                    })
+                                }
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        };
+
+                        let hint = grounding_hint.unwrap_or_else(|| {
+                            "Find the assumption all current proposals share that might be wrong. \
+                             Propose a solution that directly contradicts it."
+                                .to_string()
+                        });
+
+                        retry_context = Some(format!(
+                            "{system_context_with_rubric}\n\n\
+                             --- CORRELATED ENSEMBLE DETECTED (iteration {retry_count}) ---\n\
+                             {hint}\n\
+                             ---"
+                        ));
+
+                        tau_values_tried.push(tau_values.clone());
+                        Self::apply_optimizer(
+                            &mut current_params,
+                            &mut tao_config,
+                            &mut verification_config,
+                            &quality_history,
+                            n_max_ceiling,
+                            cg_mean,
+                            1.0,
+                            input.calibration.ensemble.as_ref(),
+                            input.cfg,
+                        );
+                        continue;
+                    }
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────
+
+            // ── SRANI: Specification-Relative Architectural Noun Intersection ──
+            // Orthogonal to C1: fires when diverse proposals share a fabricated entity.
+            if input.cfg.srani.enabled && proposals.len() >= 2 {
+                let proposal_texts: Vec<&str> =
+                    proposals.iter().map(|p| p.raw_output.as_str()).collect();
+                let task_spec = &input.manifest.description;
+                if let Some(grounding) =
+                    crate::specification_grounding::check_specification_grounding(
+                        task_spec,
+                        &proposal_texts,
+                    )
+                {
+                    // Always update EMA regardless of whether the gate fires.
+                    let new_ema = crate::srani_gate::update_ema(
+                        input.srani_ema_cfi,
+                        grounding.cfi,
+                        input.cfg.srani.ema_alpha,
+                    );
+                    srani_ema_updated = new_ema;
+                    srani_count_updated = input.srani_count + 1;
+
+                    let (pressure, hint_injected) = if input.cfg.srani.adaptive {
+                        let mu = if input.srani_count < 5 {
+                            input.cfg.srani.cold_start_midpoint()
+                        } else {
+                            input.srani_ema_cfi
+                        };
+                        let p = crate::srani_gate::compute_injection_pressure(
+                            grounding.cfi,
+                            mu,
+                            input.cfg.srani.temperature,
+                        );
+                        (p, p >= input.cfg.srani.gate_threshold)
+                    } else {
+                        // Legacy static-threshold path (adaptive=false).
+                        let injected = grounding.cfi > input.cfg.srani.inject_threshold;
+                        let p = if grounding.cfi > input.cfg.srani.warn_threshold {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        (p, injected)
+                    };
+
+                    // Warn floor: 0.20 for adaptive, warn_threshold crossing for static.
+                    let should_emit = if input.cfg.srani.adaptive {
+                        pressure >= 0.20
+                    } else {
+                        grounding.cfi > input.cfg.srani.warn_threshold
+                    };
+
+                    if should_emit {
+                        all_srani_events.push(h2ai_types::events::CorrelatedFabricationEvent {
+                            task_id: task_id.clone(),
+                            cfi: grounding.cfi,
+                            injection_pressure: pressure,
+                            shared_ungrounded_entities: grounding.shared_ungrounded.clone(),
+                            proposal_count: grounding.proposal_count,
+                            hint_injected,
+                            timestamp: Utc::now(),
+                        });
+                        if hint_injected {
+                            let grounding_ctx = crate::srani_grounding::GroundingContext {
+                                fabricated_entities: grounding.shared_ungrounded.clone(),
+                                task_description: input.manifest.description.clone(),
+                            };
+                            let chain_result = if let Some(ref chain) = input.srani_grounding_chain
+                            {
+                                chain.resolve(&grounding_ctx, srani_tier).await
+                            } else {
+                                use crate::srani_grounding::GroundingProvider;
+                                crate::srani_grounding::SpecAnchorGrounder
+                                    .ground(&grounding_ctx)
+                                    .await
+                            };
+                            if let Some(ref result) = chain_result {
+                                let hint = crate::srani_grounding::format_grounding_hint(
+                                    result,
+                                    &grounding.shared_ungrounded,
+                                );
+                                retry_context = Some(retry_context.unwrap_or_default() + &hint);
+                                all_researcher_grounding_events.push(
+                                    h2ai_types::events::ResearcherGroundingEvent {
+                                        task_id: task_id.clone(),
+                                        shared_assumption: grounding.shared_ungrounded.join(", "),
+                                        literature_summary: result.grounding_statement.clone(),
+                                        slot: None,
+                                        source: result.source.clone(),
+                                    },
+                                );
+                            } else {
+                                let entities = grounding.shared_ungrounded.join(", ");
+                                retry_context = Some(
+                                    retry_context.unwrap_or_default()
+                                        + &format!(
+                                            "\n\n--- GROUNDING CONTEXT ---\n\
+                                             Avoid (not in spec): {entities}\n\
+                                             Design using spec-defined components only.\n---"
+                                        ),
+                                );
+                            }
+                            if srani_last_wave_fired {
+                                srani_tier = srani_tier.saturating_add(1);
+                            }
+                            srani_last_wave_fired = true;
+                        } else {
+                            srani_last_wave_fired = false;
+                        }
+                    }
+                }
+            }
 
             // ── Phase 3.5: Verification Loop (LLM-as-Judge) ──────────────
             use crate::verification::{VerificationInput, VerificationPhase};
@@ -893,6 +1323,7 @@ impl ExecutionEngine {
                 evaluator: input.verification_adapter,
                 config: verification_config.clone(),
                 eval_cache: std::sync::Arc::clone(&task_eval_cache),
+                consensus_passes: input.cfg.verifier_consensus_passes,
             })
             .await;
             all_comparison_events.extend(ver_out.comparison_events.iter().cloned());
@@ -902,7 +1333,7 @@ impl ExecutionEngine {
             if matches!(
                 crate::diversity::DiversityGuard::check(
                     &ver_out.passed,
-                    input.cfg.diversity_threshold
+                    input.cfg.safety.diversity_threshold
                 ),
                 crate::diversity::DiversityResult::Collapsed
             ) {
@@ -986,9 +1417,19 @@ impl ExecutionEngine {
                         );
                         continue;
                     }
-                    RetryAction::Fail(_) => {
+                    RetryAction::Fail(reason) => {
+                        tracing::warn!(
+                            target: "h2ai.engine",
+                            task_id = %task_id,
+                            retry_count,
+                            reason = ?reason,
+                            last_multiplication_failure = ?last_multiplication_failure,
+                            "retry policy decided Fail (all-pruned) — giving up"
+                        );
                         input.store.mark_failed(&task_id);
-                        return Err(EngineError::MaxRetriesExhausted);
+                        return Err(EngineError::MaxRetriesExhausted {
+                            partial_verification_events: all_verification_events.clone(),
+                        });
                     }
                 }
             }
@@ -1034,6 +1475,14 @@ impl ExecutionEngine {
                     .and_then(|idx| provisioned.role_error_costs.get(idx))
                     .cloned()
                     .unwrap_or(error_cost);
+                tracing::info!(
+                    target: "h2ai.engine",
+                    explorer_id = %prop.explorer_id,
+                    compliance = compliance,
+                    hard_gate = hard_gate,
+                    violated = ?violations.iter().map(|v| &v.constraint_id).collect::<Vec<_>>(),
+                    "proposal pruned"
+                );
                 pruned.push(BranchPrunedEvent {
                     task_id: task_id.clone(),
                     explorer_id: prop.explorer_id,
@@ -1070,36 +1519,126 @@ impl ExecutionEngine {
             let mut proposal_set = ProposalSet::new();
             let mut synthesis_candidates: Vec<ProposalEvent> = Vec::new();
 
-            for proposal in proposals {
-                let audit_prompt = input
-                    .auditor_config
-                    .prompt_template
-                    .replace("{constraints}", &input.manifest.constraints.join(", "))
-                    .replace("{proposal}", &proposal.raw_output);
-                let audit_req = ComputeRequest {
-                    system_context: system_context.clone(),
-                    task: audit_prompt,
-                    tau: input.auditor_config.tau,
-                    max_tokens: input.auditor_config.max_tokens,
-                };
-                let audit_result = input
-                    .auditor_adapter
-                    .execute(audit_req)
-                    .await
-                    .map_err(|e| EngineError::Adapter(e.to_string()))?;
+            // Shadow auditor setup — domain and vote mode for this task.
+            let task_domain = input
+                .manifest
+                .constraint_tags
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "default".to_string());
+            let majority_vote_active = input
+                .shadow_audit_ctx
+                .as_ref()
+                .map(|ctx| ctx.promoted_domains.contains(&task_domain))
+                .unwrap_or(false);
+            let mut shadow_events_this_wave: Vec<h2ai_types::events::ShadowAuditorResultEvent> =
+                Vec::new();
 
-                let (rejected, audit_reason) =
-                    match extract_json_object::<AuditResponse>(&audit_result.output) {
-                        Some(r) => (!r.approved, r.reason),
-                        None => {
-                            tracing::warn!(
-                                task_id = %task_id,
-                                output = %audit_result.output,
-                                "auditor returned non-JSON; failing safe (treating as rejected)"
-                            );
-                            (true, "auditor parse failure".to_string())
-                        }
+            // In single-family mode the auditor is the same model as the explorer.
+            // Adversarial self-evaluation produces systematic rejection bias — skip the
+            // audit phase entirely and let all proposals through to the verifier.
+            // Mock adapters are excluded: tests use Mock for both and must still run the audit.
+            use h2ai_types::adapter::AdapterFamily as AF;
+            let auditor_fam = input.auditor_adapter.family();
+            let explorer_fam = input
+                .explorer_adapters
+                .first()
+                .map(|a| a.family())
+                .unwrap_or(auditor_fam.clone());
+            let skip_audit = auditor_fam != AF::Mock && auditor_fam == explorer_fam;
+            if skip_audit {
+                tracing::info!(
+                    target: "h2ai.engine",
+                    task_id = %task_id,
+                    family = %input.auditor_adapter.family(),
+                    "single-family mode: skipping auditor (same family as explorer)"
+                );
+            }
+
+            for proposal in proposals {
+                let (primary_approved, audit_reason, audit_violated, shadow_result_opt) =
+                    if skip_audit {
+                        (true, String::new(), vec![], None)
+                    } else {
+                        let audit_prompt = input
+                            .auditor_config
+                            .prompt_template
+                            .replace("{constraints}", &input.manifest.constraints.join(", "))
+                            .replace("{proposal}", &proposal.raw_output);
+
+                        let audit_prompt_str = audit_prompt;
+                        let make_req = || ComputeRequest {
+                            system_context: input.auditor_config.system_prompt.clone(),
+                            task: audit_prompt_str.clone(),
+                            tau: input.auditor_config.tau,
+                            max_tokens: input.auditor_config.max_tokens,
+                        };
+
+                        // Run shadow concurrently with primary when shadow ctx is present.
+                        let (primary_result, shadow_opt) = match input.shadow_audit_ctx.as_ref() {
+                            Some(ctx) => {
+                                let (p, s) = tokio::join!(
+                                    input.auditor_adapter.execute(make_req()),
+                                    ctx.adapter.execute(make_req())
+                                );
+                                (p, Some(s))
+                            }
+                            None => (input.auditor_adapter.execute(make_req()).await, None),
+                        };
+
+                        let audit_result =
+                            primary_result.map_err(|e| EngineError::Adapter(e.to_string()))?;
+
+                        let (approved, reason, violated) = match extract_json_object::<AuditResponse>(
+                            &audit_result.output,
+                        ) {
+                            Some(r) => (r.approved, r.reason, r.violated),
+                            None => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    output = %audit_result.output,
+                                    "auditor returned non-JSON; failing safe (treating as rejected)"
+                                );
+                                (false, "auditor parse failure".to_string(), vec![])
+                            }
+                        };
+                        (approved, reason, violated, shadow_opt)
                     };
+
+                // Extract shadow decision (None if shadow errored or absent).
+                let shadow_approved_opt: Option<bool> = shadow_result_opt.and_then(|sr| {
+                    sr.ok()
+                        .and_then(|r| extract_json_object::<AuditResponse>(&r.output))
+                        .map(|a| a.approved)
+                });
+
+                // Pruning decision.
+                let rejected = if majority_vote_active {
+                    // Promoted domain: both must approve (AND vote).
+                    // If shadow errored (None), fall back to primary-only — shadow error ≠ rejection.
+                    let shadow_vote = shadow_approved_opt.unwrap_or(primary_approved);
+                    !(primary_approved && shadow_vote)
+                } else {
+                    // Shadow mode or no shadow: primary always decides.
+                    !primary_approved
+                };
+
+                // Collect shadow event when shadow ran successfully.
+                if let (Some(shadow_approved), Some(ctx)) =
+                    (shadow_approved_opt, input.shadow_audit_ctx.as_ref())
+                {
+                    shadow_events_this_wave.push(h2ai_types::events::ShadowAuditorResultEvent {
+                        task_id: task_id.clone(),
+                        explorer_id: proposal.explorer_id.clone(),
+                        primary_approved,
+                        shadow_approved,
+                        disagreement: primary_approved != shadow_approved,
+                        domain: task_domain.clone(),
+                        primary_family: input.auditor_adapter.family().to_string(),
+                        shadow_family: ctx.adapter.family().to_string(),
+                        timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+                    });
+                }
 
                 if rejected {
                     let explorer_id = proposal.explorer_id.clone();
@@ -1115,7 +1654,15 @@ impl ExecutionEngine {
                         explorer_id,
                         reason: audit_reason,
                         constraint_error_cost: cost,
-                        violated_constraints: vec![],
+                        violated_constraints: audit_violated
+                            .iter()
+                            .map(|id| h2ai_types::events::ConstraintViolation {
+                                constraint_id: id.clone(),
+                                score: 0.0,
+                                severity_label: "Hard".to_string(),
+                                remediation_hint: None,
+                            })
+                            .collect(),
                         timestamp: Utc::now(),
                     });
                     input.store.record_validation(&task_id, false);
@@ -1130,6 +1677,7 @@ impl ExecutionEngine {
                     proposal_set.insert_scored(proposal, ver_score);
                 }
             }
+            all_shadow_audit_events.extend(shadow_events_this_wave);
 
             // ── Constraint Frontier (Phase 4.5) ────────────────────────────
             // Build satisfaction matrix from surviving proposals × Static-tier constraints.
@@ -1335,6 +1883,7 @@ impl ExecutionEngine {
                                 adapter_kind: h2ai_types::config::AdapterKind::CloudGeneric {
                                     endpoint: "synthesis".into(),
                                     api_key_env: "NONE".into(),
+                                    model: None,
                                 },
                                 timestamp: Utc::now(),
                             };
@@ -1345,6 +1894,7 @@ impl ExecutionEngine {
                                 evaluator: input.verification_adapter,
                                 config: verification_config.clone(),
                                 eval_cache: std::sync::Arc::clone(&task_eval_cache),
+                                consensus_passes: input.cfg.verifier_consensus_passes,
                             })
                             .await;
                             all_comparison_events.extend(re_ver.comparison_events.iter().cloned());
@@ -1460,6 +2010,7 @@ impl ExecutionEngine {
                     attribution,
                     attribution_interval,
                     verification_events: all_verification_events,
+                    failed_proposals: all_failed_proposals.clone(),
                     talagrand,
                     suggested_next_params: Some(suggested_next),
                     waste_ratio,
@@ -1473,6 +2024,13 @@ impl ExecutionEngine {
                     adapter_correctness: adapter_correctness.clone(),
                     coherence_state: wave_coherence,
                     comparison_events: all_comparison_events.clone(),
+                    shadow_audit_events: all_shadow_audit_events.clone(),
+                    correlated_warnings: all_correlated_warnings.clone(),
+                    researcher_grounding_events: all_researcher_grounding_events.clone(),
+                    diversity_degraded_event: diversity_degraded_event_for_output.clone(),
+                    srani_events: all_srani_events.clone(),
+                    srani_ema_cfi_updated: srani_ema_updated,
+                    srani_count_updated,
                 });
             }
 
@@ -1552,45 +2110,50 @@ impl ExecutionEngine {
 
                     input.store.mark_resolved(&task_id);
 
-                    // Spawn async EpistemicYield — does not block task close.
-                    if let Some(model) = input.embedding_model {
+                    // Compute epistemic yield synchronously so the result is returned to callers.
+                    // When an embedding model is available, use cosine n_eff (eigenvalue-based).
+                    // Otherwise fall back to a Jaccard-diversity approximation:
+                    //   yield = mean_jaccard_distance × (n_survivors / n_requested)
+                    // This approximation degrades gracefully — it's 0 when proposals are identical
+                    // and approaches 1 when they are maximally diverse and all survive.
+                    let epistemic_yield: Option<f64> = {
                         let surviving_texts: Vec<String> = synthesis_candidates
                             .iter()
                             .map(|p| p.raw_output.clone())
                             .collect();
                         let n_requested = all_raw_texts_this_wave.len().max(1);
-                        let n_eff_prior = input.calibration.n_eff_cosine_prior;
-                        let task_id_yield = task_id.clone();
-                        let eigen_delta = input.cfg.eigen_n_eff_delta;
-                        let adapter_ids: Vec<String> = provisioned
-                            .explorer_configs
-                            .iter()
-                            .map(|ec| ec.explorer_id.to_string())
-                            .collect();
-                        // Safety: EmbeddingModel is Arc-owned in AppState and outlives this spawn.
-                        let model_ref: &'static dyn h2ai_context::embedding::EmbeddingModel =
-                            unsafe { std::mem::transmute(model) };
-                        tokio::spawn(async move {
+                        if let Some(model) = input.embedding_model {
                             let n_eff = h2ai_autonomic::epistemic::compute_n_eff_cosine(
                                 &surviving_texts,
-                                model_ref,
-                                eigen_delta,
+                                model,
+                                input.cfg.eigen_n_eff_delta,
                             );
                             let yield_ratio = n_eff / n_requested as f64;
-                            let _yield_ev = h2ai_types::events::EpistemicYieldEvent {
-                                task_id: task_id_yield,
-                                n_eff_cosine_actual: n_eff,
-                                n_eff_prior,
-                                yield_ratio,
-                                adapters: adapter_ids,
-                            };
                             tracing::debug!(
                                 n_eff_cosine_actual = n_eff,
                                 yield_ratio,
-                                "EpistemicYield computed"
+                                "EpistemicYield computed (cosine)"
                             );
-                        });
-                    }
+                            Some(yield_ratio.clamp(0.0, 1.0))
+                        } else if surviving_texts.len() >= 2 {
+                            let refs: Vec<&str> =
+                                surviving_texts.iter().map(|s| s.as_str()).collect();
+                            let mean_jaccard = crate::correlated_hallucination::compute_cv(&refs)
+                                .map(|s| s.mean_jaccard_distance)
+                                .unwrap_or(0.0);
+                            let survival_rate = surviving_texts.len() as f64 / n_requested as f64;
+                            let yield_approx = mean_jaccard * survival_rate;
+                            tracing::debug!(
+                                mean_jaccard,
+                                survival_rate,
+                                yield_approx,
+                                "EpistemicYield computed (jaccard fallback)"
+                            );
+                            Some(yield_approx.clamp(0.0, 1.0))
+                        } else {
+                            None
+                        }
+                    };
 
                     if let Some(ref bandit_arc) = input.bandit_state {
                         let n_used = current_params.n_agents;
@@ -1609,19 +2172,27 @@ impl ExecutionEngine {
                         attribution,
                         attribution_interval,
                         verification_events: all_verification_events,
+                        failed_proposals: all_failed_proposals.clone(),
                         talagrand,
                         suggested_next_params: Some(suggested_next),
                         waste_ratio,
                         applied_optimizations,
                         topology_retry_events: topology_retry_events.clone(),
                         mode_collapse_count,
-                        epistemic_yield: None,
+                        epistemic_yield,
                         task_quadrant: Some(assessed_quadrant),
                         complexity_event: complexity_event_for_output.clone(),
                         frontier_event: frontier_event.clone(),
                         adapter_correctness: adapter_correctness.clone(),
                         coherence_state: wave_coherence,
                         comparison_events: all_comparison_events.clone(),
+                        shadow_audit_events: all_shadow_audit_events.clone(),
+                        correlated_warnings: all_correlated_warnings.clone(),
+                        researcher_grounding_events: all_researcher_grounding_events.clone(),
+                        diversity_degraded_event: diversity_degraded_event_for_output.clone(),
+                        srani_events: all_srani_events.clone(),
+                        srani_ema_cfi_updated: srani_ema_updated,
+                        srani_count_updated,
                     });
                 }
                 MergeOutcome::ZeroSurvival(mut zero_event) => {
@@ -1642,7 +2213,9 @@ impl ExecutionEngine {
                              constraint coverage complete; skipping further retries"
                         );
                         input.store.mark_failed(&task_id);
-                        return Err(EngineError::MaxRetriesExhausted);
+                        return Err(EngineError::MaxRetriesExhausted {
+                            partial_verification_events: all_verification_events.clone(),
+                        });
                     }
 
                     // Compute epistemic diagnostics synchronously on the MAPE-K path.
@@ -1655,7 +2228,7 @@ impl ExecutionEngine {
                         let failure = h2ai_autonomic::epistemic::classify_failure_mode(
                             n_eff,
                             all_raw_texts_this_wave.len().max(1),
-                            input.cfg.diversity_threshold,
+                            input.cfg.safety.diversity_threshold,
                         );
                         zero_event.n_eff_cosine_actual = Some(n_eff);
                         zero_event.failure_mode = Some(failure.clone());
@@ -1680,6 +2253,11 @@ impl ExecutionEngine {
                                     .collect();
                             pending_tombstone =
                                 h2ai_autonomic::epistemic::synthesize_tombstone(&all_violations);
+                        }
+                        Some(h2ai_types::events::FailureMode::CorrelatedHallucination {
+                            ..
+                        }) => {
+                            // C1 retries are handled directly before Phase 3.5 — no extra routing needed here.
                         }
                         None => {}
                     }
@@ -1753,17 +2331,36 @@ impl ExecutionEngine {
                                 input.cfg,
                             );
                         }
-                        RetryAction::Fail(_) => {
+                        RetryAction::Fail(reason) => {
+                            tracing::warn!(
+                                target: "h2ai.engine",
+                                task_id = %task_id,
+                                retry_count,
+                                reason = ?reason,
+                                "retry policy decided Fail (post-phase5) — giving up"
+                            );
                             input.store.mark_failed(&task_id);
-                            return Err(EngineError::MaxRetriesExhausted);
+                            return Err(EngineError::MaxRetriesExhausted {
+                                partial_verification_events: all_verification_events.clone(),
+                            });
                         }
                     }
                 }
             }
         }
 
+        tracing::warn!(
+            target: "h2ai.engine",
+            task_id = %task_id,
+            max_retries = input.cfg.max_autonomic_retries,
+            last_multiplication_failure = ?last_multiplication_failure,
+            all_pruned_count = all_pruned.len(),
+            "retry loop exhausted all attempts — giving up"
+        );
         input.store.mark_failed(&task_id);
-        Err(EngineError::MaxRetriesExhausted)
+        Err(EngineError::MaxRetriesExhausted {
+            partial_verification_events: all_verification_events,
+        })
     }
 
     /// Resume execution from a persisted checkpoint.
@@ -1815,6 +2412,7 @@ impl ExecutionEngine {
                 },
                 attribution_interval: None,
                 verification_events: vec![],
+                failed_proposals: vec![],
                 talagrand: None,
                 suggested_next_params: None,
                 waste_ratio: 0.0,
@@ -1842,6 +2440,13 @@ impl ExecutionEngine {
                 adapter_correctness: vec![],
                 coherence_state: crate::coherence::CoherenceState::default(),
                 comparison_events: vec![],
+                shadow_audit_events: vec![],
+                correlated_warnings: vec![],
+                researcher_grounding_events: vec![],
+                diversity_degraded_event: None,
+                srani_events: vec![],
+                srani_ema_cfi_updated: input.srani_ema_cfi,
+                srani_count_updated: input.srani_count,
             })
         } else {
             // Earlier phase or unknown phase — restart from scratch

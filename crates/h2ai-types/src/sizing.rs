@@ -195,13 +195,17 @@ impl CoherencyCoefficients {
     }
 
     pub fn cg_std_dev(&self) -> f64 {
+        let n = self.cg_samples.len();
+        if n < 2 {
+            return 0.0;
+        }
         let mean = self.cg_mean();
         let variance = self
             .cg_samples
             .iter()
             .map(|x| (x - mean).powi(2))
             .sum::<f64>()
-            / self.cg_samples.len() as f64;
+            / (n - 1) as f64;
         variance.sqrt()
     }
 
@@ -439,7 +443,7 @@ fn log_gamma(n: usize) -> f64 {
 ///
 /// `Heuristic`: p and ρ are proxied from CG_mean — not empirically validated.
 /// `Empirical`: p is from `baseline_accuracy_proxy` (measured on a held-out set via
-///              `scripts/baseline_eval.py`). Better grounded but still uses CG proxy for ρ.
+///              `compare.py` (benchmark tool — see `docs/architecture/reference.md`)). Better grounded but still uses CG proxy for ρ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PredictionBasis {
     #[default]
@@ -454,7 +458,7 @@ pub enum PredictionBasis {
 /// gain at that size, derived from the Condorcet Jury Theorem.
 ///
 /// `topology_gain` is derived from the CG embedding proxy for ρ. Empirical
-/// validation via `scripts/baseline_eval.py` is recommended for production
+/// validation via `compare.py` (benchmark tool — see `docs/architecture/reference.md`) is recommended for production
 /// quality claims. See `prediction_basis` for the source of p and ρ estimates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnsembleCalibration {
@@ -506,7 +510,7 @@ impl EnsembleCalibration {
     }
 
     /// Construct with a directly measured accuracy value, overriding the CG-mean proxy.
-    /// Use when `baseline_accuracy_proxy` is set in config from `scripts/baseline_eval.py`.
+    /// Use when `baseline_accuracy_proxy` is set in config from `compare.py` (benchmark tool — see `docs/architecture/reference.md`).
     /// Uses the same marginal-gain-per-agent scoring as `from_cg_mean`.
     pub fn from_measured_p(p_mean: f64, cg_mean: f64, max_n: usize) -> Self {
         let p = p_mean.clamp(0.5, 1.0);
@@ -525,6 +529,31 @@ impl EnsembleCalibration {
         Self {
             p_mean: p,
             rho_mean,
+            n_optimal,
+            q_optimal,
+            prediction_basis: PredictionBasis::Empirical,
+        }
+    }
+
+    /// Construct with directly measured p and ρ, bypassing all proxy formulas.
+    /// Used by the online ρ EMA updater (INNOVATION-3, GAP-A3).
+    /// `rho` is clamped to [0.0, 0.99] to prevent degenerate Condorcet computation.
+    pub fn from_empirical(p_mean: f64, rho_empirical: f64, max_n: usize) -> Self {
+        let p = p_mean.clamp(0.5, 1.0);
+        let rho = rho_empirical.clamp(0.0, 0.99);
+        let max_n = max_n.max(1);
+        let (n_optimal, _) = (1..=max_n)
+            .map(|n| {
+                let q = condorcet_quality(n, p, rho);
+                let score = (q - p) / n as f64;
+                (n, score)
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((1, 0.0));
+        let q_optimal = condorcet_quality(n_optimal, p, rho);
+        Self {
+            p_mean: p,
+            rho_mean: rho,
             n_optimal,
             q_optimal,
             prediction_basis: PredictionBasis::Empirical,
@@ -1087,6 +1116,26 @@ mod condorcet_tests {
             "p_mean should be 0.9, got {}",
             ec.p_mean
         );
+    }
+
+    #[test]
+    fn from_empirical_sets_empirical_basis_and_exact_rho() {
+        let ec = EnsembleCalibration::from_empirical(0.75, 0.35, 9);
+        assert_eq!(ec.prediction_basis, PredictionBasis::Empirical);
+        assert!(
+            (ec.rho_mean - 0.35).abs() < 1e-9,
+            "rho_mean must be set directly"
+        );
+        assert!((ec.p_mean - 0.75).abs() < 1e-9, "p_mean must match input");
+        assert!(ec.n_optimal >= 1);
+    }
+
+    #[test]
+    fn from_empirical_clamps_rho_to_valid_range() {
+        let ec_low = EnsembleCalibration::from_empirical(0.7, -0.5, 9);
+        let ec_high = EnsembleCalibration::from_empirical(0.7, 2.0, 9);
+        assert!(ec_low.rho_mean >= 0.0);
+        assert!(ec_high.rho_mean <= 0.99);
     }
 
     #[test]

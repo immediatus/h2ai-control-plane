@@ -70,6 +70,17 @@ pub struct ExplorerSlotConfig {
     /// Injected as "[FIND]: ..." after role_frame when non-empty.
     #[serde(default)]
     pub rejection_criteria: String,
+    /// Constraint corpus domain tags this slot covers.
+    /// Assigned by the decomposition LLM; used to compute the C3 domain coverage score.
+    /// Empty when the decomposition predates this field or corpus has no domain tags.
+    #[serde(default)]
+    pub constraint_domains: Vec<String>,
+    /// When `true`, this slot runs a researcher pre-step before generating proposals.
+    /// The researcher fetches current state-of-the-art grounding and injects it into
+    /// the explorer prompt. Assigned by the decomposition LLM for tasks requiring
+    /// current external knowledge (library versions, security advisories, regulations).
+    #[serde(default)]
+    pub search_enabled: bool,
 }
 
 /// POST /tasks request body

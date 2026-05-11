@@ -1635,6 +1635,7 @@ dependencies = [
  "h2ai-provisioner",
  "h2ai-state",
  "h2ai-telemetry",
+ "h2ai-tools",
  "h2ai-types",
  "hex",
  "jsonschema",

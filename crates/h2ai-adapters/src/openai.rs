@@ -8,14 +8,25 @@ pub struct OpenAIAdapter {
     kind: AdapterKind,
     endpoint: String,
     client: reqwest::Client,
+    enable_thinking: bool,
 }
 
 impl OpenAIAdapter {
     pub fn new(endpoint: String, api_key_env: String, model: String) -> Self {
+        Self::with_thinking(endpoint, api_key_env, model, true)
+    }
+
+    pub fn with_thinking(
+        endpoint: String,
+        api_key_env: String,
+        model: String,
+        enable_thinking: bool,
+    ) -> Self {
         Self {
             endpoint,
             client: reqwest::Client::new(),
             kind: AdapterKind::OpenAI { api_key_env, model },
+            enable_thinking,
         }
     }
 
@@ -71,11 +82,33 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct Choice {
     message: Message,
+    /// "stop" = natural finish; "length" = max_tokens reached mid-generation.
+    #[serde(default)]
+    finish_reason: String,
 }
 
 #[derive(Deserialize)]
 struct Message {
+    #[serde(default)]
     content: String,
+    /// Reasoning-only models (DeepSeek R1) put their entire answer here and always
+    /// leave `content` empty — use as fallback when `finish_reason == "stop"`.
+    /// When `finish_reason == "length"`, the answer was never generated; return error.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+}
+
+/// Select the answer text from a completed choice — same logic as cloud.rs.
+fn extract_output(choice: Choice) -> Result<String, AdapterError> {
+    if !choice.message.content.is_empty() {
+        return Ok(choice.message.content);
+    }
+    if choice.finish_reason == "length" {
+        return Err(AdapterError::NetworkError(
+            "model hit max_tokens during thinking phase; increase max_tokens and retry".into(),
+        ));
+    }
+    Ok(choice.message.reasoning_content.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
@@ -104,6 +137,10 @@ impl IComputeAdapter for OpenAIAdapter {
             .unwrap()
             .extend(extras.as_object().unwrap().clone());
 
+        if !self.enable_thinking {
+            body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
+        }
+
         let http_resp = self
             .client
             .post(&url)
@@ -127,12 +164,11 @@ impl IComputeAdapter for OpenAIAdapter {
             .await
             .map_err(|e| AdapterError::NetworkError(e.to_string()))?;
 
-        let output = chat
-            .choices
-            .into_iter()
-            .next()
-            .map(|c| c.message.content)
-            .ok_or_else(|| AdapterError::NetworkError("no choices in OpenAI response".into()))?;
+        let choice =
+            chat.choices.into_iter().next().ok_or_else(|| {
+                AdapterError::NetworkError("no choices in OpenAI response".into())
+            })?;
+        let output = extract_output(choice)?;
 
         Ok(ComputeResponse {
             output,

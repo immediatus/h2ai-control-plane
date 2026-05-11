@@ -157,6 +157,7 @@ fn make_slot(role: &str) -> ExplorerSlotConfig {
         cot_style: CotStyle::None,
         focus_mandate: String::new(),
         rejection_criteria: String::new(),
+        ..Default::default()
     }
 }
 
@@ -277,6 +278,7 @@ impl IComputeAdapter for MockDecompositionAdapter {
             adapter_kind: AdapterKind::CloudGeneric {
                 endpoint: String::new(),
                 api_key_env: String::new(),
+                model: None,
             },
             tokens_used: None,
         })
@@ -286,6 +288,7 @@ impl IComputeAdapter for MockDecompositionAdapter {
         KIND.get_or_init(|| AdapterKind::CloudGeneric {
             endpoint: String::new(),
             api_key_env: String::new(),
+            model: None,
         })
     }
 }
@@ -303,6 +306,7 @@ impl IComputeAdapter for FailingAdapter {
         KIND.get_or_init(|| AdapterKind::CloudGeneric {
             endpoint: String::new(),
             api_key_env: String::new(),
+            model: None,
         })
     }
 }
@@ -317,10 +321,20 @@ async fn run_decomposition_agent_uses_llm_slots_on_success() {
         .into(),
     };
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
-    let slots =
-        run_decomposition_agent("design a caching layer", &[], &weights, 2, 5, &adapter, None)
-            .await
-            .unwrap();
+    let slots = run_decomposition_agent(
+        "design a caching layer",
+        &[],
+        &weights,
+        2,
+        5,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(slots.len(), 2);
     assert!(slots[0].role_frame.contains("security"));
 }
@@ -336,9 +350,10 @@ async fn run_decomposition_agent_prunes_to_n_max() {
         .into(),
     };
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
-    let slots = run_decomposition_agent("task", &[], &weights, 2, 2, &adapter, None)
-        .await
-        .unwrap();
+    let slots =
+        run_decomposition_agent("task", &[], &weights, 2, 2, &adapter, None, 2048, 8192, "")
+            .await
+            .unwrap();
     assert_eq!(slots.len(), 2);
 }
 
@@ -346,9 +361,19 @@ async fn run_decomposition_agent_prunes_to_n_max() {
 async fn run_decomposition_agent_returns_err_on_adapter_failure() {
     let adapter = FailingAdapter;
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
-    let result =
-        run_decomposition_agent("design a caching layer", &[], &weights, 2, 5, &adapter, None)
-            .await;
+    let result = run_decomposition_agent(
+        "design a caching layer",
+        &[],
+        &weights,
+        2,
+        5,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await;
     assert!(result.is_err(), "adapter failure must propagate as Err");
 }
 
@@ -358,8 +383,19 @@ async fn run_decomposition_agent_returns_err_on_parse_failure() {
         response: "not valid json".into(),
     };
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
-    let result =
-        run_decomposition_agent("design something", &[], &weights, 2, 5, &adapter, None).await;
+    let result = run_decomposition_agent(
+        "design something",
+        &[],
+        &weights,
+        2,
+        5,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await;
     assert!(result.is_err(), "parse failure must propagate as Err");
 }
 
@@ -381,12 +417,186 @@ async fn decomposition_failure_propagates_as_err() {
         5,
         &adapter,
         None,
+        2048,
+        8192,
+        "",
     )
     .await;
     assert!(
         result.is_err(),
         "non-JSON response must propagate as Err — no fallback"
     );
+}
+
+// ── Request-capturing adapter ─────────────────────────────────────────────────
+
+/// Captures all `task` strings from `execute` calls while returning sequential responses.
+/// Used to assert on the content of prompts sent to each pipeline step.
+#[derive(Debug)]
+struct CapturingAdapter {
+    responses: Vec<String>,
+    captured_tasks: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    call_count: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl CapturingAdapter {
+    fn new(responses: Vec<&str>) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let adapter = Self {
+            responses: responses.into_iter().map(str::to_string).collect(),
+            captured_tasks: captured.clone(),
+            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        };
+        (adapter, captured)
+    }
+}
+
+#[async_trait]
+impl IComputeAdapter for CapturingAdapter {
+    async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        self.captured_tasks.lock().unwrap().push(req.task.clone());
+        let mut count = self.call_count.lock().unwrap();
+        let response = self
+            .responses
+            .get(*count)
+            .cloned()
+            .unwrap_or_else(|| self.responses.last().cloned().unwrap_or_default());
+        *count += 1;
+        Ok(ComputeResponse {
+            output: response,
+            token_cost: 50,
+            adapter_kind: AdapterKind::CloudGeneric {
+                endpoint: String::new(),
+                api_key_env: String::new(),
+                model: None,
+            },
+            tokens_used: None,
+        })
+    }
+    fn kind(&self) -> &AdapterKind {
+        static KIND: std::sync::OnceLock<AdapterKind> = std::sync::OnceLock::new();
+        KIND.get_or_init(|| AdapterKind::CloudGeneric {
+            endpoint: String::new(),
+            api_key_env: String::new(),
+            model: None,
+        })
+    }
+}
+
+/// STEP3 prompt must contain the corpus domain vocabulary so the LLM can emit
+/// verbatim strings. This is the primary fix for C3 vocabulary mismatch.
+#[tokio::test]
+async fn step3_prompt_contains_corpus_domain_vocabulary() {
+    let json_slots = r#"[
+        {
+            "role_frame": "You are a security engineer.",
+            "cot_style": "devil_s_advocate",
+            "focus_mandate": "auth constraints",
+            "rejection_criteria": "Token forgery.",
+            "constraint_domains": ["auth"],
+            "search_enabled": false
+        },
+        {
+            "role_frame": "You are a performance engineer.",
+            "cot_style": "first_principles",
+            "focus_mandate": "latency constraints",
+            "rejection_criteria": "SLO breach under load.",
+            "constraint_domains": ["latency"],
+            "search_enabled": false
+        }
+    ]"#;
+
+    let (adapter, captured) = CapturingAdapter::new(vec![
+        "Step 1 analysis: auth misses token expiry; latency misses P99 under concurrent load.",
+        "Step 2 roles: security engineer for auth; performance engineer for latency.",
+        json_slots,
+    ]);
+
+    let corpus = vec![
+        make_constraint("C-001", vec!["auth"]),
+        make_constraint("C-002", vec!["latency"]),
+    ];
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+
+    let slots = run_decomposition_agent(
+        "design an authentication service with latency SLOs",
+        &corpus,
+        &weights,
+        2,
+        5,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await
+    .unwrap();
+
+    let tasks = captured.lock().unwrap();
+    assert_eq!(tasks.len(), 3, "pipeline must make exactly 3 adapter calls");
+
+    // STEP3 task (index 2) must contain the exact corpus vocabulary strings so the
+    // LLM knows which domain tags to emit verbatim.
+    let step3_task = &tasks[2];
+    assert!(
+        step3_task.contains("\"auth\""),
+        "STEP3 prompt must list corpus domain 'auth' — got:\n{step3_task}"
+    );
+    assert!(
+        step3_task.contains("\"latency\""),
+        "STEP3 prompt must list corpus domain 'latency' — got:\n{step3_task}"
+    );
+
+    // Output slots should carry the exact vocabulary strings the LLM echoed back.
+    let auth_slot = slots
+        .iter()
+        .find(|s| s.constraint_domains.contains(&"auth".to_string()));
+    assert!(
+        auth_slot.is_some(),
+        "at least one slot must claim domain 'auth'"
+    );
+}
+
+/// When corpus is empty, STEP3 prompt must still render without panicking,
+/// and the domains placeholder must indicate no vocabulary is defined.
+#[tokio::test]
+async fn step3_prompt_handles_empty_corpus_gracefully() {
+    let json_slots = r#"[
+        {"role_frame": "You are a senior architect.", "cot_style": "step_by_step",
+         "constraint_domains": [], "search_enabled": false}
+    ]"#;
+
+    let (adapter, captured) = CapturingAdapter::new(vec![
+        "Step 1: no constraints, general analysis.",
+        "Step 2: one general architect role.",
+        json_slots,
+    ]);
+
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let slots = run_decomposition_agent(
+        "design a caching layer",
+        &[],
+        &weights,
+        1,
+        5,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await
+    .unwrap();
+
+    let tasks = captured.lock().unwrap();
+    let step3_task = &tasks[2];
+    // Empty corpus must not produce a placeholder that looks like a real domain list.
+    assert!(
+        step3_task.contains("no corpus domains defined"),
+        "empty corpus must produce clear 'no corpus domains' message in STEP3 — got:\n{step3_task}"
+    );
+    assert_eq!(slots.len(), 1);
 }
 
 // ── 3-step pipeline chain tests ───────────────────────────────────────────────
@@ -424,6 +634,7 @@ impl IComputeAdapter for SequentialMockAdapter {
             adapter_kind: AdapterKind::CloudGeneric {
                 endpoint: String::new(),
                 api_key_env: String::new(),
+                model: None,
             },
             tokens_used: None,
         })
@@ -433,6 +644,7 @@ impl IComputeAdapter for SequentialMockAdapter {
         KIND.get_or_init(|| AdapterKind::CloudGeneric {
             endpoint: String::new(),
             api_key_env: String::new(),
+            model: None,
         })
     }
 }
@@ -481,6 +693,9 @@ async fn pipeline_uses_step3_json_output_for_slot_construction() {
         5,
         &adapter,
         None,
+        2048,
+        8192,
+        "",
     )
     .await
     .unwrap();
@@ -510,6 +725,9 @@ async fn pipeline_fails_fast_on_step1_adapter_error() {
         5,
         &adapter,
         None,
+        2048,
+        8192,
+        "",
     )
     .await;
     assert!(result.is_err());
@@ -524,8 +742,100 @@ async fn pipeline_fails_on_step3_json_parse_error() {
         "Step 3 produced no JSON array here.",
     ]);
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
-    let result = run_decomposition_agent("task", &[], &weights, 2, 5, &adapter, None).await;
+    let result =
+        run_decomposition_agent("task", &[], &weights, 2, 5, &adapter, None, 2048, 8192, "").await;
     assert!(result.is_err(), "Step 3 non-JSON must propagate as Err");
     let calls = *adapter.call_count.lock().unwrap();
     assert_eq!(calls, 3, "all 3 steps must be attempted before parse error");
+}
+
+#[test]
+fn parse_response_captures_constraint_domains() {
+    let json = r#"[
+        {
+            "role_frame": "You are a security engineer.",
+            "cot_style": "devil_s_advocate",
+            "focus_mandate": "Ensure auth constraints are met.",
+            "rejection_criteria": "Token forgery attack.",
+            "constraint_domains": ["security", "auth"],
+            "search_enabled": false
+        }
+    ]"#;
+    let slots = parse_decomposition_response(json).unwrap();
+    assert_eq!(slots[0].constraint_domains, vec!["security", "auth"]);
+    assert!(!slots[0].search_enabled);
+}
+
+#[test]
+fn parse_response_captures_search_enabled() {
+    let json = r#"[
+        {
+            "role_frame": "You are a security researcher.",
+            "cot_style": "step_by_step",
+            "focus_mandate": "Check latest CVEs.",
+            "rejection_criteria": "Unpatched known vuln.",
+            "constraint_domains": ["security"],
+            "search_enabled": true
+        }
+    ]"#;
+    let slots = parse_decomposition_response(json).unwrap();
+    assert!(slots[0].search_enabled);
+    assert_eq!(slots[0].constraint_domains, vec!["security"]);
+}
+
+#[test]
+fn parse_response_defaults_new_fields_when_absent() {
+    let json = r#"[
+        {
+            "role_frame": "You are a performance engineer.",
+            "cot_style": "first_principles",
+            "focus_mandate": "Ensure latency SLOs.",
+            "rejection_criteria": "Bottleneck under load."
+        }
+    ]"#;
+    let slots = parse_decomposition_response(json).unwrap();
+    assert!(slots[0].constraint_domains.is_empty());
+    assert!(!slots[0].search_enabled);
+}
+
+#[test]
+fn corpus_fallback_populates_constraint_domains() {
+    let mut doc = ConstraintDoc::new_llm_judge("SEC-001", "No SQL injection.");
+    doc.domains = vec!["security".into()];
+    let slots = corpus_fallback(&[doc], &ParetoWeights::new(0.33, 0.33, 0.34).unwrap(), 4);
+    assert!(!slots.is_empty());
+    let security_slot = slots
+        .iter()
+        .find(|s| s.constraint_domains.contains(&"security".to_string()));
+    assert!(
+        security_slot.is_some(),
+        "expected a slot with constraint_domains=['security']"
+    );
+}
+
+#[test]
+fn step1_includes_thinking_context_when_provided() {
+    use h2ai_config::prompts::DECOMPOSITION_STEP1_TASK;
+    let rendered = DECOMPOSITION_STEP1_TASK.render(&[
+        (
+            "thinking_context",
+            "PRIOR THINKING CONTEXT:\nUse P95 histogram.\n\n",
+        ),
+        ("description", "design RTB timeout"),
+        ("constraints", "CONSTRAINT-003"),
+    ]);
+    assert!(rendered.contains("Use P95 histogram"));
+    assert!(rendered.contains("design RTB timeout"));
+}
+
+#[test]
+fn step1_empty_thinking_context_produces_no_prefix() {
+    use h2ai_config::prompts::DECOMPOSITION_STEP1_TASK;
+    let rendered = DECOMPOSITION_STEP1_TASK.render(&[
+        ("thinking_context", ""),
+        ("description", "design RTB timeout"),
+        ("constraints", "CONSTRAINT-003"),
+    ]);
+    assert!(!rendered.contains("PRIOR THINKING CONTEXT"));
+    assert!(rendered.contains("design RTB timeout"));
 }

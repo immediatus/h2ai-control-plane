@@ -12,21 +12,20 @@ services:
         USER_UID: ${UID:-1000}
         USER_GID: ${GID:-1000}
     volumes:
-      - ../:/${WORKSPACES_PATH}:z
+      - ../:/workspaces/h2ai-control-plane:z
       - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/${WORKSPACES_PATH}/target
+      - target-cache:/workspaces/h2ai-control-plane/target
       - ${HOME}/.claude:/home/${USER}/.claude:z
       - ${HOME}/.claude.json:/home/${USER}/.claude.json:z
       - ${HOME}/.local/bin/claude:/home/${USER}/.local/bin/claude:z
       - ${HOME}/.local/bin/claude:/usr/local/bin/claude:z
       - ${HOME}/.local/share/claude:/home/${USER}/.local/share/claude:z
     command: sleep infinity
+    env_file:
+      - .env
     environment:
       HOME: /home/${USER}
       USER: ${USER}
-      H2AI_LISTEN_ADDR: 0.0.0.0:8080
-      H2AI_METRICS_ADDR: 0.0.0.0:9090
-      LLAMACPP_BASE_URL: http://host.docker.internal:8080/v1
     depends_on:
       nats:
         condition: service_healthy

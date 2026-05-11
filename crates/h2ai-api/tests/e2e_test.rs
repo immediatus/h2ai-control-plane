@@ -3,7 +3,7 @@
 //! All tests require a live NATS server with JetStream enabled:
 //!   NATS_URL=nats://localhost:4222 cargo nextest run -p h2ai-api --test e2e_test
 
-use h2ai_adapters::mock::MockAdapter;
+use h2ai_adapters::mock::{DecompositionMockAdapter, MockAdapter};
 use h2ai_api::{
     routes::{calibrate_router, health_router, task_router},
     state::AppState,
@@ -22,7 +22,10 @@ async fn boot_app() -> (String, tokio::task::JoinHandle<()>) {
     nats.ensure_infrastructure().await.expect("infra");
 
     let cfg = H2AIConfig::default();
-    let explorer = Arc::new(MockAdapter::new("mock explorer output".into()));
+    // DecompositionMockAdapter returns valid STEP3 JSON when called by the decomposition
+    // pipeline (detected via "JSON formatter" system context), and plain text otherwise.
+    // Plain MockAdapter would cause STEP3 JSON parse failure → task reaches "failed".
+    let explorer = Arc::new(DecompositionMockAdapter::new("mock explorer output".into()));
     // Auditor output must be valid JSON for both the verifier ({"score": float}) and
     // auditor gate ({"approved": bool}) phases — the engine fails safe on non-JSON.
     let auditor = Arc::new(MockAdapter::new(

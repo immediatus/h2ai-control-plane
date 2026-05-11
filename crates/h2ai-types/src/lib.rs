@@ -30,3 +30,4 @@ pub mod memory;
 pub mod plan;
 pub mod prompts;
 pub mod sizing;
+pub mod thinking;

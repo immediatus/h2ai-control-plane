@@ -103,6 +103,8 @@ pub enum AdapterKind {
     CloudGeneric {
         endpoint: String,
         api_key_env: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     OpenAI {
         api_key_env: String,
@@ -140,6 +142,8 @@ pub struct AuditorConfig {
     pub adapter: AdapterKind,
     pub tau: TauValue,
     pub max_tokens: u64,
+    #[serde(default = "crate::prompts::auditor_system_prompt_default")]
+    pub system_prompt: String,
     pub prompt_template: String,
 }
 
@@ -149,9 +153,11 @@ impl Default for AuditorConfig {
             adapter: AdapterKind::CloudGeneric {
                 endpoint: String::new(),
                 api_key_env: String::new(),
+                model: None,
             },
             tau: TauValue::new(0.1).unwrap(),
             max_tokens: 4096,
+            system_prompt: crate::prompts::AUDITOR_SYSTEM_PROMPT.into(),
             prompt_template: crate::prompts::AUDITOR_PROMPT_TEMPLATE.into(),
         }
     }

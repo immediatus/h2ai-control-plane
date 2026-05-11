@@ -1,0 +1,34 @@
+id: CONSTRAINT-003
+title: "RTB Timeout Strategy — Adaptive Per-DSP Timeouts"
+severity: hard
+threshold: 0.6  # requires ≥3 of 5 binary checks; prevents dilution when T_global/cold-start/P95 checks fail
+domains:
+  - rtb
+  - latency
+related_to:
+  - CONSTRAINT-006  # JVM GC pauses compete with RTB deadline; ZGC chosen to stay under 2ms
+remediation_hint: "Track per-DSP latency histograms locally in each Ad Server instance (no cross-instance coordination). Use P95 observed latency as the per-DSP cutoff budget; enforce a minimum warm-up sample count before activating adaptive mode. Always proceed with partial bids on timeout — never extend the global deadline."
+numeric_checks:
+  - pattern: "(?i)(?:T_global|global[^0-9\\n]{0,25}timeout|deadline_ts_ms\\s*=\\s*[^+\\n]*\\+\\s*)([0-9]+)"
+    op: le
+    value: 100.0
+criteria:
+  pass: |
+    All five behaviors are present:
+    - Global deadline preserved: T_global is the DSP bid-collection window (100ms); high-latency DSPs receive a tighter per-DSP cutoff, never a raised T_global. The 150ms end-to-end SLO is a separate system-level target and must not be used as a DSP timeout value.
+    - Cold-start safety: adaptive per-DSP timeout requires a warm-up period (≥100 observed samples) before activating — a brand-new DSP starts at the safe T_global default.
+    - P95 as adaptive signal: per-DSP timeout is derived from P95 of the observed latency distribution, not P99, mean, or a fixed fraction of the end-to-end SLO.
+    - Local latency tracking: latency state lives inside each Ad Server instance; no cross-instance coordination needed for timeout decisions.
+    - Graceful partial auction: when a DSP times out, the auction proceeds immediately with bids already received.
+  partial: "Direction is correct but one of the five behaviors above is unclear or missing."
+  fail: |
+    Any of the following:
+    - The proposal raises T_global (the DSP bid-collection window) above 100ms to accommodate a slow DSP.
+    - The proposal sets a per-DSP timeout using the end-to-end ad-request SLO (e.g., 148ms or 150ms) rather than T_global.
+    - The proposal blocks the entire auction waiting for a slow DSP's response.
+  checks:
+    - Does the proposal track per-DSP latency histograms locally inside each Ad Server instance (no cross-instance coordination)?
+    - Is T_global (the DSP bid-collection window) kept fixed at ≤100ms? A proposal that sets any DSP timeout above 100ms (including by conflating it with the 150ms end-to-end SLO) fails this check.
+    - Does the proposal require a cold-start warm-up period (≥100 samples) before activating adaptive per-DSP timeouts?
+    - Does the proposal use per-DSP P95 (not P99, mean, or a hardcoded fraction of the end-to-end SLO) as the adaptive timeout signal?
+    - When a DSP times out, does the auction proceed immediately with bids already received (no blocking wait)?

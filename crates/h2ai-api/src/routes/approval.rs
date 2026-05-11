@@ -118,6 +118,7 @@ async fn finalize_approved_task(
     let merge_ev = H2AIEvent::MergeResolved(h2ai_types::events::MergeResolvedEvent {
         task_id: task_id.clone(),
         resolved_output: resolved_output.clone(),
+        j_eff: None,
         timestamp: chrono::Utc::now(),
     });
     if let Err(e) = state.nats.publish_event(&task_id, &merge_ev).await {

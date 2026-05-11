@@ -2,6 +2,18 @@ use crate::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 use serde::Deserialize;
 use std::path::Path;
 
+/// A single deterministic numeric pre-condition. The regex must contain exactly one capture
+/// group that yields a float-parseable string. Evaluated via `eval_sync` before the LlmJudge.
+#[derive(Debug, Deserialize)]
+pub struct NumericCheck {
+    /// Regex with one capture group matching the numeric value to extract from the proposal.
+    pub pattern: String,
+    /// Comparison operator: "lt" | "le" | "eq" | "ge" | "gt"
+    pub op: String,
+    /// Threshold value to compare against.
+    pub value: f64,
+}
+
 /// Structured YAML constraint file — the canonical format for new constraints.
 ///
 /// Replaces the markdown heuristic (## Key Terms / ## Semantic Rules parsing) with
@@ -41,6 +53,11 @@ pub struct ConstraintYaml {
 
     /// Shown in violation events to guide remediation.
     pub remediation_hint: Option<String>,
+
+    /// Deterministic numeric pre-conditions that run before the LlmJudge rubric.
+    /// When present, generates Composite(And([NumericThreshold..., LlmJudge])).
+    #[serde(default)]
+    pub numeric_checks: Vec<NumericCheck>,
 
     pub criteria: Criteria,
 }
@@ -125,7 +142,41 @@ impl ConstraintYaml {
             source_file: self.id.clone(),
             description: self.title,
             severity,
-            predicate: ConstraintPredicate::LlmJudge { rubric },
+            predicate: if self.numeric_checks.is_empty() {
+                ConstraintPredicate::LlmJudge { rubric }
+            } else {
+                use crate::types::{CompositeOp, NumericOp};
+                let mut children: Vec<ConstraintPredicate> = self
+                    .numeric_checks
+                    .iter()
+                    .map(|nc| {
+                        let op = match nc.op.as_str() {
+                            "lt" => NumericOp::Lt,
+                            "le" => NumericOp::Le,
+                            "eq" => NumericOp::Eq,
+                            "ge" => NumericOp::Ge,
+                            "gt" => NumericOp::Gt,
+                            other => {
+                                tracing::warn!(
+                                    "unknown numeric_check op '{}'; defaulting to le",
+                                    other
+                                );
+                                NumericOp::Le
+                            }
+                        };
+                        ConstraintPredicate::NumericThreshold {
+                            field_pattern: nc.pattern.clone(),
+                            op,
+                            value: nc.value,
+                        }
+                    })
+                    .collect();
+                children.push(ConstraintPredicate::LlmJudge { rubric });
+                ConstraintPredicate::Composite {
+                    op: CompositeOp::And,
+                    children,
+                }
+            },
             remediation_hint: self.remediation_hint,
             domains: self.domains,
             mandatory_for_tags: self.mandatory_for_tags,

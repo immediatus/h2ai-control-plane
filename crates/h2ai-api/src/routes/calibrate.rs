@@ -30,7 +30,9 @@ pub(crate) async fn run_calibration_core(
         "What is a good API boundary?".into(),
     ];
     let pool: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = {
+        use h2ai_types::adapter::AdapterFamily;
         use std::collections::HashSet;
+        let explorer_family = state.explorer_adapter.family();
         let candidates = [
             state.explorer_adapter.as_ref(),
             state.explorer2_adapter.as_ref(),
@@ -39,6 +41,12 @@ pub(crate) async fn run_calibration_core(
         let mut seen: HashSet<*const dyn h2ai_types::adapter::IComputeAdapter> = HashSet::new();
         let mut distinct = Vec::new();
         for a in candidates {
+            // Skip remote/cloud adapters that belong to a different family than the explorer.
+            // USL calibration measures local LLM throughput; probing a remote API distorts
+            // the fit and wastes rate-limited quota.
+            if a.family() != explorer_family && a.family() != AdapterFamily::Mock {
+                continue;
+            }
             let ptr = a as *const dyn h2ai_types::adapter::IComputeAdapter;
             if seen.insert(ptr) {
                 distinct.push(a);
@@ -150,20 +158,25 @@ pub async fn start_calibration(
     .filter(|f| *f != AdapterFamily::Mock)
     .collect();
     let single_family_warning = pre_families.len() == 1;
-    if single_family_warning && !state.cfg.allow_single_family {
-        let family = pre_families
-            .iter()
-            .next()
-            .map(|f| f.to_string())
-            .unwrap_or_default();
-        return Err(ApiError::SingleFamilyPool { family });
-    }
     if single_family_warning {
-        tracing::warn!(
-            target: "h2ai.calibration",
-            "single-family adapter pool: Weiszfeld BFT correlated hallucination protection \
-             degraded. Set allow_single_family=true to acknowledge."
-        );
+        use h2ai_config::FamilyConstraint;
+        match state.cfg.safety.family_constraint {
+            FamilyConstraint::RequireDiverse => {
+                let family = pre_families
+                    .iter()
+                    .next()
+                    .map(|f| f.to_string())
+                    .unwrap_or_default();
+                return Err(ApiError::SingleFamilyPool { family });
+            }
+            FamilyConstraint::SingleFamilyOk => {
+                tracing::warn!(
+                    target: "h2ai.calibration",
+                    "single-family adapter pool: correlated hallucination protection degraded"
+                );
+            }
+            FamilyConstraint::Disabled => {}
+        }
     }
     let mut adapter_families: Vec<String> = pre_families.iter().map(|f| f.to_string()).collect();
     adapter_families.sort();

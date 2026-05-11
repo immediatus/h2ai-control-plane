@@ -233,6 +233,7 @@ impl IComputeAdapter for RecordingAdapter {
             adapter_kind: h2ai_types::config::AdapterKind::CloudGeneric {
                 endpoint: "mock://recording".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
             tokens_used: None,
         })

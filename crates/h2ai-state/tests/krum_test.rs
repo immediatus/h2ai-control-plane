@@ -97,6 +97,7 @@ fn prop(text: &str) -> ProposalEvent {
         adapter_kind: AdapterKind::CloudGeneric {
             endpoint: "mock".into(),
             api_key_env: "NONE".into(),
+            model: None,
         },
         timestamp: Utc::now(),
     }

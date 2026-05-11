@@ -11,6 +11,7 @@ h2ai-types       = { path = "../h2ai-types" }
 h2ai-nats        = { path = "../h2ai-nats" }
 h2ai-context     = { path = "../h2ai-context" }
 h2ai-constraints = { path = "../h2ai-constraints" }
+h2ai-config      = { path = "../h2ai-config" }
 async-nats  = "0.38"
 futures     = { workspace = true }
 serde       = { workspace = true }

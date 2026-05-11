@@ -151,8 +151,8 @@ impl TopologyPlanner {
         let merge_strategy = MergeStrategy::from_role_costs(
             &role_error_costs,
             input.cfg.bft_threshold,
-            input.cfg.krum_threshold,
-            input.cfg.krum_fault_tolerance,
+            input.cfg.safety.krum_threshold,
+            input.cfg.safety.krum_fault_tolerance,
         );
 
         let explorer_configs: Vec<ExplorerConfig> = input

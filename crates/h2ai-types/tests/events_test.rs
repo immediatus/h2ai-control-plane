@@ -64,6 +64,7 @@ fn cloud_adapter() -> AdapterKind {
     AdapterKind::CloudGeneric {
         endpoint: "https://api.example.com".into(),
         api_key_env: "API_KEY".into(),
+        model: None,
     }
 }
 fn calibration() -> CoherencyCoefficients {
@@ -385,6 +386,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
         H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: task_id(),
             resolved_output: "final".into(),
+            j_eff: None,
             timestamp: Utc::now(),
         }),
         H2AIEvent::TaskFailed(TaskFailedEvent {
@@ -704,5 +706,130 @@ mod manifest_oracle_tests {
         let spec = back.oracle.unwrap();
         assert_eq!(spec.language, "python");
         assert!(matches!(spec.oracle_type, OracleType::TestSuite));
+    }
+}
+
+#[cfg(test)]
+mod shadow_auditor_event_tests {
+    use h2ai_types::events::{
+        AuditDomainDemotedEvent, AuditDomainPromotedEvent, ShadowAuditorResultEvent,
+    };
+    use h2ai_types::identity::{ExplorerId, TaskId};
+
+    #[test]
+    fn shadow_auditor_result_event_roundtrips_json() {
+        let ev = ShadowAuditorResultEvent {
+            task_id: TaskId::new(),
+            explorer_id: ExplorerId::new(),
+            primary_approved: true,
+            shadow_approved: false,
+            disagreement: true,
+            domain: "security".to_string(),
+            primary_family: "cloudgeneric".to_string(),
+            shadow_family: "llamacpp".to_string(),
+            timestamp_ms: 1234567890,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: ShadowAuditorResultEvent = serde_json::from_str(&json).unwrap();
+        assert!(back.disagreement);
+        assert_eq!(back.domain, "security");
+        assert_eq!(back.primary_family, "cloudgeneric");
+        assert!(!back.shadow_approved);
+    }
+
+    #[test]
+    fn shadow_auditor_result_disagreement_flag_computed_correctly() {
+        let agree = ShadowAuditorResultEvent {
+            task_id: TaskId::new(),
+            explorer_id: ExplorerId::new(),
+            primary_approved: true,
+            shadow_approved: true,
+            disagreement: false,
+            domain: "default".to_string(),
+            primary_family: "a".to_string(),
+            shadow_family: "b".to_string(),
+            timestamp_ms: 0,
+        };
+        assert!(!agree.disagreement);
+        let disagree = ShadowAuditorResultEvent {
+            primary_approved: false,
+            shadow_approved: true,
+            disagreement: true,
+            ..agree
+        };
+        assert!(disagree.disagreement);
+    }
+
+    #[test]
+    fn audit_domain_promoted_event_roundtrips_json() {
+        let ev = AuditDomainPromotedEvent {
+            domain: "eu_data".to_string(),
+            disagreement_rate: 0.12,
+            n_observations: 45,
+            timestamp_ms: 999,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: AuditDomainPromotedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.domain, "eu_data");
+        assert!((back.disagreement_rate - 0.12).abs() < 1e-9);
+        assert_eq!(back.n_observations, 45);
+    }
+
+    #[test]
+    fn audit_domain_demoted_event_roundtrips_json() {
+        let ev = AuditDomainDemotedEvent {
+            domain: "eu_data".to_string(),
+            disagreement_rate: 0.01,
+            n_observations: 120,
+            timestamp_ms: 888,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: AuditDomainDemotedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.domain, "eu_data");
+        assert_eq!(back.n_observations, 120);
+    }
+
+    #[test]
+    fn h2ai_event_shadow_audit_variant_serializes() {
+        use h2ai_types::events::H2AIEvent;
+        let ev = H2AIEvent::ShadowAudit(ShadowAuditorResultEvent {
+            task_id: TaskId::new(),
+            explorer_id: ExplorerId::new(),
+            primary_approved: true,
+            shadow_approved: true,
+            disagreement: false,
+            domain: "default".to_string(),
+            primary_family: "gemini".to_string(),
+            shadow_family: "llamacpp".to_string(),
+            timestamp_ms: 42,
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("ShadowAudit"));
+    }
+
+    #[test]
+    fn h2ai_event_audit_domain_promoted_variant_serializes() {
+        use h2ai_types::events::H2AIEvent;
+        let ev = H2AIEvent::AuditDomainPromoted(AuditDomainPromotedEvent {
+            domain: "code".to_string(),
+            disagreement_rate: 0.08,
+            n_observations: 35,
+            timestamp_ms: 0,
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("AuditDomainPromoted"));
+    }
+
+    #[test]
+    fn h2ai_event_audit_domain_demoted_variant_serializes() {
+        use h2ai_types::events::H2AIEvent;
+        let ev = H2AIEvent::AuditDomainDemoted(AuditDomainDemotedEvent {
+            domain: "code".to_string(),
+            disagreement_rate: 0.01,
+            n_observations: 200,
+            timestamp_ms: 0,
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("AuditDomainDemoted"));
     }
 }

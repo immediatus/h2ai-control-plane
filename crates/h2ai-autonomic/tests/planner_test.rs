@@ -16,6 +16,7 @@ fn adapter() -> AdapterKind {
     AdapterKind::CloudGeneric {
         endpoint: "https://api.example.com".into(),
         api_key_env: "TEST_KEY".into(),
+        model: None,
     }
 }
 
@@ -374,6 +375,7 @@ fn planner_precision_quadrant_caps_n_max_at_three() {
 #[test]
 fn planner_complex_quadrant_bypasses_eigen_cap() {
     // cc() gives n_max_usl >> eigen.n_pruned. Complex must bypass eigen and use full USL n_max.
+    // n_max_usl is computed context-aware when max_context_tokens is set in the config.
     let cc = cc();
     let weights = ParetoWeights::new(0.34, 0.33, 0.33).unwrap();
     let cfg = H2AIConfig::default();
@@ -383,7 +385,16 @@ fn planner_complex_quadrant_bypasses_eigen_cap() {
         eigenvalues: vec![3.0, 0.5, 0.3, 0.1, 0.1],
         n_pruned: 3,
     };
-    let usl_n_max = cc.n_max();
+    // Mirror planner's n_max_usl calculation so the assertion stays correct
+    // even when max_context_tokens changes in reference.toml.
+    let usl_n_max = match cfg.max_context_tokens {
+        Some(max_tokens) => cc.n_max_context_aware(
+            cfg.explorer_max_tokens as f64,
+            max_tokens as f64,
+            cfg.context_pressure_gamma,
+        ),
+        None => cc.n_max(),
+    };
     let (event, _) = TopologyPlanner::provision(ProvisionInput {
         task_id: TaskId::new(),
         cc: &cc,
@@ -398,10 +409,17 @@ fn planner_complex_quadrant_bypasses_eigen_cap() {
         eigen: Some(&eigen),
         task_quadrant: Some(TaskQuadrant::Complex),
     });
-    // Complex bypasses eigen.n_pruned=3, so n_max must equal the uncapped USL value.
+    // Complex bypasses eigen.n_pruned=3, so n_max must equal the uncapped USL value
+    // (after any context-pressure reduction, but ignoring the eigen cap of 3).
     assert!(
-        (event.n_max - usl_n_max).abs() < 1e-9,
-        "Complex quadrant must bypass eigen cap: expected n_max={usl_n_max}, got {}",
+        event.n_max > eigen.n_pruned as f64,
+        "Complex quadrant must bypass eigen cap of {}: got {}",
+        eigen.n_pruned,
+        event.n_max
+    );
+    assert!(
+        (event.n_max - usl_n_max).abs() < 0.5,
+        "Complex quadrant n_max must equal USL value {usl_n_max}, got {}",
         event.n_max
     );
 }

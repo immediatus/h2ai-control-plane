@@ -123,6 +123,16 @@ impl NatsClient {
         })
         .await?;
 
+        // KV bucket: shadow auditor promoted domains (domains in two-auditor AND-vote mode)
+        self.ensure_kv_bucket(kv::Config {
+            bucket: "H2AI_AUDIT_SHADOW".to_owned(),
+            description: "Shadow auditor promoted domains — persisted across restarts".to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
         // KV bucket: task phase checkpoints for crash-recovery (zstd-compressed, latest-only)
         self.ensure_kv_bucket(kv::Config {
             bucket: "H2AI_TASK_CHECKPOINTS".to_owned(),
@@ -342,6 +352,44 @@ impl NatsClient {
         }
     }
 
+    /// Persist the set of domains currently in two-auditor AND-vote mode.
+    ///
+    /// Stored as a JSON array of strings under key `"promoted"` in `H2AI_AUDIT_SHADOW`.
+    pub async fn put_shadow_promoted_domains(
+        &self,
+        domains: &std::collections::HashSet<String>,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_AUDIT_SHADOW")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let payload = serde_json::to_vec(domains).map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put("promoted", payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve the set of domains currently in two-auditor AND-vote mode.
+    ///
+    /// Returns an empty set if the key is absent (first startup).
+    pub async fn get_shadow_promoted_domains(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_AUDIT_SHADOW")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get("promoted").await {
+            Ok(Some(entry)) => serde_json::from_slice::<std::collections::HashSet<String>>(&entry)
+                .map_err(|e| NatsError::KvError(e.to_string())),
+            Ok(None) => Ok(std::collections::HashSet::new()),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
     /// Persist the TaoMultiplierEstimator EMA state so it survives process restarts.
     pub async fn put_tao_estimator_state(&self, ema: f64, count: usize) -> Result<(), NatsError> {
         #[derive(serde::Serialize)]
@@ -385,6 +433,49 @@ impl NatsClient {
         }
     }
 
+    /// Persist the SRANI adaptive EMA state so it survives process restarts.
+    pub async fn put_srani_state(&self, ema_cfi: f64, count: usize) -> Result<(), NatsError> {
+        #[derive(serde::Serialize)]
+        struct State {
+            ema_cfi: f64,
+            count: usize,
+        }
+        let payload = serde_json::to_vec(&State { ema_cfi, count })
+            .map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ESTIMATOR")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put("srani_adaptive_state", payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve the persisted SRANI adaptive EMA state, or `None` if absent.
+    pub async fn get_srani_state(&self) -> Result<Option<(f64, usize)>, NatsError> {
+        #[derive(serde::Deserialize)]
+        struct State {
+            ema_cfi: f64,
+            count: usize,
+        }
+        let kv = self
+            .jetstream
+            .get_key_value("H2AI_ESTIMATOR")
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get("srani_adaptive_state").await {
+            Ok(Some(entry)) => {
+                let s: State = serde_json::from_slice(&entry)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some((s.ema_cfi, s.count)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
     /// Persist raw JSON bytes to the `H2AI_ESTIMATOR` bucket under key `bandit_state`.
     /// Callers are responsible for serialization (avoids a circular crate dependency).
     pub async fn put_bandit_state(&self, json_bytes: Vec<u8>) -> Result<(), NatsError> {
@@ -412,6 +503,41 @@ impl NatsClient {
             Ok(None) => Ok(None),
             Err(e) => Err(NatsError::KvError(e.to_string())),
         }
+    }
+
+    /// Write the active safety configuration as a JSON snapshot to NATS KV.
+    ///
+    /// Bucket: `H2AI_ESTIMATOR`. Key: `h2ai.config.safety_profile`.
+    /// Overwrites any previous snapshot unconditionally.
+    pub async fn put_safety_profile_snapshot(
+        &self,
+        cfg: &h2ai_config::SafetyConfig,
+    ) -> Result<(), async_nats::Error> {
+        #[derive(serde::Serialize)]
+        struct SafetyProfileSnapshot {
+            profile: String,
+            krum_fault_tolerance: usize,
+            diversity_threshold: f64,
+            shadow_auditor_enabled: bool,
+            require_bivariate_cg: bool,
+            timestamp_ms: u64,
+        }
+        let snapshot = SafetyProfileSnapshot {
+            profile: cfg.profile.as_str().to_string(),
+            krum_fault_tolerance: cfg.krum_fault_tolerance,
+            diversity_threshold: cfg.diversity_threshold,
+            shadow_auditor_enabled: cfg.shadow_auditor.enabled,
+            require_bivariate_cg: cfg.require_bivariate_cg,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        let payload =
+            serde_json::to_vec(&snapshot).map_err(|e| Box::new(e) as async_nats::Error)?;
+        let kv = self.jetstream.get_key_value("H2AI_ESTIMATOR").await?;
+        kv.put("h2ai.config.safety_profile", payload.into()).await?;
+        Ok(())
     }
 
     /// Open an ordered pull consumer on `h2ai.tasks.{task_id}` and return a stream of events.

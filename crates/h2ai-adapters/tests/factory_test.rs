@@ -6,6 +6,7 @@ fn factory_builds_cloud_generic_adapter() {
     let kind = AdapterKind::CloudGeneric {
         endpoint: "https://api.example.com".into(),
         api_key_env: "MY_KEY".into(),
+        model: None,
     };
     let adapter = AdapterFactory::build(&kind);
     assert!(adapter.is_ok());

@@ -24,7 +24,7 @@ fn task_request() -> ComputeRequest {
             .into(),
         task: "What is a stateless authentication token? Answer in one sentence.".into(),
         tau: TauValue::new(0.3).unwrap(),
-        max_tokens: 80,
+        max_tokens: 2048, // thinking models spend 500+ tokens on <reasoning> before answering
     }
 }
 

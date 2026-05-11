@@ -1,4 +1,5 @@
 use crate::constraint_source::{NatsConstraintIndex, NatsConstraintStore};
+use crate::rho_ema::RhoEmaState;
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::resolver::ConstraintResolver;
 use h2ai_constraints::source::{FsConstraintIndex, FsConstraintStore};
@@ -44,6 +45,13 @@ pub struct AppState {
     /// Optional dedicated adapter for `TaskProfile::Scoring`.  When `None`, the
     /// explorer adapter handles scoring tasks, which may share quota with exploration.
     pub scoring_adapter: Option<Arc<dyn IComputeAdapter>>,
+    /// Optional shadow auditor for Phase 4 bias measurement (GAP-C2).
+    /// Must be from a different adapter family than `auditor_adapter`.
+    /// `None` = shadow mode off regardless of config.
+    pub shadow_auditor_adapter: Option<Arc<dyn IComputeAdapter>>,
+    /// Domains currently in two-auditor AND-vote mode, maintained by `ShadowAuditorAccumulator`.
+    /// Read at task dispatch time; updated in place by the accumulator via this shared ref.
+    pub promoted_audit_domains: Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
     /// Semaphore that caps concurrency at `cfg.max_concurrent_tasks`.
     /// `submit_task` acquires a permit before spawning; the permit is held until the
     /// engine finishes so back-pressure is applied at the HTTP layer.
@@ -68,6 +76,24 @@ pub struct AppState {
     /// Content-addressed store for large task-context offloading.
     /// Passed through to `NatsDispatchConfig::payload_store`.
     pub payload_store: Arc<dyn PayloadStore>,
+    /// Shadow auditor accumulator. When `Some`, `tasks.rs` calls `process()` after
+    /// each engine run to update per-domain disagreement windows.
+    pub shadow_accumulator:
+        Option<Arc<tokio::sync::Mutex<crate::shadow_auditor::ShadowAuditorAccumulator>>>,
+    /// Optional researcher adapter for C1 grounding (GAP-C1).
+    /// When `Some`, search-enabled slots get a pre-step and low-CV retries fetch contradiction evidence.
+    /// When `None`, C1 falls back to hint-only without external web grounding.
+    pub researcher_adapter: Option<Arc<dyn IComputeAdapter>>,
+    /// SRANI adaptive EMA state: (ema_cfi, count).
+    /// Loaded from NATS KV at startup; updated by tasks.rs after each engine run.
+    pub srani_state: Arc<tokio::sync::RwLock<(f64, usize)>>,
+    /// SRANI grounding chain: spec anchor → LLM researcher → web search escalation.
+    /// Built at startup from available adapters; `None` = spec anchor only (inline, no chain).
+    pub srani_grounding_chain:
+        Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
+    /// Online ρ EMA tracker for INNOVATION-3 (GAP-A3).
+    /// Updated after each engine run with pairwise centered score products.
+    pub rho_ema: Arc<RwLock<RhoEmaState>>,
 }
 
 impl AppState {
@@ -93,6 +119,9 @@ impl AppState {
         let tao_ema_alpha = cfg.tao_estimator_ema_alpha;
         let tao_warmup = cfg.tao_estimator_warmup;
         let n_max_init = cfg.bandit_n_max_initial;
+        let bandit_n_max_arms = cfg.bandit_n_max_arms;
+        let bandit_prior_sigma = cfg.bandit_prior_sigma;
+        let bandit_prior_strength = cfg.bandit_prior_strength;
         Self {
             nats,
             cfg: Arc::new(cfg),
@@ -104,6 +133,10 @@ impl AppState {
             verification_adapter: auditor_adapter.clone(),
             auditor_adapter,
             scoring_adapter: None,
+            shadow_auditor_adapter: None,
+            promoted_audit_domains: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
             task_semaphore: Arc::new(Semaphore::new(max_tasks)),
             embedding_model: None,
             tao_multiplier_estimator: Arc::new(RwLock::new(
@@ -113,12 +146,23 @@ impl AppState {
                 tau_spread[0],
                 tau_spread[1],
             ))),
-            bandit_state: Arc::new(RwLock::new(BanditState::new(n_max_init, 0))),
+            bandit_state: Arc::new(RwLock::new(BanditState::new(
+                n_max_init,
+                0,
+                bandit_n_max_arms,
+                bandit_prior_sigma,
+                bandit_prior_strength,
+            ))),
             metrics: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::metrics::MetricsState::default(),
             )),
             agent_provider: None,
             payload_store: Arc::new(MemoryPayloadStore::new()),
+            shadow_accumulator: None,
+            researcher_adapter: None,
+            srani_state: Arc::new(tokio::sync::RwLock::new((0.0, 0))),
+            srani_grounding_chain: None,
+            rho_ema: Arc::new(RwLock::new(RhoEmaState::default())),
         }
     }
 
@@ -137,6 +181,15 @@ impl AppState {
     /// here to ensure the calibration sees genuine cross-adapter round-trip cost.
     pub fn with_explorer2(mut self, adapter: Arc<dyn IComputeAdapter>) -> Self {
         self.explorer2_adapter = adapter;
+        self
+    }
+
+    /// Configure a shadow auditor adapter for Phase 4 disagreement measurement (GAP-C2).
+    ///
+    /// The shadow adapter MUST be from a different family than `auditor_adapter`.
+    /// Callers are responsible for the family check — this method stores whatever is passed.
+    pub fn with_shadow_auditor(mut self, adapter: Arc<dyn IComputeAdapter>) -> Self {
+        self.shadow_auditor_adapter = Some(adapter);
         self
     }
 
@@ -219,6 +272,35 @@ impl AppState {
             Ok(None) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load bandit state from NATS; using default prior")
+            }
+        }
+    }
+
+    /// Load persisted SRANI adaptive EMA state from NATS KV on startup.
+    /// On first run (no entry) or deserialization failure, falls back to cold-start defaults.
+    pub async fn load_srani_state(&self) {
+        match self.nats.get_srani_state().await {
+            Ok(Some((ema_cfi, count))) => {
+                *self.srani_state.write().await = (ema_cfi, count);
+                tracing::info!(
+                    target: "h2ai.startup",
+                    ema_cfi,
+                    count,
+                    "srani adaptive state restored from NATS KV"
+                );
+            }
+            Ok(None) => {
+                let midpoint = self.cfg.srani.cold_start_midpoint();
+                *self.srani_state.write().await = (midpoint, 0);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "h2ai.startup",
+                    error = %e,
+                    "failed to load srani state from NATS; using cold-start defaults"
+                );
+                let midpoint = self.cfg.srani.cold_start_midpoint();
+                *self.srani_state.write().await = (midpoint, 0);
             }
         }
     }

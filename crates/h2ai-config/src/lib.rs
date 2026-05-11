@@ -87,6 +87,277 @@ pub enum ConfigLoadError {
     Config(#[from] config::ConfigError),
 }
 
+/// Configuration for the Phase 4 shadow auditor (GAP-C2).
+///
+/// When `enabled = true` and a shadow adapter is configured at startup
+/// (via `H2AI_SHADOW_AUDITOR_PROVIDER`), every Phase 4 audit is accompanied
+/// by a concurrent shadow call. Disagreements are counted per task domain.
+/// When a domain's rolling disagreement rate exceeds `promotion_threshold`
+/// over `promotion_window` observations, majority-vote (AND) enforcement
+/// activates for that domain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShadowAuditorConfig {
+    /// Enable shadow auditor. Requires `H2AI_SHADOW_AUDITOR_PROVIDER` to be set.
+    pub enabled: bool,
+    /// Rolling-window disagreement rate above which majority vote activates.
+    /// Default 0.05 (5%). Range (0, 1).
+    pub promotion_threshold: f64,
+    /// Observations per domain required before promotion is considered. Default 30.
+    pub promotion_window: usize,
+    /// Automatically remove a domain from majority-vote set when its disagreement
+    /// rate drops below `promotion_threshold / 2` over `2 * promotion_window` obs.
+    pub auto_demotion: bool,
+}
+
+impl Default for ShadowAuditorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            promotion_threshold: 0.05,
+            promotion_window: 30,
+            auto_demotion: true,
+        }
+    }
+}
+
+/// Named safety tier. When `profile != Custom`, `apply_safety_profile()` overwrites
+/// all `SafetyConfig` fields from the profile definition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyProfile {
+    #[default]
+    Development,
+    Production,
+    Strict,
+    Custom,
+}
+
+impl SafetyProfile {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SafetyProfile::Development => "development",
+            SafetyProfile::Production => "production",
+            SafetyProfile::Strict => "strict",
+            SafetyProfile::Custom => "custom",
+        }
+    }
+}
+
+/// Three-way policy for multi-family adapter pool enforcement.
+/// Replaces `allow_single_family: bool`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FamilyConstraint {
+    #[default]
+    SingleFamilyOk,
+    RequireDiverse,
+    Disabled,
+}
+
+/// All safety-relevant config grouped under `[safety]` in TOML.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SafetyConfig {
+    pub profile: SafetyProfile,
+    pub krum_fault_tolerance: usize,
+    pub krum_threshold: f64,
+    pub diversity_threshold: f64,
+    pub family_constraint: FamilyConstraint,
+    pub require_bivariate_cg: bool,
+    pub shadow_auditor: ShadowAuditorConfig,
+}
+
+impl Default for SafetyConfig {
+    fn default() -> Self {
+        Self {
+            profile: SafetyProfile::Development,
+            krum_fault_tolerance: 0,
+            krum_threshold: 0.30,
+            diversity_threshold: 0.0,
+            family_constraint: FamilyConstraint::SingleFamilyOk,
+            require_bivariate_cg: false,
+            shadow_auditor: ShadowAuditorConfig::default(),
+        }
+    }
+}
+
+/// Configuration for SRANI — Specification-Relative Architectural Noun Intersection.
+/// Detects shared ungrounded architectural entities across proposals (GAP-C1 extension).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SraniConfig {
+    /// When false, SRANI check is skipped entirely. Default true.
+    #[serde(default = "srani_default_enabled")]
+    pub enabled: bool,
+    /// When true (default), use sigmoid gate with EMA midpoint.
+    /// When false, use static warn_threshold / inject_threshold.
+    #[serde(default = "srani_default_adaptive")]
+    pub adaptive: bool,
+    /// EMA smoothing factor for the adaptive midpoint. Range (0, 1].
+    /// Lower = slower adaptation (longer memory). Default 0.20 ≈ 5-task horizon.
+    #[serde(default = "srani_default_ema_alpha")]
+    pub ema_alpha: f64,
+    /// Sigmoid temperature: controls curve sharpness. Lower = sharper cliff. Default 0.15.
+    #[serde(default = "srani_default_temperature")]
+    pub temperature: f64,
+    /// Injection pressure above which the grounding hint is injected. Default 0.50.
+    #[serde(default = "srani_default_gate_threshold")]
+    pub gate_threshold: f64,
+    /// CFI above this threshold emits `CorrelatedFabricationEvent` (adaptive=false only).
+    /// Also used for cold_start_midpoint() when adaptive=true. Default 0.3.
+    #[serde(default = "srani_default_warn_threshold")]
+    pub warn_threshold: f64,
+    /// CFI above this threshold injects a grounding hint (adaptive=false only).
+    /// Also used for cold_start_midpoint() when adaptive=true. Default 0.6.
+    #[serde(default = "srani_default_inject_threshold")]
+    pub inject_threshold: f64,
+    /// Maximum characters of raw web-search text fed into the distillation step.
+    /// Larger = more context for the distiller LLM. Default 4000.
+    #[serde(default = "srani_default_grounding_raw_max_chars")]
+    pub grounding_raw_max_chars: usize,
+    /// Maximum characters of the (optionally distilled) grounding statement
+    /// injected into the explorer hint block. Default 1200.
+    #[serde(default = "srani_default_grounding_hint_max_chars")]
+    pub grounding_hint_max_chars: usize,
+    /// When true (default) and a researcher adapter is available, distill raw
+    /// web-search results with the LLM before injecting them as grounding context.
+    #[serde(default = "srani_default_grounding_distill")]
+    pub grounding_distill: bool,
+}
+
+fn srani_default_enabled() -> bool {
+    true
+}
+fn srani_default_adaptive() -> bool {
+    true
+}
+fn srani_default_ema_alpha() -> f64 {
+    0.20
+}
+fn srani_default_temperature() -> f64 {
+    0.15
+}
+fn srani_default_gate_threshold() -> f64 {
+    0.50
+}
+fn srani_default_warn_threshold() -> f64 {
+    0.3
+}
+fn srani_default_inject_threshold() -> f64 {
+    0.6
+}
+fn srani_default_grounding_raw_max_chars() -> usize {
+    4000
+}
+fn srani_default_grounding_hint_max_chars() -> usize {
+    1200
+}
+fn srani_default_grounding_distill() -> bool {
+    true
+}
+
+impl Default for SraniConfig {
+    fn default() -> Self {
+        Self {
+            enabled: srani_default_enabled(),
+            adaptive: srani_default_adaptive(),
+            ema_alpha: srani_default_ema_alpha(),
+            temperature: srani_default_temperature(),
+            gate_threshold: srani_default_gate_threshold(),
+            warn_threshold: srani_default_warn_threshold(),
+            inject_threshold: srani_default_inject_threshold(),
+            grounding_raw_max_chars: srani_default_grounding_raw_max_chars(),
+            grounding_hint_max_chars: srani_default_grounding_hint_max_chars(),
+            grounding_distill: srani_default_grounding_distill(),
+        }
+    }
+}
+
+impl SraniConfig {
+    /// Returns the static midpoint used during cold start (count < 5) and when adaptive=false.
+    /// Derived from existing thresholds — no new config required.
+    pub fn cold_start_midpoint(&self) -> f64 {
+        (self.warn_threshold + self.inject_threshold) / 2.0
+    }
+}
+
+/// Adapter profile name mappings for the three thinking loop model tiers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ThinkingModelTiers {
+    /// Adapter profile name for Fast tier. Empty string = use first available explorer adapter.
+    #[serde(default)]
+    pub fast: String,
+    /// Adapter profile name for Standard tier. Empty string = use first available explorer adapter.
+    #[serde(default)]
+    pub standard: String,
+    /// Adapter profile name for Capable tier. Empty string = use first available explorer adapter.
+    #[serde(default)]
+    pub capable: String,
+}
+
+/// Configuration for the pre-execution thinking loop (spec: 2026-05-13-thinking-loop-design.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThinkingLoopConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_thinking_max_iterations")]
+    pub max_iterations: u32,
+    #[serde(default = "default_thinking_max_archetypes")]
+    pub max_archetypes: usize,
+    #[serde(default = "default_thinking_coverage_threshold")]
+    pub coverage_threshold: f64,
+    #[serde(default = "default_thinking_convergence_threshold")]
+    pub convergence_threshold: f64,
+    /// Starting temperature for archetype brainstorm (iter 0). Default: 0.85
+    #[serde(default = "default_tl_tau_max")]
+    pub tau_max: f64,
+    /// Minimum temperature for final iteration. Default: 0.20
+    #[serde(default = "default_tl_tau_min")]
+    pub tau_min: f64,
+    /// Min verification pass rate required before expanding archetype count in iter N+1.
+    /// Guards against quality degradation from uncontrolled diversity. Default: 0.30
+    #[serde(default = "default_expansion_quality_floor")]
+    pub expansion_quality_floor: f64,
+    #[serde(default)]
+    pub model_tiers: ThinkingModelTiers,
+}
+
+fn default_thinking_max_iterations() -> u32 {
+    5
+}
+fn default_thinking_max_archetypes() -> usize {
+    4
+}
+fn default_thinking_coverage_threshold() -> f64 {
+    0.75
+}
+fn default_thinking_convergence_threshold() -> f64 {
+    0.90
+}
+fn default_tl_tau_max() -> f64 {
+    0.85
+}
+fn default_tl_tau_min() -> f64 {
+    0.20
+}
+fn default_expansion_quality_floor() -> f64 {
+    0.30
+}
+
+impl Default for ThinkingLoopConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_iterations: default_thinking_max_iterations(),
+            max_archetypes: default_thinking_max_archetypes(),
+            coverage_threshold: default_thinking_coverage_threshold(),
+            convergence_threshold: default_thinking_convergence_threshold(),
+            tau_max: default_tl_tau_max(),
+            tau_min: default_tl_tau_min(),
+            expansion_quality_floor: default_expansion_quality_floor(),
+            model_tiers: ThinkingModelTiers::default(),
+        }
+    }
+}
+
 /// Single configuration authority for the H2AI Control Plane runtime.
 ///
 /// All fields are populated by `load_layered()`, which merges the embedded
@@ -96,10 +367,6 @@ pub enum ConfigLoadError {
 pub struct H2AIConfig {
     /// BFT consensus threshold — fraction of agents that must agree for a result to be accepted. Range [0, 1].
     pub bft_threshold: f64,
-    /// Number of Byzantine explorers Krum/Multi-Krum will tolerate; `0` disables Krum and falls back to `ConsensusMedian`. Requires at least `2n+3` agents when nonzero.
-    pub krum_fault_tolerance: usize,
-    /// Role error-cost threshold above which Krum is preferred over `ConsensusMedian`. Only relevant when `krum_fault_tolerance > 0`.
-    pub krum_threshold: f64,
     /// Maximum coordination threshold θ derived from calibration. Range [0, 1].
     pub coordination_threshold_max: f64,
     /// Minimum baseline competence p₀ required to pass the multiplication condition. Range [0, 1].
@@ -129,6 +396,16 @@ pub struct H2AIConfig {
     pub explorer_max_tokens: u64,
     /// Maximum tokens per calibration probe call.
     pub calibration_max_tokens: u64,
+    /// Maximum tokens for decomposition steps 1 and 2 (analysis + role design).
+    pub decomposition_step_max_tokens: u64,
+    /// Maximum tokens for decomposition step 3 (JSON formatting). Thinking models need extra
+    /// budget here because they consume tokens on <think> chains before emitting JSON.
+    pub decomposition_json_max_tokens: u64,
+    /// When `false`, passes `chat_template_kwargs: {"enable_thinking": false}` in every
+    /// adapter request body. Disables the extended thinking chain on Qwen3-style models
+    /// served by llama.cpp, making multi-step pipelines practical. Cloud APIs (OpenAI,
+    /// Anthropic) silently ignore unknown body fields, so this is safe globally.
+    pub adapter_enable_thinking: bool,
     /// Temperature used for all calibration adapter probes. Range [0, 1].
     pub calibration_tau: f64,
     /// Step size for `verify_threshold` reduction suggestions from the self-optimizer. Range (0, 1).
@@ -149,8 +426,6 @@ pub struct H2AIConfig {
     pub tao_per_turn_factor: f64,
     /// EMA smoothing factor α for `TaoMultiplierEstimator` drift tracking. Smaller values weight history more; half-life ≈ ln(2) / α samples.
     pub tao_estimator_ema_alpha: f64,
-    /// Minimum mean pairwise Hamming distance (on constraint-satisfaction fingerprints) required for the swarm to be considered diverse. Below this threshold the swarm is flagged as collectively hallucinated and a MAPE-K retry is triggered. Range [0, 1]. 0.0 disables the gate; recommended production value 0.15.
-    pub diversity_threshold: f64,
     /// Hard deadline in seconds for a single task end-to-end. `None` means no deadline; omit from the override file to leave unlimited.
     #[serde(default)]
     pub task_deadline_secs: Option<u64>,
@@ -160,7 +435,7 @@ pub struct H2AIConfig {
     pub adapter_profiles: Vec<AdapterProfile>,
     /// Context pressure sensitivity γ: scales how much a full context window raises β. `0` disables the effect; `0.5` doubles β at 100% context fill. Range [0, 1].
     pub context_pressure_gamma: f64,
-    /// Per-adapter baseline accuracy proxy. `0.0` uses the CG-mean proxy (`0.5 + CG_mean / 2`); set to an empirically measured value via `scripts/baseline_eval.py`.
+    /// Per-adapter baseline accuracy proxy. `0.0` uses the CG-mean proxy (`0.5 + CG_mean / 2`); set to an empirically measured value via `compare.py` (benchmark tool — see `docs/architecture/reference.md`).
     pub baseline_accuracy_proxy: f64,
     /// Number of adapter instances spawned during calibration. Minimum 3 for a valid USL two-point fit; fewer falls back to `alpha_contention` and `beta_base_default`.
     pub calibration_adapter_count: usize,
@@ -181,7 +456,7 @@ pub struct H2AIConfig {
     /// Raise to 50–100 for high-variance task distributions.
     pub tao_estimator_warmup: usize,
     /// Initial N_max used to seed the Thompson Sampling bandit warm prior at first startup
-    /// before any calibration result is available. Clamped to [1, 6] by the bandit. Default 4.
+    /// before any calibration result is available. Clamped to [1, bandit_n_max_arms] by the bandit. Default 4.
     pub bandit_n_max_initial: u32,
     /// Tasks completed before activating the bandit (Phase 0 — pure exploration); during Phase 0 N = N_max_USL unconditionally.
     pub bandit_phase0_k: u32,
@@ -191,14 +466,47 @@ pub struct H2AIConfig {
     pub bandit_epsilon: f64,
     /// Soft-reset decay factor applied to the learned posterior when the adapter version hash changes. `0.3` blends 30 % toward the initial prior.
     pub bandit_soft_reset_decay: f64,
+    /// Maximum ensemble size explored by Condorcet/n_it_optimal search during calibration.
+    /// Bounds `EnsembleCalibration::from_cg_mean` and `from_measured_p`. Default 9.
+    /// Lower on resource-constrained nodes; raise for very large adapter pools.
+    #[serde(default = "default_calibration_max_ensemble_size")]
+    pub calibration_max_ensemble_size: usize,
+    /// Maximum number of arms (N values) the Thompson Sampling bandit explores.
+    /// The bandit considers N ∈ [1, bandit_n_max_arms]. Default 6.
+    /// Must be ≤ calibration_max_ensemble_size for coherent physics.
+    #[serde(default = "default_bandit_n_max_arms")]
+    pub bandit_n_max_arms: u32,
+    /// σ for the Gaussian warm prior centred on N_max_USL in the bandit.
+    /// σ=2 means arms within 2 of N_max get meaningful weight; σ²=4 appears in the exponent.
+    /// Default 2.0. Decrease for tighter priors (faster convergence, less exploration).
+    #[serde(default = "default_bandit_prior_sigma")]
+    pub bandit_prior_sigma: f64,
+    /// Prior strength (pseudo-observation count) for the bandit warm prior. Default 5.0.
+    /// Higher = slower to learn from real task feedback; good for fresh deployments.
+    #[serde(default = "default_bandit_prior_strength")]
+    pub bandit_prior_strength: f64,
+    /// Maximum slot count for Precision-quadrant tasks (Self-MoA budget). Default 3.
+    /// Lower bound is 2 (synthesis requires ≥2 proposals). Raise for larger single-family pools.
+    #[serde(default = "default_precision_mode_max_slots")]
+    pub precision_mode_max_slots: usize,
+    /// Rolling window size for oracle calibration observations. Default 200.
+    /// Older entries are dropped (FIFO) when the window exceeds this size.
+    #[serde(default = "default_oracle_window_size")]
+    pub oracle_window_size: usize,
+    /// ECE (Expected Calibration Error) threshold above which `CalibrationDriftWarning`
+    /// fires. Requires ≥ 30 oracle observations. Default 0.15.
+    #[serde(default = "default_oracle_ece_alert_threshold")]
+    pub oracle_ece_alert_threshold: f64,
+    /// Oracle pass-rate floor below which `OracleSuspectEvent` fires.
+    /// Requires ≥ 30 oracle observations. Default 0.30.
+    #[serde(default = "default_oracle_pass_rate_floor")]
+    pub oracle_pass_rate_floor: f64,
     /// Maximum τ-spread expansion factor when Talagrand detects over-confidence. `2.0` means the spread can at most double.
     pub tau_spread_max_factor: f64,
     /// When `true`, automatically switches to the Empirical prediction basis after `auto_baseline_eval_min_tasks` Tier 1 oracle tasks complete.
     pub auto_baseline_eval: bool,
     /// Minimum Tier 1 oracle task count before automatic baseline evaluation triggers.
     pub auto_baseline_eval_min_tasks: u32,
-    /// When `false` (default), calibration aborts if all non-Mock adapters share the same provider family; set `true` to allow single-family pools with a warning.
-    pub allow_single_family: bool,
     /// Fraction of proposals that must survive verification for a run to be considered non-wasteful; below this threshold the self-optimizer suggests reducing the `verify_threshold`.
     pub optimizer_waste_threshold: f64,
     /// Agent dispatch scheduling policy.
@@ -209,6 +517,9 @@ pub struct H2AIConfig {
     pub payload_offload_threshold_bytes: usize,
     /// Events published per task before a state snapshot is written to NATS KV. Reduces crash-recovery replay time. Default 50. 0 disables snapshotting.
     pub snapshot_interval_events: usize,
+    /// URL path prefix for all versioned API routes (tasks, calibrate).
+    /// Health/ready/metrics are always mounted at root. Example: `"v1"` → `/v1/tasks`.
+    pub api_version: String,
     /// NATS server URL used by the API server, agent binary, and integration tests.
     pub nats_url: String,
     /// Enable the synthesis phase. When false, the engine uses the selection chain exclusively.
@@ -249,6 +560,84 @@ pub struct H2AIConfig {
     pub hitl: HitlConfig,
     /// Constraint wiki configuration — tag routing, NATS KV storage.
     pub constraint_wiki: ConstraintWikiConfig,
+    /// Safety profile — groups all safety-relevant fields.
+    /// When `profile != custom`, `apply_safety_profile()` in `load_layered()` overwrites
+    /// all safety field values from the profile definition.
+    #[serde(default)]
+    pub safety: SafetyConfig,
+    /// CV threshold below which correlated hallucination detection fires (GAP-C1).
+    /// CV = std_dev(pairwise_jaccard_distances) / mean(pairwise_jaccard_distances).
+    /// Low CV = proposals are semantically clustered → correlated assumption risk.
+    /// Default 0.30. Set to 0.0 to disable C1 detection entirely.
+    #[serde(default = "default_correlated_hallucination_cv_threshold")]
+    pub correlated_hallucination_cv_threshold: f64,
+    /// Minimum mean pairwise Jaccard distance required for C1 to fire.
+    /// Guards against spurious C1 retries when proposals are already diverse by absolute measure
+    /// (uniform-but-diverse ensemble: low CV but high mean distance). Default 0.50.
+    /// C1 fires only when BOTH cv < cv_threshold AND mean_jaccard < this floor.
+    #[serde(default = "default_correlated_hallucination_min_jaccard_floor")]
+    pub correlated_hallucination_min_jaccard_floor: f64,
+    /// Minimum fraction of constraint corpus domains that slot assignments must cover (GAP-C3).
+    /// coverage_score = |covered_domains ∩ corpus_domains| / |corpus_domains|.
+    /// Fires `DiversityGuardDegradedEvent` when below this threshold. Default 0.40.
+    #[serde(default = "default_domain_coverage_threshold")]
+    pub domain_coverage_threshold: f64,
+    /// SRANI correlated fabrication detection configuration (GAP-C1 extension).
+    #[serde(default)]
+    pub srani: SraniConfig,
+    /// Optional path to an NDJSON debug log file. When set, every completed task
+    /// appends one JSON line containing the full spec, all proposals with scores,
+    /// SRANI events, EMA before/after, and the merged output — no truncation.
+    /// File is opened in append mode; directory must already exist.
+    /// Example: `/tmp/h2ai-debug.ndjson`
+    #[serde(default)]
+    pub debug_log_path: Option<String>,
+    /// LLM judge passes per Hard constraint evaluation (averaged). 1 = current single-pass behavior.
+    /// ≥2 reduces false-positives by requiring multiple independent passes to agree.
+    #[serde(default = "default_verifier_consensus_passes")]
+    pub verifier_consensus_passes: u8,
+    /// Pre-execution thinking loop configuration.
+    /// When enabled, runs archetype selection + parallel brainstorm + synthesis before
+    /// the 3-step decomposition. Disabled by default — opt-in per scenario.
+    #[serde(default)]
+    pub thinking_loop: ThinkingLoopConfig,
+}
+
+fn default_correlated_hallucination_cv_threshold() -> f64 {
+    0.30
+}
+fn default_correlated_hallucination_min_jaccard_floor() -> f64 {
+    0.50
+}
+fn default_domain_coverage_threshold() -> f64 {
+    0.40
+}
+fn default_calibration_max_ensemble_size() -> usize {
+    9
+}
+fn default_bandit_n_max_arms() -> u32 {
+    6
+}
+fn default_bandit_prior_sigma() -> f64 {
+    2.0
+}
+fn default_bandit_prior_strength() -> f64 {
+    5.0
+}
+fn default_precision_mode_max_slots() -> usize {
+    3
+}
+fn default_oracle_window_size() -> usize {
+    200
+}
+fn default_oracle_ece_alert_threshold() -> f64 {
+    0.15
+}
+fn default_oracle_pass_rate_floor() -> f64 {
+    0.30
+}
+fn default_verifier_consensus_passes() -> u8 {
+    1
 }
 
 /// Configuration for the WebSearch executor (Google Custom Search API).
@@ -327,8 +716,8 @@ mod synthesis_config_tests {
         assert!(cfg.synthesis_enabled);
         assert_eq!(cfg.synthesis_min_proposals, 2);
         assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
-        assert_eq!(cfg.synthesis_critique_max_tokens, 8192);
-        assert_eq!(cfg.synthesis_max_tokens, 8192);
+        assert_eq!(cfg.synthesis_critique_max_tokens, 65536);
+        assert_eq!(cfg.synthesis_max_tokens, 65536);
     }
 
     #[test]
@@ -497,7 +886,8 @@ impl H2AIConfig {
                 .try_parsing(true),
         );
 
-        let cfg: Self = builder.build()?.try_deserialize()?;
+        let mut cfg: Self = builder.build()?.try_deserialize()?;
+        apply_safety_profile(&mut cfg);
         cfg.validate_shell_allowlist_subset();
         Ok(cfg)
     }
@@ -511,5 +901,177 @@ impl H2AIConfig {
         let cfg: Self = serde_json::from_str(&contents)?;
         cfg.validate_shell_allowlist_subset();
         Ok(cfg)
+    }
+}
+
+/// Emit one structured tracing log block per nested config section at startup.
+///
+/// Logs at WARN when a primary safety/activation flag is in a degraded or disabled state;
+/// logs at INFO otherwise. Call this once after `load_layered()` completes.
+pub fn log_startup_config_report(cfg: &H2AIConfig) {
+    // [safety] block — WARN if development profile
+    if cfg.safety.profile == SafetyProfile::Development {
+        tracing::warn!(
+            profile = %cfg.safety.profile.as_str(),
+            krum_fault_tolerance = cfg.safety.krum_fault_tolerance,
+            krum_threshold = cfg.safety.krum_threshold,
+            diversity_threshold = cfg.safety.diversity_threshold,
+            family_constraint = %format!("{:?}", cfg.safety.family_constraint),
+            require_bivariate_cg = cfg.safety.require_bivariate_cg,
+            shadow_auditor_enabled = cfg.safety.shadow_auditor.enabled,
+            "[safety] profile={} ({})",
+            cfg.safety.profile.as_str(),
+            "non-production defaults active"
+        );
+    } else {
+        tracing::info!(
+            profile = %cfg.safety.profile.as_str(),
+            krum_fault_tolerance = cfg.safety.krum_fault_tolerance,
+            krum_threshold = cfg.safety.krum_threshold,
+            diversity_threshold = cfg.safety.diversity_threshold,
+            family_constraint = %format!("{:?}", cfg.safety.family_constraint),
+            require_bivariate_cg = cfg.safety.require_bivariate_cg,
+            shadow_auditor_enabled = cfg.safety.shadow_auditor.enabled,
+            "[safety] profile={} ({})",
+            cfg.safety.profile.as_str(),
+            "production-grade safety active"
+        );
+    }
+
+    // [task_complexity] block — WARN if shadow_mode=true
+    if cfg.task_complexity.shadow_mode {
+        tracing::warn!(
+            shadow_mode = cfg.task_complexity.shadow_mode,
+            tcc_precision = cfg.task_complexity.tcc_precision_threshold,
+            tcc_coverage = cfg.task_complexity.tcc_coverage_threshold,
+            k_soft = cfg.task_complexity.k_soft,
+            k_type = cfg.task_complexity.k_type,
+            k_cross = cfg.task_complexity.k_cross,
+            k_heavy = cfg.task_complexity.k_heavy,
+            n_probe = cfg.task_complexity.n_probe,
+            n_eff_complex_threshold = cfg.task_complexity.n_eff_complex_threshold,
+            "[task_complexity] shadow_mode={} ({})",
+            cfg.task_complexity.shadow_mode,
+            "quadrant routing disabled"
+        );
+    } else {
+        tracing::info!(
+            shadow_mode = cfg.task_complexity.shadow_mode,
+            tcc_precision = cfg.task_complexity.tcc_precision_threshold,
+            tcc_coverage = cfg.task_complexity.tcc_coverage_threshold,
+            k_soft = cfg.task_complexity.k_soft,
+            k_type = cfg.task_complexity.k_type,
+            k_cross = cfg.task_complexity.k_cross,
+            k_heavy = cfg.task_complexity.k_heavy,
+            n_probe = cfg.task_complexity.n_probe,
+            n_eff_complex_threshold = cfg.task_complexity.n_eff_complex_threshold,
+            "[task_complexity] shadow_mode={} ({})",
+            cfg.task_complexity.shadow_mode,
+            "quadrant routing active"
+        );
+    }
+
+    // [srani] block — WARN if !enabled
+    if !cfg.srani.enabled {
+        tracing::warn!(
+            enabled = cfg.srani.enabled,
+            adaptive = cfg.srani.adaptive,
+            ema_alpha = cfg.srani.ema_alpha,
+            temperature = cfg.srani.temperature,
+            gate_threshold = cfg.srani.gate_threshold,
+            warn_threshold = cfg.srani.warn_threshold,
+            inject_threshold = cfg.srani.inject_threshold,
+            "[srani] enabled={} ({})",
+            cfg.srani.enabled,
+            "hint injection disabled"
+        );
+    } else {
+        tracing::info!(
+            enabled = cfg.srani.enabled,
+            adaptive = cfg.srani.adaptive,
+            ema_alpha = cfg.srani.ema_alpha,
+            temperature = cfg.srani.temperature,
+            gate_threshold = cfg.srani.gate_threshold,
+            warn_threshold = cfg.srani.warn_threshold,
+            inject_threshold = cfg.srani.inject_threshold,
+            "[srani] enabled={} ({})",
+            cfg.srani.enabled,
+            "hint injection active"
+        );
+    }
+
+    // [hitl] block — WARN if !enabled
+    if !cfg.hitl.enabled {
+        tracing::warn!(
+            enabled = cfg.hitl.enabled,
+            confidence_threshold = cfg.hitl.confidence_threshold,
+            timeout_ms = cfg.hitl.timeout_ms,
+            "[hitl] enabled={} ({})",
+            cfg.hitl.enabled,
+            "human approval gate bypassed"
+        );
+    } else {
+        tracing::info!(
+            enabled = cfg.hitl.enabled,
+            confidence_threshold = cfg.hitl.confidence_threshold,
+            timeout_ms = cfg.hitl.timeout_ms,
+            "[hitl] enabled={} ({})",
+            cfg.hitl.enabled,
+            "human approval gate active"
+        );
+    }
+}
+
+/// Post-deserialization step called inside `load_layered()`.
+/// For non-Custom profiles, overwrites all safety fields from the canonical profile.
+/// Only `shadow_auditor` tuning sub-fields are preserved from operator override.
+pub fn apply_safety_profile(cfg: &mut H2AIConfig) {
+    match cfg.safety.profile {
+        SafetyProfile::Development => {
+            cfg.safety.krum_fault_tolerance = 0;
+            cfg.safety.krum_threshold = 0.30;
+            cfg.safety.diversity_threshold = 0.0;
+            cfg.safety.family_constraint = FamilyConstraint::SingleFamilyOk;
+            cfg.safety.require_bivariate_cg = false;
+            cfg.safety.shadow_auditor.enabled = false;
+        }
+        SafetyProfile::Production => {
+            cfg.safety.krum_fault_tolerance = 1;
+            cfg.safety.krum_threshold = 0.30;
+            cfg.safety.diversity_threshold = 0.15;
+            cfg.safety.family_constraint = FamilyConstraint::RequireDiverse;
+            cfg.safety.require_bivariate_cg = false;
+            cfg.safety.shadow_auditor.enabled = true;
+        }
+        SafetyProfile::Strict => {
+            cfg.safety.krum_fault_tolerance = 2;
+            cfg.safety.krum_threshold = 0.20;
+            cfg.safety.diversity_threshold = 0.20;
+            cfg.safety.family_constraint = FamilyConstraint::RequireDiverse;
+            cfg.safety.require_bivariate_cg = true;
+            cfg.safety.shadow_auditor.enabled = true;
+        }
+        SafetyProfile::Custom => {}
+    }
+}
+
+#[cfg(test)]
+mod thinking_config_tests {
+    use super::*;
+
+    #[test]
+    fn thinking_loop_config_defaults_to_disabled() {
+        let cfg = ThinkingLoopConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.max_iterations, 5);
+        assert_eq!(cfg.max_archetypes, 4);
+        assert!((cfg.coverage_threshold - 0.75).abs() < 1e-9);
+        assert!((cfg.convergence_threshold - 0.90).abs() < 1e-9);
+    }
+
+    #[test]
+    fn h2ai_config_default_has_thinking_loop_disabled() {
+        let cfg = H2AIConfig::default();
+        assert!(!cfg.thinking_loop.enabled);
     }
 }

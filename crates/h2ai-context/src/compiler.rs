@@ -1,4 +1,4 @@
-use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate};
+use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 
 /// Output produced by a successful [`compile`] call.
 pub struct CompilerResult {
@@ -10,8 +10,10 @@ pub struct CompilerResult {
 ///
 /// `include_rubric` controls whether `LlmJudge` constraint rubrics are injected into
 /// the explorer's context. Pass `false` (the production default) to withhold rubrics
-/// from the explorer — the verifier retains them via `ConstraintPredicate::LlmJudge`.
-/// Pass `true` only when the caller explicitly wants the rubric visible to the explorer.
+/// from soft/advisory `LlmJudge` constraints — the verifier retains them via
+/// `ConstraintPredicate::LlmJudge`. Hard-severity `LlmJudge` constraints always inject
+/// their full rubric regardless of this flag: they represent non-negotiable requirements
+/// the explorer must know upfront.
 ///
 /// Vocabulary-based constraints (term lists) are always included regardless of this flag.
 pub fn compile(manifest: &str, corpus: &[ConstraintDoc], include_rubric: bool) -> CompilerResult {
@@ -25,8 +27,13 @@ fn build_system_context(manifest: &str, corpus: &[ConstraintDoc], include_rubric
     for doc in corpus {
         match &doc.predicate {
             ConstraintPredicate::LlmJudge { rubric } => {
-                if include_rubric {
-                    parts.push(format!("## {} Constraint\n{}", doc.id, rubric.trim()));
+                let is_hard = matches!(doc.severity, ConstraintSeverity::Hard { .. });
+                if include_rubric || is_hard {
+                    let mut entry = format!("## {} Constraint\n{}", doc.id, rubric.trim());
+                    if let Some(h) = &doc.remediation_hint {
+                        entry.push_str(&format!("\nGuidance: {h}"));
+                    }
+                    parts.push(entry);
                 } else {
                     // Withhold the scoring rubric but always inject the constraint ID and
                     // remediation guidance so explorers know what behavioral requirements
@@ -98,14 +105,27 @@ mod compiler_tests {
 
     #[test]
     fn include_rubric_false_withholds_rubric_but_keeps_id_and_hint() {
-        let mut doc = llm_judge_doc("C-001", "The proposal must be stateless.");
-        doc.remediation_hint = Some("Avoid sticky sessions.".into());
+        // Use Soft constraint to test withholding rubric behavior
+        // (Hard constraints always get rubric regardless of include_rubric flag)
+        let doc = ConstraintDoc {
+            id: "C-001".to_string(),
+            source_file: "test.md".into(),
+            description: String::new(),
+            severity: ConstraintSeverity::Soft { weight: 1.0 },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "The proposal must be stateless.".to_string(),
+            },
+            remediation_hint: Some("Avoid sticky sessions.".into()),
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        };
         let result = compile("task description", &[doc], false);
         assert!(
             !result
                 .system_context
                 .contains("The proposal must be stateless."),
-            "rubric scoring text must NOT appear when include_rubric=false"
+            "rubric scoring text must NOT appear when include_rubric=false for Soft constraints"
         );
         assert!(
             result.system_context.contains("C-001"),
@@ -142,6 +162,19 @@ mod compiler_tests {
         assert!(
             result.system_context.contains("idempotency"),
             "vocabulary terms must still appear when include_rubric=false"
+        );
+    }
+
+    #[test]
+    fn hard_constraint_always_gets_rubric_regardless_of_include_rubric_flag() {
+        let doc = llm_judge_doc("C-HARD", "The proposal must keep T_global ≤ 100ms.");
+        // llm_judge_doc uses Hard severity with threshold 0.8
+        let result = compile("task description", &[doc], false);
+        assert!(
+            result
+                .system_context
+                .contains("The proposal must keep T_global ≤ 100ms."),
+            "Hard constraint rubric must appear even when include_rubric=false"
         );
     }
 }

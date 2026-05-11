@@ -5,6 +5,23 @@
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-orange)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
 
+> **A Rust LLM multi-agent orchestration runtime that replaces "spawn-N-agents-and-hope" frameworks with measured, math-grounded quality guarantees.**
+
+Most multi-agent frameworks treat quality as an output property — something you observe after the fact, hope is good enough, and retry if it isn't. H2AI treats quality as a control variable: measured before generation starts, bounded by physics, and enforced by typed constraints at every stage.
+
+The core claim: **adding more agents past a measurable ceiling actively degrades output quality**. The Universal Scalability Law gives you that ceiling exactly. H2AI computes it per deployment, enforces it per task, and closes the feedback loop via a MAPE-K autonomic engine that adjusts ensemble topology before quality falls off the cliff.
+
+### Measured Results
+
+| Scenario | Baseline | H2AI | Uplift |
+|---|---|---|---|
+| Constraint-gap tasks (audit trail domain) | 48% pass rate | 72% pass rate | **+50%** |
+| Multi-constraint DSP onboarding | 64% pass rate | 80% pass rate | **+25%** |
+
+Constraint-gap tasks are the hardest class: the LLM has domain knowledge but the team's architectural decisions are not in its training data. Encoding those decisions as typed `ConstraintDoc` predicates lets the Auditor gate reject hallucinated proposals before they reach synthesis — not after the human reads the output.
+
+---
+
 **H2AI Control Plane** is a distributed multi-agent orchestration runtime that prevents LLM agent swarms from degrading under their own coordination cost. It measures the overhead of making N agents agree, bounds ensemble size before that overhead exceeds the quality gain, and enforces typed constraints so agents share enough common ground to produce coherent results.
 
 Reference implementation of the framework defined in **[One Equation Governs CPU Caches, Human Teams, and AI Agent Systems](https://e-mindset.space/blog/coordination-constant-usl-human-ai-teams/)**.
@@ -86,7 +103,7 @@ docker compose up -d
 
 # Seed your constraint corpus (your team's architectural decisions)
 mkdir -p ../../constraints
-cp -r ../../docs/examples/ads-platform/constraints/* ../../constraints/
+cp -r ../../tests/e2e/constraints/* ../../constraints/
 
 # Calibrate the adapter pool
 curl -X POST http://localhost:8080/calibrate
@@ -174,6 +191,10 @@ The calibration harness runs representative tasks through the adapter pool and m
 - `CG(i,j)` — **Common Ground** between every Explorer pair: mean pairwise Hamming distance on the binary constraint-satisfaction fingerprints each agent produces (1 bit per constraint: pass/fail). High CG means agents satisfied the same constraints; low CG means they diverged and conflict reconciliation is costly. This is a metadata measurement — the control plane never compares raw LLM text to compute CG.
 
 From these it derives `N_max = sqrt((1−α) / β_eff)` — the agent count at which Condorcet quality gain and reconciliation cost intersect. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
+
+### 1.5. Thinking Loop (optional pre-execution coverage-convergence)
+
+When `thinking_loop.enabled = true`, a structured multi-archetype brainstorm runs before task decomposition. It iterates until `coverage_score ≥ coverage_threshold`, adaptively contracting the archetype count each iteration, linearly scheduling temperature from `tau_max → tau_min`, and injecting explicit tension-targeting instructions when prior iterations identify unresolved gaps. The synthesis (`shared_understanding` from `ThinkingReport`) is injected as `{thinking_context}` into the Phase 0 decomposition prompt. This improves decomposition quality on complex multi-domain tasks. Default: disabled.
 
 ### 2. Bootstrap — compile Dark Knowledge into explicit constraints
 
@@ -316,7 +337,7 @@ ZeroSurvivalEvent                  → all proposals pruned, autonomic retry fir
 InterfaceSaturationWarningEvent    → active sub-tasks approaching N_max^interface
 ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates from ScoreOrdered to ConsensusMedian/OutlierResistant (fractional BFT threshold on fingerprints — not PBFT)
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
-MergeResolvedEvent                 → human O(1) decision, task closed
+MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
 TaoIterationEvent                  → TAO loop turn result: tool_calls[] (tool, input_json, output, iteration) + total_token_cost
 VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5)
@@ -406,32 +427,26 @@ h2ai-control-plane/
 ├── .github/workflows/
 │   ├── ci.yml                      # fmt → clippy -D warnings → nextest → docker → helm lint
 │   └── release.yml                 # image → ghcr.io, Helm chart → GitHub Pages, binary release
+├── tests/
+│   └── e2e/                        # E2E tests against a live server + local LLM + NATS
+│       ├── scenarios/              # per-scenario directories with task.json + expected results
+│       ├── constraints/            # 7 + 4 constraint docs (ads-platform corpus)
+│       ├── replay.py               # test runner + regression/analysis harness
+│       └── scripts/
+│           └── analyze_failed_run.py  # post-failure rubric improvement analysis
 └── docs/
-    ├── architecture/               # 5-file consolidated documentation
-    │   ├── architecture.md         # System overview, crate boundaries, event vocabulary
-    │   ├── math.md                 # USL/CJT foundations, formulas, calibration table
-    │   ├── reference.md            # API, configuration, metrics, adapters, constraint corpus
-    │   ├── operations.md           # Getting started, deployment, alerts, troubleshooting
-    │   └── research-state.md       # Thesis, implemented gaps, open questions, benchmarks
-    └── examples/
-        └── ads-platform/           # Reference constraint corpus + integration test task manifests
-            ├── constraints/        # 7 constraint docs derived from "Architecting Real-Time Ads Platform"
-            └── tasks/              # 3 task manifests with expected Auditor outcomes
+    └── architecture/               # 5-file consolidated documentation
+        ├── architecture.md         # System overview, crate boundaries, event vocabulary
+        ├── math.md                 # USL/CJT/j_eff foundations, formulas, calibration table
+        ├── reference.md            # API, configuration, metrics, adapters, constraint corpus
+        ├── operations.md           # Getting started, deployment, alerts, troubleshooting
+        ├── gaps.md                 # Open research gaps and innovation roadmap
+        └── research-state.md       # Thesis, implemented gaps, open questions, benchmarks
 ```
 
 **Dependency rule:** `h2ai-types`, `h2ai-config`, and `h2ai-constraints` have zero external I/O dependencies — predicate evaluation is pure computation. `h2ai-planner` depends only on `h2ai-types` (LLM calls go through `IComputeAdapter` from `h2ai-types`; no NATS or HTTP deps). Six crates import `async-nats` directly, each on a dedicated subject namespace: `h2ai-nats` (subject constants + NKey provisioning), `h2ai-state` (task event log), `h2ai-memory` (context history), `h2ai-telemetry` (audit log), `h2ai-provisioner` (agent heartbeats + soft-kill), `h2ai-agent` (binary — heartbeat publisher + task subscriber). `h2ai-api` is the only crate that talks to HTTP. Nothing imports `h2ai-api`.
 
 **Compute isolation:** Cloud HTTP adapters (Anthropic, OpenAI, Ollama) run async on the main worker pool. Future llama.cpp FFI inference uses `spawn_blocking` with `max_blocking_threads` explicitly set so CPU-bound inference never starves NATS consumers or HTTP handlers.
-
----
-
-## Scripts
-
-| Script | Purpose |
-|---|---|
-| `scripts/simulate.py` | Visualization: USL curves, β_eff vs CG coupling, N_max vs CG, CJT quality curves, N_eff eigenvalue vs scalar ρ, Talagrand rank histogram shapes |
-| `scripts/baseline_eval.py` | **Production tool** — measures real p and ρ from live adapters against `eval_questions.jsonl`; output overrides `baseline_accuracy_proxy` in config. Run before high-stakes deployments. |
-| `scripts/benchmark/` | Benchmark harness: GSM8K, HumanEval, TruthfulQA runners + B0/B1/B2/B3/H2AI baseline comparison. Runs not yet executed. |
 
 ---
 
@@ -467,7 +482,7 @@ The system is **C-first**: the distributed cluster is the architectural foundati
 
 The **Dark Knowledge Compiler** reads your team's `ConstraintDoc` files. Each document becomes a typed `ConstraintDoc` with a `ConstraintPredicate` (vocabulary presence, negative keywords, regex, numeric threshold, LLM judge, or composites) and a severity (`Hard`, `Soft`, or `Advisory`). Hard constraints gate the merge; Soft constraints contribute a weighted compliance score; `constraint_error_cost = 1.0 − compliance` feeds back into the BFT merge strategy selector.
 
-`docs/examples/ads-platform/` is a complete reference corpus derived from the blog series **[Architecting Real-Time Ads Platform](https://e-mindset.space/series/architecting-ads-platforms/)**:
+The bundled e2e corpus (`tests/e2e/constraints/`) is derived from the blog series **[Architecting Real-Time Ads Platform](https://e-mindset.space/series/architecting-ads-platforms/)**:
 
 | Constraint | Decision |
 |---|---|
@@ -479,13 +494,11 @@ The **Dark Knowledge Compiler** reads your team's `ConstraintDoc` files. Each do
 | CONSTRAINT-006 | Java 21 + Generational ZGC — 32GB heap, <2ms P99.9 GC pauses |
 | CONSTRAINT-007 | Tiered consistency — budget=strong, profiles=eventual, billing=linearizable |
 
-The task manifests in `docs/examples/ads-platform/tasks/` are the input corpus for the integration test suite. They specify the expected Auditor outcomes — which proposals should be pruned, which constraint they violate — so that `cargo nextest run --test integration` can assert system behavior end-to-end.
+The task manifests in `tests/e2e/tasks/` drive the e2e tests. Run them against a live server: `python3 tests/e2e/run.py`.
 
 ---
 
 ## Documentation
-
-All documentation is under `docs/architecture/`.
 
 | Document | Contents |
 |---|---|
@@ -494,12 +507,6 @@ All documentation is under `docs/architecture/`.
 | [Reference](docs/architecture/reference.md) | REST API, SSE event stream, configuration fields, Prometheus metrics, adapter guide, constraint corpus |
 | [Operations](docs/architecture/operations.md) | Getting started, deployment plans, key metrics, alert rules, scaling, troubleshooting |
 | [Research State](docs/architecture/research-state.md) | Project thesis, implemented gaps, open research questions, empirical benchmarking strategy |
-
-### Examples
-
-| Document | Contents |
-|---|---|
-| [Ads Platform](docs/examples/ads-platform/) | 7 constraint docs + 3 integration test tasks derived from "Architecting Real-Time Ads Platform" |
 
 ---
 

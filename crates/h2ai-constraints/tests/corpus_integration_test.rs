@@ -1,5 +1,5 @@
 /// End-to-end integration tests that load the real ads-platform constraint corpus
-/// from `docs/examples/ads-platform/constraints/` and verify the full pipeline:
+/// from `tests/e2e/constraints/` and verify the full pipeline:
 /// YAML loading, BM25 retrieval, domain navigation, relation graph, and payload fetch.
 use h2ai_constraints::resolver::ConstraintResolver;
 use h2ai_constraints::source::FsConstraintStore;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 fn corpus_dir() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest)
-        .join("../../docs/examples/ads-platform/constraints")
+        .join("../../tests/e2e/constraints")
         .canonicalize()
         .expect("ads-platform constraints directory must exist")
 }
@@ -46,11 +46,24 @@ fn corpus_loads_all_yaml_constraints() {
 
 #[test]
 fn corpus_all_constraints_have_llm_judge_predicate() {
+    use h2ai_constraints::types::CompositeOp;
     let (store, _) = load_corpus();
     for doc in store.all_docs_sorted() {
+        let has_llm_judge = match &doc.predicate {
+            ConstraintPredicate::LlmJudge { .. } => true,
+            // Composite(And([..., LlmJudge])) — numeric_checks present
+            ConstraintPredicate::Composite { op, children } => {
+                *op == CompositeOp::And
+                    && children
+                        .last()
+                        .map(|c| matches!(c, ConstraintPredicate::LlmJudge { .. }))
+                        .unwrap_or(false)
+            }
+            _ => false,
+        };
         assert!(
-            matches!(doc.predicate, ConstraintPredicate::LlmJudge { .. }),
-            "constraint {} must have LlmJudge predicate (loaded from YAML criteria); got non-LlmJudge",
+            has_llm_judge,
+            "constraint {} must have LlmJudge predicate (or Composite ending in LlmJudge); got non-LlmJudge",
             doc.id
         );
     }
@@ -102,6 +115,65 @@ fn corpus_all_expected_ids_present() {
     ] {
         assert!(ids.contains(expected), "corpus must contain {expected}");
     }
+}
+
+// ── NumericCheck predicate construction ──────────────────────────────────────
+
+#[test]
+fn yaml_numeric_checks_generate_composite_predicate() {
+    use h2ai_constraints::types::{CompositeOp, ConstraintPredicate};
+    use h2ai_constraints::yaml::parse_yaml_constraint;
+    use std::path::Path;
+
+    let yaml = r#"
+id: TEST-NUM
+title: "Numeric check test"
+severity: hard
+criteria:
+  pass: "Global timeout ≤100ms."
+  fail: "Global timeout exceeds 100ms."
+numeric_checks:
+  - pattern: "(?i)timeout[^0-9]*([0-9]+)"
+    op: le
+    value: 100.0
+"#;
+    let doc = parse_yaml_constraint(Path::new("TEST-NUM.yaml"), yaml).unwrap();
+    match &doc.predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert_eq!(children.len(), 2, "one NumericThreshold + one LlmJudge");
+            assert!(
+                matches!(children[0], ConstraintPredicate::NumericThreshold { .. }),
+                "first child must be NumericThreshold"
+            );
+            assert!(
+                matches!(children[1], ConstraintPredicate::LlmJudge { .. }),
+                "last child must be LlmJudge"
+            );
+        }
+        other => panic!("expected Composite predicate, got {other:?}"),
+    }
+}
+
+#[test]
+fn yaml_without_numeric_checks_still_produces_llm_judge() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    use h2ai_constraints::yaml::parse_yaml_constraint;
+    use std::path::Path;
+
+    let yaml = r#"
+id: TEST-PLAIN
+title: "Plain LLM judge"
+severity: hard
+criteria:
+  pass: "Proposal is stateless."
+  fail: "Proposal uses state."
+"#;
+    let doc = parse_yaml_constraint(Path::new("TEST-PLAIN.yaml"), yaml).unwrap();
+    assert!(
+        matches!(doc.predicate, ConstraintPredicate::LlmJudge { .. }),
+        "no numeric_checks → plain LlmJudge"
+    );
 }
 
 // ── Domain navigation ────────────────────────────────────────────────────────

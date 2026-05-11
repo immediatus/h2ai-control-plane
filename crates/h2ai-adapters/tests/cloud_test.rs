@@ -47,7 +47,7 @@ async fn cloud_adapter_returns_parsed_content_and_token_count() {
 
     // SAFETY: test-only env mutation; tests run in separate processes
     unsafe { std::env::set_var("H2AI_TEST_KEY_1", "sk-test-1") };
-    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_1".into());
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_1".into(), None);
     let resp = adapter.execute(request()).await.unwrap();
 
     assert_eq!(resp.output, "hello!");
@@ -63,7 +63,7 @@ async fn cloud_adapter_returns_network_error_on_http_500() {
         .await;
 
     unsafe { std::env::set_var("H2AI_TEST_KEY_2", "any") };
-    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_2".into());
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_2".into(), None);
     let result = adapter.execute(request()).await;
     assert!(matches!(result, Err(AdapterError::NetworkError(_))));
 }
@@ -73,6 +73,7 @@ async fn cloud_adapter_returns_network_error_when_env_var_missing() {
     let adapter = CloudGenericAdapter::new(
         "https://api.example.com".into(),
         "H2AI_TEST_KEY_CERTAINLY_NOT_SET_XYZ".into(),
+        None,
     );
     let result = adapter.execute(request()).await;
     assert!(matches!(result, Err(AdapterError::NetworkError(_))));
@@ -93,7 +94,7 @@ async fn cloud_adapter_uses_reasoning_content_when_content_is_empty_string() {
         .await;
 
     unsafe { std::env::set_var("H2AI_TEST_KEY_REASONING_1", "sk-test-r1") };
-    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_1".into());
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_1".into(), None);
     let resp = adapter.execute(request()).await.unwrap();
 
     assert_eq!(resp.output, "chain-of-thought answer");
@@ -115,7 +116,7 @@ async fn cloud_adapter_uses_reasoning_content_when_content_key_absent() {
         .await;
 
     unsafe { std::env::set_var("H2AI_TEST_KEY_REASONING_2", "sk-test-r2") };
-    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_2".into());
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_2".into(), None);
     let resp = adapter.execute(request()).await.unwrap();
 
     assert_eq!(resp.output, "answer without content key");
@@ -138,19 +139,47 @@ async fn cloud_adapter_prefers_content_over_reasoning_content_when_both_present(
         .await;
 
     unsafe { std::env::set_var("H2AI_TEST_KEY_REASONING_3", "sk-test-r3") };
-    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_3".into());
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_REASONING_3".into(), None);
     let resp = adapter.execute(request()).await.unwrap();
 
     assert_eq!(resp.output, "final answer");
 }
 
+/// When `finish_reason == "length"` and `content` is empty, the model hit max_tokens
+/// during the thinking phase and never produced an answer — must return an error so
+/// callers can retry with a higher budget rather than treating thinking as the answer.
+#[tokio::test]
+async fn cloud_adapter_errors_when_finish_reason_length_and_content_empty() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"finish_reason": "length", "message": {
+                "content": "",
+                "reasoning_content": "partial thinking that was cut off"
+            }}],
+            "usage": {"total_tokens": 100}
+        })))
+        .mount(&server)
+        .await;
+
+    unsafe { std::env::set_var("H2AI_TEST_KEY_LEN", "sk-test-len") };
+    let adapter = CloudGenericAdapter::new(server.uri(), "H2AI_TEST_KEY_LEN".into(), None);
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(ref msg)) if msg.contains("max_tokens")),
+        "finish_reason=length with empty content must return NetworkError, got: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn cloud_adapter_kind_reflects_constructor_args() {
-    let adapter = CloudGenericAdapter::new("https://api.example.com".into(), "MY_KEY".into());
+    let adapter = CloudGenericAdapter::new("https://api.example.com".into(), "MY_KEY".into(), None);
     match adapter.kind() {
         AdapterKind::CloudGeneric {
             endpoint,
             api_key_env,
+            model: None,
         } => {
             assert_eq!(endpoint, "https://api.example.com");
             assert_eq!(api_key_env, "MY_KEY");

@@ -59,6 +59,7 @@ impl NatsDispatchAdapter {
             kind: AdapterKind::CloudGeneric {
                 endpoint: "nats://dispatch".into(),
                 api_key_env: String::new(),
+                model: None,
             },
         }
     }

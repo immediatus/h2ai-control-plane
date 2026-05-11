@@ -58,7 +58,7 @@ pub enum CalibrationSource {
 /// Computed synchronously from cosine N_eff before re-provisioning.
 /// Drives retry routing: ConstrainedExploration injects a tombstone;
 /// ModeCollapse rotates the adapter selection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FailureMode {
     /// Agents explored diverse solution areas but none satisfied constraints.
     /// Retry: same topology, inject Constraint Violation Tombstone.
@@ -66,6 +66,9 @@ pub enum FailureMode {
     /// Agents converged on a shared hallucination (N_eff ≈ 1).
     /// Retry: rotate adapter selection or widen τ_spread.
     ModeCollapse,
+    /// Proposals share a correlated assumption (low Jaccard CV).
+    /// Retry: inject contradiction hint + researcher grounding.
+    CorrelatedHallucination { cv: f64, mean_jaccard_distance: f64 },
 }
 
 /// Emitted asynchronously after `MergeResolvedEvent` — does not block task close.
@@ -331,6 +334,11 @@ pub struct SelectionResolvedEvent {
 pub struct MergeResolvedEvent {
     pub task_id: TaskId,
     pub resolved_output: String,
+    /// Ensemble Efficiency Index: Q_realized / Q_ceiling ∈ [0, 1].
+    /// Measures what fraction of the Condorcet quality ceiling was realized.
+    /// None when calibration is unavailable at merge time.
+    #[serde(default)]
+    pub j_eff: Option<f64>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -379,6 +387,127 @@ pub struct VerifierComparisonEvent {
     /// Human-readable label for the verifier configuration used. Currently always "llmjudge".
     pub verifier_kind: String,
     pub timestamp: DateTime<Utc>,
+}
+
+/// Per-proposal shadow auditor outcome — published to `h2ai.audit.shadow_results`.
+///
+/// Both auditors ran concurrently; `disagreement = primary_approved != shadow_approved`.
+/// The primary auditor's decision always controls Phase 4 pruning in shadow mode.
+/// In majority-vote mode (promoted domain), both must approve for the proposal to survive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShadowAuditorResultEvent {
+    pub task_id: TaskId,
+    pub explorer_id: ExplorerId,
+    /// Decision from the configured primary auditor adapter.
+    pub primary_approved: bool,
+    /// Decision from the shadow auditor adapter.
+    pub shadow_approved: bool,
+    /// `true` when `primary_approved != shadow_approved`.
+    pub disagreement: bool,
+    /// Task domain from `constraint_tags[0]`, or `"default"` when no tags are present.
+    pub domain: String,
+    /// `AdapterFamily::to_string()` of the primary auditor.
+    pub primary_family: String,
+    /// `AdapterFamily::to_string()` of the shadow auditor.
+    pub shadow_family: String,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted by `ShadowAuditorAccumulator` when a domain's rolling disagreement rate
+/// exceeds `promotion_threshold` over `promotion_window` observations.
+/// From this point the domain uses two-auditor AND vote in Phase 4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditDomainPromotedEvent {
+    pub domain: String,
+    pub disagreement_rate: f64,
+    pub n_observations: usize,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted by `ShadowAuditorAccumulator` when a promoted domain's rolling rate
+/// drops below `promotion_threshold / 2` over `2 * promotion_window` observations.
+/// Majority-vote enforcement is removed for this domain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditDomainDemotedEvent {
+    pub domain: String,
+    pub disagreement_rate: f64,
+    pub n_observations: usize,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted when the CV of pairwise Jaccard distances among surviving proposals
+/// falls below `correlated_hallucination_cv_threshold`. Low CV = semantic clustering.
+/// Triggers a MAPE-K retry with researcher grounding injected into explorer prompts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrelatedEnsembleWarning {
+    pub task_id: TaskId,
+    /// Coefficient of variation of pairwise Jaccard distance matrix.
+    pub cv: f64,
+    /// Mean pairwise Jaccard distance across all proposal pairs.
+    pub mean_jaccard_distance: f64,
+    /// MAPE-K iteration at which the warning fired.
+    pub retry_count: u32,
+}
+
+/// Emitted when SRANI detects shared ungrounded architectural entities across proposals.
+/// CFI (Correlated Fabrication Index) = max pairwise overlap of ungrounded entity sets.
+/// 0.0 = no shared fabrication; 1.0 = all proposals share the same fabricated component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrelatedFabricationEvent {
+    pub task_id: TaskId,
+    /// CFI value that triggered this event.
+    pub cfi: f64,
+    /// Sigmoid injection pressure: sigmoid((CFI − μ) / T). Range [0, 1].
+    /// 0.20 = warn floor; gate_threshold (default 0.50) = injection cutoff.
+    /// Set to 0.0 when adaptive=false (legacy static-threshold path).
+    pub injection_pressure: f64,
+    /// Architectural entities present in ≥2 proposals but absent from the task specification.
+    pub shared_ungrounded_entities: Vec<String>,
+    /// Number of proposals analysed.
+    pub proposal_count: usize,
+    /// True if a grounding hint was injected into retry_context.
+    pub hint_injected: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Identifies which tier of the SRANI grounding chain produced a `ResearcherGroundingEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroundingSource {
+    SpecAnchor,
+    #[default]
+    LlmResearcher,
+    WebSearch,
+}
+
+/// Emitted when the researcher adapter fetches external grounding for a C1 retry
+/// or a proactive search-enabled slot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearcherGroundingEvent {
+    pub task_id: TaskId,
+    /// Shared assumption identified among correlated proposals. Empty for proactive slots.
+    pub shared_assumption: String,
+    /// Summary of what external literature says about this topic.
+    pub literature_summary: String,
+    /// `Some("slot_N")` for proactive pre-steps; `None` for reactive C1 groundings.
+    pub slot: Option<String>,
+    /// Which grounding tier produced this event. Defaults to `LlmResearcher` for
+    /// backward-compatible deserialisation of pre-existing events.
+    #[serde(default)]
+    pub source: GroundingSource,
+}
+
+/// Emitted when Phase 2.6 domain coverage falls below `domain_coverage_threshold`.
+/// Non-fatal by default; fatal when `require_bivariate_cg = true`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiversityGuardDegradedEvent {
+    pub task_id: TaskId,
+    /// Human-readable explanation (e.g. "coverage 0.25 < threshold 0.40").
+    pub reason: String,
+    /// Fraction of corpus domains covered by the slot assignment.
+    pub coverage_score: f64,
+    /// All domain tags assigned across all slots (flattened).
+    pub slot_domains: Vec<String>,
 }
 
 /// Emitted when a review gate fires and routes a proposal to a reviewer explorer for approval.
@@ -708,6 +837,35 @@ pub struct ApprovalResolvedEvent {
     pub decided_at_ms: u64,
 }
 
+/// Emitted after the pre-execution thinking loop completes (or is skipped when disabled).
+/// Consumers can assert `iterations_run >= 1` to verify the loop fired.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingLoopCompletedEvent {
+    pub task_id: TaskId,
+    /// False when `thinking_loop.enabled = false`; all other fields are zero/empty.
+    pub enabled: bool,
+    pub iterations_run: u32,
+    pub coverage_score: f64,
+    /// Char count of the final `shared_understanding` string (keeps event small).
+    pub shared_understanding_len: usize,
+    /// Names of the archetypes selected in the final iteration (empty when disabled).
+    pub archetypes: Vec<String>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Emitted inside `patch_ensemble_p_from_oracle` when the oracle has accumulated enough
+/// observations (n >= 10) to replace the heuristic p_mean with the empirical pass rate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleCalibrationPatchedEvent {
+    pub task_id: TaskId,
+    pub oracle_pass_rate: f64,
+    pub n_observations: usize,
+    pub p_mean_before: f64,
+    pub p_mean_after: f64,
+    pub rho_mean: f64,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
 ///
 /// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
@@ -789,6 +947,24 @@ pub enum H2AIEvent {
     ApprovalResolved(ApprovalResolvedEvent),
     /// Wraps [`VerifierComparisonEvent`]: dual-run verifier comparison data point.
     VerifierComparison(VerifierComparisonEvent),
+    /// Per-proposal shadow auditor outcome (GAP-C2 shadow mode).
+    ShadowAudit(ShadowAuditorResultEvent),
+    /// Domain promoted to two-auditor majority-vote mode by ShadowAuditorAccumulator.
+    AuditDomainPromoted(AuditDomainPromotedEvent),
+    /// Domain demoted from majority-vote mode (disagreement rate fell below threshold/2).
+    AuditDomainDemoted(AuditDomainDemotedEvent),
+    /// C1 correlated ensemble warning — low Jaccard CV detected post-Phase-3.
+    CorrelatedEnsemble(CorrelatedEnsembleWarning),
+    /// Researcher grounding event — external knowledge fetched for C1 retry or proactive slot.
+    ResearcherGrounding(ResearcherGroundingEvent),
+    /// C3 domain coverage degradation — slot assignment covers insufficient corpus domains.
+    DiversityGuardDegraded(DiversityGuardDegradedEvent),
+    /// SRANI correlated fabrication warning — shared ungrounded entities detected across proposals.
+    CorrelatedFabrication(CorrelatedFabricationEvent),
+    /// Pre-execution thinking loop completed (or was skipped). Always emitted per task.
+    ThinkingLoopCompleted(ThinkingLoopCompletedEvent),
+    /// Oracle accumulated enough observations to replace heuristic p_mean with pass_rate.
+    OracleCalibrationPatched(OracleCalibrationPatchedEvent),
 }
 
 impl H2AIEvent {

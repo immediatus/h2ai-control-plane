@@ -28,7 +28,7 @@ impl BanditArm {
 
 /// Thompson Sampling bandit state for N (agent count) selection.
 ///
-/// Arms are keyed by N value (1..=min(6, N_max_USL)).
+/// Arms are keyed by N value (1..=min(bandit_n_max_arms, N_max_USL)).
 /// Phased activation:
 /// - Phase 0 (k_tasks < cfg.bandit_phase0_k): return max arm (N_max_USL); no update.
 /// - Phase 1 (phase0_k ≤ k_tasks < phase1_k): ε-greedy TS.
@@ -47,10 +47,16 @@ pub struct BanditState {
 
 impl BanditState {
     /// Create a new BanditState with a warm prior centered on `n_max_usl`.
-    pub fn new(n_max_usl: u32, adapter_version_hash: u64) -> Self {
-        let arm_keys: Vec<u32> = (1..=n_max_usl.clamp(1, 6)).collect();
-        let arms = warm_prior(n_max_usl, &arm_keys);
-        let initial_prior = warm_prior(n_max_usl, &arm_keys);
+    pub fn new(
+        n_max_usl: u32,
+        adapter_version_hash: u64,
+        max_arms: u32,
+        prior_sigma: f64,
+        prior_strength: f64,
+    ) -> Self {
+        let arm_keys: Vec<u32> = (1..=n_max_usl.clamp(1, max_arms)).collect();
+        let arms = warm_prior(n_max_usl, &arm_keys, prior_sigma, prior_strength);
+        let initial_prior = warm_prior(n_max_usl, &arm_keys, prior_sigma, prior_strength);
         Self {
             arms,
             k_tasks: 0,
@@ -145,11 +151,15 @@ impl BanditState {
 
 /// Build a warm prior `BTreeMap<N, BanditArm>` with a Gaussian weight centered on `n_max_usl`.
 ///
-/// σ=2: arms within 2 of N_max_USL get meaningful prior weight;
-/// arms far from N_max_USL start near Beta(1, 6) — weighted against but not excluded.
-pub fn warm_prior(n_max_usl: u32, arm_keys: &[u32]) -> BTreeMap<u32, BanditArm> {
-    let sigma_sq = 4.0_f64; // σ=2 → σ²=4
-    let prior_strength = 5.0_f64;
+/// `prior_sigma` controls width: arms within `prior_sigma` of N_max_USL get meaningful weight;
+/// arms far from N_max_USL start near Beta(1, prior_strength+1) — weighted against but not excluded.
+pub fn warm_prior(
+    n_max_usl: u32,
+    arm_keys: &[u32],
+    prior_sigma: f64,
+    prior_strength: f64,
+) -> BTreeMap<u32, BanditArm> {
+    let sigma_sq = prior_sigma * prior_sigma;
     arm_keys
         .iter()
         .map(|&n| {
@@ -180,7 +190,7 @@ mod tests {
     fn warm_prior_arm_at_n_max_has_highest_mean() {
         let n_max = 4u32;
         let keys: Vec<u32> = (1..=6).collect();
-        let prior = warm_prior(n_max, &keys);
+        let prior = warm_prior(n_max, &keys, 2.0, 5.0);
         let mean_at_n_max = prior[&n_max].mean();
         for (&n, arm) in &prior {
             if n != n_max {
@@ -197,7 +207,7 @@ mod tests {
     #[test]
     fn warm_prior_distant_arm_weighted_against() {
         // N=1 when N_max=6: distance=5 → weight ≈ exp(-25/8) ≈ 0.044 → alpha ≈ 1.22, beta ≈ 5.78
-        let prior = warm_prior(6, &[1u32, 6]);
+        let prior = warm_prior(6, &[1u32, 6], 2.0, 5.0);
         let mean_1 = prior[&1].mean();
         let mean_6 = prior[&6].mean();
         assert!(
@@ -210,7 +220,7 @@ mod tests {
 
     #[test]
     fn select_phase0_returns_n_max_arm() {
-        let state = BanditState::new(4, 0);
+        let state = BanditState::new(4, 0, 6, 2.0, 5.0);
         let cfg = cfg();
         // k_tasks = 0 < phase0_k = 10 → Phase 0
         for _ in 0..20 {
@@ -220,7 +230,7 @@ mod tests {
 
     #[test]
     fn update_increments_k_tasks() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         assert_eq!(state.k_tasks, 0);
         state.update(4, None, Some(0.8));
         assert_eq!(state.k_tasks, 1);
@@ -228,7 +238,7 @@ mod tests {
 
     #[test]
     fn phase1_activates_at_phase0_k() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         let cfg = cfg();
         // Advance to k_tasks = phase0_k = 10 (just entering Phase 1)
         for _ in 0..10 {
@@ -248,7 +258,7 @@ mod tests {
 
     #[test]
     fn tier1_pass_increments_alpha() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         let alpha_before = state.arms[&4].alpha;
         state.update(4, Some(true), None);
         assert!(
@@ -256,14 +266,14 @@ mod tests {
             "Tier 1 pass must increment alpha by 1"
         );
         assert!(
-            (state.arms[&4].beta - warm_prior(4, &[4])[&4].beta).abs() < 1e-9,
+            (state.arms[&4].beta - warm_prior(4, &[4], 2.0, 5.0)[&4].beta).abs() < 1e-9,
             "Tier 1 pass must not change beta"
         );
     }
 
     #[test]
     fn tier1_fail_increments_beta() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         let beta_before = state.arms[&4].beta;
         state.update(4, Some(false), None);
         assert!(
@@ -275,7 +285,7 @@ mod tests {
     #[test]
     fn tier3_soft_update_score_0_8() {
         // score=0.8 → alpha += 0.8, beta += 0.2
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         let alpha_before = state.arms[&3].alpha;
         let beta_before = state.arms[&3].beta;
         state.update(3, None, Some(0.8));
@@ -291,8 +301,8 @@ mod tests {
 
     #[test]
     fn tier1_overrides_tier3_when_both_present() {
-        let mut state_t1 = BanditState::new(4, 0);
-        let mut state_t3 = BanditState::new(4, 0);
+        let mut state_t1 = BanditState::new(4, 0, 6, 2.0, 5.0);
+        let mut state_t3 = BanditState::new(4, 0, 6, 2.0, 5.0);
 
         // Update with Tier 1 pass + Tier 3 score=0.5
         state_t1.update(4, Some(true), Some(0.5));
@@ -308,7 +318,7 @@ mod tests {
             (alpha_t1 - alpha_t3).abs()
         );
         // More precisely: Tier 1 adds exactly 1.0, Tier 3 would add 0.5
-        let prior_alpha = warm_prior(4, &[4])[&4].alpha;
+        let prior_alpha = warm_prior(4, &[4], 2.0, 5.0)[&4].alpha;
         assert!(
             (alpha_t1 - (prior_alpha + 1.0)).abs() < 1e-9,
             "Tier 1 must add exactly 1.0 to alpha"
@@ -319,7 +329,7 @@ mod tests {
 
     #[test]
     fn soft_reset_decay_0_3_preserves_70_percent() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         // Train heavily on arm 4: add 100 successes
         for _ in 0..100 {
             state.update(4, Some(true), None);
@@ -340,13 +350,13 @@ mod tests {
 
     #[test]
     fn soft_reset_decay_1_returns_to_prior() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         for _ in 0..50 {
             state.update(4, Some(true), None);
         }
         state.soft_reset(1.0);
 
-        let prior = warm_prior(4, &(1u32..=4).collect::<Vec<_>>());
+        let prior = warm_prior(4, &(1u32..=4).collect::<Vec<_>>(), 2.0, 5.0);
         for (&n, arm) in &state.arms {
             let p = &prior[&n];
             assert!(
@@ -360,7 +370,7 @@ mod tests {
 
     #[test]
     fn optimizer_hint_nudges_lower_arm_when_current_is_near_optimal() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         // Force arm 4 to near-optimal mean by adding many successes
         for _ in 0..200 {
             state.update(4, Some(true), None);
@@ -379,7 +389,7 @@ mod tests {
 
     #[test]
     fn optimizer_hint_skipped_when_suggested_n_not_lower() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         let arms_before: Vec<(u32, f64, f64)> = state
             .arms
             .iter()
@@ -400,7 +410,7 @@ mod tests {
 
     #[test]
     fn bandit_state_serde_roundtrip() {
-        let state = BanditState::new(4, 42);
+        let state = BanditState::new(4, 42, 6, 2.0, 5.0);
         let json = serde_json::to_string(&state).expect("serialize");
         let restored: BanditState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state.k_tasks, restored.k_tasks);
@@ -409,8 +419,26 @@ mod tests {
     }
 
     #[test]
+    fn warm_prior_uses_custom_sigma_and_strength() {
+        // sigma=1 (tighter), strength=2 → arm at N_max: weight=exp(0)=1 → alpha = 2*1+1=3.0, beta = 2*(1-1)+1=1.0
+        let prior = warm_prior(4, &[4u32], 1.0, 2.0);
+        let alpha_at_max = prior[&4].alpha;
+        let beta_at_max = prior[&4].beta;
+        assert!((alpha_at_max - 3.0).abs() < 1e-9, "alpha={alpha_at_max}");
+        assert!((beta_at_max - 1.0).abs() < 1e-9, "beta={beta_at_max}");
+    }
+
+    #[test]
+    fn bandit_new_respects_max_arms_ceiling() {
+        // max_arms=3 → arms are [1,2,3] even when n_max_usl=6
+        let state = BanditState::new(6, 0, 3, 2.0, 5.0);
+        let max_arm = *state.arms.keys().last().unwrap();
+        assert_eq!(max_arm, 3, "max arm must be clamped to max_arms=3");
+    }
+
+    #[test]
     fn bandit_update_after_task_raises_k_tasks() {
-        let mut state = BanditState::new(4, 0);
+        let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
         assert_eq!(state.k_tasks, 0);
         state.update(3, None, Some(0.85));
         assert_eq!(state.k_tasks, 1);

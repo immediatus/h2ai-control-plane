@@ -19,6 +19,7 @@ fn make_proposal(task_id: TaskId, text: &str) -> ProposalEvent {
         adapter_kind: AdapterKind::CloudGeneric {
             endpoint: "mock".into(),
             api_key_env: "NONE".into(),
+            model: None,
         },
         timestamp: Utc::now(),
     }
@@ -38,6 +39,7 @@ async fn verification_passes_high_score() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -73,6 +75,7 @@ async fn verification_fails_low_score() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config,
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -104,6 +107,7 @@ async fn verification_parallel_multiple_proposals() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -135,6 +139,7 @@ async fn verification_parse_error_neutral_score() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -166,6 +171,7 @@ async fn verification_evaluator_empty_output_neutral_score() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -203,6 +209,7 @@ async fn verification_score_exactly_at_threshold_passes() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config,
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(out.passed.len(), 1, "score exactly at threshold must pass");
@@ -218,6 +225,7 @@ async fn verification_empty_proposals_returns_empty_output() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
     assert!(out.passed.is_empty());
@@ -235,6 +243,7 @@ async fn verification_score_clamped_above_one() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(out.passed.len(), 1, "clamped score must still pass");
@@ -271,6 +280,7 @@ async fn verification_all_proposals_fail_below_threshold() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config,
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(out.passed.len(), 0, "all below hard threshold must fail");
@@ -289,6 +299,7 @@ async fn verification_aggregate_score_used_for_passed() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(out.passed.len(), 1);
@@ -325,6 +336,7 @@ async fn verification_json_schema_predicate_passes_valid_json() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -365,6 +377,7 @@ async fn verification_length_range_predicate_rejects_long_output() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -400,6 +413,7 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: new_eval_cache(),
+        consensus_passes: 1,
     })
     .await;
 
@@ -452,6 +466,7 @@ async fn eval_cache_reuses_score_for_similar_proposals() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: Arc::clone(&cache),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(first.passed.len(), 1);
@@ -465,6 +480,7 @@ async fn eval_cache_reuses_score_for_similar_proposals() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: Arc::clone(&cache),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(second.passed.len(), 1);
@@ -509,6 +525,7 @@ async fn eval_cache_does_not_reuse_for_dissimilar_proposals() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: Arc::clone(&cache),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(first.passed.len(), 1);
@@ -523,6 +540,7 @@ async fn eval_cache_does_not_reuse_for_dissimilar_proposals() {
         evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
         config: VerificationConfig::default(),
         eval_cache: Arc::clone(&cache),
+        consensus_passes: 1,
     })
     .await;
     assert_eq!(second.passed.len(), 1);

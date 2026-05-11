@@ -1,8 +1,11 @@
 pub mod approval_reaper;
 pub mod constraint_source;
+pub mod debug_record;
 pub mod error;
 pub mod metrics;
 pub mod oracle;
 pub mod recovery;
+pub mod rho_ema;
 pub mod routes;
+pub mod shadow_auditor;
 pub mod state;

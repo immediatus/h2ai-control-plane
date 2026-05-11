@@ -5,7 +5,10 @@ use tantivy::schema::Value;
 use tantivy::schema::{Schema, STORED, TEXT};
 use tantivy::{Index, TantivyDocument};
 
-/// RRF constant from Cormack et al. 2009. Lower k → top ranks matter more.
+/// Reciprocal Rank Fusion constant k=60 from Cormack, Clarke & Buettcher (SIGIR 2009).
+/// Value 60 was chosen as optimal across TREC datasets; it prevents rank-1 documents
+/// from dominating. Not operator-configurable — changing it would invalidate the
+/// published optimality claim.
 pub const RRF_K: f64 = 60.0;
 
 pub fn rrf_fuse(ranked_lists: &[Vec<(usize, f64)>], k: f64) -> Vec<(usize, f64)> {

@@ -172,10 +172,13 @@ impl CalibrationHarness {
                 EnsembleCalibration::from_measured_p(
                     input.cfg.baseline_accuracy_proxy,
                     cg_mean_val,
-                    9,
+                    input.cfg.calibration_max_ensemble_size,
                 )
             } else {
-                EnsembleCalibration::from_cg_mean(cg_mean_val, 9)
+                EnsembleCalibration::from_cg_mean(
+                    cg_mean_val,
+                    input.cfg.calibration_max_ensemble_size,
+                )
             };
             (
                 pairs,
@@ -719,5 +722,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn calibration_max_ensemble_size_bounds_condorcet_search() {
+        // A config capping max ensemble at 3 must produce n_optimal ≤ 3
+        let cfg = h2ai_config::H2AIConfig {
+            calibration_max_ensemble_size: 3,
+            ..Default::default()
+        };
+        let ec = h2ai_types::sizing::EnsembleCalibration::from_cg_mean(
+            0.7,
+            cfg.calibration_max_ensemble_size,
+        );
+        assert!(
+            ec.n_optimal <= 3,
+            "n_optimal must be ≤ calibration_max_ensemble_size=3, got {}",
+            ec.n_optimal
+        );
     }
 }

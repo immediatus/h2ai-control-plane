@@ -176,6 +176,7 @@ impl MergeEngine {
         let resolved = MergeResolvedEvent {
             task_id,
             resolved_output,
+            j_eff: None,
             timestamp: Utc::now(),
         };
 

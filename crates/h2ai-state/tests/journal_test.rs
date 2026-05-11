@@ -23,6 +23,7 @@ async fn append_and_replay_preserves_order() {
         .append(H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: tid.clone(),
             resolved_output: "done".into(),
+            j_eff: None,
             timestamp: Utc::now(),
         }))
         .await

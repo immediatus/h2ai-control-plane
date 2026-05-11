@@ -1,0 +1,14 @@
+# H2AI Control Plane — local single-workstation deployment override
+# Merged on top of reference.toml at startup.
+# Only values that differ from reference.toml defaults belong here.
+
+nats_url = "nats://nats:4222"
+
+[safety]
+profile = "development"
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 3
+max_archetypes     = 3
+coverage_threshold = 0.70

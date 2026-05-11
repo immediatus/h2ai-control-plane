@@ -62,15 +62,34 @@ The runtime uses an effective β driven by Hamming CG:
 β_eff = β₀ × (1 − CG_mean)        bounded at β₀ when CG_mean = 0
 ```
 
-> **Note (GAP-B1):** `β_eff = β₀ × (1 − CG_mean)` is an empirical heuristic, not a consequence derived from USL theory. The functional form is fitted from merge-phase timing data; the correct form is an open research question.
+> **Note (GAP-B1, derived form):** `β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation
+> under one key assumption: constraint conflict resolution cost is linear in conflict count. If
+> the expected conflict rate between any two adapters is `(1 − CG_mean)` (fraction of constraints
+> where they disagree), and resolution cost per conflict is proportional to β₀, then:
+> `β_eff ∝ β₀ × (1 − CG_mean)`. The linear form follows directly.
+>
+> The derivation breaks if conflict resolution is super-linear (e.g. due to "Lost in the Middle"
+> attention degradation in long synthesis contexts). The context-aware formula `β_ctx(N)` in §2.3
+> handles this case. Whether super-linearity is significant is an open empirical question (GAP-B1).
+>
+> **GAP-D1 critical note:** the current calibration measures `β₀` from API round-trip latency,
+> not constraint conflict count. A fast local LLM produces small β₀ and large N_max — the opposite
+> of the correct direction for a single-model deployment. See gaps.md INNOVATION-2 for the
+> conflict-count β signal that corrects this.
 
-Setting `dX/dN = 0` gives the ensemble ceiling:
+Setting `dX/dN = 0` gives the ensemble cost ceiling:
 
 ```
 N_max = round(√((1 − α) / β_eff))
 ```
 
-A one-σ confidence interval `(n_max_lo, n_max_hi)` is propagated from the empirical CG variance: `n_at_cg(CG_mean ± cg_std_dev)`.
+> **N_max is a cost ceiling, not a quality target.** USL was derived for CPU/network throughput;
+> no published work validates USL N_max as a quality ceiling for LLM ensembles. The quality
+> target is `n_it_optimal` (§5.1). The planning logic uses `min(n_it_optimal, N_max)`.
+> See gaps.md GAP-A2 and INNOVATION-4.
+
+A one-σ confidence interval `(n_max_lo, n_max_hi)` is propagated from the **sample** CG variance
+(`cg_std_dev` uses Bessel-corrected variance `/ (n−1)`): `n_at_cg(CG_mean ± cg_std_dev)`.
 
 ### 2.1 Two layers of cost — orchestration vs. synthesis
 
@@ -172,13 +191,40 @@ p_mean   = 0.5 + CG_mean / 2
 rho_mean = 1 − CG_mean
 ```
 
-`EnsembleCalibration::from_measured_p` accepts a directly measured baseline accuracy from `scripts/baseline_eval.py` and switches `prediction_basis` from `Heuristic` to `Empirical`.
+> **Proxy status (GAP-B2, GAP-B5):** Both formulas are operational conventions without derivation.
+>
+> `p_mean = 0.5 + CG_mean / 2` assumes CG_mean is a linear proxy for individual agent accuracy
+> (CG=0 → p=0.5, CG=1 → p=1.0). The oracle accumulator already measures the empirical p
+> (oracle pass rate). When `oracle_calibration_basis >= 1` (≥10 observations), `from_measured_p`
+> is the correct path and should be called automatically. See gaps.md INNOVATION-1.
+>
+> `rho_mean = 1 − CG_mean` assumes low constraint agreement implies high error correlation. The
+> direction is contested (see gaps.md GAP-B5). It is replaced by the online ρ_EMA from
+> verification score Pearson correlation once 30 task observations exist (INNOVATION-3).
 
-`n_optimal` is the N that maximises `(Q(N, p, ρ) − p) / N` — the marginal Condorcet gain per adapter — capped at `max_n` (default 9 in production config).
+`EnsembleCalibration::from_measured_p` accepts a directly measured baseline accuracy (from the
+oracle accumulator or from `compare.py`) and switches `prediction_basis` from `Heuristic` to
+`Empirical`. This path should be triggered automatically from the oracle accumulator rather than
+requiring manual operator intervention.
 
-### 5.1 Information-theoretic ceiling
+`n_optimal` is the N that maximises `(Q(N, p, ρ) − p) / N` — the marginal Condorcet gain per
+adapter — capped at `max_n` (default 9 in production config).
 
-Source: `n_it_optimal(rho)`. Returns the smallest N where `(1 − ρ)^(N−1) < 0.5`, i.e. where the marginal information gain drops below half the per-adapter entropy. Matches the Condorcet `n_optimal` within ±1 for ρ ∈ [0.3, 0.95].
+### 5.1 Information-theoretic ceiling (primary quality target)
+
+Source: `n_it_optimal(rho)`. Returns the smallest N where `(1 − ρ)^(N−1) < 0.5`, i.e. where the
+marginal information gain drops below half the per-adapter entropy:
+
+```
+N_IT = ceil(log(0.5) / log(1 − ρ))    [information-theoretic optimal N]
+```
+
+Derivation: marginal information contribution of agent k is `I_k = H(X) × (1−ρ)^(k−1)`. N_IT
+is where this drops below H(X)/2, after which adding agents yields diminishing returns regardless
+of cost. This derivation is self-contained and does not require the USL domain-transfer assumption.
+
+Matches `condorcet_n_optimal` within ±1 for ρ ∈ [0.3, 0.95]. **This is the primary quality
+target; N_max_USL is the cost ceiling.** Planning logic: `min(N_IT, N_max_USL)`. See INNOVATION-4.
 
 ### 5.2 Physical enforcement of the independence requirement
 
@@ -186,13 +232,13 @@ The CJT independence requirement is not just a mathematical axiom — it is a ph
 
 **Shared state isolation.** `WasmExecutor` runs scripts in a `wasmtime` sandbox with no WASI imports: no filesystem, no network, no host mutation. An agent cannot contaminate another agent's state space via code execution. `McpExecutor` enforces read-only access (`read_file`, `list_directory` only) at the executor layer regardless of backend capability. Agents that read the same resource get the same content and diverge only through their own reasoning — the intended source of independent diversity.
 
-**Affinity bias elimination.** `VerifierExplorerFamilyConflict` is a hard gate in `h2ai-orchestrator/src/engine.rs` that fires before the MAPE-K loop. When the explorer pool and the verification adapter share a provider family and `cfg.allow_single_family = false` (the default), the task fails immediately with `MultiplicationConditionFailure::VerifierExplorerFamilyConflict`. This is not retryable — no MAPE-K retry can fix a deployment topology where the judge and the defendant share the same pre-training biases. The constraint is architectural.
+**Affinity bias elimination.** `VerifierExplorerFamilyConflict` is a hard gate in `h2ai-orchestrator/src/engine.rs` that fires before the MAPE-K loop. When the explorer pool and the verification adapter share a provider family and `cfg.safety.family_constraint = RequireDiverse` (production/strict default), the task fails immediately with `MultiplicationConditionFailure::VerifierExplorerFamilyConflict`. This is not retryable — no MAPE-K retry can fix a deployment topology where the judge and the defendant share the same pre-training biases. The constraint is architectural.
 
 **Serial fraction protection.** The TaoAgent TAO loop runs entirely inside the edge agent binary. No tool call crosses the NATS boundary during generation. α captures only the genuinely serial phases: constraint compilation, topology provisioning, and merge. The tool-call loop itself is fully parallel across N agents and contributes zero to α. This directly protects N_max from being driven toward 1 by accumulated NATS round-trip latency.
 
 ### 5.3 Honest limitation
 
-The CJT is a theorem about **independent voters**. The system uses `(1 − ρ)` as a correction term, but it does *not* directly measure ρ — it proxies it from `1 − CG_mean` (Hamming) or `1 − N_eff / N` (cosine). When two adapters from the same family hallucinate the same answer, both proxies underestimate the true correlation. Physical enforcement (§5.2) reduces the contamination surface but cannot eliminate shared pre-training data as a source of correlated failure. Empirical baseline accuracy from `scripts/baseline_eval.py` upgrades `PredictionBasis::Heuristic → Empirical` for the p estimate; the ρ estimate remains a proxy.
+The CJT is a theorem about **independent voters**. The system uses `(1 − ρ)` as a correction term. The ρ estimate starts as a proxy (`1 − CG_mean`) and upgrades to an empirical EMA once 30 task observations accumulate: `RhoEmaState` in `h2ai-api/src/rho_ema.rs` tracks per-adapter-pair Pearson score products and sets `prediction_basis = Empirical` on the `EnsembleCalibration`. Similarly, p_mean upgrades from `0.5 + CG_mean / 2` to oracle pass rate once 10 observations exist. Physical enforcement (§5.2) reduces the contamination surface but cannot eliminate shared pre-training data as a source of correlated failure.
 
 ---
 
@@ -241,7 +287,31 @@ This event never blocks task close. It is an observability signal, not a control
 
 ---
 
-## 8. Merge Strategy Selection
+## 8. Ensemble Efficiency Index (j_eff)
+
+Source: `h2ai-api/src/routes/tasks.rs::compute_j_eff`. Emitted as `j_eff: Option<f64>` on every `MergeResolvedEvent`.
+
+```
+j_eff = Q_realized / Q_ceiling
+
+Q_realized = condorcet_quality(n_valid, filter_ratio, rho_mean)
+Q_ceiling  = condorcet_quality(n_agents, p_mean, 0.0)
+
+where filter_ratio = n_valid / n_agents
+```
+
+`Q_ceiling` is the theoretical quality bound for N agents at the calibrated p_mean with zero correlation — the best the committee could achieve. `Q_realized` is the quality bound actually achieved by the n_valid proposals that passed verification. The ratio measures what fraction of the theoretical ceiling the ensemble realised.
+
+Interpretation:
+- **j_eff ≈ 1.0** — the filter removed few proposals and ensemble diversity was well-used.
+- **j_eff ≈ 0** — either very few proposals survived (low n_valid) or high correlation eroded the quality gain (`rho_mean ≈ 1`).
+- **j_eff = None** — Q_ceiling ≤ 0 (degenerate calibration: p_mean = 0, n_agents = 0).
+
+**Dynamic threshold:** The MAPE-K gate uses `j_eff_min = pareto_weights.diversity × thinking_coverage_score`. When the thinking loop is disabled or produces zero coverage, `thinking_coverage_score = 0.0` and the gate is inactive. When the thinking loop runs to completion (`coverage_score ≥ coverage_threshold`), the gate tightens proportionally to the diversity weight.
+
+---
+
+## 9. Merge Strategy Selection
 
 Source: `crates/h2ai-types/src/sizing.rs::MergeStrategy::from_role_costs`.
 
@@ -264,7 +334,47 @@ else                                          → ScoreOrdered
 
 ---
 
-## 9. Attribution
+## 10. Correlated Fabrication Index (SRANI)
+
+Source: `crates/h2ai-orchestrator/src/srani_gate.rs`, `crates/h2ai-orchestrator/src/srani_grounding.rs`.
+
+SRANI (Specification-Relative Architectural Noun Intersection) measures entity-level cross-proposal fabrication — distinct from the token-level Jaccard CV in §6.
+
+### 9.1 CFI — Correlated Fabrication Index
+
+For each proposal `i`, extract the set of architectural noun entities `E_i` that appear in the proposal but are absent from the task specification. The Correlated Fabrication Index is:
+
+```
+ungrounded_i = E_i \ spec_entities
+CFI = max_{i ≠ j} |ungrounded_i ∩ ungrounded_j| / max(|ungrounded_i|, |ungrounded_j|)
+```
+
+CFI ∈ [0, 1]. CFI = 0 means no two proposals share any fabricated entity. CFI = 1 means at least one pair of proposals shares all fabricated entities — strong cross-proposal correlated fabrication signal.
+
+### 9.2 Adaptive sigmoid gate
+
+Rather than static thresholds, injection pressure is computed as:
+
+```
+injection_pressure = σ((CFI − μ) / T)
+σ(x) = 1 / (1 + exp(−x))
+```
+
+- `μ` — EMA of observed CFI values: `μ_new = (1 − α) × μ_old + α × CFI`, `α = srani.ema_alpha` (default 0.20)
+- `T` — sigmoid temperature (`srani.temperature`, default 0.15): lower = sharper cliff around μ
+- Cold start: `μ = 0.45` until count ≥ 5 observations
+
+When `injection_pressure ≥ srani.gate_threshold` (default 0.50), `SraniGroundingChain::resolve` is called.
+
+### 9.3 EMA properties
+
+The EMA tracks the system's operating CFI regime. With α = 0.20, the effective memory horizon is approximately 5 tasks (`1/α`). Tasks in a low-CFI regime build a low baseline, so genuine spikes trigger grounding. Tasks in a sustained high-CFI regime raise the baseline, preventing every wave from triggering.
+
+Persistence: μ and count are written to NATS KV bucket `H2AI_ESTIMATOR` key `"srani_adaptive_state"` after each task and loaded at startup. This prevents cold-start reset across process restarts.
+
+---
+
+## 11. Attribution
 
 Source: `crates/h2ai-orchestrator/src/attribution.rs::HarnessAttribution::compute`.
 
@@ -288,12 +398,12 @@ Bootstrap intervals over CG samples (`bootstrap_interval`, 1000 resamples) provi
 
 ---
 
-## 10. Honest Limitations
+## 12. Honest Limitations
 
 The math used in this system is calibrated to specific assumptions. They are listed here so they are not forgotten:
 
 - **CJT independence.** The theorem assumes independent voters. The runtime corrects with `(1 − ρ)`, but ρ is proxied — not directly measured. Cross-family pools, single-family warnings, and the cosine N_eff guard mitigate this; they do not eliminate it.
 - **CG as a proxy chain.** The flow is `CG → β_eff → N_max` and `CG → (p, ρ) → Q`. Each arrow is a heuristic. Empirical validation upgrades `p` to measured; ρ remains a proxy.
-- **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 reduces but does not solve this.
+- **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 (cosine N_eff diversity guard), Phase 3.1 (token-Jaccard CV joint check), and Phase 3.2 (SRANI entity-level CFI with sigmoid-gated grounding) each add a layer of mitigation. None can eliminate shared pre-training data as a source of correlated failure — they reduce the surface, not eliminate it.
 - **Synthesis gain is local.** `synthesis_gain` is measured against the same verification adapter that scored the individual proposals. A verifier blind spot inflates both terms equally and cancels out.
 - **No oracle.** Without a `q_measured` from an external oracle, `q_confidence` is the only quality signal and it measures the system's self-confidence, not correctness. The bootstrap interval reflects CG variance, not ground-truth uncertainty.

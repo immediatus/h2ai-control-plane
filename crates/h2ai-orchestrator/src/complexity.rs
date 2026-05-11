@@ -1,5 +1,6 @@
 use chrono::Utc;
 use futures::future::join_all;
+use h2ai_config::prompts::{PROBE_SYSTEM_PREFIX, PROBE_TASK};
 use h2ai_config::TaskComplexityConfig;
 use h2ai_constraints::complexity::compute_corpus_complexity_with_coefficients;
 use h2ai_constraints::eval::eval_sync;
@@ -294,9 +295,8 @@ pub async fn run_probe(input: ProbeInput<'_>) -> TaskComplexityAssessedEvent {
     } = input;
     let probe_reqs: Vec<ComputeRequest> = (0..cfg.n_probe)
         .map(|_| ComputeRequest {
-            system_context: format!("[PROBE_MODE: structure assessment only]\n{system_context}"),
-            task: "Briefly outline your approach to this task. Focus on which constraints apply."
-                .into(),
+            system_context: format!("{PROBE_SYSTEM_PREFIX}\n{system_context}"),
+            task: PROBE_TASK.as_str().into(),
             tau: h2ai_types::sizing::TauValue::new(cfg.probe_tau.clamp(0.05, 0.95))
                 .unwrap_or_else(|_| h2ai_types::sizing::TauValue::new(0.5).unwrap()),
             max_tokens: cfg.probe_max_tokens,

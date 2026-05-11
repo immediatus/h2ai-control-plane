@@ -4,19 +4,14 @@
 
 version: '3.8'
 
-x-h2ai-env: &h2ai-env
-  H2AI_NATS_URL: nats://nats-0:4222,nats://nats-1:4222,nats://nats-2:4222
-  H2AI_CONSTRAINT_CORPUS_PATH: /adr
-  H2AI_LISTEN_ADDR: 0.0.0.0:8080
-  H2AI_METRICS_ADDR: 0.0.0.0:9090
-  H2AI_MAX_BLOCKING_THREADS: "8"
-  H2AI_MAX_RETRIES: "3"
-  H2AI_CALIBRATION_TASKS: "3"
-  H2AI_J_EFF_THRESHOLD: "0.4"
-  H2AI_PLAN: server
-  H2AI_OTEL_ENDPOINT: http://jaeger:4317
-  RUST_LOG: h2ai=info
-  RUST_BACKTRACE: "1"
+x-h2ai-common: &h2ai-common
+  image: h2ai-control-plane:local
+  restart: unless-stopped
+  volumes:
+    - ./h2ai.toml:/etc/h2ai/h2ai.toml:ro
+  environment:
+    RUST_LOG: h2ai=info
+    RUST_BACKTRACE: "1"
 
 x-nats-common: &nats-common
   image: nats:2-alpine
@@ -63,15 +58,10 @@ services:
 
   # ── H2AI control plane (2 replicas) ───────────────────────────────────────
   h2ai-0:
+    <<: *h2ai-common
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: h2ai-control-plane:local
-    restart: unless-stopped
-    environment:
-      <<: *h2ai-env
-    volumes:
-      - ../../adr:/adr:ro
     depends_on:
       nats-0:
         condition: service_healthy
@@ -81,12 +71,7 @@ services:
         condition: service_healthy
 
   h2ai-1:
-    image: h2ai-control-plane:local
-    restart: unless-stopped
-    environment:
-      <<: *h2ai-env
-    volumes:
-      - ../../adr:/adr:ro
+    <<: *h2ai-common
     depends_on:
       h2ai-0:
         condition: service_started

@@ -63,6 +63,7 @@ fn apply_proposal_increments_completed_and_sets_generating() {
             adapter_kind: AdapterKind::CloudGeneric {
                 endpoint: "http://example.com".into(),
                 api_key_env: "KEY".into(),
+                model: None,
             },
             timestamp: Utc::now(),
         }),
@@ -152,6 +153,7 @@ fn apply_merge_resolved_sets_resolved() {
         H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: tid.clone(),
             resolved_output: "final answer".into(),
+            j_eff: None,
             timestamp: Utc::now(),
         }),
     );
@@ -270,6 +272,7 @@ async fn replay_reconstructs_resolved_task_state() {
         &H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: tid.clone(),
             resolved_output: "final".into(),
+            j_eff: None,
             timestamp: Utc::now(),
         }),
     )
@@ -344,6 +347,7 @@ async fn snapshot_written_and_recovered_via_replay() {
         &H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: tid.clone(),
             resolved_output: "final".into(),
+            j_eff: None,
             timestamp: Utc::now(),
         }),
     )

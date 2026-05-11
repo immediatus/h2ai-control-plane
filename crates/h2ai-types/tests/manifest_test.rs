@@ -18,6 +18,7 @@ fn explorer_slot_config_new_fields_round_trip() {
         cot_style: CotStyle::DevilsAdvocate,
         focus_mandate: "Responsible for CONSTRAINT-001 and CONSTRAINT-002.".into(),
         rejection_criteria: "Find: the most likely way an attacker exploits this.".into(),
+        ..Default::default()
     };
     let json = serde_json::to_string(&slot).unwrap();
     let back: ExplorerSlotConfig = serde_json::from_str(&json).unwrap();
@@ -133,12 +134,14 @@ fn manifest_with_slot_configs_roundtrips_json() {
                     cot_style: CotStyle::FirstPrinciples,
                     focus_mandate: String::new(),
                     rejection_criteria: "Irreversible technical debt.".into(),
+                    ..Default::default()
                 },
                 ExplorerSlotConfig {
                     role_frame: "You are a security engineer.".into(),
                     cot_style: CotStyle::DevilsAdvocate,
                     focus_mandate: String::new(),
                     rejection_criteria: "Attacker exploit path.".into(),
+                    ..Default::default()
                 },
             ],
         },

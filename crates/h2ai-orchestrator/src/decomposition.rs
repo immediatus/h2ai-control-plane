@@ -1,3 +1,7 @@
+use h2ai_config::prompts::{
+    DECOMPOSITION_STEP1_SYSTEM, DECOMPOSITION_STEP1_TASK, DECOMPOSITION_STEP2_SYSTEM,
+    DECOMPOSITION_STEP2_TASK, DECOMPOSITION_STEP3_SYSTEM, DECOMPOSITION_STEP3_TASK,
+};
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate};
 use h2ai_context::embedding::{cosine_similarity, EmbeddingModel};
 use h2ai_types::adapter::{AdapterError, ComputeRequest, IComputeAdapter};
@@ -7,26 +11,6 @@ use h2ai_types::sizing::TauValue;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use thiserror::Error;
-
-// ── Step 1: Failure Mode Analysis ────────────────────────────────────────────
-// The LLM reads actual constraint rubrics and surfaces counter-intuitive requirements.
-const STEP1_SYSTEM: &str = "\
-You are a failure mode analyst. Your job is to read constraint requirements and \
-identify the specific requirements that general-purpose engineers miss on first pass — \
-not the obvious ones, but the ones that cause production incidents.";
-
-// ── Step 2: Role Frame Design ─────────────────────────────────────────────────
-// The LLM designs personas anchored to the failure modes surfaced in Step 1.
-const STEP2_SYSTEM: &str = "\
-You are designing expert reviewer personas for a technical committee. Each persona \
-must be defined by what they notice FIRST when reading a proposal — anchored to \
-specific professional experience with a concrete failure type, not a generic title.";
-
-// ── Step 3: JSON Assembly ─────────────────────────────────────────────────────
-// The LLM formats the designed roles as a JSON array. Narrow formatting task only.
-const STEP3_SYSTEM: &str = "\
-You are a JSON formatter. Convert structured expert role descriptions into a precise \
-JSON array. Output only valid JSON — no markdown fences, no explanation.";
 
 #[derive(Debug, Error)]
 pub enum DecompositionError {
@@ -76,6 +60,10 @@ struct RawSlot {
     focus_mandate: Option<String>,
     #[serde(default, deserialize_with = "coerce_to_opt_string")]
     rejection_criteria: Option<String>,
+    #[serde(default)]
+    constraint_domains: Vec<String>,
+    #[serde(default)]
+    search_enabled: bool,
 }
 
 fn raw_to_cot(s: &str) -> CotStyle {
@@ -125,6 +113,8 @@ pub fn parse_decomposition_response(
             cot_style: raw_to_cot(&s.cot_style),
             focus_mandate: s.focus_mandate.unwrap_or_default(),
             rejection_criteria: s.rejection_criteria.unwrap_or_default(),
+            constraint_domains: s.constraint_domains,
+            search_enabled: s.search_enabled,
         })
         .collect();
 
@@ -237,6 +227,8 @@ fn domain_to_slot(domain: &str, constraint_ids: &[String]) -> ExplorerSlotConfig
             rejection_criteria: "The single most likely way an attacker exploits \
                                   or bypasses this proposal."
                 .into(),
+            constraint_domains: vec![domain.to_string()],
+            ..Default::default()
         },
         "performance" | "latency" | "throughput" | "scalability" => ExplorerSlotConfig {
             role_frame: "You are a systems performance engineer. Your first concern is \
@@ -250,6 +242,8 @@ fn domain_to_slot(domain: &str, constraint_ids: &[String]) -> ExplorerSlotConfig
             rejection_criteria: "The single most likely way this proposal degrades \
                                   under high concurrency or a load spike."
                 .into(),
+            constraint_domains: vec![domain.to_string()],
+            ..Default::default()
         },
         "correctness" | "accuracy" | "validation" | "integrity" => ExplorerSlotConfig {
             role_frame: "You are a formal verification engineer. Your first concern is \
@@ -263,6 +257,8 @@ fn domain_to_slot(domain: &str, constraint_ids: &[String]) -> ExplorerSlotConfig
             rejection_criteria: "The single invariant violation or edge case that \
                                   produces incorrect output under valid inputs."
                 .into(),
+            constraint_domains: vec![domain.to_string()],
+            ..Default::default()
         },
         "consistency" | "distributed" | "concurrency" | "synchronization" => ExplorerSlotConfig {
             role_frame: "You are a distributed systems architect. Your first concern is \
@@ -276,6 +272,8 @@ fn domain_to_slot(domain: &str, constraint_ids: &[String]) -> ExplorerSlotConfig
             rejection_criteria: "The single consistency violation under concurrent \
                                   operations or partial network failure."
                 .into(),
+            constraint_domains: vec![domain.to_string()],
+            ..Default::default()
         },
         "compliance" | "regulatory" | "legal" | "audit" => ExplorerSlotConfig {
             role_frame: "You are a regulatory compliance analyst. Your first concern is \
@@ -289,6 +287,8 @@ fn domain_to_slot(domain: &str, constraint_ids: &[String]) -> ExplorerSlotConfig
             rejection_criteria: "The single compliance gap that would fail a \
                                   regulatory audit."
                 .into(),
+            constraint_domains: vec![domain.to_string()],
+            ..Default::default()
         },
         _ => ExplorerSlotConfig {
             role_frame: "You are a senior software architect. Your first concern is \
@@ -302,6 +302,8 @@ fn domain_to_slot(domain: &str, constraint_ids: &[String]) -> ExplorerSlotConfig
             rejection_criteria: "The single architectural decision that creates \
                                   irreversible technical debt."
                 .into(),
+            constraint_domains: vec![domain.to_string()],
+            ..Default::default()
         },
     }
 }
@@ -316,6 +318,8 @@ fn default_slot() -> ExplorerSlotConfig {
         rejection_criteria: "The single architectural decision that creates \
                               irreversible technical debt."
             .into(),
+        constraint_domains: vec![],
+        search_enabled: false,
     }
 }
 
@@ -333,8 +337,12 @@ fn extract_rubric(pred: &ConstraintPredicate) -> String {
     }
 }
 
-/// Step 1 task: give the LLM actual rubric text and ask it to surface what engineers miss.
-fn step1_analyze_task(description: &str, corpus: &[ConstraintDoc]) -> String {
+/// Build the Step 1 task by rendering the template with the constraint corpus content.
+fn step1_analyze_task(
+    description: &str,
+    corpus: &[ConstraintDoc],
+    thinking_context: &str,
+) -> String {
     let constraint_block = if corpus.is_empty() {
         "No constraints loaded. Analyze based on general engineering best practices.".to_string()
     } else {
@@ -347,69 +355,67 @@ fn step1_analyze_task(description: &str, corpus: &[ConstraintDoc]) -> String {
                     doc.domains.join(", ")
                 };
                 let rubric = extract_rubric(&doc.predicate);
-                let hint = doc
-                    .remediation_hint
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_string();
+                let hint = doc.remediation_hint.as_deref().unwrap_or("").to_string();
                 format!(
-                    "CONSTRAINT {id} [{domains}]\n\
-                     Rubric: {rubric}\n\
-                     Remediation hint: {hint}",
+                    "CONSTRAINT {id} [{domains}]\nRubric: {rubric}\nRemediation hint: {hint}",
                     id = doc.id,
                 )
             })
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-
-    format!(
-        "TASK: {description}\n\n\
-         ACTIVE CONSTRAINTS:\n{constraint_block}\n\n\
-         For each constraint domain above, answer three questions:\n\
-         1. What is the single most counter-intuitive requirement \
-            (the one a general-purpose engineer misses on first pass)?\n\
-         2. What is the typical violation pattern — how does the design usually fail this?\n\
-         3. What epistemic blindspot causes engineers to miss it \
-            (wrong mental model, missing context, false assumption)?"
-    )
+    let context_block = if thinking_context.is_empty() {
+        String::new()
+    } else {
+        format!("PRIOR THINKING CONTEXT:\n{}\n\n", thinking_context)
+    };
+    DECOMPOSITION_STEP1_TASK.render(&[
+        ("thinking_context", &context_block),
+        ("description", description),
+        ("constraints", &constraint_block),
+    ])
 }
 
-/// Step 2 task: given the failure analysis, design concrete expert personas.
-fn step2_design_roles_task(step1_analysis: &str, n_target: usize) -> String {
-    format!(
-        "FAILURE MODE ANALYSIS:\n{step1_analysis}\n\n\
-         Design exactly {n_target} expert reviewer personas for a proposal review committee.\n\n\
-         For each failure mode identified above, create one expert whose role is defined \
-         by direct professional experience with that specific failure:\n\
-         - role_frame: Start with \"You are a [role] who has [specific experience with this failure].\"\n\
-           The role must change what the expert notices FIRST in any proposal — \
-           not a generic title, but an identity anchored to the failure mode.\n\
-         - reasoning_style: Choose backward_chaining (trace from the failure backward), \
-           devil_s_advocate (prove the design is wrong), \
-           first_principles (derive from invariants, ignore precedent), or \
-           step_by_step (enumerate every state transition).\n\
-         - what_they_hunt: In one sentence, the specific failure this expert looks for \
-           before anything else.\n\n\
-         The final role ({n_target}) is an integration reviewer who detects cascade failures \
-         between the domains above — what breaks when both failure modes occur simultaneously.\n\n\
-         Describe each role in plain text. Be concrete about the failure experience."
-    )
+/// Build the Step 2 task with explicit domain-to-slot assignments.
+///
+/// Each domain gets exactly one role; an integration slot is appended.
+/// Passing domain names explicitly prevents the LLM from over-expanding one domain.
+fn step2_design_roles_task(step1_analysis: &str, constraint_domains: &[String]) -> String {
+    let domain_assignments: String = constraint_domains
+        .iter()
+        .enumerate()
+        .map(|(i, d)| format!("  Role {}: covers the \"{}\" domain.\n", i + 1, d))
+        .collect();
+    let integration_idx = (constraint_domains.len() + 1).to_string();
+    let n_total = integration_idx.clone();
+    DECOMPOSITION_STEP2_TASK.render(&[
+        ("analysis", step1_analysis),
+        ("n_total", &n_total),
+        ("domain_assignments", &domain_assignments),
+        ("integration_idx", &integration_idx),
+    ])
 }
 
-/// Step 3 task: format the designed roles as a JSON array.
-fn step3_assemble_json_task(step2_roles: &str, n_max: usize) -> String {
-    format!(
-        "EXPERT ROLES:\n{step2_roles}\n\n\
-         Convert these roles into a JSON array. Maximum {n_max} elements.\n\
-         Each element must have exactly these fields:\n\
-         - \"role_frame\": string. 1-2 sentences starting with \"You are a [specific role].\"\n\
-         - \"cot_style\": exactly one of: \"step_by_step\", \"devil_s_advocate\", \
-           \"first_principles\", \"backward_chaining\", \"none\"\n\
-         - \"focus_mandate\": string. The constraint domain(s) this expert covers.\n\
-         - \"rejection_criteria\": string. The specific failure mode this expert hunts.\n\n\
-         Output ONLY the JSON array. No markdown, no explanation."
-    )
+/// Build the Step 3 task for JSON assembly from the designed roles.
+///
+/// `corpus_domains` is the authoritative vocabulary for `constraint_domains` fields.
+/// Passing it here ensures the LLM emits only verbatim corpus strings, preventing
+/// vocabulary mismatch between generated tags and the coverage validator.
+fn step3_assemble_json_task(step2_roles: &str, n_max: usize, corpus_domains: &[String]) -> String {
+    let domains_str = if corpus_domains.is_empty() {
+        "[] — no corpus domains defined, always use empty array".to_string()
+    } else {
+        let quoted: Vec<String> = corpus_domains
+            .iter()
+            .map(|d| format!("\"{}\"", d))
+            .collect();
+        format!("[{}]", quoted.join(", "))
+    };
+    DECOMPOSITION_STEP3_TASK.render(&[
+        ("roles", step2_roles),
+        ("n_max", &n_max.to_string()),
+        ("corpus_domains", &domains_str),
+    ])
 }
 
 /// Run one adapter call, returning the output text or a DecompositionError.
@@ -440,6 +446,7 @@ async fn call_step(
 ///
 /// Returns `Err` if any step fails or the final JSON cannot be parsed.
 /// No silent fallback — the caller publishes `TaskFailed` on error.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_decomposition_agent(
     description: &str,
     corpus: &[ConstraintDoc],
@@ -448,32 +455,79 @@ pub async fn run_decomposition_agent(
     n_max: usize,
     adapter: &dyn IComputeAdapter,
     embedding_model: Option<&dyn EmbeddingModel>,
+    step_max_tokens: u64,
+    json_max_tokens: u64,
+    thinking_context: &str,
 ) -> Result<Vec<ExplorerSlotConfig>, DecompositionError> {
-    let _ = pareto_weights; // Pareto weights inform n_target at call site; not needed in prompt pipeline.
+    let _ = (pareto_weights, n_target); // n_target is recomputed from domains here; pareto weights unused.
+
+    // Collect the unique constraint domains from the corpus — Step 2 anchors one role per domain.
+    let constraint_domains: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut ordered = Vec::new();
+        for doc in corpus {
+            for d in &doc.domains {
+                if seen.insert(d.clone()) {
+                    ordered.push(d.clone());
+                }
+            }
+        }
+        ordered.sort();
+        ordered
+    };
 
     // Step 1: Identify what engineers miss in each constraint domain.
-    let analysis =
-        call_step(adapter, STEP1_SYSTEM, step1_analyze_task(description, corpus), 1024).await?;
+    let analysis = call_step(
+        adapter,
+        DECOMPOSITION_STEP1_SYSTEM.as_str(),
+        step1_analyze_task(description, corpus, thinking_context),
+        step_max_tokens,
+    )
+    .await?;
 
-    // Step 2: Design expert personas anchored to those failure modes.
+    // Step 2: Design one expert persona per domain (explicit domain list prevents over-expansion).
     let roles = call_step(
         adapter,
-        STEP2_SYSTEM,
-        step2_design_roles_task(&analysis, n_target),
-        1024,
+        DECOMPOSITION_STEP2_SYSTEM.as_str(),
+        step2_design_roles_task(&analysis, &constraint_domains),
+        step_max_tokens,
     )
     .await?;
 
     // Step 3: Format roles as JSON. Narrow formatting task — no creative reasoning.
+    // Pass corpus_domains so the LLM emits verbatim vocabulary strings, preventing
+    // vocabulary mismatch between generated constraint_domains and the coverage validator.
     let json_output = call_step(
         adapter,
-        STEP3_SYSTEM,
-        step3_assemble_json_task(&roles, n_max),
-        2048,
+        DECOMPOSITION_STEP3_SYSTEM.as_str(),
+        step3_assemble_json_task(&roles, n_max, &constraint_domains),
+        json_max_tokens,
     )
     .await?;
 
-    let slots = parse_decomposition_response(&json_output)?;
+    let mut slots = parse_decomposition_response(&json_output)?;
+
+    // Coverage check: ensure every constraint domain has at least one slot covering it.
+    // If the LLM dropped a domain, add a corpus_fallback slot for the missing ones.
+    for domain in &constraint_domains {
+        let covered = slots.iter().any(|s| {
+            s.focus_mandate
+                .to_lowercase()
+                .contains(&domain.to_lowercase())
+                || s.role_frame.to_lowercase().contains(&domain.to_lowercase())
+        });
+        if !covered {
+            // Find constraints for this domain and inject a fallback slot.
+            let domain_ids: Vec<String> = corpus
+                .iter()
+                .filter(|doc| doc.domains.iter().any(|d| d == domain))
+                .map(|doc| doc.id.clone())
+                .collect();
+            if !domain_ids.is_empty() {
+                slots.push(domain_to_slot(domain, &domain_ids));
+            }
+        }
+    }
 
     let limit = n_max.max(1);
     let pruned = if let Some(model) = embedding_model {

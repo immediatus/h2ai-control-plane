@@ -110,7 +110,7 @@ NATS is the authoritative event log and the KV backing store. The runtime expect
 | `H2AI_TELEMETRY` (`h2ai.telemetry.>`) | File | MaxAge 7d, MaxBytes 10 GB | 3 | Adapter telemetry. |
 | `H2AI_CALIBRATION` KV | — | TTL none (invalidated by `POST /calibrate`) | 3 | Latest calibration. |
 | `H2AI_AGENT_MEMORY` KV | — | per-session keys | 3 | Session memory. |
-| `H2AI_ESTIMATOR` KV | — | — | 1 | TaO estimator + bandit state. |
+| `H2AI_ESTIMATOR` KV | — | — | 1 | TAO multiplier estimator + bandit state + SRANI adaptive EMA (`srani_adaptive_state` key). |
 | `H2AI_SNAPSHOTS` KV | — | History 1 | 1 | Per-task snapshots. |
 
 JetStream message size limit defaults to 1 MB. `payload_offload_threshold_bytes` (default 524 288) governs when `system_context` is written to a content-addressed blob and replaced with a hash reference (`ContextPayload::Ref`) so the NATS message stays well under the limit.
@@ -168,7 +168,7 @@ curl -sN http://localhost:8080/calibrate/cal_.../events
 - **Hamming CG matrix.** Pairwise constraint-profile agreement on the configured corpus. Used to populate `cg_samples` and feed `EigenCalibration::from_cg_matrix`.
 - **Cosine N_eff prior.** When an `EmbeddingModel` is configured, the harness embeds the calibration prompts, builds the cosine kernel, normalises K = C/N, and computes `n_eff_cosine_prior` via `EigenCalibration::from_cosine_matrix`. Without an embedding model it falls back to a closed-form estimate `1 + cg_fallback × (N − 1)`.
 - **Family flags.** `single_family_warning` is set when all non-Mock adapters share a provider family. `explorer_verification_family_match` is set when the verifier and explorers come from the same non-Mock family — a flag for self-preference judge bias.
-- **Calibration safety gate.** When `cfg.allow_single_family = false` (default), a single-family pool aborts calibration with `CalibrationFailed`. Override only with the documented warning understood.
+- **Calibration safety gate.** When `family_constraint = "require_diverse"` (production/strict default), a single-family pool aborts calibration with `CalibrationFailed`. Set `family_constraint = "single_family_ok"` (development default) only with the documented warning understood.
 
 ### When to recalibrate
 

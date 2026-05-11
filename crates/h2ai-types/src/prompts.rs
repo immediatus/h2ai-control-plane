@@ -78,11 +78,63 @@ pub const ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT: &str = concat!(
 
 // ── Auditor ───────────────────────────────────────────────────────────────────
 
-/// Auditor approval template. Variables: `{constraints}`, `{proposal}`.
+/// System prompt for the auditor role.
+///
+/// Establishes the adversarial post-incident engineer persona and mandates JSON output.
+/// Kept separate from the user-level `AUDITOR_PROMPT_TEMPLATE` so the role framing
+/// is not overridden by the explorer's constraint-corpus system context.
+///
+/// # Design rationale — single-family independence
+///
+/// Naive confirmatory prompts ("is this compliant?") produce strong approval bias:
+/// the same model that generated the proposal tends to affirm it (Constitutional AI,
+/// Bai et al. 2022; sycophancy studies on self-evaluation). Two techniques from the
+/// literature restore independence without a separate model family:
+///
+/// 1. **Null-hypothesis reversal** (adversarial framing): treat the proposal as
+///    non-compliant by default; require explicit per-constraint evidence of compliance
+///    before approving. This mirrors the critique step in Constitutional AI and the
+///    adversarial scoring in MT-Bench / LLM-as-Judge (Zheng et al. 2023).
+///
+/// 2. **Anchored chain-of-thought** (Self-Refine, Madaan et al. 2023): force the
+///    model to enumerate each constraint and state a verdict before reaching the
+///    overall decision. Structured CoT dramatically reduces confirmation bias compared
+///    to a single yes/no question (Wei et al. 2022).
+pub const AUDITOR_SYSTEM_PROMPT: &str = concat!(
+    "You are a post-incident engineer. You have been called in after production failures ",
+    "caused by exactly the class of constraints listed below being violated.\n",
+    "Your job is to find whether a proposal contains the same class of bug — ",
+    "NOT to confirm it looks fine.\n\n",
+    "Treat each proposal as guilty until proven innocent. ",
+    "For each constraint, hunt for the specific way it is violated. ",
+    "Only record SATISFIES when you find explicit, concrete evidence in the proposal text.\n\n",
+    "You MUST end your response with a JSON object on its own line — no exceptions:\n",
+    "{\"approved\": <true only if ALL constraints SATISFY>, ",
+    "\"violated\": [\"<constraint-id>\", ...], ",
+    "\"reason\": \"<one line per violated constraint>\"}"
+);
+
+/// `serde(default)` helper for `AuditorConfig::system_prompt`.
+pub fn auditor_system_prompt_default() -> String {
+    AUDITOR_SYSTEM_PROMPT.into()
+}
+
+/// Adversarial auditor user-message template. Variables: `{constraints}`, `{proposal}`.
+///
+/// Sent as the user turn; the system turn uses `AUDITOR_SYSTEM_PROMPT`.
+/// The full constraint predicate text lives in the system context compiled by
+/// `compiler.rs`; `{constraints}` here is the list of IDs used as anchors.
 pub const AUDITOR_PROMPT_TEMPLATE: &str = concat!(
-    "Review the following proposal for compliance with constraints: {constraints}.\n\n",
+    "Constraints to audit: {constraints}\n\n",
+    "For each constraint ID:\n",
+    "  1. What does this constraint prohibit or require?\n",
+    "  2. Does the proposal contain the prohibited pattern or omit the required one?\n",
+    "  3. Verdict: SATISFIES or VIOLATES — cite the exact line or phrase.\n\n",
     "Proposal:\n{proposal}\n\n",
-    "Respond ONLY with JSON: {\"approved\": true, \"reason\": \"<brief explanation>\"}"
+    "After your per-constraint analysis, output JSON on its own line:\n",
+    "{{\"approved\": <true only if every constraint is SATISFIES>, ",
+    "\"violated\": [\"<constraint-id>\", ...], ",
+    "\"reason\": \"<one line per violated constraint>\"}}"
 );
 
 // ── TAO retry loop ────────────────────────────────────────────────────────────

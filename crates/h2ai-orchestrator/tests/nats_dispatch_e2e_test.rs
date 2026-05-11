@@ -34,6 +34,7 @@ impl IComputeAdapter for FixedCostAdapter {
             adapter_kind: AdapterKind::CloudGeneric {
                 endpoint: "fixed://localhost".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
             tokens_used: None,
         })
@@ -45,6 +46,7 @@ impl IComputeAdapter for FixedCostAdapter {
         KIND.get_or_init(|| AdapterKind::CloudGeneric {
             endpoint: "fixed://localhost".into(),
             api_key_env: "NONE".into(),
+            model: None,
         })
     }
 }

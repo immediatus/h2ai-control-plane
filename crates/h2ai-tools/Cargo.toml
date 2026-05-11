@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-web-search      = ["dep:reqwest"]
+web-search      = []
 wasm            = ["dep:wasmtime"]
 mcp-filesystem  = []
 enterprise      = ["web-search", "wasm", "mcp-filesystem"]
@@ -18,7 +18,7 @@ async-trait = { workspace = true }
 futures     = { workspace = true }
 serde_json  = { workspace = true }
 tracing     = { workspace = true }
-reqwest     = { workspace = true, optional = true }
+reqwest     = { workspace = true }
 wasmtime    = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

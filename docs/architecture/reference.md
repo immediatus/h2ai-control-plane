@@ -83,7 +83,7 @@ curl -X POST http://localhost:8080/calibrate
 
 Response: `{"calibration_id": "cal_...", "status": "accepted"}`. Calibration must finish before tasks can be submitted; in-flight task requests during a calibration return `503`. The harness writes the result to `H2AI_CALIBRATION` KV; subsequent `GET /calibrate/current` returns the most recent `CalibrationCompletedEvent` payload.
 
-When `cfg.allow_single_family = false` (default), calibration aborts with `CalibrationFailed` if all non-Mock adapters share a provider family. Set `allow_single_family = true` to proceed with a warning.
+With `family_constraint = "require_diverse"` (the production/strict default), calibration aborts with `CalibrationFailed` if all non-Mock adapters share a provider family. The development default is `"single_family_ok"` — use that to proceed with a warning.
 
 ---
 
@@ -123,6 +123,11 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `SubtaskCompleted` | `SubtaskCompletedEvent` | subtask |
 | `PendingApproval` | `PendingApprovalEvent` | post-merge (HITL gate) |
 | `ApprovalResolved` | `ApprovalResolvedEvent` | post-approval |
+| `CoherenceIncomplete` | `CoherenceIncompleteEvent` | post-merge (observability) |
+| `CorrelatedEnsemble` | `CorrelatedEnsembleWarning` | 3.1 (C1 detection) |
+| `CorrelatedFabrication` | `CorrelatedFabricationEvent` | 3.2 (SRANI) |
+| `ResearcherGrounding` | `ResearcherGroundingEvent` | 3.1 / 3.2 / proactive |
+| `DiversityGuardDegraded` | `DiversityGuardDegradedEvent` | 2.6 (domain coverage) |
 
 ### Key payloads
 
@@ -228,7 +233,7 @@ InsufficientPoolDiversity { n_eff, threshold }          // Phase 2.6
 VerifierExplorerFamilyConflict { explorer_family, verifier_family }   // hard gate, pre-MAPE-K
 ```
 
-`VerifierExplorerFamilyConflict` is evaluated once, before the MAPE-K retry loop, in `h2ai-orchestrator/src/engine.rs`. It fires when `calibration.explorer_verification_family_match = true` and `cfg.allow_single_family = false`. Unlike the other variants — which may be resolved by MAPE-K retries — this variant marks the task permanently failed. No retry can resolve a deployment topology where the verification judge and the explorer pool share a provider family. The fix is a configuration change: route the verification adapter to a different model family and recalibrate.
+`VerifierExplorerFamilyConflict` is evaluated once, before the MAPE-K retry loop, in `h2ai-orchestrator/src/engine.rs`. It fires when `calibration.explorer_verification_family_match = true` and `cfg.safety.family_constraint = RequireDiverse` (production/strict default). Unlike the other variants — which may be resolved by MAPE-K retries — this variant marks the task permanently failed. No retry can resolve a deployment topology where the verification judge and the explorer pool share a provider family. The fix is a configuration change: route the verification adapter to a different model family and recalibrate.
 
 #### TaskAttributionEvent
 
@@ -274,6 +279,76 @@ struct ApprovalResolvedEvent {
     operator_id: String,
     reviewer_note: Option<String>,
     decided_at_ms: u64,
+}
+```
+
+#### CoherenceIncompleteEvent
+
+Emitted at task close when the surviving ensemble does not reach coherent closure over the constraint corpus. Non-blocking — the task still succeeds.
+
+```rust
+struct CoherenceIncompleteEvent {
+    task_id: TaskId,
+    uncovered_domains: Vec<String>,         // constraint domains where pruned proposals had violations
+    active_contradictions: Vec<(String, String, String)>, // (explorer_a_id, explorer_b_id, domain)
+    retries: u32,
+    timestamp: DateTime<Utc>,
+}
+```
+
+#### CorrelatedEnsembleWarning
+
+Emitted (Phase 3.1) when the token-Jaccard pairwise CV check detects semantic clustering. Fires only when BOTH conditions hold: `cv < correlated_hallucination_cv_threshold` AND `mean_jaccard_distance < correlated_hallucination_min_jaccard_floor`.
+
+```rust
+struct CorrelatedEnsembleWarning {
+    task_id: TaskId,
+    cv: f64,                    // coefficient of variation of pairwise Jaccard distances
+    mean_jaccard_distance: f64, // mean pairwise Jaccard distance across all proposal pairs
+    retry_count: u32,
+}
+```
+
+#### CorrelatedFabricationEvent
+
+Emitted (Phase 3.2) when SRANI detects shared ungrounded architectural entities across proposals. CFI = max pairwise overlap of per-proposal ungrounded entity sets (absent from the task spec).
+
+```rust
+struct CorrelatedFabricationEvent {
+    task_id: TaskId,
+    cfi: f64,                               // Correlated Fabrication Index ∈ [0, 1]
+    injection_pressure: f64,               // sigmoid((CFI − μ) / T); 0.0 when adaptive=false
+    shared_ungrounded_entities: Vec<String>,
+    proposal_count: usize,
+    hint_injected: bool,
+    timestamp: DateTime<Utc>,
+}
+```
+
+#### ResearcherGroundingEvent
+
+Emitted when external grounding is fetched — either reactively (C1/SRANI retry) or proactively (slot with `search_enabled: true`).
+
+```rust
+struct ResearcherGroundingEvent {
+    task_id: TaskId,
+    shared_assumption: String,    // assumption detected among correlated proposals (empty for proactive)
+    literature_summary: String,
+    slot: Option<String>,         // Some("slot_N") for proactive pre-steps; None for reactive
+    source: GroundingSource,      // SpecAnchor | LlmResearcher (default) | WebSearch
+}
+```
+
+#### DiversityGuardDegradedEvent
+
+Emitted (Phase 2.6) when the union of slot `constraint_domains` covers less than `domain_coverage_threshold` of the corpus domain set.
+
+```rust
+struct DiversityGuardDegradedEvent {
+    task_id: TaskId,
+    reason: String,               // e.g. "coverage 0.25 < threshold 0.40"
+    coverage_score: f64,
+    slot_domains: Vec<String>,    // all domain tags assigned across all slots (flattened)
 }
 ```
 
@@ -337,7 +412,7 @@ The TOML key is the lower-snake-case Rust field name. The env-var key is the upp
 | `baseline_accuracy_proxy` | `0.0` | When > 0, switches `EnsembleCalibration` to `Empirical` basis. |
 | `auto_baseline_eval` | `false` | Auto-promote to `Empirical` after `auto_baseline_eval_min_tasks`. |
 | `auto_baseline_eval_min_tasks` | `50` | Threshold for auto-promotion. |
-| `allow_single_family` | `false` | Allow calibration to proceed with a monoculture pool. |
+| `family_constraint` | `"single_family_ok"` | `"single_family_ok"` \| `"require_diverse"` \| `"disabled"`. Production profile sets `"require_diverse"`. |
 
 ### MAPE-K and self-optimizer
 
@@ -370,6 +445,29 @@ The TOML key is the lower-snake-case Rust field name. The env-var key is the upp
 | `synthesis_tau` | `0.2` | τ for critique and synthesis adapter calls. |
 | `synthesis_critique_max_tokens` | `1024` | Critique stage budget. |
 | `synthesis_max_tokens` | `2048` | Synthesis stage budget. |
+
+### Correlated Hallucination and SRANI (C1 / GAP-C1)
+
+| Field | Default | Purpose |
+|---|---|---|
+| `correlated_hallucination_cv_threshold` | `0.30` | CV of pairwise Jaccard distances below which C1 fires. Set to `0.0` to disable C1 entirely. |
+| `correlated_hallucination_min_jaccard_floor` | `0.50` | Mean pairwise Jaccard distance must also be **below** this floor for C1 to fire. Joint AND condition prevents spurious retries on genuinely-diverse equidistant ensembles (CV=0 but all distances high). |
+| `correlated_hallucination_min_proposals` | `2` | Minimum proposals required before C1 check runs. |
+| `domain_coverage_threshold` | `0.40` | Minimum fraction of corpus domains that slot `constraint_domains` must cover. Below this, `DiversityGuardDegradedEvent` fires. |
+| `require_bivariate_cg` | `false` | When `true`, tasks fail rather than warn when domain coverage is below threshold. |
+| `[srani]` | — | SRANI correlated fabrication detection (entity-level cross-proposal overlap). |
+| `srani.enabled` | `true` | Set to `false` to skip SRANI check entirely. |
+| `srani.adaptive` | `true` | Use sigmoid gate with EMA-tracked midpoint (`true`) vs. static `warn_threshold`/`inject_threshold` pair (`false`). |
+| `srani.ema_alpha` | `0.20` | EMA smoothing factor for adaptive midpoint. Lower = slower adaptation (longer memory horizon). 0.20 ≈ 5-task memory. |
+| `srani.temperature` | `0.15` | Sigmoid temperature: controls gate sharpness. Lower = sharper cliff around midpoint. |
+| `srani.gate_threshold` | `0.50` | Injection pressure above which grounding hint is injected. |
+| `srani.warn_threshold` | `0.30` | CFI above which `CorrelatedFabricationEvent` is emitted (adaptive=false only). Also the cold-start midpoint lower bound. |
+| `srani.inject_threshold` | `0.60` | CFI above which grounding hint is injected (adaptive=false only). Also the cold-start midpoint upper bound. |
+| `srani.grounding_raw_max_chars` | `4000` | Maximum characters of raw web-search text fed into the distillation step. |
+| `srani.grounding_hint_max_chars` | `1200` | Maximum characters of the grounding statement injected into the explorer hint block. |
+| `srani.grounding_distill` | `true` | When `true` and a researcher adapter is available, distill raw web-search results with the LLM before injection. |
+
+**NATS KV state:** SRANI EMA state (`srani_ema_cfi`, `srani_count`) is persisted at key `"srani_adaptive_state"` in `H2AI_ESTIMATOR`. Cold start: μ = 0.45 (midpoint of default thresholds) until count ≥ 5.
 
 ### Shell Tool
 

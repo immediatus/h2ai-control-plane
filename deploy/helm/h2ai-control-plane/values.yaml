@@ -12,25 +12,15 @@ image:
 imagePullSecrets: []
 
 # ── H2AI runtime config ───────────────────────────────────────────────────────
-config:
-  maxBlockingThreads: 8
-  maxRetries: 3
-  calibrationTasks: 3
-  jEffThreshold: "0.4"
-  plan: cloud
-  logLevel: "h2ai=info"
+# TOML content merged on top of the embedded reference.toml at startup.
+# Add only values that differ from reference.toml defaults.
+config: |
+  [safety]
+  profile = "production"
 
-# Constraint corpus — mount a ConfigMap containing your team's constraint documents and ADRs
-# kubectl create configmap constraint-corpus --from-file=./adr/ -n h2ai
-constraintCorpus:
-  configMapName: constraint-corpus
-  mountPath: /adr
+logLevel: "h2ai=info"
 
 # ── Observability ─────────────────────────────────────────────────────────────
-tracing:
-  enabled: true
-  otlpEndpoint: ""  # e.g. http://jaeger-collector:4317
-
 serviceMonitor:
   # Requires Prometheus Operator (kube-prometheus-stack)
   enabled: false
@@ -42,7 +32,6 @@ serviceMonitor:
 service:
   type: ClusterIP
   port: 80
-  metricsPort: 9090
 
 ingress:
   enabled: false

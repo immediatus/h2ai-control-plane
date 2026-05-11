@@ -57,6 +57,24 @@ fn coordination_threshold_formula_verified() {
 }
 
 #[test]
+fn cg_std_dev_uses_sample_variance() {
+    // Three samples: 0.6, 0.7, 0.8 → mean=0.7, sample variance = (0.01+0+0.01)/2 = 0.01
+    // sample std = 0.1  (population std would be sqrt(0.01*2/3) ≈ 0.0816)
+    let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.6, 0.7, 0.8]).unwrap();
+    let std = cc.cg_std_dev();
+    assert!(
+        (std - 0.1).abs() < 1e-9,
+        "cg_std_dev must use sample variance (n-1): expected 0.1, got {std}"
+    );
+}
+
+#[test]
+fn cg_std_dev_single_sample_is_zero() {
+    let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.7]).unwrap();
+    assert_eq!(cc.cg_std_dev(), 0.0);
+}
+
+#[test]
 fn coherency_coefficients_serde_round_trip() {
     let cc = CoherencyCoefficients::new(0.10, 0.015, vec![0.55, 0.70, 0.62]).unwrap();
     let json = serde_json::to_string(&cc).unwrap();

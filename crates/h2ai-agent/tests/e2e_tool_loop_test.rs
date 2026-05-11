@@ -128,6 +128,7 @@ async fn tao_agent_three_tool_registry_injects_all_schemas_into_system_context()
                 adapter_kind: AdapterKind::CloudGeneric {
                     endpoint: "mock://capture".into(),
                     api_key_env: "NONE".into(),
+                    model: None,
                 },
                 tokens_used: None,
             })

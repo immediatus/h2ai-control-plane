@@ -221,7 +221,8 @@ mod tests {
         assert_eq!(
             family_of(AdapterKind::CloudGeneric {
                 endpoint: "http://x".into(),
-                api_key_env: "K".into()
+                api_key_env: "K".into(),
+                model: None,
             }),
             AdapterFamily::Local
         );

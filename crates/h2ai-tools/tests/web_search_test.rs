@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use h2ai_tools::error::ToolError;
-use h2ai_tools::web_search::{MockSearchBackend, WebSearchBackend, WebSearchExecutor};
+use h2ai_tools::web_search::{
+    GeminiSearchBackend, MockSearchBackend, WebSearchBackend, WebSearchExecutor,
+    WikipediaSearchBackend,
+};
 use h2ai_tools::ToolExecutor;
 use std::sync::{Arc, Mutex};
 
@@ -69,4 +72,72 @@ async fn web_search_executor_rejects_missing_query_field() {
 async fn web_search_schema_has_correct_name() {
     let executor = WebSearchExecutor::new(Box::new(MockSearchBackend::new("x")), 3);
     assert_eq!(executor.schema().name, "web_search");
+}
+
+/// Live: Wikipedia backend — free, no API key, returns real snippets.
+/// Soft-skips only on network error.
+#[tokio::test]
+async fn live_wikipedia_search_returns_real_text() {
+    let backend = WikipediaSearchBackend::new();
+    match backend
+        .search("Redis rate limiting sliding window", 3)
+        .await
+    {
+        Err(e) => eprintln!("Wikipedia unreachable (skipping): {e}"),
+        Ok(text) => {
+            println!("Wikipedia response:\n{text}");
+            assert!(
+                !text.is_empty() && text != "No results found.",
+                "Expected real Wikipedia snippets, got: {text}"
+            );
+            let lower = text.to_lowercase();
+            assert!(
+                lower.contains("rate limit")
+                    || lower.contains("sliding")
+                    || lower.contains("window")
+                    || lower.contains("redis")
+                    || lower.contains("counter"),
+                "Expected at least one relevant keyword;\ngot:\n{text}"
+            );
+        }
+    }
+}
+
+/// Live: Gemini backend with Google Search grounding.
+/// Reads GEMINI_API_KEY from env; soft-skips if absent or quota exhausted.
+#[tokio::test]
+async fn live_gemini_search_returns_real_grounded_text() {
+    let api_key = match std::env::var("GEMINI_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            eprintln!("GEMINI_API_KEY not set — skipping live Gemini search test");
+            return;
+        }
+    };
+
+    let backend = GeminiSearchBackend::new(api_key);
+    match backend
+        .search("Redis sliding window rate limiting algorithm", 5)
+        .await
+    {
+        Err(e) => eprintln!("Gemini API error (skipping): {e}"),
+        Ok(text) => {
+            println!("Gemini grounded response:\n{text}");
+            assert!(
+                !text.is_empty() && text != "No results found.",
+                "Expected real grounded text, got: {text}"
+            );
+            let lower = text.to_lowercase();
+            assert!(
+                lower.contains("redis")
+                    || lower.contains("rate limit")
+                    || lower.contains("sliding")
+                    || lower.contains("window")
+                    || lower.contains("counter")
+                    || lower.contains("token")
+                    || lower.contains("lua"),
+                "Expected at least one relevant technical keyword;\ngot:\n{text}"
+            );
+        }
+    }
 }

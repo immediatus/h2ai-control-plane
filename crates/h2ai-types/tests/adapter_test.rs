@@ -26,6 +26,7 @@ fn compute_response_serde_round_trip() {
         adapter_kind: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
+            model: None,
         },
         tokens_used: None,
     };
@@ -83,6 +84,7 @@ fn label(name: &str) -> std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>
         h2ai_types::config::AdapterKind::CloudGeneric {
             endpoint: "mock://test".into(),
             api_key_env: "NONE".into(),
+            model: None,
         },
     ))
 }

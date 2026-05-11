@@ -16,7 +16,7 @@ spec:
         app: h2ai-control-plane
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
+        prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
       containers:
@@ -26,14 +26,12 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            - name: metrics
-              containerPort: 9090
-          envFrom:
-            - configMapRef:
-                name: h2ai-config
+          env:
+            - name: RUST_LOG
+              value: "h2ai=info"
           volumeMounts:
-            - name: constraint-corpus
-              mountPath: /adr
+            - name: h2ai-config
+              mountPath: /etc/h2ai
               readOnly: true
           livenessProbe:
             httpGet:
@@ -55,6 +53,6 @@ spec:
               cpu: 2
               memory: 4Gi
       volumes:
-        - name: constraint-corpus
+        - name: h2ai-config
           configMap:
-            name: constraint-corpus
+            name: h2ai-config

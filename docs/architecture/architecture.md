@@ -30,8 +30,6 @@ A system that only has the first two loops is a sophisticated coherence engine. 
 
 The stopping criteria are epistemic, not mechanical. The system does not stop because it reached a retry limit — it stops because it has acquired enough knowledge. This is the architectural difference between H2AI and a pipeline with retries.
 
-> **Current state:** TAO and MAPE-K loops are fully implemented. Phase 0 Epistemic Decomposition (Path C, always-on) derives motivated committee roles from the task — GAP-A5 closed. Calibration labels its source (`Measured`/`PartialFit`/`SyntheticPriors`) on `CalibrationCompletedEvent` and `TaskAttributionEvent`, surfaced as a Prometheus gauge and startup warning — GAP-D4 closed. The rubric is withheld from the explorer's context (`include_rubric=false`); the adversarial verifier activates when `rejection_criteria` is present (always true for Path C output) — GAP-A4 architectural fix done. `CoherenceState` (uncovered constraint domains + active contradiction pairs between surviving proposals) is computed per MAPE-K wave and emitted as `CoherenceIncomplete` at task close — observability complete, but `is_closed()` is not yet a loop exit gate. The oracle loop exists as a human approval gate; automated oracle integration is open (GAP-E1).
-
 ---
 
 ## 1. What the system is
@@ -101,11 +99,23 @@ C4Container
 
 A task moves through six phases. Each phase emits one or more events, and every retry restarts at Phase 2.
 
+### Phase −1 — Thinking Loop (optional pre-execution)
+
+When `thinking_loop.enabled = true`, a coverage-convergence brainstorm runs before Phase 0. A sequence of cognitive archetypes are selected via LLM, each brainstorming the task description independently. The loop iterates until `coverage_score ≥ coverage_threshold` (default 0.75) or `max_iterations` is reached.
+
+**Adaptive archetype count:** On iteration 0, all `max_archetypes` are instantiated. On subsequent iterations, the count contracts to `max(2, ceil(max_archetypes × (1 − coverage_score)))` — proportional to how much coverage remains. A quality floor gate prevents contraction if fewer than `expansion_quality_floor` (default 0.30) of archetypes pass the selection filter.
+
+**Temperature scheduling:** `scheduled_tau` decays linearly from `tau_max` (0.85, broad exploration) to `tau_min` (0.20, exploitation) across iterations.
+
+**Tension injection:** When the previous iteration's `ThinkingReport.tensions` is non-empty, the archetype selection prompt receives an explicit instruction to address the named open tensions.
+
+The loop produces a `ThinkingReport { shared_understanding, tensions, coverage_score, iteration }`. The `shared_understanding` string is injected as `{thinking_context}` into the Phase 0 decomposition prompt. The final `coverage_score` is used as the `thinking_coverage_score` for the `j_eff_min` dynamic threshold.
+
 ### Phase 0 — Epistemic Decomposition
 
 Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motivated committee from the task description and constraint corpus. **This phase always runs.** Operator-supplied `slot_configs` are appended to the result as additive context, not as a bypass.
 
-**Path C (production, always):** A pre-dispatch LLM call to the auditor adapter (most capable, τ=0.1) asks: *"What are the N most cognitively distinct expert perspectives needed to solve this problem?"* The structured JSON response is parsed into `Vec<ExplorerSlotConfig>` — each slot has a motivated `role_frame`, `cot_style`, `focus_mandate` (what constraint domains this slot owns), and `rejection_criteria` (the specific failure mode to look for). The count of slots is the motivated N. Returns `Result<Vec<ExplorerSlotConfig>, DecompositionError>` — **failure causes `TaskFailed`; there is no silent fallback.**
+**Path C (production, always):** A pre-dispatch LLM call to the auditor adapter (most capable, τ=0.1) asks: *"What are the N most cognitively distinct expert perspectives needed to solve this problem?"* The structured JSON response is parsed into `Vec<ExplorerSlotConfig>` — each slot has a motivated `role_frame`, `cot_style`, `focus_mandate` (what constraint domains this slot owns), `rejection_criteria` (the specific failure mode to look for), `constraint_domains: Vec<String>` (domain tags owned by this slot — used by the C3 domain coverage guard), and `search_enabled: bool` (when `true`, the researcher adapter is called before Phase 3 generation to provide grounding context). The count of slots is the motivated N. Returns `Result<Vec<ExplorerSlotConfig>, DecompositionError>` — **failure causes `TaskFailed`; there is no silent fallback.**
 
 **Operator context (additive):** If the manifest carries `slot_configs`, they are appended to the Path C result after the LLM response is parsed, then the combined set is re-pruned by orthogonality. They do not bypass decomposition.
 
@@ -158,6 +168,10 @@ Failure produces `MultiplicationConditionFailed` with one of `InsufficientCompet
 
 A separate gate, evaluated only when `cfg.diversity_threshold > 0`. Compares the calibration's `n_eff_cosine_prior` against `1.0 + diversity_threshold`. When the pool's effective independent-adapter count is below the floor, the engine emits a synthetic `ZeroSurvival` with `failure_mode = ModeCollapse` and routes through `RetryPolicy`. This is the fourth multiplication condition: `InsufficientPoolDiversity`. It exists because Hamming CG can mark constraint-profile agreement as "high coordination" while the pool remains semantically near-degenerate (correlated hallucination risk).
 
+**Loud degradation (GAP-C3, 2026-05-11):** When `embedding_model` is `None` (fastembed unconfigured) and `diversity_threshold > 0`, `DiversityGuardDegradedEvent` is emitted to NATS rather than silently falling back to the closed-form `n_eff_cosine_prior`. A startup warning fires when this configuration is detected. When `cfg.require_bivariate_cg = true`, the task fails with `InsufficientPoolDiversity` rather than proceeding in degraded mode.
+
+**Domain coverage guard (C3 pre-loop):** Before the MAPE-K wave loop starts, the engine checks whether the union of `constraint_domains` across all `ExplorerSlotConfig`s covers the corpus domain tag set. Coverage fraction = `|covered| / |corpus_domains|`. Below `cfg.domain_coverage_threshold` (default 0.40), `DiversityGuardDegradedEvent` is emitted. With `require_bivariate_cg = true`, the task fails immediately.
+
 ### Phase 3 — Parallel Generation (TAO)
 
 N explorers run their TAO (Thought–Action–Observation) loops in parallel through the Tokio executor. Each explorer independently:
@@ -168,6 +182,34 @@ N explorers run their TAO (Thought–Action–Observation) loops in parallel thr
 - Produces a `Proposal` event with raw output and token cost — or a `ProposalFailed` event on timeout, OOM, or adapter error.
 
 `GenerationPhaseCompleted` summarises success/failure counts. Adapter rotation offset (set by `ModeCollapse` retries) is applied at adapter selection time so a retry sees a rotated subset of the pool.
+
+### Phase 3.1 — Correlated Hallucination Detection (C1)
+
+After all explorer proposals arrive and before verification, the engine runs the correlated hallucination check when `cfg.correlated_hallucination_cv_threshold > 0.0` and at least `cfg.correlated_hallucination_min_proposals` proposals are available.
+
+`compute_cv(proposals)` (`crates/h2ai-orchestrator/src/correlated_hallucination.rs`) computes all `N×(N−1)/2` pairwise token-Jaccard distances and returns the coefficient of variation. Low CV = proposals cluster semantically = correlated-regime signal. The N = 2 edge case is handled: a single pairwise distance is a one-point distribution (CV = 0 always); `compute_cv` returns `None` for diverse N = 2 (statistically meaningless) and `Some(cv = 0.0)` only for identical N = 2 proposals (definite signal).
+
+When `cv < correlated_hallucination_cv_threshold` **AND** `mean_jaccard_distance < correlated_hallucination_min_jaccard_floor` (default 0.50): (1) `CorrelatedEnsembleWarningEvent` is appended to the output; (2) the **reactive grounding path** invokes `SraniGroundingChain::resolve` — a three-tier escalating chain: `SpecAnchorGrounder` (always, injects spec entities), then `LlmResearcherGrounder` (tier 0, fetches contradiction evidence via the researcher adapter), then `WebSearchGrounder` (tier 1, live web search distilled by LLM); (3) the MAPE-K retry loop `continue`s to the next generation wave. The joint AND condition prevents spurious retries on high-quality diverse ensembles where all pairwise distances are high (CV=0 but not correlated).
+
+**Proactive researcher path** (separate from C1): slots with `search_enabled: true` (set by decomposition STEP3) trigger a researcher pre-pass *before* Phase 3 generation — the researcher fetches domain-specific grounding context that is injected into the slot's system context before any LLM call. This decouples grounding from hallucination detection.
+
+`CorrelatedEnsembleWarning` and `ResearcherGrounding` events are published to NATS via `tasks.rs` after the shadow audit events block.
+
+### Phase 3.2 — SRANI Correlated Fabrication Detection
+
+After the token-Jaccard CV check (Phase 3.1), the engine runs SRANI (Specification-Relative Architectural Noun Intersection) when `cfg.srani.enabled = true`.
+
+`SraniGroundingChain::compute_cfi(proposals, task_spec)` extracts architectural noun entities from each proposal, intersects them with the set absent from the task specification, and computes CFI = max pairwise overlap of per-proposal ungrounded entity sets. CFI ∈ [0, 1]; CFI = 1 means every entity in one proposal's ungrounded set is shared with another proposal — a strong cross-proposal fabrication signal at the entity level (distinct from token-level CV).
+
+**Adaptive sigmoid gate:** Rather than static warn/inject thresholds, injection pressure is computed as `injection_pressure = σ((CFI − μ) / T)` where:
+- `μ` = EMA of observed CFI values (`srani_ema_alpha`, default 0.20, ≈5-task memory horizon), cold-start value 0.45
+- `T` = temperature controlling gate sharpness (`srani_temperature`, default 0.15)
+
+When `injection_pressure ≥ srani_gate_threshold`: `SraniGroundingChain::resolve(ctx, tier)` is called. The chain escalates: tier 0 runs `SpecAnchorGrounder` (always, injects spec entities as alternatives) + `LlmResearcherGrounder` (researcher adapter fetches grounding evidence); tier 1 additionally runs `WebSearchGrounder` (live web search, LLM-distilled). The hint is injected into the next generation wave.
+
+**EMA persistence:** `srani_ema_cfi` and `srani_count` are loaded from NATS KV bucket `H2AI_ESTIMATOR` key `"srani_adaptive_state"` at startup and persisted after each task. The EMA tracks the system's operating regime — tasks in low-CFI regimes use a low baseline, letting genuine spikes trigger grounding; tasks in high-CFI regimes raise the baseline so not every wave triggers.
+
+Emits `CorrelatedFabricationEvent { cfi, injection_pressure, shared_ungrounded_entities, hint_injected }` and optionally `ResearcherGroundingEvent { source: GroundingSource, ... }`.
 
 ### Phase 3.5 — Verification
 
@@ -209,9 +251,7 @@ After each verification round (`all_pruned.extend()`), the engine computes `wave
 
 `is_closed()` returns `true` only when both fields are empty. `wave_coherence` is reused at all exit paths (synthesis bypass, `MergeOutcome::Resolved`) without recomputation. It is traced per-wave at `h2ai.coherence` level.
 
-At task close (in `tasks.rs`), if `!output.coherence_state.is_closed()`, a `CoherenceIncomplete` event is published to NATS before `MergeResolved`, carrying the `uncovered_domains` list and retry count. Callers can use this to know exactly which constraint areas the output does not cover.
-
-> **Current gap:** `is_closed()` drives observability and the `CoherenceIncomplete` event but does not yet gate the retry loop. Wiring it as an early exit condition (when coherent, stop retrying) is the remaining step for GAP-D1 closure.
+At task close (in `tasks.rs`), if `!output.coherence_state.is_closed()`, a `CoherenceIncomplete` event is published to NATS before `MergeResolved`, carrying the `uncovered_domains` list and retry count.
 
 ### MAPE-K loop on zero survival
 

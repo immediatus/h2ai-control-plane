@@ -177,6 +177,11 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             tao_estimator,
             synthesis_adapter: None,
             bandit_state: Some(bandit),
+            shadow_audit_ctx: None,
+            researcher_adapter: None,
+            srani_ema_cfi: 0.45,
+            srani_count: 0,
+            srani_grounding_chain: None,
         };
 
         match ExecutionEngine::run_from_checkpoint(input, checkpoint.clone()).await {
@@ -184,6 +189,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                 let ev = H2AIEvent::MergeResolved(MergeResolvedEvent {
                     task_id: output.task_id.clone(),
                     resolved_output: output.resolved_output.clone(),
+                    j_eff: None,
                     timestamp: chrono::Utc::now(),
                 });
                 if let Err(e) = state.nats.publish_event(&output.task_id, &ev).await {

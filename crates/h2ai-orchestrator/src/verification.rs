@@ -1,5 +1,6 @@
 use dashmap::DashMap;
 use futures::future::join_all;
+use h2ai_config::prompts::VERIFICATION_TASK;
 use h2ai_constraints::eval::eval_sync;
 use h2ai_constraints::types::{
     aggregate_compliance_score, ComplianceResult, CompositeOp, ConstraintDoc, ConstraintPredicate,
@@ -36,6 +37,8 @@ pub struct VerificationInput<'a> {
     pub config: VerificationConfig,
     /// Per-task eval cache. Pass the same `Arc` across retry rounds to share hits within a task.
     pub eval_cache: EvalCache,
+    /// Number of LLM judge passes for Hard LlmJudge constraints. Averaged. Default 1.
+    pub consensus_passes: u8,
 }
 
 pub struct VerificationOutput {
@@ -71,6 +74,7 @@ impl VerificationPhase {
         let max_tokens = input.config.evaluator_max_tokens;
         let record_adversarial_comparison = input.config.record_adversarial_comparison;
         let input_config = input.config.clone();
+        let consensus_passes = input.consensus_passes;
         // Fresh cache for the adversarial pass: sharing the standard cache would pollute
         // standard-score entries with adversarial scores, causing incorrect cache hits
         // on retry waves when the same proposals are re-verified.
@@ -91,6 +95,7 @@ impl VerificationPhase {
                     tau,
                     max_tokens,
                     &cache,
+                    consensus_passes,
                 )
                 .await;
                 (proposal, results, any_cache_hit)
@@ -151,6 +156,7 @@ impl VerificationPhase {
                 evaluator,
                 config: adv_config,
                 eval_cache: eval_cache_for_adv,
+                consensus_passes,
             }))
             .await;
 
@@ -246,6 +252,7 @@ impl VerificationPhase {
                     tau,
                     max_tokens,
                     &cache,
+                    1, // score_proposals uses single-pass scoring (used for TAO estimator)
                 )
                 .await;
                 let score = aggregate_compliance_score(&results);
@@ -265,6 +272,7 @@ impl VerificationPhase {
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
         cache: &EvalCache,
+        consensus_passes: u8,
     ) -> (Vec<ComplianceResult>, bool) {
         // If corpus is empty, fall back to the CoT rubric (G-Eval, arxiv 2303.16634).
         // The default rubric (h2ai_config::prompts::COT_RUBRIC) is criteria-first to reduce
@@ -309,6 +317,12 @@ impl VerificationPhase {
                         .map(|(_, score)| *score)
                 });
 
+                // For Hard constraints, apply multi-pass consensus when consensus_passes > 1.
+                let effective_passes = match &severity {
+                    ConstraintSeverity::Hard { .. } => consensus_passes.max(1),
+                    _ => 1,
+                };
+
                 let (score, hit) = if let Some(score) = cached_score {
                     tracing::debug!(
                         target: "h2ai.verification.cache",
@@ -319,7 +333,13 @@ impl VerificationPhase {
                     (score, true)
                 } else {
                     let score = Self::eval_predicate_async(
-                        &predicate, &output, evaluator, &sp, tau, max_tokens,
+                        &predicate,
+                        &output,
+                        evaluator,
+                        &sp,
+                        tau,
+                        max_tokens,
+                        effective_passes,
                     )
                     .await;
                     cache
@@ -360,26 +380,32 @@ impl VerificationPhase {
         sp: &'a str,
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
+        consensus_passes: u8,
     ) -> Pin<Box<dyn Future<Output = f64> + Send + 'a>> {
         Box::pin(async move {
             match pred {
                 ConstraintPredicate::LlmJudge { rubric } => {
-                    // Apply a per-call timeout so slow local models don't stall verification.
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(600),
-                        Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens),
-                    )
-                    .await
-                    {
-                        Ok(score) => score,
-                        Err(_) => {
-                            tracing::warn!(
-                                target: "h2ai.verification",
-                                "LlmJudge timed out (600s); skipping — score defaults to 0.5"
-                            );
-                            0.5
-                        }
+                    let passes = consensus_passes.max(1) as usize;
+                    let mut scores = Vec::with_capacity(passes);
+                    for _ in 0..passes {
+                        let s = match tokio::time::timeout(
+                            std::time::Duration::from_secs(600),
+                            Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens),
+                        )
+                        .await
+                        {
+                            Ok(score) => score,
+                            Err(_) => {
+                                tracing::warn!(
+                                    target: "h2ai.verification",
+                                    "LlmJudge timed out (600s); skipping — score defaults to 0.5"
+                                );
+                                0.5
+                            }
+                        };
+                        scores.push(s);
                     }
+                    scores.iter().sum::<f64>() / scores.len() as f64
                 }
                 ConstraintPredicate::OracleExecution {
                     test_runner_uri,
@@ -410,7 +436,13 @@ impl VerificationPhase {
                             // Only call LlmJudge if static predicates all passed.
                             for child in deferred {
                                 let s = Self::eval_predicate_async(
-                                    child, output, evaluator, sp, tau, max_tokens,
+                                    child,
+                                    output,
+                                    evaluator,
+                                    sp,
+                                    tau,
+                                    max_tokens,
+                                    consensus_passes,
                                 )
                                 .await;
                                 min_score = min_score.min(s);
@@ -424,7 +456,13 @@ impl VerificationPhase {
                             let mut max_score = 0.0_f64;
                             for child in children {
                                 let s = Self::eval_predicate_async(
-                                    child, output, evaluator, sp, tau, max_tokens,
+                                    child,
+                                    output,
+                                    evaluator,
+                                    sp,
+                                    tau,
+                                    max_tokens,
+                                    consensus_passes,
                                 )
                                 .await;
                                 max_score = max_score.max(s);
@@ -437,7 +475,13 @@ impl VerificationPhase {
                         CompositeOp::Not => {
                             let s = if let Some(child) = children.first() {
                                 Self::eval_predicate_async(
-                                    child, output, evaluator, sp, tau, max_tokens,
+                                    child,
+                                    output,
+                                    evaluator,
+                                    sp,
+                                    tau,
+                                    max_tokens,
+                                    consensus_passes,
                                 )
                                 .await
                             } else {
@@ -539,7 +583,7 @@ impl VerificationPhase {
         // Separate criterion (what to check) from the proposal (what to score).
         // The JSON response format is owned by EVALUATOR_SYSTEM_PROMPT — rubrics must
         // not repeat it; they contain only behavioral pass/fail criteria.
-        let prompt = format!("Criterion:\n{rubric}\n\nProposal:\n{output}");
+        let prompt = VERIFICATION_TASK.render(&[("rubric", rubric), ("output", output)]);
         let req = ComputeRequest {
             system_context: sp.to_owned(),
             task: prompt,
@@ -549,7 +593,7 @@ impl VerificationPhase {
         match evaluator.execute(req).await {
             Ok(resp) => match extract_json_object::<ScoreResponse>(&resp.output) {
                 Some(s) => {
-                    tracing::debug!(
+                    tracing::info!(
                         target: "h2ai.verification",
                         score = s.score,
                         reason = %s.reason,
@@ -560,7 +604,7 @@ impl VerificationPhase {
                 // JSON parse failure: model did not emit a score object.
                 // Fall back to neutral (0.7) so static predicates remain the actual gate.
                 None => {
-                    tracing::debug!(
+                    tracing::info!(
                         target: "h2ai.verification",
                         raw = %resp.output,
                         "LlmJudge response did not contain JSON score object; using neutral 0.7"

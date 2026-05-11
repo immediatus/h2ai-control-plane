@@ -1,6 +1,6 @@
 //! Ensemble calibration diagnostics inspired by weather ensemble rank histograms.
 //!
-//! See docs/research/2026-04-27-innovation-synthesis.md Section 6.
+//! See internal research notes Section 6.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CalibrationState {

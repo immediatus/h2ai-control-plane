@@ -30,6 +30,7 @@ impl FailingAdapter {
             kind: AdapterKind::CloudGeneric {
                 endpoint: "mock://failing".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
         }
     }
@@ -60,6 +61,7 @@ impl TokenCostAdapter {
             kind: AdapterKind::CloudGeneric {
                 endpoint: "mock://token-cost".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
         }
     }
@@ -135,6 +137,7 @@ fn auditor_cfg() -> AuditorConfig {
         adapter: AdapterKind::CloudGeneric {
             endpoint: "mock".into(),
             api_key_env: "NONE".into(),
+            model: None,
         },
         ..Default::default()
     }
@@ -156,7 +159,12 @@ async fn system_solves_well_formed_problem() {
         MockAdapter::new(r#"{"approved": true, "reason": "compliant with ADR-001"}"#.into());
     let cal = run_calibration(&[&ex1 as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
-    let cfg = H2AIConfig::default();
+    // Disable C1 — this test predates correlated-hallucination detection and uses
+    // similar auth proposals intentionally; dedicated c1_ tests cover that path.
+    let cfg = H2AIConfig {
+        correlated_hallucination_cv_threshold: 0.0,
+        ..Default::default()
+    };
     let task_id = TaskId::new();
 
     let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
@@ -188,6 +196,11 @@ async fn system_solves_well_formed_problem() {
         )),
         synthesis_adapter: None,
         bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -259,12 +272,17 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         )),
         synthesis_adapter: None,
         bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err());
     assert!(
-        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted),
+        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted { .. }),
         "expected MaxRetriesExhausted"
     );
 
@@ -319,6 +337,11 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         )),
         synthesis_adapter: None,
         bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -414,6 +437,11 @@ async fn system_resolves_conflict_via_bft_consensus() {
         )),
         synthesis_adapter: None,
         bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -431,5 +459,492 @@ async fn system_resolves_conflict_via_bft_consensus() {
             || out.resolved_output == "high-cost auth solution — stateless ADR-001",
         "expected one of the two valid proposals, got: {}",
         out.resolved_output
+    );
+}
+
+// ── Shadow audit system integration tests ───────────────────────────────────
+
+#[derive(Debug)]
+struct ShadowAdapter {
+    approved: bool,
+    kind: AdapterKind,
+}
+
+impl ShadowAdapter {
+    fn approves() -> Self {
+        Self {
+            approved: true,
+            kind: AdapterKind::Anthropic {
+                api_key_env: "NONE".into(),
+                model: "claude-shadow".into(),
+            },
+        }
+    }
+    fn rejects() -> Self {
+        Self {
+            approved: false,
+            kind: AdapterKind::Anthropic {
+                api_key_env: "NONE".into(),
+                model: "claude-shadow".into(),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl IComputeAdapter for ShadowAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        let body = if self.approved {
+            r#"{"approved": true, "reason": "shadow ok"}"#
+        } else {
+            r#"{"approved": false, "reason": "shadow rejected"}"#
+        };
+        Ok(ComputeResponse {
+            output: body.into(),
+            token_cost: 1,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+        })
+    }
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
+
+/// Shadow mode on + both agree → task resolves, shadow_audit_events populated, disagreement=false.
+#[tokio::test]
+async fn system_shadow_mode_agreement_resolves_task() {
+    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let scorer = scoring_adapter();
+    let primary_auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let shadow = ShadowAdapter::approves();
+    let cal = run_calibration(&[&explorer as &dyn IComputeAdapter]).await;
+    let store = TaskStore::new();
+    let cfg = H2AIConfig::default();
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "stateless JWT auth — ADR-001 compliant".into(),
+    )) as Arc<dyn IComputeAdapter>);
+
+    let mut manifest = default_manifest(1);
+    manifest.constraint_tags = vec!["security".into()];
+
+    let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
+        adapter: Arc::new(shadow) as Arc<dyn IComputeAdapter>,
+        promoted_domains: Default::default(),
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&explorer as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &primary_auditor as &dyn IComputeAdapter,
+        auditor_config: auditor_cfg(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: constraint_corpus(),
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: Some(ctx),
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+    };
+
+    let output = ExecutionEngine::run_offline(input).await.unwrap();
+    assert!(!output.resolved_output.is_empty(), "task must resolve");
+    assert!(
+        !output.shadow_audit_events.is_empty(),
+        "shadow audit events must be populated"
+    );
+    assert!(
+        output.shadow_audit_events.iter().all(|e| !e.disagreement),
+        "all events must have disagreement=false when both auditors agree"
+    );
+}
+
+/// Shadow mode on + shadow rejects (shadow mode, not AND-vote) → task still resolves,
+/// disagreement=true in events, but primary's approve wins.
+#[tokio::test]
+async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
+    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let scorer = scoring_adapter();
+    let primary_auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let shadow = ShadowAdapter::rejects();
+    let cal = run_calibration(&[&explorer as &dyn IComputeAdapter]).await;
+    let store = TaskStore::new();
+    let cfg = H2AIConfig::default();
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "stateless JWT auth — ADR-001 compliant".into(),
+    )) as Arc<dyn IComputeAdapter>);
+
+    // promoted_domains is empty → shadow observe mode, NOT AND-vote
+    let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
+        adapter: Arc::new(shadow) as Arc<dyn IComputeAdapter>,
+        promoted_domains: Default::default(),
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest: default_manifest(1),
+        calibration: cal,
+        explorer_adapters: vec![&explorer as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &primary_auditor as &dyn IComputeAdapter,
+        auditor_config: auditor_cfg(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: constraint_corpus(),
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: Some(ctx),
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+    };
+
+    let output = ExecutionEngine::run_offline(input).await.unwrap();
+    assert!(
+        !output.resolved_output.is_empty(),
+        "task must resolve when not in AND-vote mode"
+    );
+    assert!(
+        output.shadow_audit_events.iter().any(|e| e.disagreement),
+        "at least one event must record disagreement=true"
+    );
+}
+
+/// AND-vote mode active: primary approves, shadow rejects → task must fail.
+#[tokio::test]
+async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
+    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let scorer = scoring_adapter();
+    let primary_auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let shadow = ShadowAdapter::rejects();
+    let cal = run_calibration(&[&explorer as &dyn IComputeAdapter]).await;
+    let store = TaskStore::new();
+    let cfg = H2AIConfig {
+        max_autonomic_retries: 0,
+        ..H2AIConfig::default()
+    };
+    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
+        "stateless JWT auth — ADR-001 compliant".into(),
+    )) as Arc<dyn IComputeAdapter>);
+
+    let mut manifest = default_manifest(1);
+    manifest.constraint_tags = vec!["security".into()];
+
+    // "security" domain is in promoted_domains → AND-vote active
+    let mut promoted = std::collections::HashSet::new();
+    promoted.insert("security".to_string());
+    let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
+        adapter: Arc::new(shadow) as Arc<dyn IComputeAdapter>,
+        promoted_domains: promoted,
+    };
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&explorer as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &primary_auditor as &dyn IComputeAdapter,
+        auditor_config: auditor_cfg(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: constraint_corpus(),
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: Some(ctx),
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+    };
+
+    let result = ExecutionEngine::run_offline(input).await;
+    assert!(
+        result.is_err(),
+        "AND-vote must fail when shadow rejects and retries=0"
+    );
+}
+
+// ── GAP-C1 system test ───────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct IdenticalOutputAdapter {
+    output: String,
+    kind: AdapterKind,
+}
+
+impl IdenticalOutputAdapter {
+    fn new(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://identical".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl IComputeAdapter for IdenticalOutputAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        Ok(ComputeResponse {
+            output: self.output.clone(),
+            token_cost: 10,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+        })
+    }
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
+
+#[tokio::test]
+async fn system_c1_fires_and_records_warning_for_identical_proposals() {
+    let text = "stateless JWT auth token validation bearer scheme ADR-001 compliant".to_string();
+    let ex1 = IdenticalOutputAdapter::new(text.clone());
+    let ex2 = IdenticalOutputAdapter::new(text.clone());
+    let scorer = scoring_adapter();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+
+    let cfg = H2AIConfig {
+        correlated_hallucination_cv_threshold: 0.30,
+        max_autonomic_retries: 1,
+        ..Default::default()
+    };
+
+    let cal = run_calibration(&[&ex1 as &dyn IComputeAdapter]).await;
+    let store = h2ai_orchestrator::task_store::TaskStore::new();
+    let task_id = TaskId::new();
+    let registry =
+        AdapterRegistry::new(Arc::new(MockAdapter::new(text.clone())) as Arc<dyn IComputeAdapter>);
+    let mut manifest = default_manifest(2);
+    manifest.explorers.count = 2;
+
+    let input = EngineInput {
+        task_id: task_id.clone(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&ex1 as &dyn IComputeAdapter, &ex2 as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: auditor_cfg(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: constraint_corpus(),
+        cfg: &cfg,
+        store,
+        nats_dispatch: None,
+        registry: &registry,
+        embedding_model: None,
+        tao_multiplier: 1.0,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+    };
+
+    let result = ExecutionEngine::run_offline(input).await;
+    match result {
+        Ok(output) => {
+            assert!(
+                !output.correlated_warnings.is_empty(),
+                "C1 warning must fire for identical proposals"
+            );
+            let warn = &output.correlated_warnings[0];
+            assert_eq!(warn.cv, 0.0, "cv must be 0 for identical proposals");
+            assert_eq!(warn.mean_jaccard_distance, 0.0);
+        }
+        Err(EngineError::MaxRetriesExhausted { .. }) => {
+            // Acceptable: retries exhausted after repeated C1 detection
+        }
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+// ── GAP-C3 system test ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn system_c3_no_degraded_event_when_domains_covered() {
+    let ex = MockAdapter::new("stateless JWT auth solution ADR-001 compliant security".into());
+    let scorer = scoring_adapter();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+
+    let cfg = H2AIConfig {
+        domain_coverage_threshold: 0.5,
+        ..Default::default()
+    };
+
+    let mut doc = ConstraintDoc::new_llm_judge("SEC-001", "The solution must use stateless auth.");
+    doc.domains = vec!["security".into()];
+    let corpus = vec![doc];
+
+    let cal = run_calibration(&[&ex as &dyn IComputeAdapter]).await;
+    let store = h2ai_orchestrator::task_store::TaskStore::new();
+    let registry = AdapterRegistry::new(
+        Arc::new(MockAdapter::new("solution".into())) as Arc<dyn IComputeAdapter>
+    );
+
+    let mut manifest = default_manifest(1);
+    manifest.explorers.slot_configs = vec![h2ai_types::manifest::ExplorerSlotConfig {
+        role_frame: "You are a security engineer.".into(),
+        constraint_domains: vec!["security".into()],
+        ..Default::default()
+    }];
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&ex as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: auditor_cfg(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        cfg: &cfg,
+        store,
+        nats_dispatch: None,
+        registry: &registry,
+        embedding_model: None,
+        tao_multiplier: 1.0,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+    };
+
+    let output = ExecutionEngine::run_offline(input).await.unwrap();
+    assert!(
+        output.diversity_degraded_event.is_none(),
+        "domains fully covered → no degraded event expected"
+    );
+}
+
+#[tokio::test]
+async fn system_c3_degraded_event_when_domains_uncovered() {
+    let ex =
+        MockAdapter::new("stateless JWT auth solution security correctness performance".into());
+    let scorer = scoring_adapter();
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+
+    let cfg = H2AIConfig {
+        domain_coverage_threshold: 0.8,
+        safety: h2ai_config::SafetyConfig {
+            require_bivariate_cg: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut d1 = ConstraintDoc::new_llm_judge("S1", "security rule");
+    d1.domains = vec!["security".into()];
+    let mut d2 = ConstraintDoc::new_llm_judge("P1", "perf rule");
+    d2.domains = vec!["performance".into()];
+    let mut d3 = ConstraintDoc::new_llm_judge("C1", "correctness rule");
+    d3.domains = vec!["correctness".into()];
+    let corpus = vec![d1, d2, d3];
+
+    let cal = run_calibration(&[&ex as &dyn IComputeAdapter]).await;
+    let store = h2ai_orchestrator::task_store::TaskStore::new();
+    let registry = AdapterRegistry::new(
+        Arc::new(MockAdapter::new("solution".into())) as Arc<dyn IComputeAdapter>
+    );
+
+    let mut manifest = default_manifest(1);
+    manifest.explorers.slot_configs = vec![h2ai_types::manifest::ExplorerSlotConfig {
+        role_frame: "You are a security engineer.".into(),
+        constraint_domains: vec!["security".into()],
+        ..Default::default()
+    }];
+
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&ex as &dyn IComputeAdapter],
+        verification_adapter: &scorer as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: auditor_cfg(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        cfg: &cfg,
+        store,
+        nats_dispatch: None,
+        registry: &registry,
+        embedding_model: None,
+        tao_multiplier: 1.0,
+        tao_estimator: std::sync::Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+    };
+
+    let output = ExecutionEngine::run_offline(input).await.unwrap();
+    assert!(
+        output.diversity_degraded_event.is_some(),
+        "domains uncovered → DiversityGuardDegradedEvent expected"
+    );
+    let evt = output.diversity_degraded_event.unwrap();
+    assert!(
+        evt.coverage_score < 0.5,
+        "coverage_score should be ~0.33, got {}",
+        evt.coverage_score
     );
 }

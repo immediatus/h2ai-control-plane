@@ -10,6 +10,7 @@ fn adapter() -> AdapterKind {
     AdapterKind::CloudGeneric {
         endpoint: "https://api.test".into(),
         api_key_env: "K".into(),
+        model: None,
     }
 }
 
@@ -534,6 +535,7 @@ async fn krum_selects_semantically_central_with_semantic_variant() {
     let kind = AdapterKind::CloudGeneric {
         endpoint: "https://api.test".into(),
         api_key_env: "K".into(),
+        model: None,
     };
     let make = |text: &str| ProposalEvent {
         task_id: task_id.clone(),

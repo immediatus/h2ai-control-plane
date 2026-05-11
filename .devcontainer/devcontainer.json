@@ -12,10 +12,6 @@
 
   "remoteEnv": {
     "H2AI_NATS_URL": "nats://nats:4222",
-    "LLAMACPP_BASE_URL": "http://host.docker.internal:8080/v1",
-    "LLAMACPP_API_KEY": "local",
-    "LLAMACPP_MODEL": "local",
-    "H2AI_ALLOW_SINGLE_FAMILY": "true",
     "RUST_LOG": "h2ai=debug,info",
     "RUST_BACKTRACE": "1"
   },

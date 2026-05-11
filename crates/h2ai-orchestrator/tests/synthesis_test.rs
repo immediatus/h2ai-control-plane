@@ -20,6 +20,7 @@ fn make_proposal(output: &str) -> ProposalEvent {
         adapter_kind: AdapterKind::CloudGeneric {
             endpoint: "mock://test".into(),
             api_key_env: "NONE".into(),
+            model: None,
         },
         timestamp: Utc::now(),
     }
@@ -41,6 +42,7 @@ impl FixedAdapter {
             kind: AdapterKind::CloudGeneric {
                 endpoint: "mock://fixed".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
         }
     }
@@ -77,6 +79,7 @@ impl SequencedAdapter {
             kind: AdapterKind::CloudGeneric {
                 endpoint: "mock://sequenced".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
         }
     }

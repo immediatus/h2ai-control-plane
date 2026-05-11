@@ -18,8 +18,9 @@ spec:
         {{- include "h2ai.selectorLabels" . | nindent 8 }}
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
+        prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
+        checksum/config: {{ .Values.config | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -43,36 +44,12 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            - name: metrics
-              containerPort: 9090
           env:
-            - name: H2AI_NATS_URL
-              value: {{ include "h2ai.natsUrl" . | quote }}
-            - name: H2AI_CONSTRAINT_CORPUS_PATH
-              value: {{ .Values.constraintCorpus.mountPath | quote }}
-            - name: H2AI_LISTEN_ADDR
-              value: "0.0.0.0:8080"
-            - name: H2AI_METRICS_ADDR
-              value: "0.0.0.0:9090"
-            - name: H2AI_MAX_BLOCKING_THREADS
-              value: {{ .Values.config.maxBlockingThreads | quote }}
-            - name: H2AI_MAX_RETRIES
-              value: {{ .Values.config.maxRetries | quote }}
-            - name: H2AI_CALIBRATION_TASKS
-              value: {{ .Values.config.calibrationTasks | quote }}
-            - name: H2AI_J_EFF_THRESHOLD
-              value: {{ .Values.config.jEffThreshold | quote }}
-            - name: H2AI_PLAN
-              value: {{ .Values.config.plan | quote }}
             - name: RUST_LOG
-              value: {{ .Values.config.logLevel | quote }}
-            {{- if and .Values.tracing.enabled .Values.tracing.otlpEndpoint }}
-            - name: H2AI_OTEL_ENDPOINT
-              value: {{ .Values.tracing.otlpEndpoint | quote }}
-            {{- end }}
+              value: {{ .Values.logLevel | default "h2ai=info" | quote }}
           volumeMounts:
-            - name: constraint-corpus
-              mountPath: {{ .Values.constraintCorpus.mountPath }}
+            - name: h2ai-config
+              mountPath: /etc/h2ai
               readOnly: true
           livenessProbe:
             httpGet:
@@ -89,9 +66,9 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        - name: constraint-corpus
+        - name: h2ai-config
           configMap:
-            name: {{ .Values.constraintCorpus.configMapName }}
+            name: {{ include "h2ai.fullname" . }}-config
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

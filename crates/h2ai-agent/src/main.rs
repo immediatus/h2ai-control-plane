@@ -34,6 +34,7 @@ fn build_adapter() -> Arc<dyn IComputeAdapter> {
         "cloudgeneric" | "cloud" => AdapterKind::CloudGeneric {
             endpoint: endpoint.unwrap_or_else(|| "http://localhost:8000/v1".into()),
             api_key_env,
+            model: None,
         },
         _ => {
             eprintln!("WARN: H2AI_EXPLORER_PROVIDER not set or unknown — using MockAdapter");

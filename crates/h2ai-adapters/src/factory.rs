@@ -12,19 +12,32 @@ pub struct AdapterFactory;
 
 impl AdapterFactory {
     pub fn build(kind: &AdapterKind) -> Result<Arc<dyn IComputeAdapter>, String> {
+        Self::build_with_thinking(kind, true)
+    }
+
+    pub fn build_with_thinking(
+        kind: &AdapterKind,
+        enable_thinking: bool,
+    ) -> Result<Arc<dyn IComputeAdapter>, String> {
         match kind {
             AdapterKind::CloudGeneric {
                 endpoint,
                 api_key_env,
-            } => Ok(Arc::new(CloudGenericAdapter::new(
+                model,
+            } => Ok(Arc::new(CloudGenericAdapter::with_thinking(
                 endpoint.clone(),
                 api_key_env.clone(),
-            ))),
-            AdapterKind::OpenAI { api_key_env, model } => Ok(Arc::new(OpenAIAdapter::new(
-                "https://api.openai.com/v1".into(),
-                api_key_env.clone(),
                 model.clone(),
+                enable_thinking,
             ))),
+            AdapterKind::OpenAI { api_key_env, model } => {
+                Ok(Arc::new(OpenAIAdapter::with_thinking(
+                    "https://api.openai.com/v1".into(),
+                    api_key_env.clone(),
+                    model.clone(),
+                    enable_thinking,
+                )))
+            }
             AdapterKind::Anthropic { api_key_env, model } => Ok(Arc::new(AnthropicAdapter::new(
                 "https://api.anthropic.com".into(),
                 api_key_env.clone(),

@@ -120,6 +120,7 @@ fn explorer_config_serde_round_trip() {
         adapter: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
+            model: None,
         },
         role: None,
     };
@@ -138,6 +139,7 @@ fn explorer_config_with_role_serde_round_trip() {
         adapter: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
+            model: None,
         },
         role: Some(AgentRole::Evaluator),
     };
@@ -152,6 +154,7 @@ fn auditor_config_has_default_tau() {
         adapter: AdapterKind::CloudGeneric {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
+            model: None,
         },
         ..Default::default()
     };

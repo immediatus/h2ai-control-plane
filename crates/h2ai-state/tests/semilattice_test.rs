@@ -9,6 +9,7 @@ fn cloud() -> AdapterKind {
     AdapterKind::CloudGeneric {
         endpoint: "https://x.com".into(),
         api_key_env: "K".into(),
+        model: None,
     }
 }
 

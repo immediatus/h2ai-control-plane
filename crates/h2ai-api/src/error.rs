@@ -15,7 +15,7 @@ pub enum ApiError {
     },
     ServiceUnavailable(String),
     /// All non-Mock adapters belong to the same family; BFT correlated hallucination protection
-    /// is degraded. Set `allow_single_family = true` in config to proceed with a warning.
+    /// is degraded. Set `family_constraint = "single_family_ok"` in config to proceed with a warning.
     SingleFamilyPool {
         family: String,
     },
@@ -75,7 +75,7 @@ impl IntoResponse for ApiError {
                     "message": format!(
                         "All non-Mock adapters are from the '{family}' family. \
                          Weiszfeld BFT correlated hallucination protection is degraded. \
-                         Add adapters from a different family or set allow_single_family=true."
+                         Add adapters from a different family or set family_constraint = \"single_family_ok\"."
                     )
                 }),
             ),

@@ -74,6 +74,7 @@ async fn make_engine_input<'a>(
             adapter: AdapterKind::CloudGeneric {
                 endpoint: "mock".into(),
                 api_key_env: "NONE".into(),
+                model: None,
             },
             ..Default::default()
         },
@@ -91,6 +92,11 @@ async fn make_engine_input<'a>(
         )),
         synthesis_adapter: None,
         bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
     }
 }
 
