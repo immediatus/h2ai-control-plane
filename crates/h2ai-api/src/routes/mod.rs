@@ -17,6 +17,7 @@ pub fn task_router() -> Router<AppState> {
         .route("/tasks/:task_id/recover", get(recovery::recover_task))
         .route("/tasks/:task_id/approve", post(approval::approve_task))
         .route("/tasks/:task_id/approval", get(approval::get_approval))
+        .route("/tasks/:task_id/clarify", post(tasks::clarify_task))
 }
 
 pub fn calibrate_router() -> Router<AppState> {

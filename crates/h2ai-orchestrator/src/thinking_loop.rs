@@ -18,10 +18,10 @@ use h2ai_config::prompts::{
 use h2ai_config::ThinkingLoopConfig;
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
+use h2ai_types::events::OracleGateResultEvent;
 use h2ai_types::sizing::TauValue;
 use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ThinkingReport};
 use serde::Deserialize;
-
 // ─── Public input struct ──────────────────────────────────────────────────────
 
 pub struct ThinkingLoopInput<'a> {
@@ -32,6 +32,11 @@ pub struct ThinkingLoopInput<'a> {
     pub cfg: &'a ThinkingLoopConfig,
     pub adapter: &'a dyn IComputeAdapter,
     pub embedding_model: Option<&'a dyn EmbeddingModel>,
+    /// Optional NATS client for inline oracle checks per archetype (Stage 2).
+    /// Pass `None` to skip oracle checks.
+    pub nats_client: Option<async_nats::Client>,
+    /// Task ID used in oracle gate payloads. May be empty when `nats_client` is `None`.
+    pub task_id: &'a str,
 }
 
 // ─── Pure helpers (pub for unit tests) ───────────────────────────────────────
@@ -67,6 +72,25 @@ pub fn scheduled_tau(iteration: usize, max_iterations: u32, tau_max: f64, tau_mi
     }
     let progress = iteration as f64 / (max_iterations - 1) as f64;
     (tau_max - progress * (tau_max - tau_min)).clamp(tau_min, tau_max)
+}
+
+/// Extract the candidate_solution field value from structured LLM output text.
+/// Searches for the last occurrence of `"candidate_solution"` and extracts the quoted string after the colon.
+pub fn extract_candidate_solution(text: &str) -> Option<String> {
+    let marker = "\"candidate_solution\"";
+    let pos = text.rfind(marker)?;
+    let after = &text[pos + marker.len()..];
+    // Find colon
+    let colon = after.find(':')?;
+    let after_colon = after[colon + 1..].trim_start();
+    // Find opening quote
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+    let inner = &after_colon[1..];
+    // Find closing quote (handle escaped quotes)
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -204,7 +228,7 @@ async fn brainstorm_all(
 ) -> Vec<ArchetypeOutput> {
     let futures: Vec<_> = archetypes
         .iter()
-        .map(|a| brainstorm_one(input, a, iteration_tau))
+        .map(|a| brainstorm_one(input, a, iteration_tau, input.nats_client.clone()))
         .collect();
     join_all(futures).await
 }
@@ -213,6 +237,7 @@ async fn brainstorm_one(
     input: &ThinkingLoopInput<'_>,
     archetype: &ArchetypeSpec,
     iteration_tau: f64,
+    nats_client: Option<async_nats::Client>,
 ) -> ArchetypeOutput {
     let cot_instruction = archetype.cot_style.instruction();
     let task = THINKING_BRAINSTORM_TASK.render(&[
@@ -231,11 +256,20 @@ async fn brainstorm_one(
         max_tokens: 1024,
     };
 
-    let (problem_analysis, solution_sketch, confidence) = match input.adapter.execute(req).await {
-        Ok(resp) => parse_brainstorm_output(&resp.output, archetype.confidence.clamp(0.0, 1.0)),
+    let (llm_response_text, problem_analysis, solution_sketch, confidence) = match input
+        .adapter
+        .execute(req)
+        .await
+    {
+        Ok(resp) => {
+            let (pa, ss, conf) =
+                parse_brainstorm_output(&resp.output, archetype.confidence.clamp(0.0, 1.0));
+            (resp.output, pa, ss, conf)
+        }
         Err(e) => {
             tracing::warn!(target: "h2ai.thinking_loop", archetype = %archetype.name, error = %e, "brainstorm call failed");
             (
+                String::new(),
                 String::new(),
                 String::new(),
                 archetype.confidence.clamp(0.0, 1.0),
@@ -243,11 +277,46 @@ async fn brainstorm_one(
         }
     };
 
+    // Inline oracle check (Stage 2)
+    let oracle_result = if input.cfg.oracle_timeout_secs > 0 {
+        if let Some(candidate) = extract_candidate_solution(&llm_response_text) {
+            if let Some(nats) = &nats_client {
+                let payload = serde_json::json!({
+                    "task_id": input.task_id,
+                    "candidate_solution": candidate,
+                    "stage": "thinking_loop",
+                });
+                let timeout = std::time::Duration::from_secs(input.cfg.oracle_timeout_secs);
+                match tokio::time::timeout(
+                    timeout,
+                    nats.request(
+                        "h2ai.oracle.gate",
+                        serde_json::to_vec(&payload).unwrap_or_default().into(),
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        serde_json::from_slice::<OracleGateResultEvent>(&response.payload).ok()
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     ArchetypeOutput {
         archetype: archetype.clone(),
         problem_analysis,
         solution_sketch,
         confidence,
+        oracle_result,
     }
 }
 
@@ -296,9 +365,20 @@ async fn synthesize(
     let perspectives = outputs
         .iter()
         .map(|o| {
+            // Apply oracle confidence bonus if oracle passed
+            let j_eff = if o
+                .oracle_result
+                .as_ref()
+                .map(|r| r.gate_passed)
+                .unwrap_or(false)
+            {
+                (o.confidence + input.cfg.oracle_confidence_bonus).min(1.0)
+            } else {
+                o.confidence
+            };
             format!(
                 "[{} | confidence={:.2}]\nPROBLEM: {}\nSOLUTION: {}",
-                o.archetype.name, o.confidence, o.problem_analysis, o.solution_sketch
+                o.archetype.name, j_eff, o.problem_analysis, o.solution_sketch
             )
         })
         .collect::<Vec<_>>()

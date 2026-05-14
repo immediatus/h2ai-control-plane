@@ -1,8 +1,10 @@
 mod approval_reaper;
+mod bootstrap;
 mod constraint_source;
 mod debug_record;
 mod error;
 mod metrics;
+mod opro;
 mod oracle;
 mod oracle_worker;
 mod recovery;
@@ -149,7 +151,7 @@ async fn main() {
 
     h2ai_config::log_startup_config_report(&cfg);
 
-    let nats = NatsClient::connect(&cfg.nats_url)
+    let nats = NatsClient::connect_with_cfg(&cfg.nats_url, cfg.state.clone())
         .await
         .unwrap_or_else(|e| {
             tracing::error!(target: "h2ai.startup", nats_url = %cfg.nats_url, error = %e,
@@ -159,6 +161,11 @@ async fn main() {
     nats.ensure_infrastructure()
         .await
         .expect("NATS infrastructure setup");
+
+    // Seed Bayesian bootstrap priors for all adapter profiles so Thompson sampling
+    // doesn't start cold. Idempotent — skips adapters that already have OPRO state.
+    bootstrap::seed_all_bootstrap_priors(&cfg.adapter_profiles, &cfg.calibration_bootstrap, &nats)
+        .await;
 
     if let Err(e) = nats.put_safety_profile_snapshot(&cfg.safety).await {
         tracing::warn!(target: "h2ai.startup", error = %e, "failed to publish safety profile snapshot to NATS KV");

@@ -120,6 +120,7 @@ async fn finalize_approved_task(
         resolved_output: resolved_output.clone(),
         j_eff: None,
         timestamp: chrono::Utc::now(),
+        oracle_gate_passed: None,
     });
     if let Err(e) = state.nats.publish_event(&task_id, &merge_ev).await {
         tracing::warn!(task_id = %task_id, "failed to publish MergeResolved on approve: {e}");

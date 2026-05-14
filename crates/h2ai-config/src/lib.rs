@@ -5,6 +5,74 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 
+/// Clarification template for oracle gate failures.
+///
+/// When the oracle gate fails with a reason, pattern matching against templates
+/// generates follow-up questions for the user to clarify intent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClarificationTemplate {
+    /// Regex pattern to match oracle failure reason.
+    pub pattern: String,
+    /// Template with {placeholder} variables for generating clarification questions.
+    pub question_template: String,
+}
+
+/// Configuration for the oracle gate feature.
+///
+/// When the engine finishes Phase 3, it calls an oracle service to verify
+/// the proposed solution before proceeding to merge. All defaults are set in
+/// `reference.toml` under `[oracle_gate]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OracleGateConfig {
+    /// Enable the oracle gate. Default: false.
+    #[serde(default = "default_oracle_gate_enabled")]
+    pub enabled: bool,
+    /// NATS subject to send gate requests to. Default: "h2ai.oracle.gate".
+    #[serde(default = "default_oracle_gate_subject")]
+    pub subject: String,
+    /// Timeout in seconds for oracle gate requests. Default: 30.
+    #[serde(default = "default_oracle_gate_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Timeout behavior: "pass", "fail", or "clarify". Default: "pass".
+    #[serde(default = "default_oracle_gate_on_timeout")]
+    pub on_timeout: String,
+    /// Gate passes if oracle confidence >= this. Default: 0.7.
+    #[serde(default = "default_oracle_gate_min_confidence")]
+    pub min_confidence: f64,
+    /// Clarification templates for oracle failure reasons.
+    #[serde(default)]
+    pub clarification_templates: Vec<ClarificationTemplate>,
+}
+
+fn default_oracle_gate_enabled() -> bool {
+    false
+}
+fn default_oracle_gate_subject() -> String {
+    "h2ai.oracle.gate".to_string()
+}
+fn default_oracle_gate_timeout_secs() -> u64 {
+    30u64
+}
+fn default_oracle_gate_on_timeout() -> String {
+    "pass".to_string()
+}
+fn default_oracle_gate_min_confidence() -> f64 {
+    0.7f64
+}
+
+impl Default for OracleGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_oracle_gate_enabled(),
+            subject: default_oracle_gate_subject(),
+            timeout_secs: default_oracle_gate_timeout_secs(),
+            on_timeout: default_oracle_gate_on_timeout(),
+            min_confidence: default_oracle_gate_min_confidence(),
+            clarification_templates: Vec::new(),
+        }
+    }
+}
+
 /// Configuration for Phase 1.5 task complexity assessment and quadrant routing.
 ///
 /// All defaults are set in `reference.toml` under `[task_complexity]`.
@@ -60,6 +128,16 @@ pub struct TaskComplexityConfig {
     pub neff_probe_warning_fraction: f64,
 }
 
+/// Model capability tier for Bayesian priors and OPRO triggering.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileTier {
+    Fast,
+    #[default]
+    Standard,
+    Capable,
+}
+
 /// Named adapter configuration entry used for TaskProfile routing.
 ///
 /// Operators populate `H2AIConfig::adapter_profiles` with these entries so that
@@ -71,6 +149,9 @@ pub struct AdapterProfile {
     pub name: String,
     /// Backend kind and its connection parameters (API key env var, model string, etc.).
     pub kind: AdapterKind,
+    /// Model capability tier for Bayesian priors and OPRO triggering.
+    #[serde(default)]
+    pub tier: ProfileTier,
 }
 
 /// Error returned by `H2AIConfig::load_layered` and `H2AIConfig::load_from_file`.
@@ -254,6 +335,89 @@ fn srani_default_grounding_distill() -> bool {
     true
 }
 
+/// Configuration for OPRO (Optimization by Prompt Retrieval).
+/// Controls trigger thresholds and promotion criteria for prompt variant optimization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OproConfig {
+    /// Enable OPRO variant selection and promotion. Default: false.
+    #[serde(default = "default_opro_enabled")]
+    pub enabled: bool,
+    /// Trigger OPRO when j_eff EMA falls below this threshold. Default: 0.6.
+    #[serde(default = "default_opro_trigger_j_eff_threshold")]
+    pub trigger_j_eff_threshold: f64,
+    /// Minimum tasks completed before OPRO can be triggered. Default: 10.
+    #[serde(default = "default_opro_min_tasks_before_trigger")]
+    pub min_tasks_before_trigger: u32,
+    /// Tasks to suppress re-trigger after each OPRO run. Default: 5.
+    #[serde(default = "default_opro_suppress_n_tasks")]
+    pub suppress_n_tasks: u32,
+    /// Total tasks required before a variant can be promoted to primary. Default: 20.
+    #[serde(default = "default_opro_graduation_tasks")]
+    pub graduation_tasks: u32,
+    /// Performance margin a variant must beat current by to promote. Default: 0.05.
+    #[serde(default = "default_opro_promotion_margin")]
+    pub promotion_margin: f64,
+    /// EMA window size for j_eff smoothing. Default: 10.
+    #[serde(default = "default_opro_ema_window")]
+    pub ema_window: u32,
+}
+
+fn default_opro_enabled() -> bool {
+    false
+}
+fn default_opro_trigger_j_eff_threshold() -> f64 {
+    0.6f64
+}
+fn default_opro_min_tasks_before_trigger() -> u32 {
+    10u32
+}
+fn default_opro_suppress_n_tasks() -> u32 {
+    5u32
+}
+fn default_opro_graduation_tasks() -> u32 {
+    20u32
+}
+fn default_opro_promotion_margin() -> f64 {
+    0.05f64
+}
+fn default_opro_ema_window() -> u32 {
+    10u32
+}
+
+impl Default for OproConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_opro_enabled(),
+            trigger_j_eff_threshold: default_opro_trigger_j_eff_threshold(),
+            min_tasks_before_trigger: default_opro_min_tasks_before_trigger(),
+            suppress_n_tasks: default_opro_suppress_n_tasks(),
+            graduation_tasks: default_opro_graduation_tasks(),
+            promotion_margin: default_opro_promotion_margin(),
+            ema_window: default_opro_ema_window(),
+        }
+    }
+}
+
+/// Configuration for calibration bootstrap parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationBootstrapConfig {
+    /// Number of synthetic observations for the bootstrap prior. Default: 5.
+    #[serde(default = "default_bootstrap_prior_weight")]
+    pub prior_weight: u32,
+}
+
+fn default_bootstrap_prior_weight() -> u32 {
+    5u32
+}
+
+impl Default for CalibrationBootstrapConfig {
+    fn default() -> Self {
+        Self {
+            prior_weight: default_bootstrap_prior_weight(),
+        }
+    }
+}
+
 impl Default for SraniConfig {
     fn default() -> Self {
         Self {
@@ -318,8 +482,20 @@ pub struct ThinkingLoopConfig {
     pub expansion_quality_floor: f64,
     #[serde(default)]
     pub model_tiers: ThinkingModelTiers,
+    /// Timeout for inline oracle check per archetype. Default: 20 seconds.
+    #[serde(default = "default_oracle_timeout_secs")]
+    pub oracle_timeout_secs: u64,
+    /// j_eff boost when oracle passes. Default: 0.1
+    #[serde(default = "default_oracle_confidence_bonus")]
+    pub oracle_confidence_bonus: f64,
 }
 
+fn default_oracle_timeout_secs() -> u64 {
+    20u64
+}
+fn default_oracle_confidence_bonus() -> f64 {
+    0.1f64
+}
 fn default_thinking_max_iterations() -> u32 {
     5
 }
@@ -354,6 +530,158 @@ impl Default for ThinkingLoopConfig {
             tau_min: default_tl_tau_min(),
             expansion_quality_floor: default_expansion_quality_floor(),
             model_tiers: ThinkingModelTiers::default(),
+            oracle_timeout_secs: default_oracle_timeout_secs(),
+            oracle_confidence_bonus: default_oracle_confidence_bonus(),
+        }
+    }
+}
+
+/// Configuration for delta checkpoint encoding parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateDeltaConfig {
+    #[serde(default = "default_delta_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_base_interval")]
+    pub base_interval: u32,
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_cache_max_entries")]
+    pub cache_max_entries: usize,
+}
+
+fn default_delta_enabled() -> bool {
+    true
+}
+fn default_base_interval() -> u32 {
+    10
+}
+fn default_cache_ttl_secs() -> u64 {
+    60
+}
+fn default_cache_max_entries() -> usize {
+    200
+}
+
+impl Default for StateDeltaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_delta_enabled(),
+            base_interval: default_base_interval(),
+            cache_ttl_secs: default_cache_ttl_secs(),
+            cache_max_entries: default_cache_max_entries(),
+        }
+    }
+}
+
+/// Configuration for NATS bucket names, stream names, and delta checkpoint encoding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateConfig {
+    #[serde(default = "default_snapshots_bucket")]
+    pub snapshots_bucket: String,
+    #[serde(default = "default_task_checkpoints_bucket")]
+    pub task_checkpoints_bucket: String,
+    #[serde(default = "default_checkpoint_payloads_bucket")]
+    pub checkpoint_payloads_bucket: String,
+    #[serde(default = "default_oracle_calibration_bucket")]
+    pub oracle_calibration_bucket: String,
+    #[serde(default = "default_estimator_bucket")]
+    pub estimator_bucket: String,
+    #[serde(default = "default_calibration_bucket")]
+    pub calibration_bucket: String,
+    #[serde(default = "default_sessions_bucket")]
+    pub sessions_bucket: String,
+    #[serde(default = "default_audit_shadow_bucket")]
+    pub audit_shadow_bucket: String,
+    #[serde(default = "default_prompt_variants_bucket")]
+    pub prompt_variants_bucket: String,
+    #[serde(default = "default_constraint_wiki_bucket")]
+    pub constraint_wiki_bucket: String,
+    #[serde(default = "default_constraint_meta_bucket")]
+    pub constraint_meta_bucket: String,
+    #[serde(default = "default_constraint_payloads_bucket")]
+    pub constraint_payloads_bucket: String,
+    #[serde(default = "default_approvals_bucket")]
+    pub approvals_bucket: String,
+    // JetStream stream names
+    #[serde(default = "default_tasks_stream")]
+    pub tasks_stream: String,
+    #[serde(default = "default_telemetry_stream")]
+    pub telemetry_stream: String,
+    #[serde(default = "default_results_stream")]
+    pub results_stream: String,
+    #[serde(default)]
+    pub delta: StateDeltaConfig,
+}
+
+fn default_snapshots_bucket() -> String {
+    "H2AI_SNAPSHOTS".to_string()
+}
+fn default_task_checkpoints_bucket() -> String {
+    "H2AI_TASK_CHECKPOINTS".to_string()
+}
+fn default_checkpoint_payloads_bucket() -> String {
+    "H2AI_CHECKPOINT_PAYLOADS".to_string()
+}
+fn default_oracle_calibration_bucket() -> String {
+    "H2AI_ORACLE_CALIBRATION".to_string()
+}
+fn default_estimator_bucket() -> String {
+    "H2AI_ESTIMATOR".to_string()
+}
+fn default_calibration_bucket() -> String {
+    "H2AI_CALIBRATION".to_string()
+}
+fn default_sessions_bucket() -> String {
+    "H2AI_SESSIONS".to_string()
+}
+fn default_audit_shadow_bucket() -> String {
+    "H2AI_AUDIT_SHADOW".to_string()
+}
+fn default_prompt_variants_bucket() -> String {
+    "H2AI_PROMPT_VARIANTS".to_string()
+}
+fn default_constraint_wiki_bucket() -> String {
+    "H2AI_CONSTRAINT_WIKI".to_string()
+}
+fn default_constraint_meta_bucket() -> String {
+    "H2AI_CONSTRAINT_META".to_string()
+}
+fn default_constraint_payloads_bucket() -> String {
+    "H2AI_CONSTRAINT_PAYLOADS".to_string()
+}
+fn default_approvals_bucket() -> String {
+    "H2AI_APPROVALS".to_string()
+}
+fn default_tasks_stream() -> String {
+    "H2AI_TASKS".to_string()
+}
+fn default_telemetry_stream() -> String {
+    "H2AI_TELEMETRY".to_string()
+}
+fn default_results_stream() -> String {
+    "H2AI_RESULTS".to_string()
+}
+
+impl Default for StateConfig {
+    fn default() -> Self {
+        Self {
+            snapshots_bucket: default_snapshots_bucket(),
+            task_checkpoints_bucket: default_task_checkpoints_bucket(),
+            checkpoint_payloads_bucket: default_checkpoint_payloads_bucket(),
+            oracle_calibration_bucket: default_oracle_calibration_bucket(),
+            estimator_bucket: default_estimator_bucket(),
+            calibration_bucket: default_calibration_bucket(),
+            sessions_bucket: default_sessions_bucket(),
+            audit_shadow_bucket: default_audit_shadow_bucket(),
+            prompt_variants_bucket: default_prompt_variants_bucket(),
+            constraint_wiki_bucket: default_constraint_wiki_bucket(),
+            constraint_meta_bucket: default_constraint_meta_bucket(),
+            constraint_payloads_bucket: default_constraint_payloads_bucket(),
+            approvals_bucket: default_approvals_bucket(),
+            tasks_stream: default_tasks_stream(),
+            telemetry_stream: default_telemetry_stream(),
+            results_stream: default_results_stream(),
+            delta: StateDeltaConfig::default(),
         }
     }
 }
@@ -601,6 +929,21 @@ pub struct H2AIConfig {
     /// the 3-step decomposition. Disabled by default — opt-in per scenario.
     #[serde(default)]
     pub thinking_loop: ThinkingLoopConfig,
+    /// Oracle gate configuration.
+    /// Controls Phase 3 → Phase 4 verification via oracle service.
+    #[serde(default)]
+    pub oracle_gate: OracleGateConfig,
+    /// NATS bucket names and delta checkpoint encoding parameters.
+    #[serde(default)]
+    pub state: StateConfig,
+    /// OPRO (Optimization by Prompt Retrieval) configuration.
+    /// Controls variant selection, promotion criteria, and trigger thresholds.
+    #[serde(default)]
+    pub opro: OproConfig,
+    /// Calibration bootstrap configuration.
+    /// Controls synthetic prior weight for calibration initialization.
+    #[serde(default)]
+    pub calibration_bootstrap: CalibrationBootstrapConfig,
 }
 
 fn default_correlated_hallucination_cv_threshold() -> f64 {

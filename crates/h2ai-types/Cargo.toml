@@ -9,6 +9,7 @@ license.workspace    = true
 [dependencies]
 uuid        = { workspace = true }
 chrono      = { workspace = true }
+json-patch  = "2"
 serde       = { workspace = true }
 async-trait = { workspace = true }
 thiserror   = { workspace = true }

@@ -97,6 +97,7 @@ async fn make_engine_input<'a>(
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     }
 }
 

@@ -340,6 +340,10 @@ pub struct MergeResolvedEvent {
     #[serde(default)]
     pub j_eff: Option<f64>,
     pub timestamp: DateTime<Utc>,
+    /// Whether the oracle gate passed for this merged output.
+    /// `None` when no oracle gate was configured or evaluation has not yet completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oracle_gate_passed: Option<bool>,
 }
 
 /// Emitted when the MAPE-K loop exhausts all retries without producing a resolved output.
@@ -732,6 +736,41 @@ pub struct ConstraintFrontierEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when the oracle gate finishes evaluating proposed solutions before merge.
+///
+/// The gate runs synchronously before `MergeResolvedEvent` is emitted. When
+/// `gate_passed = false` the orchestrator may trigger a MAPE-K retry rather than
+/// accepting the current ensemble output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleGateResultEvent {
+    pub task_id: String,
+    pub gate_passed: bool,
+    /// Aggregate confidence of the oracle evaluation ∈ [0.0, 1.0].
+    pub confidence: f64,
+    /// Brief human-readable explanation produced by the oracle.
+    pub summary: String,
+    /// Total number of proposals evaluated by the oracle gate.
+    pub checked_proposals: u32,
+    /// Number of proposals that passed the oracle gate.
+    pub passed_proposals: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when the orchestrator requires human clarification before proceeding.
+///
+/// Published to `h2ai.tasks.{task_id}.pending_clarification`. The orchestrator
+/// suspends the task until a clarification answer is received or `timeout_secs` elapses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingClarificationEvent {
+    pub task_id: String,
+    /// The clarification question directed at the human operator.
+    pub question: String,
+    /// Relevant task context that helps the operator answer the question.
+    pub context: String,
+    pub timeout_secs: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Async Phase 6 oracle evaluation request.
 ///
 /// Published to `h2ai.oracle.pending` (NATS core) immediately after task completion.
@@ -866,6 +905,26 @@ pub struct OracleCalibrationPatchedEvent {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Emitted when j_eff EMA drops below the configured threshold, triggering OPRO.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OproTriggeredEvent {
+    pub adapter_name: String,
+    pub prompt_key: String,
+    pub j_eff_ema: f64,
+    pub n_tasks_total: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when OPRO selects a winning prompt variant after sampling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptVariantPromotedEvent {
+    pub adapter_name: String,
+    pub prompt_key: String,
+    pub variant_id: String,
+    pub winning_score: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
 ///
 /// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
@@ -965,6 +1024,14 @@ pub enum H2AIEvent {
     ThinkingLoopCompleted(ThinkingLoopCompletedEvent),
     /// Oracle accumulated enough observations to replace heuristic p_mean with pass_rate.
     OracleCalibrationPatched(OracleCalibrationPatchedEvent),
+    /// Oracle gate finished evaluating proposals before merge; records pass/fail and confidence.
+    OracleGateResult(OracleGateResultEvent),
+    /// Orchestrator requires human clarification before continuing task execution.
+    PendingClarification(PendingClarificationEvent),
+    /// OPRO triggered: j_eff EMA fell below threshold.
+    OproTriggered(OproTriggeredEvent),
+    /// Prompt variant promoted: OPRO selected a winning variant.
+    PromptVariantPromoted(PromptVariantPromotedEvent),
 }
 
 impl H2AIEvent {

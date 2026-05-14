@@ -10,6 +10,7 @@ fn build_from_profiles_finds_named_profile() {
             endpoint: "http://localhost:11434".into(),
             model: "llama3".into(),
         },
+        tier: h2ai_config::ProfileTier::Standard,
     }];
     // Just check it resolves without error — we can't call execute() without a server.
     let result = AdapterFactory::build_from_profiles("my-mock", &profiles);
@@ -33,6 +34,7 @@ fn build_from_profiles_errors_on_llama_cpp() {
             model_path: PathBuf::from("/models/llama.gguf"),
             n_threads: 8,
         },
+        tier: h2ai_config::ProfileTier::Standard,
     }];
     let result = AdapterFactory::build_from_profiles("local", &profiles);
     assert!(result.is_err());

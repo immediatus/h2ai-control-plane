@@ -98,6 +98,7 @@ async fn system_chain_absent_task_completes_without_panic() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -146,6 +147,7 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -501,6 +503,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         srani_ema_cfi: 0.45,
         srani_count: 5,
         srani_grounding_chain: Some(chain),
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

@@ -17,6 +17,7 @@ The Axum router is wired in `crates/h2ai-api/src/routes/mod.rs`. Authentication 
 | `GET` | `/tasks/:task_id` | Current task status snapshot. |
 | `POST` | `/tasks/:task_id/merge` | Resolve a Merge Authority decision. |
 | `POST` | `/tasks/:task_id/approve` | Submit HITL approval decision (`approved`, `reviewer_note`, `operator_id`). |
+| `POST` | `/tasks/:task_id/clarify` | Submit operator answer to a pending oracle clarification. |
 | `GET` | `/tasks/:task_id/approval` | Current `ApprovalRecord` for tasks in `AwaitingApproval` phase; 404 otherwise. |
 | `GET` | `/tasks/:task_id/recover` | Trigger snapshot+replay recovery for a task. |
 | `POST` | `/calibrate` | Start a calibration run. |
@@ -75,6 +76,17 @@ data: {"event_type": "...", "payload": {...}}
 
 Reconnect with `Last-Event-ID: <sequence>` to resume from the last seen offset.
 
+### POST /tasks/:task_id/clarify
+
+Resumes an engine suspended by a `PendingClarificationEvent`. The engine waits up to `oracle_gate.timeout_secs` for an answer before timing out with `on_timeout` behavior.
+
+**Request body:**
+```json
+{ "answer": "string" }
+```
+
+**Response:** `200 OK` when the answer was delivered; `404` when no pending clarification exists for this task; `503` when the task is not in a clarifiable state.
+
 ### POST /calibrate
 
 ```bash
@@ -128,6 +140,10 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `CorrelatedFabrication` | `CorrelatedFabricationEvent` | 3.2 (SRANI) |
 | `ResearcherGrounding` | `ResearcherGroundingEvent` | 3.1 / 3.2 / proactive |
 | `DiversityGuardDegraded` | `DiversityGuardDegradedEvent` | 2.6 (domain coverage) |
+| `OracleGateResult` | `OracleGateResultEvent` | 4.5 |
+| `PendingClarification` | `PendingClarificationEvent` | 4.5 |
+| `OproTriggered` | `OproTriggeredEvent` | post-merge (async) |
+| `PromptVariantPromoted` | `PromptVariantPromotedEvent` | post-merge (async) |
 
 ### Key payloads
 
@@ -352,6 +368,44 @@ struct DiversityGuardDegradedEvent {
 }
 ```
 
+#### OracleGateResultEvent
+
+Emitted (Phase 4.5) when the oracle gate responds. `oracle_gate_passed: Option<bool>` on `MergeResolvedEvent` reflects this result.
+
+```rust
+struct OracleGateResultEvent {
+    task_id: TaskId,
+    gate_passed: bool,
+    confidence: f64,
+    summary: String,
+    checked_proposals: u32,
+    passed_proposals: u32,
+    timestamp: DateTime<Utc>,
+}
+```
+
+#### PendingClarificationEvent
+
+Emitted (Phase 4.5) when the oracle gate fails with low confidence and a matching `ClarificationTemplate` fires. The engine suspends via `clarification_waiters`; `POST /tasks/{id}/clarify` resumes it.
+
+```rust
+struct PendingClarificationEvent {
+    task_id: TaskId,
+    question: String,
+    context: String,
+    timeout_secs: u64,
+    timestamp: DateTime<Utc>,
+}
+```
+
+#### MergeResolvedEvent (updated field)
+
+`MergeResolvedEvent` now carries `oracle_gate_passed: Option<bool>`:
+
+- `Some(true)` — oracle gate ran and approved the surviving proposals.
+- `Some(false)` — oracle gate ran and rejected; clarification was supplied or `on_timeout = "fail"` was overridden.
+- `None` — oracle gate was disabled, timed out with `on_timeout = "skip"`, or was bypassed.
+
 ---
 
 ## 3. Prometheus Metrics
@@ -575,6 +629,93 @@ struct ConstraintSnapshot {
 }
 ```
 
+### State and Delta Checkpointing
+
+```toml
+[state]
+# All NATS bucket and stream names — override to namespace multi-tenant deployments.
+calibration_bucket = "H2AI_CALIBRATION"
+snapshots_bucket = "H2AI_SNAPSHOTS"
+agent_memory_bucket = "H2AI_AGENT_MEMORY"
+estimator_bucket = "H2AI_ESTIMATOR"
+shadow_auditor_bucket = "H2AI_SHADOW_AUDITOR"
+approvals_bucket = "H2AI_APPROVALS"
+prompt_variants_bucket = "H2AI_PROMPT_VARIANTS"
+tasks_stream = "H2AI_TASKS"
+telemetry_stream = "H2AI_TELEMETRY"
+results_stream = "H2AI_RESULTS"
+
+[state.delta]
+enabled = true
+base_interval = 10          # store a full base every N checkpoints
+cache_ttl_secs = 60
+cache_max_entries = 200
+```
+
+**Delta checkpoint NATS key scheme:**
+
+| Key | Contents | Written when |
+|---|---|---|
+| `{task_id}/seq/{seq:08}` | `TaskCheckpointEntry` (Base or Delta) | Every `put_checkpoint_delta` call |
+| `{task_id}/seq/latest` | Plain u32 seq number | CAS-updated after every write (3-retry loop) |
+
+`seq=0` and every multiple of `base_interval` store a `CheckpointKind::Base(Box<TaskCheckpoint>)` (full snapshot). All other seqs store `CheckpointKind::Delta(Vec<PatchOperation>)` — the RFC 6902 diff against the nearest base. On read, `reconstruct_at_seq` fetches the base entry then applies the patch chain. Legacy flat-key checkpoints (pre-delta, no `/seq/` component) are detected by key format and read as a Base without migration.
+
+### Oracle Gate
+
+```toml
+[oracle_gate]
+enabled = false
+subject = "h2ai.oracle.gate"
+timeout_secs = 30
+on_timeout = "pass"         # pass | fail | skip
+min_confidence = 0.7
+# clarification_templates = [{ pattern = "...", question_template = "..." }]
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Master switch; set `true` to wire Phase 4.5. |
+| `subject` | `"h2ai.oracle.gate"` | NATS subject for `request()` calls. The oracle service subscribes here. |
+| `timeout_secs` | `30` | How long to wait for an oracle reply before applying `on_timeout`. |
+| `on_timeout` | `"pass"` | `pass` — treat timeout as approved; `fail` — treat as rejected; `skip` — proceed with no `oracle_gate_passed` field. |
+| `min_confidence` | `0.7` | When oracle responds with `gate_passed=false` AND `confidence < min_confidence`, the engine attempts clarification via a matching `ClarificationTemplate`. |
+| `clarification_templates` | `[]` | Array of `{ pattern: regex, question_template: string }`. Template placeholders: `{test_name}`, `{expected}`, `{actual}`, `{failure_delta}`. First matching pattern wins. If no template matches, the engine proceeds with `on_timeout` behaviour. |
+
+### Adaptive Prompt Harness (OPRO)
+
+```toml
+[opro]
+enabled = false
+trigger_j_eff_threshold = 0.60
+min_tasks_before_trigger = 10
+suppress_n_tasks = 5        # suppress OPRO for N tasks after each trigger
+graduation_tasks = 20       # total tasks before bandit graduation
+promotion_margin = 0.05     # min improvement to promote a variant
+ema_window = 10             # tasks in the j_eff EMA window
+
+[calibration_bootstrap]
+prior_weight = 5            # virtual task count for bootstrap Bayesian prior
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `trigger_j_eff_threshold` | `0.60` | OPRO cycle fires when `j_eff_ema < threshold` and task count conditions are met. |
+| `min_tasks_before_trigger` | `10` | Minimum observed tasks before any OPRO cycle is allowed. |
+| `suppress_n_tasks` | `5` | Tasks to skip after each OPRO trigger (cooldown). |
+| `graduation_tasks` | `20` | Total tasks observed before the Thompson bandit promotes the best variant. |
+| `promotion_margin` | `0.05` | A challenger variant must beat the incumbent by this margin (in mean j_eff) to be promoted. |
+| `ema_window` | `10` | EMA decay window (α = 2/(window+1)). Smaller = reacts faster to recent task quality. |
+| `prior_weight` | `5` | Virtual observation count for bootstrap Beta priors. Tier medians: Capable=0.78, Standard=0.62, Fast=0.45. |
+
+**Prompt variant NATS key scheme** (`H2AI_PROMPT_VARIANTS` bucket):
+
+| Key | Contents |
+|---|---|
+| `{adapter_name}/{prompt_key}/{variant_id}` | `PromptVariant` JSON |
+| `{adapter_name}/{prompt_key}/_active` | Active variant ID (plain string pointer) |
+| `{adapter_name}/_opro_state` | `AdapterOproState` JSON (EMA, bandit arms, task counters) |
+
 ### HITL
 
 | Field | Default | Purpose |
@@ -605,10 +746,13 @@ struct ConstraintSnapshot {
 ```toml
 [[adapter_profiles]]
 name = "claude-sonnet"
+tier = "Standard"           # Fast | Standard | Capable — seeds OPRO bootstrap prior
 [adapter_profiles.kind.Anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-5"
 ```
+
+`tier` sets the Bayesian j_eff prior for the Adaptive Prompt Harness bootstrap: `Capable` → 0.78, `Standard` → 0.62, `Fast` → 0.45. Omitting the field defaults to `Standard`. The prior is seeded once at startup as `prior_weight` virtual observations and is superseded by real task data as tasks accumulate.
 
 ### Role defaults
 

@@ -160,6 +160,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -247,6 +248,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -329,6 +331,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -411,6 +414,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -488,6 +492,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -596,6 +601,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -670,6 +676,7 @@ async fn engine_output_contains_suggested_next_params() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -825,6 +832,7 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -934,6 +942,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1108,6 +1117,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let err = ExecutionEngine::run_offline(input).await.unwrap_err();
@@ -1198,6 +1208,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
@@ -1371,6 +1382,7 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1494,6 +1506,7 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1552,6 +1565,7 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1615,6 +1629,7 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1686,6 +1701,7 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -1764,6 +1780,7 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1855,6 +1872,7 @@ async fn c3_no_event_when_corpus_empty() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1962,6 +1980,7 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2068,6 +2087,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -2193,6 +2213,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     let calls = researcher_calls.lock().unwrap();
@@ -2297,6 +2318,7 @@ async fn c1_no_warning_for_diverse_proposals() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2423,6 +2445,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     match result {
@@ -2535,6 +2558,7 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2658,6 +2682,7 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2770,6 +2795,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
         srani_ema_cfi: 0.30, // warm EMA below CFI
         srani_count: 10,     // past cold-start threshold
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -2899,6 +2925,7 @@ async fn srani_cold_start_uses_config_midpoint() {
         srani_ema_cfi: 0.99, // artificially high — should NOT be used (count < 5)
         srani_count: 2,      // cold start: count < 5
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3005,6 +3032,7 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         srani_ema_cfi: 0.45,
         srani_count: 10,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3109,6 +3137,7 @@ async fn srani_ema_formula_verified_numerically() {
         srani_ema_cfi: initial_ema,
         srani_count: 10,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3230,6 +3259,7 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -3279,6 +3309,7 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3339,6 +3370,7 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3397,6 +3429,7 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;

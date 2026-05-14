@@ -21,6 +21,7 @@ use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use h2ai_types::prompts::ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT;
 use h2ai_types::sizing::TaskQuadrant;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::time::Duration;
@@ -211,6 +212,8 @@ pub async fn submit_task(
             .collect::<std::collections::HashSet<_>>()
             .len();
         let n_target = (n_domains + 1).max(2).min(n_max.max(1));
+        let thinking_task_id = task_id_clone.to_string();
+        let thinking_nats_client = state_clone.nats.client.clone();
         let thinking_report = thinking_loop::run(ThinkingLoopInput {
             task_description: &manifest_clone.description,
             constraint_ids: &corpus.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
@@ -219,6 +222,8 @@ pub async fn submit_task(
             cfg: &state_clone.cfg.thinking_loop,
             adapter: explorer.as_ref(),
             embedding_model: state_clone.embedding_model.as_deref(),
+            nats_client: Some(thinking_nats_client),
+            task_id: &thinking_task_id,
         })
         .await;
         {
@@ -398,6 +403,7 @@ pub async fn submit_task(
             srani_ema_cfi,
             srani_count,
             srani_grounding_chain: state_clone.srani_grounding_chain.clone(),
+            nats_raw: None,
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -848,6 +854,7 @@ pub async fn submit_task(
                     resolved_output: output.resolved_output.clone(),
                     j_eff,
                     timestamp: chrono::Utc::now(),
+                    oracle_gate_passed: None,
                 });
                 if let Err(e) = state_clone
                     .nats
@@ -855,6 +862,32 @@ pub async fn submit_task(
                     .await
                 {
                     tracing::warn!("failed to publish MergeResolvedEvent: {e}");
+                }
+                // Spawn background OPRO trigger — non-blocking, errors logged internally
+                if let Some(j_eff_value) = j_eff {
+                    let opro_nats = std::sync::Arc::clone(&state_clone.nats);
+                    let opro_cfg = std::sync::Arc::clone(&state_clone.cfg);
+                    let opro_adapter = std::sync::Arc::clone(&state_clone.explorer_adapter);
+                    let opro_adapter_name = state_clone
+                        .cfg
+                        .adapter_profiles
+                        .first()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| "default".to_string());
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::opro::run_opro_trigger(
+                            opro_adapter_name,
+                            "system_preamble".to_string(),
+                            j_eff_value,
+                            &opro_nats,
+                            opro_adapter.as_ref(),
+                            &opro_cfg,
+                        )
+                        .await
+                        {
+                            tracing::warn!("OPRO trigger failed: {}", e);
+                        }
+                    });
                 }
                 // Phase 6: async oracle dispatch (fire-and-forget, non-blocking)
                 if let Some(ref oracle_spec) = oracle_spec_clone {
@@ -1090,6 +1123,7 @@ pub async fn merge_task(
             .unwrap_or_else(|| body.selected_proposals.join(", ")),
         j_eff: None,
         timestamp: chrono::Utc::now(),
+        oracle_gate_passed: None,
     });
     state
         .nats
@@ -1098,6 +1132,32 @@ pub async fn merge_task(
         .map_err(|e| ApiError::NatsUnavailable(e.to_string()))?;
     state.store.mark_resolved(&tid);
     Ok(Json(json!({"status": "resolved", "task_id": task_id})))
+}
+
+#[derive(Deserialize)]
+pub struct ClarifyRequest {
+    pub answer: String,
+}
+
+pub async fn clarify_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+    Json(body): Json<ClarifyRequest>,
+) -> impl IntoResponse {
+    let waiters = state.clarification_waiters.lock().unwrap();
+    if let Some((notify, answer_slot)) = waiters.get(&task_id) {
+        *answer_slot.lock().unwrap() = Some(body.answer);
+        notify.notify_one();
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "clarification received"})),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "no pending clarification for this task"})),
+        )
+    }
 }
 
 #[cfg(test)]

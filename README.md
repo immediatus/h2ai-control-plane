@@ -75,6 +75,7 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | Constraint corpus is static and fragile | Bulk file reload loses history | Constraint Wiki (`H2AI_CONSTRAINT_WIKI` KV) — hot-reload via NATS KV watch; `ConstraintSource` trait decouples corpus access from storage; `ConstraintSnapshot` in every checkpoint records which wiki revision was active |
 | Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
 | Low-confidence outputs reach callers silently | Every output looks the same | HITL Approval Gate — `q_confidence < threshold` or `require_approval = true` parks the output in `H2AI_APPROVALS` KV; `PendingApprovalEvent` streams immediately; 30-minute reaper auto-rejects expired records |
+| Prompt quality drifts without feedback | Manually tune prompts per deployment | Adaptive Prompt Harness — OPRO (arXiv 2309.03409) auto-improves prompts when j_eff EMA falls; Thompson bandit selects best variant |
 | Edge agent secrets leak | Long-lived API keys in containers | Scoped NATS NKeys per task_id — token expires when task closes |
 | Shell injection via LLM output | `sh -c <llm_string>` executes metacharacters | `ShellExecutor` uses JSON contract + `Command::new(cmd).args(args)` — no shell interpreter; PGID-scoped process group kill on timeout |
 | Hardened wave still has full tooling | One tool policy for all waves | `WaveMode` (Normal/Hardened) on `TaskPayload`; `ToolRegistry::for_wave()` selects a reduced allowlist for `ConstrainedExploration` and `ModeCollapse` retries |
@@ -133,6 +134,12 @@ curl -X POST http://localhost:8080/tasks \
 
 # Stream events in real time
 curl -sN http://localhost:8080/tasks/{task_id}/events
+
+# If the task suspends with PendingClarificationEvent (oracle gate + low confidence),
+# supply an operator answer to resume:
+curl -X POST http://localhost:8080/tasks/{task_id}/clarify \
+  -H "Content-Type: application/json" \
+  -d '{"answer": "your clarification here"}'
 
 # Open the Merge Authority UI
 open http://localhost:8080
@@ -337,7 +344,11 @@ ZeroSurvivalEvent                  → all proposals pruned, autonomic retry fir
 InterfaceSaturationWarningEvent    → active sub-tasks approaching N_max^interface
 ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates from ScoreOrdered to ConsensusMedian/OutlierResistant (fractional BFT threshold on fingerprints — not PBFT)
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
-MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted
+MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted; oracle_gate_passed: Option<bool>
+OracleGateResultEvent              → Phase 4.5 oracle gate: gate_passed, confidence, checked/passed counts
+PendingClarificationEvent          → engine suspended awaiting operator answer; POST /tasks/{id}/clarify to resume
+OproTriggeredEvent                 → OPRO cycle started: j_eff_ema fell below threshold for adapter
+PromptVariantPromotedEvent         → Thompson bandit promoted best variant as new prompt default
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
 TaoIterationEvent                  → TAO loop turn result: tool_calls[] (tool, input_json, output, iteration) + total_token_cost
 VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5)
@@ -379,6 +390,8 @@ h2ai-control-plane/
 │   │                               # AgentState, TaskPayload, TaskResult (typeshare-annotated)
 │   │                               # SubtaskId, SubtaskPlan, SubtaskResult, PlanStatus, Subtask
 │   │                               # ConstraintViolation (per-constraint failure record in BranchPrunedEvent)
+│   │                               # checkpoint_delta.rs — TaskCheckpointEntry, CheckpointKind (Base/Delta, RFC 6902)
+│   │                               # prompt_variant.rs — PromptVariant, AdapterOproState, ProfileTier
 │   ├── h2ai-nats/                  # NATS subject constants + scoped NKey provisioning per task_id
 │   ├── h2ai-config/                # H2AIConfig — physics thresholds and role defaults
 │   ├── h2ai-constraints/           # ConstraintDoc/ConstraintPredicate type system + sync evaluator
@@ -398,8 +411,13 @@ h2ai-control-plane/
 │   ├── h2ai-orchestrator/          # DAG builder + Pareto topology router + NatsDispatchAdapter
 │   │                               # CompoundTaskEngine (decompose → review → schedule pipeline)
 │   │                               # SchedulingEngine (Kahn topo-sort wave execution)
+│   │                               # oracle_gate.rs — Phase 4.5 NATS request/reply gate + clarification suspension
+│   │                               # prompts.rs — resolve_prompt with 30s cache, NATS lookup, config fallback
 │   ├── h2ai-autonomic/             # MAPE-K loop + calibration harness + N_max calculator
 │   ├── h2ai-state/                 # CRDT semilattice + NATS JetStream I/O + task dispatch wire protocol
+│   │                               # Delta checkpoint encoding: JSON Patch RFC 6902 diffs (O(N) storage)
+│   │                               # NatsClient::connect_with_cfg(url, StateConfig); LRU cache 200 entries/60s TTL
+│   │                               # put_checkpoint_delta, get_latest_checkpoint, reconstruct_at_seq
 │   ├── h2ai-context/               # Dark Knowledge Compiler + constraint corpus loader
 │   │                               # corpus_keywords from ConstraintDoc::vocabulary()
 │   ├── h2ai-adapters/              # IComputeAdapter: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + AdapterFactory
@@ -411,6 +429,8 @@ h2ai-control-plane/
 │   │                               # ToolRegistry::for_wave(cfg, WaveMode) — live backends
 │   │                               # ToolRegistry::for_wave_with_mocks(cfg, WaveMode) — test helper
 │   ├── h2ai-api/                   # axum REST gateway + Merge Authority web UI
+│   │                               # bootstrap.rs — seeds Bayesian beta priors from AdapterProfile.tier at startup
+│   │                               # opro.rs — j_eff EMA tracking, OPRO cycle, Thompson-sampling bandit, variant storage
 │   └── h2ai-agent/                 # Edge agent binary — heartbeat + NATS task dispatch loop
 │                                   # TaoAgent: tool-call loop up to agent_max_tool_iterations turns
 │                                   # config_validation::validate_tool_configs — fail-fast at startup

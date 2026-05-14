@@ -1,10 +1,17 @@
 use async_nats::jetstream::{self, kv, stream};
 use async_nats::Client;
+use h2ai_config::StateConfig;
 use h2ai_types::checkpoint::TaskCheckpoint;
+use h2ai_types::checkpoint_delta::{CheckpointKind, TaskCheckpointEntry};
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::TaskId;
+use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
 use h2ai_types::sizing::OracleObservation;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Error)]
 pub enum NatsError {
@@ -22,16 +29,36 @@ pub enum NatsError {
     Serialize(String),
 }
 
+/// In-memory cached reconstructed checkpoint for a task.
+pub struct CachedCheckpoint {
+    pub checkpoint: TaskCheckpoint,
+    pub seq: u32,
+    pub cached_at: std::time::Instant,
+}
+
 pub struct NatsClient {
     pub client: Client,
     jetstream: jetstream::Context,
+    state_cfg: StateConfig,
+    /// LRU cache of reconstructed checkpoints, keyed by task_id string.
+    delta_cache: Arc<RwLock<LruCache<String, CachedCheckpoint>>>,
 }
 
 impl NatsClient {
     pub async fn connect(url: &str) -> Result<Self, NatsError> {
+        Self::connect_with_cfg(url, StateConfig::default()).await
+    }
+
+    pub async fn connect_with_cfg(url: &str, state_cfg: StateConfig) -> Result<Self, NatsError> {
         let client = async_nats::connect(url).await?;
         let jetstream = jetstream::new(client.clone());
-        Ok(Self { client, jetstream })
+        let cache_size = NonZeroUsize::new(state_cfg.delta.cache_max_entries.max(1)).unwrap();
+        Ok(Self {
+            client,
+            jetstream,
+            delta_cache: Arc::new(RwLock::new(LruCache::new(cache_size))),
+            state_cfg,
+        })
     }
 
     /// Create all required JetStream streams and KV buckets.
@@ -40,7 +67,7 @@ impl NatsClient {
         // Stream 1: all task orchestration events (durable, file-backed)
         self.jetstream
             .get_or_create_stream(stream::Config {
-                name: "H2AI_TASKS".to_owned(),
+                name: self.state_cfg.tasks_stream.clone(),
                 subjects: vec!["h2ai.tasks.>".to_owned()],
                 storage: stream::StorageType::File,
                 retention: stream::RetentionPolicy::Limits,
@@ -52,7 +79,7 @@ impl NatsClient {
         // Stream 2: telemetry + audit (durable, file-backed, separate namespace)
         self.jetstream
             .get_or_create_stream(stream::Config {
-                name: "H2AI_TELEMETRY".to_owned(),
+                name: self.state_cfg.telemetry_stream.clone(),
                 subjects: vec!["h2ai.telemetry.>".to_owned(), "audit.events.>".to_owned()],
                 storage: stream::StorageType::File,
                 retention: stream::RetentionPolicy::Limits,
@@ -64,7 +91,7 @@ impl NatsClient {
         // Stream 3: task result responses from edge agents
         self.jetstream
             .get_or_create_stream(stream::Config {
-                name: "H2AI_RESULTS".to_owned(),
+                name: self.state_cfg.results_stream.clone(),
                 subjects: vec!["h2ai.results.>".to_owned()],
                 storage: stream::StorageType::Memory,
                 retention: stream::RetentionPolicy::WorkQueue,
@@ -75,7 +102,7 @@ impl NatsClient {
 
         // KV bucket: calibration cache
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_CALIBRATION".to_owned(),
+            bucket: self.state_cfg.calibration_bucket.clone(),
             storage: stream::StorageType::File,
             ..Default::default()
         })
@@ -83,7 +110,7 @@ impl NatsClient {
 
         // KV bucket: durable session memory
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_SESSIONS".to_owned(),
+            bucket: self.state_cfg.sessions_bucket.clone(),
             description: "Durable session memory — pipeline conversation history".to_owned(),
             history: 1,
             storage: stream::StorageType::File,
@@ -93,7 +120,7 @@ impl NatsClient {
 
         // KV bucket: task state snapshots for crash-recovery replay optimization
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_SNAPSHOTS".to_owned(),
+            bucket: self.state_cfg.snapshots_bucket.clone(),
             description: "Task state snapshots — latest-only, accelerates replay after crash"
                 .to_owned(),
             history: 1,
@@ -104,7 +131,7 @@ impl NatsClient {
 
         // KV bucket: TaoMultiplierEstimator EMA state for drift tracking
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_ESTIMATOR".to_owned(),
+            bucket: self.state_cfg.estimator_bucket.clone(),
             description: "TaoMultiplierEstimator EMA state — survives restarts".to_owned(),
             history: 1,
             storage: stream::StorageType::File,
@@ -114,7 +141,7 @@ impl NatsClient {
 
         // KV bucket: rolling oracle calibration observations for conformal interval estimation
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_ORACLE_CALIBRATION".to_owned(),
+            bucket: self.state_cfg.oracle_calibration_bucket.clone(),
             description: "Rolling oracle calibration window — max 200 OracleObservation entries"
                 .to_owned(),
             history: 1,
@@ -125,7 +152,7 @@ impl NatsClient {
 
         // KV bucket: shadow auditor promoted domains (domains in two-auditor AND-vote mode)
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_AUDIT_SHADOW".to_owned(),
+            bucket: self.state_cfg.audit_shadow_bucket.clone(),
             description: "Shadow auditor promoted domains — persisted across restarts".to_owned(),
             history: 1,
             storage: stream::StorageType::File,
@@ -135,7 +162,7 @@ impl NatsClient {
 
         // KV bucket: task phase checkpoints for crash-recovery (zstd-compressed, latest-only)
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_TASK_CHECKPOINTS".to_owned(),
+            bucket: self.state_cfg.task_checkpoints_bucket.clone(),
             description: "Task phase checkpoints — zstd-compressed, latest-only per task"
                 .to_owned(),
             history: 1,
@@ -147,7 +174,7 @@ impl NatsClient {
 
         // Object Store bucket: checkpoint payload overflow for entries > 800 KB
         self.ensure_object_store(async_nats::jetstream::object_store::Config {
-            bucket: "H2AI_CHECKPOINT_PAYLOADS".to_owned(),
+            bucket: self.state_cfg.checkpoint_payloads_bucket.clone(),
             description: Some(
                 "Checkpoint payload overflow — delete before KV entry on GC".to_owned(),
             ),
@@ -158,7 +185,7 @@ impl NatsClient {
 
         // KV bucket: HITL approval records pending human decision
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_APPROVALS".to_owned(),
+            bucket: self.state_cfg.approvals_bucket.clone(),
             description: "HITL approval records awaiting human decision".to_owned(),
             history: 1,
             storage: stream::StorageType::File,
@@ -169,7 +196,7 @@ impl NatsClient {
 
         // KV bucket: compact tag→[constraint_id] index (small, cacheable with TTL)
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_CONSTRAINT_WIKI".to_owned(),
+            bucket: self.state_cfg.constraint_wiki_bucket.clone(),
             description: "Compact constraint tag index — tag→[id] map, lazy-loaded per request"
                 .to_owned(),
             history: 5,
@@ -180,7 +207,7 @@ impl NatsClient {
 
         // KV bucket: individual constraint metas — one entry per constraint, fetched on demand
         self.ensure_kv_bucket(kv::Config {
-            bucket: "H2AI_CONSTRAINT_META".to_owned(),
+            bucket: self.state_cfg.constraint_meta_bucket.clone(),
             description: "Per-constraint metadata — fetched lazily by ID, never bulk-loaded"
                 .to_owned(),
             history: 3,
@@ -191,10 +218,20 @@ impl NatsClient {
 
         // Object Store: full constraint predicate payloads (LlmJudge rubrics, Oracle configs)
         self.ensure_object_store(async_nats::jetstream::object_store::Config {
-            bucket: "H2AI_CONSTRAINT_PAYLOADS".to_owned(),
+            bucket: self.state_cfg.constraint_payloads_bucket.clone(),
             description: Some(
                 "Constraint predicate payloads — lazy-fetched during Phase 4 evaluation".to_owned(),
             ),
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: OPRO prompt variants and per-adapter bandit/OPRO state
+        self.ensure_kv_bucket(kv::Config {
+            bucket: self.state_cfg.prompt_variants_bucket.clone(),
+            description: "OPRO prompt variants and per-adapter OPRO/bandit state".to_owned(),
+            history: 5,
             storage: stream::StorageType::File,
             ..Default::default()
         })
@@ -250,7 +287,7 @@ impl NatsClient {
             serde_json::to_vec(snapshot).map_err(|e| NatsError::Serialize(e.to_string()))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_SNAPSHOTS")
+            .get_key_value(&self.state_cfg.snapshots_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.put(&key, payload.into())
@@ -264,7 +301,7 @@ impl NatsClient {
         let key = format!("snapshots/{task_id}/latest");
         let kv = self
             .jetstream
-            .get_key_value("H2AI_SNAPSHOTS")
+            .get_key_value(&self.state_cfg.snapshots_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get(&key).await {
@@ -286,7 +323,7 @@ impl NatsClient {
         let payload = serde_json::to_vec(event).map_err(|e| NatsError::Serialize(e.to_string()))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CALIBRATION")
+            .get_key_value(&self.state_cfg.calibration_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.put("latest", payload.into())
@@ -299,7 +336,7 @@ impl NatsClient {
     pub async fn get_calibration(&self) -> Result<Option<CalibrationCompletedEvent>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CALIBRATION")
+            .get_key_value(&self.state_cfg.calibration_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get("latest").await {
@@ -325,7 +362,7 @@ impl NatsClient {
             serde_json::to_vec(observations).map_err(|e| NatsError::Serialize(e.to_string()))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ORACLE_CALIBRATION")
+            .get_key_value(&self.state_cfg.oracle_calibration_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.put("observations", payload.into())
@@ -338,7 +375,7 @@ impl NatsClient {
     pub async fn get_oracle_observations(&self) -> Result<Vec<OracleObservation>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ORACLE_CALIBRATION")
+            .get_key_value(&self.state_cfg.oracle_calibration_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get("observations").await {
@@ -361,7 +398,7 @@ impl NatsClient {
     ) -> Result<(), NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_AUDIT_SHADOW")
+            .get_key_value(&self.state_cfg.audit_shadow_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let payload = serde_json::to_vec(domains).map_err(|e| NatsError::KvError(e.to_string()))?;
@@ -379,7 +416,7 @@ impl NatsClient {
     ) -> Result<std::collections::HashSet<String>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_AUDIT_SHADOW")
+            .get_key_value(&self.state_cfg.audit_shadow_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get("promoted").await {
@@ -401,7 +438,7 @@ impl NatsClient {
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ESTIMATOR")
+            .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.put("tao_multiplier/state", payload.into())
@@ -419,7 +456,7 @@ impl NatsClient {
         }
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ESTIMATOR")
+            .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get("tao_multiplier/state").await {
@@ -444,7 +481,7 @@ impl NatsClient {
             .map_err(|e| NatsError::Serialize(e.to_string()))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ESTIMATOR")
+            .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.put("srani_adaptive_state", payload.into())
@@ -462,7 +499,7 @@ impl NatsClient {
         }
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ESTIMATOR")
+            .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get("srani_adaptive_state").await {
@@ -481,7 +518,7 @@ impl NatsClient {
     pub async fn put_bandit_state(&self, json_bytes: Vec<u8>) -> Result<(), NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ESTIMATOR")
+            .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.put("bandit_state", json_bytes.into())
@@ -495,7 +532,7 @@ impl NatsClient {
     pub async fn get_bandit_state(&self) -> Result<Option<Vec<u8>>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_ESTIMATOR")
+            .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get("bandit_state").await {
@@ -535,7 +572,10 @@ impl NatsClient {
         };
         let payload =
             serde_json::to_vec(&snapshot).map_err(|e| Box::new(e) as async_nats::Error)?;
-        let kv = self.jetstream.get_key_value("H2AI_ESTIMATOR").await?;
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.estimator_bucket)
+            .await?;
         kv.put("h2ai.config.safety_profile", payload.into()).await?;
         Ok(())
     }
@@ -569,7 +609,7 @@ impl NatsClient {
         };
         let js_stream = self
             .jetstream
-            .get_stream("H2AI_TASKS")
+            .get_stream(&self.state_cfg.tasks_stream)
             .await
             .map_err(|e| NatsError::StreamError(e.to_string()))?;
         let consumer = js_stream
@@ -629,7 +669,7 @@ impl NatsClient {
         };
         let js_stream = self
             .jetstream
-            .get_stream("H2AI_RESULTS")
+            .get_stream(&self.state_cfg.results_stream)
             .await
             .map_err(|e| NatsError::StreamError(e.to_string()))?;
         let consumer = js_stream
@@ -660,6 +700,139 @@ impl NatsClient {
             .map_err(|e| NatsError::StreamError(format!("ack failed: {e}")))?;
 
         Ok(result)
+    }
+
+    // ── prompt variants / OPRO state ────────────────────────────────────────
+
+    /// Store a PromptVariant at key `{adapter_name}/{prompt_key}/{variant_id}`.
+    pub async fn put_prompt_variant(&self, variant: &PromptVariant) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.prompt_variants_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!(
+            "{}/{}/{}",
+            variant.adapter_name, variant.prompt_key, variant.variant_id
+        );
+        let bytes = serde_json::to_vec(variant).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        kv.put(&key, bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Fetch a PromptVariant by adapter_name, prompt_key, variant_id.
+    /// Returns `None` if the key does not exist.
+    pub async fn get_prompt_variant(
+        &self,
+        adapter_name: &str,
+        prompt_key: &str,
+        variant_id: &str,
+    ) -> Result<Option<PromptVariant>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.prompt_variants_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/{}/{}", adapter_name, prompt_key, variant_id);
+        match kv
+            .get(&key)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(bytes) => {
+                let variant = serde_json::from_slice(&bytes)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(variant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get the active variant ID pointer for an adapter+prompt_key.
+    /// Key: `{adapter_name}/{prompt_key}/_active`.
+    pub async fn get_active_variant_ptr(
+        &self,
+        adapter_name: &str,
+        prompt_key: &str,
+    ) -> Result<Option<String>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.prompt_variants_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/{}/_active", adapter_name, prompt_key);
+        match kv
+            .get(&key)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
+            None => Ok(None),
+        }
+    }
+
+    /// Set the active variant ID pointer for an adapter+prompt_key.
+    /// Key: `{adapter_name}/{prompt_key}/_active`.
+    pub async fn set_active_variant_ptr(
+        &self,
+        adapter_name: &str,
+        prompt_key: &str,
+        variant_id: &str,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.prompt_variants_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/{}/_active", adapter_name, prompt_key);
+        kv.put(&key, variant_id.as_bytes().to_vec().into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get the per-adapter OPRO state.
+    /// Key: `{adapter_name}/_opro_state`.
+    pub async fn get_adapter_opro_state(
+        &self,
+        adapter_name: &str,
+    ) -> Result<Option<AdapterOproState>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.prompt_variants_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/_opro_state", adapter_name);
+        match kv
+            .get(&key)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(bytes) => {
+                let state = serde_json::from_slice(&bytes)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Persist the per-adapter OPRO state.
+    /// Key: `{adapter_name}/_opro_state`.
+    pub async fn put_adapter_opro_state(&self, state: &AdapterOproState) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.prompt_variants_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/_opro_state", state.adapter_name);
+        let bytes = serde_json::to_vec(state).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        kv.put(&key, bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
     }
 
     // ── internal ────────────────────────────────────────────────────────────
@@ -719,7 +892,7 @@ impl NatsClient {
             .map_err(|e| NatsError::Serialize(format!("zstd encode: {e}")))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_TASK_CHECKPOINTS")
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let revision = match expected_revision {
@@ -742,7 +915,7 @@ impl NatsClient {
     ) -> Result<Option<TaskCheckpoint>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_TASK_CHECKPOINTS")
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.get(task_id).await {
@@ -763,7 +936,11 @@ impl NatsClient {
     pub async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint> {
         use futures::TryStreamExt;
 
-        let kv = match self.jetstream.get_key_value("H2AI_TASK_CHECKPOINTS").await {
+        let kv = match self
+            .jetstream
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
+            .await
+        {
             Ok(kv) => kv,
             Err(e) => {
                 tracing::warn!("list_task_checkpoints: KV open failed: {e}");
@@ -798,7 +975,7 @@ impl NatsClient {
             if let Some(obj_ref) = &checkpoint.object_store_ref {
                 match self
                     .jetstream
-                    .get_object_store("H2AI_CHECKPOINT_PAYLOADS")
+                    .get_object_store(&self.state_cfg.checkpoint_payloads_bucket)
                     .await
                 {
                     Ok(store) => {
@@ -809,14 +986,16 @@ impl NatsClient {
                             );
                         }
                     }
-                    Err(e) => tracing::warn!("failed to open H2AI_CHECKPOINT_PAYLOADS: {e}"),
+                    Err(e) => {
+                        tracing::warn!(bucket = %self.state_cfg.checkpoint_payloads_bucket, "failed to open checkpoint payloads object store: {e}")
+                    }
                 }
             }
         }
         // 2. Delete the KV entry
         let kv = self
             .jetstream
-            .get_key_value("H2AI_TASK_CHECKPOINTS")
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         kv.delete(task_id)
@@ -836,7 +1015,7 @@ impl NatsClient {
             serde_json::to_vec(record).map_err(|e| NatsError::Serialize(e.to_string()))?;
         let kv = self
             .jetstream
-            .get_key_value("H2AI_APPROVALS")
+            .get_key_value(&self.state_cfg.approvals_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let rev = kv
@@ -854,7 +1033,7 @@ impl NatsClient {
     ) -> Result<Option<(h2ai_types::approval::ApprovalRecord, u64)>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_APPROVALS")
+            .get_key_value(&self.state_cfg.approvals_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv.entry(task_id).await {
@@ -880,7 +1059,11 @@ impl NatsClient {
         &self,
     ) -> Vec<(h2ai_types::approval::ApprovalRecord, u64)> {
         use futures::TryStreamExt;
-        let kv = match self.jetstream.get_key_value("H2AI_APPROVALS").await {
+        let kv = match self
+            .jetstream
+            .get_key_value(&self.state_cfg.approvals_bucket)
+            .await
+        {
             Ok(kv) => kv,
             Err(e) => {
                 tracing::warn!("list_approval_records: KV open failed: {e}");
@@ -914,7 +1097,7 @@ impl NatsClient {
     ) -> Result<(), NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_APPROVALS")
+            .get_key_value(&self.state_cfg.approvals_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         // Use update with empty bytes as the atomic claim — only succeeds if revision matches.
@@ -941,7 +1124,7 @@ impl NatsClient {
     ) -> Result<u64, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let bytes = serde_json::to_vec(cache).map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -966,7 +1149,7 @@ impl NatsClient {
     ) -> Result<Option<(h2ai_constraints::wiki::WikiCache, u64)>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv
@@ -995,7 +1178,7 @@ impl NatsClient {
     ) -> Result<(), NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let bytes = serde_json::to_vec(index).map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -1011,7 +1194,7 @@ impl NatsClient {
     ) -> Result<Option<std::collections::HashMap<String, Vec<String>>>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_WIKI")
+            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv
@@ -1035,7 +1218,7 @@ impl NatsClient {
     ) -> Result<(), NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_META")
+            .get_key_value(&self.state_cfg.constraint_meta_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let bytes = serde_json::to_vec(meta).map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -1052,7 +1235,7 @@ impl NatsClient {
     ) -> Result<Option<h2ai_constraints::types::ConstraintMeta>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_META")
+            .get_key_value(&self.state_cfg.constraint_meta_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         match kv
@@ -1076,7 +1259,7 @@ impl NatsClient {
     ) -> Result<Vec<h2ai_constraints::types::ConstraintMeta>, NatsError> {
         let kv = self
             .jetstream
-            .get_key_value("H2AI_CONSTRAINT_META")
+            .get_key_value(&self.state_cfg.constraint_meta_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let kv = std::sync::Arc::new(kv);
@@ -1109,7 +1292,7 @@ impl NatsClient {
     ) -> Result<(), NatsError> {
         let os = self
             .jetstream
-            .get_object_store("H2AI_CONSTRAINT_PAYLOADS")
+            .get_object_store(&self.state_cfg.constraint_payloads_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let key = format!("{}@{}", payload.id, payload.version);
@@ -1130,7 +1313,7 @@ impl NatsClient {
     ) -> Result<Option<h2ai_constraints::types::ConstraintPayload>, NatsError> {
         let os = self
             .jetstream
-            .get_object_store("H2AI_CONSTRAINT_PAYLOADS")
+            .get_object_store(&self.state_cfg.constraint_payloads_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         let key = format!("{id}@{version}");
@@ -1150,6 +1333,302 @@ impl NatsClient {
             Err(e) => Err(NatsError::KvError(e.to_string())),
         }
     }
+
+    // ── delta checkpoint write/read path ─────────────────────────────────────
+
+    /// Update the `{task_id}/seq/latest` pointer in the task_checkpoints bucket using
+    /// optimistic CAS (up to 3 attempts). Value is the seq number as little-endian u32 bytes.
+    async fn update_latest_seq(&self, task_id: &str, seq: u32) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{task_id}/seq/latest");
+        let seq_bytes: Vec<u8> = seq.to_le_bytes().to_vec();
+
+        for attempt in 0..3u32 {
+            match kv
+                .entry(&key)
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?
+            {
+                Some(entry) => {
+                    let revision = entry.revision;
+                    match kv.update(&key, seq_bytes.clone().into(), revision).await {
+                        Ok(_) => return Ok(()),
+                        Err(_) if attempt < 2 => continue,
+                        Err(e) => {
+                            return Err(NatsError::KvError(format!(
+                                "update_latest_seq CAS failed after 3 attempts: {e}"
+                            )))
+                        }
+                    }
+                }
+                None => {
+                    kv.put(&key, seq_bytes.clone().into())
+                        .await
+                        .map_err(|e| NatsError::KvError(e.to_string()))?;
+                    return Ok(());
+                }
+            }
+        }
+        Err(NatsError::KvError(
+            "update_latest_seq: max CAS retries exceeded".into(),
+        ))
+    }
+
+    /// Persist a checkpoint using delta encoding.
+    ///
+    /// When `delta.enabled = false` or `seq` falls on a base interval, stores a full
+    /// `CheckpointKind::Base`. Otherwise computes an RFC-6902 patch against the base
+    /// checkpoint and stores a `CheckpointKind::Delta`.
+    ///
+    /// After the write, updates the `{task_id}/seq/latest` CAS pointer and invalidates
+    /// the in-memory LRU cache for the task.
+    pub async fn put_checkpoint_delta(
+        &self,
+        task_id: &str,
+        checkpoint: &TaskCheckpoint,
+        seq: u32,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+
+        // Parse task_id as UUID; fall back to new UUID for legacy string task ids.
+        let task_uuid = uuid::Uuid::parse_str(task_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let typed_task_id = TaskId::from_uuid(task_uuid);
+
+        let entry = if !self.state_cfg.delta.enabled
+            || should_store_base(seq, self.state_cfg.delta.base_interval)
+        {
+            // Full base checkpoint
+            TaskCheckpointEntry {
+                task_id: typed_task_id,
+                seq,
+                base_seq: seq,
+                kind: CheckpointKind::Base(Box::new(checkpoint.clone())),
+                timestamp: chrono::Utc::now(),
+            }
+        } else {
+            // Delta against the nearest base
+            let base_seq =
+                (seq / self.state_cfg.delta.base_interval) * self.state_cfg.delta.base_interval;
+            let base_key = format!("{task_id}/seq/{base_seq:08}");
+            let base_bytes = kv
+                .get(&base_key)
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?
+                .ok_or_else(|| {
+                    NatsError::KvError(format!(
+                        "base checkpoint not found for task={task_id} base_seq={base_seq}"
+                    ))
+                })?;
+            let base_entry: TaskCheckpointEntry = serde_json::from_slice(&base_bytes)
+                .map_err(|e| NatsError::Serialize(e.to_string()))?;
+            let base_cp = match &base_entry.kind {
+                CheckpointKind::Base(cp) => (*cp).clone(),
+                CheckpointKind::Delta(_) => {
+                    return Err(NatsError::KvError(format!(
+                        "base_seq={base_seq} entry is a Delta, expected Base"
+                    )))
+                }
+            };
+            let patch = generate_delta(&base_cp, checkpoint)?;
+            TaskCheckpointEntry {
+                task_id: typed_task_id,
+                seq,
+                base_seq,
+                kind: CheckpointKind::Delta(patch.0),
+                timestamp: chrono::Utc::now(),
+            }
+        };
+
+        let key = format!("{task_id}/seq/{seq:08}");
+        let bytes = serde_json::to_vec(&entry).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        kv.put(&key, bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+
+        // Update the latest seq pointer
+        self.update_latest_seq(task_id, seq).await?;
+
+        // Invalidate cache
+        self.delta_cache.write().await.pop(task_id);
+
+        Ok(())
+    }
+
+    /// Return the most recent checkpoint for `task_id`, using the LRU cache when warm.
+    ///
+    /// Read path:
+    /// 1. Check LRU cache (TTL-gated).
+    /// 2. Read `{task_id}/seq/latest` to get the highest written seq.
+    /// 3. If no delta entry exists, fall back to `get_task_checkpoint` (legacy flat key).
+    /// 4. Reconstruct the checkpoint at that seq (apply patch if Delta).
+    /// 5. Populate the cache.
+    pub async fn get_latest_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskCheckpoint>, NatsError> {
+        // Cache lookup (write lock so LRU order is updated on hit)
+        {
+            let mut cache = self.delta_cache.write().await;
+            if let Some(cached) = cache.get(task_id) {
+                let ttl = std::time::Duration::from_secs(self.state_cfg.delta.cache_ttl_secs);
+                if cached.cached_at.elapsed() < ttl {
+                    return Ok(Some(cached.checkpoint.clone()));
+                }
+                // TTL expired
+                cache.pop(task_id);
+            }
+        }
+
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.task_checkpoints_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+
+        let latest_key = format!("{task_id}/seq/latest");
+        let seq = match kv
+            .get(&latest_key)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(bytes) => {
+                let arr: [u8; 4] = bytes.as_ref().try_into().map_err(|_| {
+                    NatsError::Serialize(format!(
+                        "latest seq key has unexpected byte length for task={task_id}"
+                    ))
+                })?;
+                u32::from_le_bytes(arr)
+            }
+            None => {
+                // No delta entries — try legacy flat key
+                return self.get_legacy_checkpoint(task_id).await;
+            }
+        };
+
+        self.reconstruct_at_seq(task_id, seq, &kv).await
+    }
+
+    /// Reconstruct (and cache) the checkpoint at a specific seq.
+    async fn reconstruct_at_seq(
+        &self,
+        task_id: &str,
+        seq: u32,
+        kv: &async_nats::jetstream::kv::Store,
+    ) -> Result<Option<TaskCheckpoint>, NatsError> {
+        let key = format!("{task_id}/seq/{seq:08}");
+        let bytes = match kv
+            .get(&key)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?
+        {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let entry: TaskCheckpointEntry =
+            serde_json::from_slice(&bytes).map_err(|e| NatsError::Serialize(e.to_string()))?;
+
+        let checkpoint = match entry.kind {
+            CheckpointKind::Base(cp) => *cp,
+            CheckpointKind::Delta(ops) => {
+                // Fetch the base
+                let base_key = format!("{task_id}/seq/{:08}", entry.base_seq);
+                let base_bytes = kv
+                    .get(&base_key)
+                    .await
+                    .map_err(|e| NatsError::KvError(e.to_string()))?
+                    .ok_or_else(|| {
+                        NatsError::KvError(format!(
+                            "base checkpoint missing for task={task_id} base_seq={}",
+                            entry.base_seq
+                        ))
+                    })?;
+                let base_entry: TaskCheckpointEntry = serde_json::from_slice(&base_bytes)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                let base_cp = match base_entry.kind {
+                    CheckpointKind::Base(cp) => *cp,
+                    CheckpointKind::Delta(_) => {
+                        return Err(NatsError::KvError(format!(
+                        "base_seq={} entry is itself a Delta — corrupt chain for task={task_id}",
+                        entry.base_seq
+                    )))
+                    }
+                };
+                let patch = json_patch::Patch(ops);
+                apply_patches(&base_cp, &[patch])?
+            }
+        };
+
+        // Populate cache
+        self.delta_cache.write().await.put(
+            task_id.to_string(),
+            CachedCheckpoint {
+                checkpoint: checkpoint.clone(),
+                seq,
+                cached_at: std::time::Instant::now(),
+            },
+        );
+
+        Ok(Some(checkpoint))
+    }
+
+    /// Backward-compatibility fallback: fetch via the old flat-key format (`task_id` directly),
+    /// which is what `get_task_checkpoint` uses (zstd-compressed JSON).
+    async fn get_legacy_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskCheckpoint>, NatsError> {
+        self.get_task_checkpoint(task_id).await
+    }
+}
+
+// ── delta encoding helpers ──────────────────────────────────────────────────
+
+/// Returns `true` when `seq` should be stored as a full Base checkpoint.
+///
+/// Sequence 0 is always a base. Thereafter, every `base_interval`-th checkpoint
+/// is stored as a base so that patch chains never grow unbounded.
+pub fn should_store_base(seq: u32, base_interval: u32) -> bool {
+    seq == 0 || seq.is_multiple_of(base_interval)
+}
+
+/// Compute the RFC-6902 JSON Patch diff between `base` and `current`.
+///
+/// The returned `Patch` is empty (zero operations) when the two checkpoints
+/// are identical. Callers store this alongside the current `seq` so a
+/// reader can reconstruct `current` by applying the patch to the base.
+pub fn generate_delta(
+    base: &TaskCheckpoint,
+    current: &TaskCheckpoint,
+) -> Result<json_patch::Patch, NatsError> {
+    let base_val = serde_json::to_value(base).map_err(|e| NatsError::Serialize(e.to_string()))?;
+    let current_val =
+        serde_json::to_value(current).map_err(|e| NatsError::Serialize(e.to_string()))?;
+    Ok(json_patch::diff(&base_val, &current_val))
+}
+
+/// Reconstruct a `TaskCheckpoint` by applying a sequence of patches to `base`.
+///
+/// Patches are applied in order. Typically called with a single-element slice
+/// (base → current diff), but the signature accepts multiple patches so a
+/// reader can fast-forward across several delta checkpoints in one call.
+pub fn apply_patches(
+    base: &TaskCheckpoint,
+    patches: &[json_patch::Patch],
+) -> Result<TaskCheckpoint, NatsError> {
+    let mut val = serde_json::to_value(base).map_err(|e| NatsError::Serialize(e.to_string()))?;
+    for patch in patches {
+        json_patch::patch(&mut val, &patch.0)
+            .map_err(|e| NatsError::Serialize(format!("json-patch apply: {e}")))?;
+    }
+    serde_json::from_value(val).map_err(|e| NatsError::Serialize(e.to_string()))
 }
 
 #[cfg(test)]
@@ -1255,5 +1734,215 @@ mod wire_protocol_tests {
         let received = waiter.await.unwrap().expect("result");
         assert_eq!(received.output, "hello");
         assert_eq!(received.task_id, task_id);
+    }
+}
+
+#[cfg(test)]
+mod delta_encoding_tests {
+    use super::*;
+    use h2ai_types::checkpoint::TaskCheckpoint;
+
+    fn minimal_checkpoint() -> TaskCheckpoint {
+        TaskCheckpoint {
+            task_id: "task-001".into(),
+            phase: "ParallelGeneration".into(),
+            node_id: "node-1".into(),
+            lease_seq: 1,
+            proposals: vec!["proposal A".into()],
+            auditor_survivors: vec![],
+            resolved_output: None,
+            manifest_json: "{}".into(),
+            object_store_ref: None,
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            constraint_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn should_store_base_seq_zero() {
+        assert!(should_store_base(0, 10));
+    }
+
+    #[test]
+    fn should_store_base_at_interval() {
+        assert!(should_store_base(10, 10));
+        assert!(should_store_base(20, 10));
+        assert!(should_store_base(100, 10));
+    }
+
+    #[test]
+    fn should_store_base_not_at_interval() {
+        assert!(!should_store_base(5, 10));
+        assert!(!should_store_base(1, 10));
+        assert!(!should_store_base(9, 10));
+    }
+
+    #[test]
+    fn generate_delta_no_change() {
+        let cp = minimal_checkpoint();
+        let patch = generate_delta(&cp, &cp).expect("generate_delta");
+        // Patch wraps Vec<PatchOperation> in field .0
+        assert_eq!(
+            patch.0.len(),
+            0,
+            "identical checkpoints should produce empty patch"
+        );
+    }
+
+    #[test]
+    fn generate_delta_single_field_changed() {
+        let base = minimal_checkpoint();
+        let mut modified = base.clone();
+        modified.phase = "AuditorGate".into();
+
+        let patch = generate_delta(&base, &modified).expect("generate_delta");
+        assert_eq!(patch.0.len(), 1, "one field changed → one patch operation");
+
+        // The operation should be a Replace at /phase
+        let op = &patch.0[0];
+        let op_json = serde_json::to_value(op).unwrap();
+        assert_eq!(op_json["op"], "replace");
+        assert_eq!(op_json["path"], "/phase");
+        assert_eq!(op_json["value"], "AuditorGate");
+    }
+
+    #[test]
+    fn apply_patches_roundtrip() {
+        let base = minimal_checkpoint();
+        let mut modified = base.clone();
+        modified.phase = "Merging".into();
+        modified.resolved_output = Some("final answer".into());
+        modified.updated_at_ms = 2_000_000;
+
+        let patch = generate_delta(&base, &modified).expect("generate_delta");
+        let reconstructed = apply_patches(&base, &[patch]).expect("apply_patches");
+
+        assert_eq!(reconstructed.phase, "Merging");
+        assert_eq!(reconstructed.resolved_output, Some("final answer".into()));
+        assert_eq!(reconstructed.updated_at_ms, 2_000_000);
+        // Unchanged fields remain intact
+        assert_eq!(reconstructed.task_id, base.task_id);
+        assert_eq!(reconstructed.proposals, base.proposals);
+    }
+
+    #[test]
+    fn apply_patches_empty_patch() {
+        let base = minimal_checkpoint();
+        let empty_patch = json_patch::Patch(vec![]);
+        let result = apply_patches(&base, &[empty_patch]).expect("apply_patches");
+        assert_eq!(result, base);
+    }
+}
+
+#[cfg(test)]
+mod delta_cache_unit_tests {
+    use super::*;
+    use h2ai_types::checkpoint::TaskCheckpoint;
+    use lru::LruCache;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn make_checkpoint(task_id: &str) -> TaskCheckpoint {
+        TaskCheckpoint {
+            task_id: task_id.into(),
+            phase: "Merging".into(),
+            node_id: "node-1".into(),
+            lease_seq: 0,
+            proposals: vec!["prop".into()],
+            auditor_survivors: vec![],
+            resolved_output: None,
+            manifest_json: "{}".into(),
+            object_store_ref: None,
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+            constraint_snapshot: None,
+        }
+    }
+
+    /// Directly manipulate the LRU cache to verify the invalidation logic used by
+    /// `put_checkpoint_delta` (which calls `delta_cache.write().await.pop(task_id)`).
+    #[tokio::test]
+    async fn cache_invalidated_on_write() {
+        let cache: Arc<RwLock<LruCache<String, CachedCheckpoint>>> =
+            Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(10).unwrap())));
+
+        let cp = make_checkpoint("task-cache-test");
+
+        // Populate the cache
+        cache.write().await.put(
+            "task-cache-test".to_string(),
+            CachedCheckpoint {
+                checkpoint: cp.clone(),
+                seq: 5,
+                cached_at: std::time::Instant::now(),
+            },
+        );
+        assert!(
+            cache.write().await.get("task-cache-test").is_some(),
+            "cache should be populated after put"
+        );
+
+        // Simulate the invalidation done by put_checkpoint_delta
+        cache.write().await.pop("task-cache-test");
+        assert!(
+            cache.write().await.get("task-cache-test").is_none(),
+            "cache should be empty after pop (invalidation)"
+        );
+    }
+
+    /// Verify that an entry past TTL is treated as a miss.
+    #[tokio::test]
+    async fn cache_ttl_expired_entry_treated_as_miss() {
+        let cache: Arc<RwLock<LruCache<String, CachedCheckpoint>>> =
+            Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(10).unwrap())));
+        let cp = make_checkpoint("task-ttl-test");
+
+        // Insert with a cached_at in the past (1 hour ago → well past any TTL)
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(3600))
+            .unwrap_or_else(std::time::Instant::now);
+        cache.write().await.put(
+            "task-ttl-test".to_string(),
+            CachedCheckpoint {
+                checkpoint: cp,
+                seq: 3,
+                cached_at: past,
+            },
+        );
+
+        // Simulate the TTL check from get_latest_checkpoint
+        let ttl = std::time::Duration::from_secs(60);
+        let expired = {
+            let mut guard = cache.write().await;
+            if let Some(cached) = guard.get("task-ttl-test") {
+                cached.cached_at.elapsed() >= ttl
+            } else {
+                false
+            }
+        };
+        assert!(
+            expired,
+            "entry older than TTL should be detected as expired"
+        );
+    }
+
+    /// LRU eviction respects capacity: inserting beyond capacity drops the LRU entry.
+    #[test]
+    fn lru_evicts_oldest_entry_at_capacity() {
+        let mut lru: LruCache<String, u32> = LruCache::new(NonZeroUsize::new(2).unwrap());
+        lru.put("a".to_string(), 1);
+        lru.put("b".to_string(), 2);
+        // Access "a" so "b" becomes the LRU
+        lru.get("a");
+        // Insert "c" → evicts "b"
+        lru.put("c".to_string(), 3);
+        assert!(lru.get("a").is_some(), "'a' should survive (recently used)");
+        assert!(lru.get("b").is_none(), "'b' should be evicted (LRU)");
+        assert!(
+            lru.get("c").is_some(),
+            "'c' should be present (just inserted)"
+        );
     }
 }

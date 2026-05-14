@@ -21,9 +21,10 @@ use h2ai_types::config::{
     AgentRole, AuditorConfig, RoleSpec, TaoConfig, TopologyKind, VerificationConfig,
 };
 use h2ai_types::events::{
-    BranchPrunedEvent, CalibrationCompletedEvent, GenerationPhaseCompletedEvent, ProposalEvent,
-    ProposalFailedEvent, ProposalFailureReason, SelectionResolvedEvent, TaskBootstrappedEvent,
-    TaskComplexityAssessedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
+    BranchPrunedEvent, CalibrationCompletedEvent, GenerationPhaseCompletedEvent,
+    OracleGateResultEvent, ProposalEvent, ProposalFailedEvent, ProposalFailureReason,
+    SelectionResolvedEvent, TaskBootstrappedEvent, TaskComplexityAssessedEvent,
+    VerificationScoredEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::TaskManifest;
@@ -142,6 +143,9 @@ pub struct EngineInput<'a> {
     /// with a positive grounding context (spec anchor + LLM researcher / web search).
     /// When `None`, falls back to `SpecAnchorGrounder` inline (zero I/O).
     pub srani_grounding_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+    /// Raw NATS client for oracle gate NATS request/reply. `None` = oracle gate skipped
+    /// even when `cfg.oracle_gate.enabled = true`.
+    pub nats_raw: Option<std::sync::Arc<async_nats::Client>>,
 }
 
 /// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
@@ -220,6 +224,9 @@ pub struct EngineOutput {
     pub srani_ema_cfi_updated: f64,
     /// Count after this task's CFI observation (srani_count + 1 if CFI was computed, else unchanged).
     pub srani_count_updated: usize,
+    /// Result of the oracle gate check before merge. `None` when gate was disabled or
+    /// no NATS client was provided. `Some(true)` = passed, `Some(false)` = failed.
+    pub oracle_gate_passed: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1732,6 +1739,46 @@ impl ExecutionEngine {
                     .map(|e| (e.explorer_id.clone(), e.passed))
                     .collect();
 
+            // ── Oracle Gate (Phase 3→4 transition) ─────────────────────────
+            let oracle_gate_passed_flag: Option<bool> = if input.cfg.oracle_gate.enabled {
+                if let Some(nats) = &input.nats_raw {
+                    let gate_payload = serde_json::json!({
+                        "task_id": &input.task_id,
+                        "phase": 3,
+                    });
+                    let payload_bytes = serde_json::to_vec(&gate_payload).unwrap_or_default();
+                    let timeout =
+                        std::time::Duration::from_secs(input.cfg.oracle_gate.timeout_secs);
+                    match tokio::time::timeout(
+                        timeout,
+                        nats.request(input.cfg.oracle_gate.subject.clone(), payload_bytes.into()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(response)) => {
+                            match serde_json::from_slice::<OracleGateResultEvent>(&response.payload)
+                            {
+                                Ok(result) => Some(result.gate_passed),
+                                Err(_) => Some(input.cfg.oracle_gate.on_timeout == "pass"),
+                            }
+                        }
+                        _ => Some(input.cfg.oracle_gate.on_timeout == "pass"),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // If oracle gate explicitly failed, abort before merge.
+            if oracle_gate_passed_flag == Some(false) {
+                input.store.mark_failed(&task_id);
+                return Err(EngineError::MaxRetriesExhausted {
+                    partial_verification_events: all_verification_events.clone(),
+                });
+            }
+
             // ── Phase 5: Merge ──────────────────────────────────────────────
             input
                 .store
@@ -2031,6 +2078,7 @@ impl ExecutionEngine {
                     srani_events: all_srani_events.clone(),
                     srani_ema_cfi_updated: srani_ema_updated,
                     srani_count_updated,
+                    oracle_gate_passed: oracle_gate_passed_flag,
                 });
             }
 
@@ -2193,6 +2241,7 @@ impl ExecutionEngine {
                         srani_events: all_srani_events.clone(),
                         srani_ema_cfi_updated: srani_ema_updated,
                         srani_count_updated,
+                        oracle_gate_passed: oracle_gate_passed_flag,
                     });
                 }
                 MergeOutcome::ZeroSurvival(mut zero_event) => {
@@ -2447,6 +2496,7 @@ impl ExecutionEngine {
                 srani_events: vec![],
                 srani_ema_cfi_updated: input.srani_ema_cfi,
                 srani_count_updated: input.srani_count,
+                oracle_gate_passed: None,
             })
         } else {
             // Earlier phase or unknown phase — restart from scratch

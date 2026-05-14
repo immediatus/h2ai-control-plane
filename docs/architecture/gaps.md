@@ -35,11 +35,12 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-B5 p_mean / rho_mean no derivation** *(new)* | 🔴 OPEN | **High** | Derivation now possible from CJT + Hamming geometry |
 | **GAP-D1 Calibration measures API latency, not coordination cost** | 🔴 OPEN | **Critical** | Conflict-count β signal from existing verifier output |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
-| GAP-D3 Bootstrap calibration | 🔴 OPEN | Low | Built-in synthetic prompt set |
-| GAP-E1 Oracle integration | 🟡 PARTIAL | Blocking | Domain-specific test suites remaining |
+| GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
+
+**Infrastructure note (2026-05-14):** Delta checkpoint encoding (JSON Patch RFC 6902, `CheckpointKind::Base/Delta`, O(N) NATS KV storage) is now live in `h2ai-state`. Previously O(N²) checkpoint growth would have exhausted NATS KV space during the long multi-task experiment runs required by GAP-A6 and GAP-A1. This blocker is resolved; experiment runs are no longer storage-constrained.
 
 ---
 
@@ -317,7 +318,7 @@ Loops  :
 | TAO inner | `agent_max_tool_iterations` (budget) | No productive hypothesis extensions remain | Budget is proxy for epistemic exhaustion |
 | MAPE-K retry | Proposals satisfy threshold OR retries exhausted; ZeroSurvival + is_closed() gate | Coherent closure: no active constraint violated, no domain uncovered | Quality threshold is rubric-coherent, not oracle-grounded |
 | Calibration | Startup-automatic + POST /calibrate | Confidence intervals narrow enough for decision quality required | GAP-D1: calibration measures latency, not epistemic conflict cost |
-| Oracle grounding | Phase 6 wired; OracleWorker + OracleAccumulator live | All load-bearing beliefs grounded in at least one oracle test | GAP-E1: domain-specific test suites remaining |
+| Oracle grounding | Phase 4.5 gate wired (NATS request/reply, `OracleGateConfig`); thinking loop Stage 2 inline oracle; `PendingClarificationEvent` suspension via `clarification_waiters` | All load-bearing beliefs grounded in at least one oracle test | GAP-E1: domain-specific automated test suites remaining |
 
 ---
 
@@ -755,15 +756,9 @@ Use the existing Thompson Sampling bandit to improve probe accuracy over time.
 
 ---
 
-### GAP-D3: Calibration Bootstrapping Has No Defined Path 🔴 OPEN — Low
+### GAP-D3: Calibration Bootstrapping — **Closed (2026-05-14)**
 
-New deployment with empty KV returns 503 on every task until calibration runs. No automated path.
-
-**Research approach.** Bootstrap calibration mode with built-in synthetic prompts (code, factual,
-reasoning). Mark result as `calibration_source: Bootstrap`. Domain-specific calibration overrides.
-Helm chart Job that runs automatically on first install.
-
-**Effort estimate.** 1 week bootstrap mode; 1 week Helm chart integration.
+Closed by the Adaptive Prompt Harness (OPRO). `seed_all_bootstrap_priors` in `h2ai-api/src/bootstrap.rs` seeds Bayesian beta priors at startup from `AdapterProfile.tier` (Capable=0.78, Standard=0.62, Fast=0.45 j_eff median priors), providing principled calibration before any tasks have run. New deployments no longer return 503 on the first task for prompt-quality bootstrapping; ensemble physics calibration (α, β) still requires a `POST /calibrate` run.
 
 ---
 
@@ -771,9 +766,11 @@ Helm chart Job that runs automatically on first install.
 
 ---
 
-### GAP-E1: No Oracle Integration 🟡 PARTIAL — Blocking
+### GAP-E1: Oracle Integration 🟢 WIRED — Blocking
 
-**Open.** Domain-specific test suites (code, factual QA, structured output) are the remaining work.
+**Wired (2026-05-14).** Phase 4.5 oracle gate is live: NATS `request()` to `cfg.oracle_gate.subject` with configurable timeout before the Phase 5 merge step. The thinking loop Stage 2 (`brainstorm_one`) sends candidate solutions to the oracle inline; `synthesize` applies `oracle_confidence_bonus` when the oracle approved. On fail + low confidence, a matching `ClarificationTemplate` fires a `PendingClarificationEvent` that suspends the engine; `POST /tasks/{id}/clarify` resumes it with an operator answer. `oracle_gate_passed: Option<bool>` on `MergeResolvedEvent` tracks the gate outcome per task.
+
+**Open.** Domain-specific automated test suites (code, factual QA, structured output) are the remaining work for automated oracle coverage.
 
 **Innovative opportunity — FUSE-style zero-label verifier ensembling.**
 arXiv 2604.18547 (Lee et al., 2026) — *"FUSE: Ensembling Verifiers with Zero Labeled Data"* —
@@ -858,7 +855,7 @@ representative task distribution.
 | GAP-D1 Calibration harness extension | Critical | 2 weeks | Calibration runs | Session 3 |
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
 | GAP-B1 β_eff functional form fit | Medium | 2 weeks | Controlled calibration | Session 5 |
-| GAP-D3 Bootstrap calibration | Low | 2 weeks | None | Any |
+| ~~GAP-D3 Bootstrap calibration~~ | — | — | — | **Closed 2026-05-14** |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
 
 ---

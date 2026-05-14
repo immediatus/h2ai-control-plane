@@ -178,6 +178,7 @@ impl MergeEngine {
             resolved_output,
             j_eff: None,
             timestamp: Utc::now(),
+            oracle_gate_passed: None,
         };
 
         MergeOutcome::Resolved {

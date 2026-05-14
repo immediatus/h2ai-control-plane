@@ -46,6 +46,7 @@ uuid              = { workspace = true }
 async-stream      = { workspace = true }
 hostname          = { workspace = true }
 rand              = { workspace = true }
+regex             = { workspace = true }
 
 [features]
 # Enables FastEmbedModel for semantic CG measurement. Requires ORT (ONNX Runtime) on the host.

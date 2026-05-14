@@ -201,6 +201,7 @@ async fn system_solves_well_formed_problem() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -277,6 +278,7 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -342,6 +344,7 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -442,6 +445,7 @@ async fn system_resolves_conflict_via_bft_consensus() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -560,6 +564,7 @@ async fn system_shadow_mode_agreement_resolves_task() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -622,6 +627,7 @@ async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -690,6 +696,7 @@ async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -784,6 +791,7 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -861,6 +869,7 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -934,6 +943,7 @@ async fn system_c3_degraded_event_when_domains_uncovered() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

@@ -24,6 +24,7 @@ async fn append_and_replay_preserves_order() {
             task_id: tid.clone(),
             resolved_output: "done".into(),
             j_eff: None,
+            oracle_gate_passed: None,
             timestamp: Utc::now(),
         }))
         .await

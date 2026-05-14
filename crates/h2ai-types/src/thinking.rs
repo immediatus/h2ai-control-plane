@@ -1,3 +1,4 @@
+use crate::events::OracleGateResultEvent;
 use crate::manifest::CotStyle;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,9 @@ pub struct ArchetypeOutput {
     pub solution_sketch: String,
     /// Self-reported confidence from brainstorm output; defaults to archetype.confidence.
     pub confidence: f64,
+    /// Oracle gate result for this archetype's output. `None` when no oracle gate ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oracle_result: Option<OracleGateResultEvent>,
 }
 
 /// Synthesis output produced each iteration; carries forward (only shared_understanding +

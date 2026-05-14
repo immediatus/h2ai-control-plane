@@ -34,6 +34,8 @@ async fn disabled_loop_returns_empty_report() {
         cfg: &cfg_disabled(),
         adapter: &adapter,
         embedding_model: None,
+        nats_client: None,
+        task_id: "",
     };
     let report = run(input).await;
     assert!(report.shared_understanding.is_empty());

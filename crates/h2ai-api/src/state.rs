@@ -14,8 +14,12 @@ use h2ai_provisioner::provider::AgentProvider;
 use h2ai_state::nats::NatsClient;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::events::CalibrationCompletedEvent;
-use std::sync::Arc;
-use tokio::sync::{RwLock, Semaphore};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{Notify, RwLock, Semaphore};
+
+/// Answer slot and wakeup notifier for a single pending clarification.
+pub type ClarificationEntry = (Arc<Notify>, Arc<Mutex<Option<String>>>);
 
 /// Shared application state injected into every Axum handler via `State<AppState>`.
 ///
@@ -94,6 +98,10 @@ pub struct AppState {
     /// Online ρ EMA tracker for INNOVATION-3 (GAP-A3).
     /// Updated after each engine run with pairwise centered score products.
     pub rho_ema: Arc<RwLock<RhoEmaState>>,
+    /// Pending human clarification waiters.
+    /// Maps task_id → (Notify to wake the waiting engine, slot for the answer text).
+    /// Populated by the engine when it suspends for clarification; resolved by POST /tasks/{id}/clarify.
+    pub clarification_waiters: Arc<Mutex<HashMap<String, ClarificationEntry>>>,
 }
 
 impl AppState {
@@ -163,6 +171,7 @@ impl AppState {
             srani_state: Arc::new(tokio::sync::RwLock::new((0.0, 0))),
             srani_grounding_chain: None,
             rho_ema: Arc::new(RwLock::new(RhoEmaState::default())),
+            clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

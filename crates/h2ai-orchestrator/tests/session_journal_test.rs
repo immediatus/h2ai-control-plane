@@ -154,6 +154,7 @@ fn apply_merge_resolved_sets_resolved() {
             task_id: tid.clone(),
             resolved_output: "final answer".into(),
             j_eff: None,
+            oracle_gate_passed: None,
             timestamp: Utc::now(),
         }),
     );
@@ -273,6 +274,7 @@ async fn replay_reconstructs_resolved_task_state() {
             task_id: tid.clone(),
             resolved_output: "final".into(),
             j_eff: None,
+            oracle_gate_passed: None,
             timestamp: Utc::now(),
         }),
     )
@@ -348,6 +350,7 @@ async fn snapshot_written_and_recovered_via_replay() {
             task_id: tid.clone(),
             resolved_output: "final".into(),
             j_eff: None,
+            oracle_gate_passed: None,
             timestamp: Utc::now(),
         }),
     )

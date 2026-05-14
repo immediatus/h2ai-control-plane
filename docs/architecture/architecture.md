@@ -85,7 +85,7 @@ C4Container
     Container(autonomic, "h2ai-autonomic", "Rust", "Calibration harness.\nEpistemic diagnostics.\nBandit (Thompson Sampling).")
     Container(agent, "h2ai-agent", "Rust / Tokio", "Edge agent binary.\nTaoAgent loop.\nDispatchLoop + HeartbeatTask.")
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
-    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV")
+    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV")
 
     Rel(client, api, "POST /tasks\nGET /events", "HTTPS")
     Rel(api, orchestrator, "spawn ExecutionEngine", "in-process")
@@ -222,6 +222,22 @@ A dedicated verification adapter (LLM-as-Judge) scores every proposal against th
 ### Phase 4 — Auditor Gate
 
 A separate auditor adapter (typically a stronger reasoning model than the verifier) is the final non-negotiable gate. Its output is required to be JSON `{approved, reason}`. Non-JSON output is treated as rejection (fail-safe). Rejected proposals become additional `BranchPruned` events.
+
+### Phase 4.5 — Oracle Gate (optional)
+
+When `oracle_gate.enabled = true`, a NATS `request()` call is made to `cfg.oracle_gate.subject` with a timeout of `oracle_gate.timeout_secs`. The oracle receives a JSON payload listing the surviving proposals and their scores. The oracle responds with `OracleGateResultEvent { gate_passed, confidence, summary, checked_proposals, passed_proposals }`.
+
+**On pass** (`gate_passed = true`): the result is attached to the merge output as `oracle_gate_passed = Some(true)`. If the thinking loop produced a candidate solution that the oracle approved, `oracle_confidence_bonus` is added to the synthesis weight.
+
+**On fail** (`gate_passed = false, confidence < min_confidence`): if a matching `ClarificationTemplate` pattern fires, a `PendingClarificationEvent` is published and the engine suspends via `clarification_waiters`. `POST /tasks/{id}/clarify` resumes it with an operator-supplied answer.
+
+**On timeout**: behaviour is controlled by `on_timeout`: `pass` (treat as approved), `fail` (treat as rejected), or `skip` (proceed without oracle result, no `oracle_gate_passed` field).
+
+### Adaptive Prompt Harness (OPRO)
+
+When `opro.enabled = true`, the control plane tracks a per-adapter j_eff EMA across tasks. When `j_eff_ema < opro.trigger_j_eff_threshold` and `n_tasks_total ≥ opro.min_tasks_before_trigger`, an OPRO (Optimization by PROmpting, arXiv 2309.03409) cycle is triggered: the auditor LLM is asked to rewrite the current prompt template to improve output quality, the candidate is validated (all template variables must survive), and stored as a new `PromptVariant` in `H2AI_PROMPT_VARIANTS`. A Thompson-sampling bandit (`alpha`, `beta` per variant) selects the active variant each task. After `graduation_tasks` total tasks, the variant with the highest mean reward (by `promotion_margin`) is promoted as the new default and a `PromptVariantPromotedEvent` is emitted.
+
+Bootstrap priors are seeded at startup from `AdapterProfile.tier`: Capable=0.78, Standard=0.62, Fast=0.45 j_eff median priors. This closes GAP-D3 (bootstrap calibration) by providing principled Bayesian priors before any tasks have run.
 
 ### Phase 5 — Merge
 
@@ -989,6 +1005,8 @@ After each phase completes, `ExecutionEngine` writes a `TaskCheckpoint` to the `
 ### 9.2 Storage format
 
 Payloads are serialised to JSON and then zstd-compressed at level 3 before writing to the KV bucket. Repetitive LLM-generated text compresses to 10–25% of its original size, keeping checkpoint payloads well below the JetStream 1 MB message ceiling. On read, `get_task_checkpoint` decompresses before deserialisation. When the *uncompressed* payload would exceed 800 KB, the raw bytes are written to the NATS Object Store and only the content-addressed reference is stored in the KV entry.
+
+**Delta encoding (2026-05-14):** Checkpoints use JSON Patch (RFC 6902) delta encoding. `CheckpointKind::Base` stores a full snapshot at seq=0 and every `base_interval` (default 10) sequences; `CheckpointKind::Delta` stores only the RFC 6902 diff against the prior base. Storage is O(N) rather than O(N²). An LRU cache (200 entries, 60s TTL) avoids repeat NATS lookups during reconstruction. All NATS bucket names are now config-driven via `StateConfig` in `[state]`; `NatsClient::connect_with_cfg(url, StateConfig)` replaces the old `connect(url)` call.
 
 ### 9.3 Startup recovery
 

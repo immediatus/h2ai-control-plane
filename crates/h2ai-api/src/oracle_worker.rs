@@ -27,6 +27,8 @@ impl OracleWorker {
         tracing::info!("OracleWorker: subscribed to h2ai.oracle.pending");
 
         while let Some(msg) = sub.next().await {
+            // Save reply subject before consuming msg.
+            let reply_subject = msg.reply.clone();
             if let Ok(ev) = serde_json::from_slice::<OraclePendingEvent>(&msg.payload) {
                 // Build executor per-message to honour oracle_spec.timeout_ms.
                 let timeout_secs = ev.oracle_spec.timeout_ms.div_ceil(1000).max(1);
@@ -37,8 +39,12 @@ impl OracleWorker {
                     Ok(payload) => {
                         let _ = self
                             .nats_raw
-                            .publish("h2ai.oracle.results", payload.into())
+                            .publish("h2ai.oracle.results", payload.clone().into())
                             .await;
+                        // Also reply to synchronous callers (request/reply pattern).
+                        if let Some(reply) = reply_subject {
+                            let _ = self.nats_raw.publish(reply, payload.into()).await;
+                        }
                         tracing::debug!(
                             task_id = %ev.task_id,
                             passed = result.passed,

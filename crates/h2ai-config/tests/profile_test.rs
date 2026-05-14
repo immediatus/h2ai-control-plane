@@ -1,4 +1,4 @@
-use h2ai_config::{AdapterProfile, H2AIConfig};
+use h2ai_config::{AdapterProfile, H2AIConfig, ProfileTier};
 use h2ai_types::config::AdapterKind;
 use std::io::Write;
 
@@ -17,6 +17,7 @@ fn config_with_profiles_round_trips_json() {
                 endpoint: "http://localhost:11434".into(),
                 model: "llama3".into(),
             },
+            tier: ProfileTier::Standard,
         }],
         ..Default::default()
     };
@@ -36,6 +37,7 @@ fn load_from_file_round_trips_adapter_profiles() {
                 endpoint: "http://localhost:11434".into(),
                 model: "mistral".into(),
             },
+            tier: ProfileTier::Standard,
         }],
         ..H2AIConfig::default()
     };

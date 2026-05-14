@@ -217,6 +217,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        nats_raw: None,
     };
 
     let max_allowed_proposals = n_max_floor * (cfg.max_autonomic_retries + 1);
@@ -385,6 +386,7 @@ async fn engine_full_pipeline_debug_trace() {
         srani_ema_cfi: 0.45,
         srani_count: 5,
         srani_grounding_chain: Some(chain),
+        nats_raw: None,
     };
 
     let output = match ExecutionEngine::run_offline(input).await {

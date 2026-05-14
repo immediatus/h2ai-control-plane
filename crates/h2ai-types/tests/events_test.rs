@@ -387,6 +387,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             task_id: task_id(),
             resolved_output: "final".into(),
             j_eff: None,
+            oracle_gate_passed: None,
             timestamp: Utc::now(),
         }),
         H2AIEvent::TaskFailed(TaskFailedEvent {

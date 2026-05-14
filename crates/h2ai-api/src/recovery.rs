@@ -182,6 +182,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             srani_ema_cfi: 0.45,
             srani_count: 0,
             srani_grounding_chain: None,
+            nats_raw: None,
         };
 
         match ExecutionEngine::run_from_checkpoint(input, checkpoint.clone()).await {
@@ -191,6 +192,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                     resolved_output: output.resolved_output.clone(),
                     j_eff: None,
                     timestamp: chrono::Utc::now(),
+                    oracle_gate_passed: None,
                 });
                 if let Err(e) = state.nats.publish_event(&output.task_id, &ev).await {
                     tracing::warn!(

@@ -282,6 +282,7 @@ scheduler_spillover_threshold = 10
 # Example entry:
 # [[adapter_profiles]]
 # name = "claude-sonnet"
+# tier = "standard"
 # [adapter_profiles.kind.Anthropic]
 # api_key_env = "ANTHROPIC_API_KEY"
 # model = "claude-sonnet-4-5"
@@ -540,6 +541,17 @@ promotion_threshold = 0.05
 promotion_window = 30
 auto_demotion = true
 
+# ── Oracle Gate ───────────────────────────────────────────────────────────────
+# Phase 3 → Phase 4 oracle verification gate. Calls oracle service to verify
+# proposed solution before proceeding to merge.
+[oracle_gate]
+enabled        = false
+subject        = "h2ai.oracle.gate"
+timeout_secs   = 30
+on_timeout     = "pass"
+min_confidence = 0.7
+clarification_templates = []
+
 # ── Thinking Loop ──────────────────────────────────────────────────────────────
 # Pre-execution thinking: research → archetype selection → parallel brainstorm →
 # synthesis → quality gate (coverage + convergence + LLM arbiter + hard cap).
@@ -553,8 +565,51 @@ convergence_threshold     = 0.90
 tau_max                   = 0.85
 tau_min                   = 0.20
 expansion_quality_floor   = 0.30
+oracle_timeout_secs       = 20
+oracle_confidence_bonus   = 0.1
 
 [thinking_loop.model_tiers]
 fast     = ""
 standard = ""
 capable  = ""
+
+# ── OPRO: Optimization by Prompt Retrieval ────────────────────────────────────
+# Controls prompt variant selection, promotion criteria, and trigger thresholds.
+[opro]
+enabled                    = false
+trigger_j_eff_threshold    = 0.6
+min_tasks_before_trigger   = 10
+suppress_n_tasks           = 5
+graduation_tasks           = 20
+promotion_margin           = 0.05
+ema_window                 = 10
+
+# ── Calibration Bootstrap ───────────────────────────────────────────────────
+# Configuration for synthetic prior weight in calibration initialization.
+[calibration_bootstrap]
+prior_weight = 5
+
+# ── State: NATS bucket names and delta checkpoint encoding ────────────────────
+[state]
+snapshots_bucket           = "H2AI_SNAPSHOTS"
+task_checkpoints_bucket    = "H2AI_TASK_CHECKPOINTS"
+checkpoint_payloads_bucket = "H2AI_CHECKPOINT_PAYLOADS"
+oracle_calibration_bucket  = "H2AI_ORACLE_CALIBRATION"
+estimator_bucket           = "H2AI_ESTIMATOR"
+calibration_bucket         = "H2AI_CALIBRATION"
+sessions_bucket            = "H2AI_SESSIONS"
+audit_shadow_bucket        = "H2AI_AUDIT_SHADOW"
+prompt_variants_bucket     = "H2AI_PROMPT_VARIANTS"
+constraint_wiki_bucket     = "H2AI_CONSTRAINT_WIKI"
+constraint_meta_bucket     = "H2AI_CONSTRAINT_META"
+constraint_payloads_bucket = "H2AI_CONSTRAINT_PAYLOADS"
+approvals_bucket           = "H2AI_APPROVALS"
+tasks_stream               = "H2AI_TASKS"
+telemetry_stream           = "H2AI_TELEMETRY"
+results_stream             = "H2AI_RESULTS"
+
+[state.delta]
+enabled           = true
+base_interval     = 10
+cache_ttl_secs    = 60
+cache_max_entries = 200
