@@ -85,7 +85,7 @@ C4Container
     Container(autonomic, "h2ai-autonomic", "Rust", "Calibration harness.\nEpistemic diagnostics.\nBandit (Thompson Sampling).")
     Container(agent, "h2ai-agent", "Rust / Tokio", "Edge agent binary.\nTaoAgent loop.\nDispatchLoop + HeartbeatTask.")
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
-    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV")
+    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
 
     Rel(client, api, "POST /tasks\nGET /events", "HTTPS")
     Rel(api, orchestrator, "spawn ExecutionEngine", "in-process")
@@ -291,6 +291,156 @@ Both interventions are bookkept as Prometheus counters with a `failure_mode` lab
 ### Post-merge async event
 
 After `MergeResolved`, the engine spawns an async task that publishes `EpistemicYield {n_eff_cosine_actual, n_eff_prior, yield_ratio, adapters}`. `yield_ratio = n_eff_actual / N_requested` — the "financial yield": you paid for N adapters, you received `n_eff_actual` independent perspectives. This event never blocks task close.
+
+---
+
+## 2.1 Orchestrator implementation — three-layer decomposition
+
+The `h2ai-orchestrator` crate implements the MAPE-K loop as three distinct layers. This decomposition separates concerns that are orthogonal but were previously entangled in a single `run_offline` function:
+
+| Layer | File | Responsibility |
+|-------|------|----------------|
+| **Phase modules** | `src/phases/` (16 modules) | Pure data transformations. Each module exposes an `Input` struct, an `Output` struct, and a `run()` function returning `StepResult<Output>`. No retry state; no cross-wave memory. |
+| **ExecutionPipeline** | `src/pipeline.rs` | Sequences the 16 phase modules for one wave. Stateless — receives `PipelineParams` each wave, returns `PipelineWaveResult`. Can be tested in isolation without a running controller. |
+| **MapeKController** | `src/mape_k.rs` | Owns all retry state. Implements `observe(wave)` (aggregates events across waves), `params()` (projects current state into `PipelineParams` for the next wave), and `decide(outcome)` (maps `PipelineOutcome` to `MapeKDecision`). |
+| **Coordinator** | `src/engine.rs` (~30 lines) | Creates controller and pipeline, runs the `loop { pipeline.run → controller.observe → controller.decide }` cycle, routes `MapeKDecision` to return/continue/error. |
+
+### Phase execution sequence
+
+Phases split into two groups with different retry semantics:
+
+**Pre-loop (run once per task, before the retry loop — `engine.rs`):**
+
+| Order | Module | What it does | Returns on failure |
+|-------|--------|-------------|-------------------|
+| 1 | `bootstrap` | Compiles system context (with and without rubric) via `compiler::compile`, applies compaction, checks family conflict gate (`RequireDiverse` / `SingleFamilyOk`) | `Err(EngineError)` — task fails immediately |
+| 2 | `complexity` | Calls `assess_task_complexity()`, assigns `TaskQuadrant`, guards against `Degenerate` in non-shadow mode, derives `cg_mean` and `n_max_ceiling` from calibration | `Err(EngineError)` — task fails immediately |
+| 3 | `domain_coverage` | Computes corpus domain tag coverage across slot configs; emits `DiversityGuardDegradedEvent`; hard-fails when `require_bivariate_cg = true` and coverage is below threshold | `Err(EngineError)` — task fails immediately |
+
+**Per-wave (run inside the retry loop — `pipeline.rs`, `ExecutionPipeline::run()`):**
+
+| Order | Module | What it does | `EarlyExit` reason |
+|-------|--------|-------------|-------------------|
+| 1 | `topology` | `TopologyPlanner::provision()`: selects topology, assigns explorer roles with τ-spread/reduction from `PipelineParams`, checks OutlierResistant quorum (`n ≥ 2f+3`) | `Fatal(InsufficientQuorum)` |
+| 2 | `multiply` | `MultiplicationChecker::check()` against `p_mean`, `ρ_mean`, CG threshold from calibration | `MultiplicationFailed { tau_values }` |
+| 3 | `diversity` | `n_eff_cosine_prior < 1.0 + diversity_threshold` check | `DiversityFailed { n_eff, tau_values }` |
+| 4 | `generation` | Parallel TAO agent dispatch — one `TaoAgent::run()` per explorer; collects `ProposalEvent`s | — (never `EarlyExit`) |
+| 5 | `hallucination` | CV + Jaccard correlated hallucination detection; triggers SRANI grounding when both thresholds fire | `HallucinationDetected { retry_context_hint }` |
+| 6 | `srani` | SRANI escalating grounding chain: `SpecAnchorGrounder` → `LlmResearcherGrounder` → `WebSearchGrounder`; updates SRANI EMA-CFI | — |
+| 7 | `verify` | `LlmJudgeVerifier` batch verification in parallel; scores each proposal against the constraint corpus | — |
+| 8 | `audit` | `AuditorAdapter` gate; selects auditor-survivor proposals; emits `ShadowAuditorResultEvent` | — |
+| 9 | `frontier` | Static constraint satisfaction matrix (proposal × static-constraint); computes `pareto_coverage` | — (returns `None` when no static constraints) |
+| 10 | `oracle` | NATS request/reply oracle gate with `timeout_secs`; `on_timeout = "pass"` → `Some(true)` | `OracleBlocked` |
+| 11 | `synthesis` | Filters proposals to auditor survivors; builds merge candidate set; derives `coherence_state` | `ZeroSurvival { filter_ratio }` when no survivors |
+| 12 | `merge` | `MergeEngine` dispatch: Krum / OutlierResistant / Hierarchical / Plurality depending on topology | `ZeroSurvival` on merge failure |
+
+### Wave result flow
+
+Every phase function returns a `StepResult` — a uniform envelope that lets `ExecutionPipeline` handle failures without pattern-matching on each phase's specific error type:
+
+```mermaid
+flowchart TD
+    SR["StepResult&lt;T&gt;"] --> Done["Done(T) — phase succeeded, pass Output to next phase"]
+    SR --> EarlyExit["EarlyExit(ExitReason) — gate fired, abort this wave"]
+    SR --> Fatal["Fatal(EngineError) — unrecoverable, task fails immediately"]
+
+    EarlyExit --> MF["MultiplicationFailed\n(p_mean × ρ_mean × CG threshold)"]
+    EarlyExit --> DF["DiversityFailed\n(n_eff_cosine_prior below floor)"]
+    EarlyExit --> ZS["ZeroSurvival\n(no auditor survivors, or merge failure)"]
+    EarlyExit --> HD["HallucinationDetected\n(CV + Jaccard thresholds both fire)"]
+    EarlyExit --> OB["OracleBlocked\n(oracle gate returned false)"]
+```
+
+`MapeKController::decide()` maps every `ExitReason` to one of three controller decisions:
+
+```mermaid
+flowchart LR
+    ER[ExitReason] --> RD["RetryPolicy::decide()"]
+    RD --> Ret["MapeKDecision::Return\n→ task resolved, emit EngineOutput"]
+    RD --> Retry["MapeKDecision::Retry\n→ continue to next wave"]
+    RD --> Fail["MapeKDecision::Fail\n→ mark_failed, propagate error"]
+```
+
+Phase modules only classify failures — they never call `RetryPolicy`. The controller owns all cross-wave state mutation: topology overrides, τ-reduction, retry context injection, self-optimizer updates, Talagrand τ-spread feedback.
+
+### PipelineParams — controller state projected into each wave
+
+`MapeKController::params()` produces an immutable snapshot before each wave. The pipeline consumes it without holding a reference back to the controller, keeping the two layers fully decoupled:
+
+| Field | Purpose |
+|-------|---------|
+| `optimizer` | Agent count and merge thresholds from the self-optimizer |
+| `force_topology` | Topology override set by `RetryPolicy` on previous wave failure |
+| `tau_reduction_factor` | Accumulated τ-reduction multiplier across retries |
+| `tau_spread_factor` | τ-spread expansion factor driven by Talagrand feedback |
+| `adapter_rotation_offset` | Round-robin offset to rotate adapter assignment across waves |
+| `retry_context` | Injected constraint-feedback hint text from `RetryPolicy` |
+| `tao_config` | Per-turn TAO configuration (may be relaxed on retry) |
+| `verification_config` | Verification gate thresholds |
+| `srani_ema_cfi` | SRANI correlated fabrication index EMA carried forward |
+| `srani_count` | SRANI trigger count accumulated across waves |
+| `srani_tier` | SRANI escalation tier: 0 = SpecAnchor, 1 = Researcher, 2 = WebSearch |
+| `srani_last_wave_fired` | Whether SRANI fired on the immediately preceding wave |
+| `pending_tombstone` | Constraint tombstone injected at the topology phase on retry |
+
+### WaveEvents — cross-wave aggregation
+
+`ExecutionPipeline::run()` returns a `PipelineWaveResult` carrying both the outcome and a `WaveEvents` bundle. `MapeKController::observe()` merges each wave's events into a running aggregate so the final `EngineOutput` reflects the full multi-wave history:
+
+| Category | Events carried |
+|----------|---------------|
+| **Verification** | `VerificationScoredEvent` per proposal, `ProposalFailedEvent` for non-survivors |
+| **Audit** | `ShadowAuditorResultEvent` per wave |
+| **Hallucination / SRANI** | `CorrelatedEnsembleWarning`, `CorrelatedFabricationEvent`, `ResearcherGroundingEvent` |
+| **Optimizer signals** | `QualityMeasurement` (self-optimizer), `TalagrandFeedback` (τ-spread), `TaoEstimatorUpdate` (bandit) |
+| **Topology** | `TopologyProvisionedEvent` (on retry waves), `BranchPrunedEvent` (synthesis/merge pruning) |
+| **Constraint frontier** | `ConstraintFrontierEvent` (static constraint satisfaction matrix) |
+| **SRANI state mutations** | Updated EMA-CFI, tier, count, and retry context — fed back into `PipelineParams` for the next wave |
+| **Gate ratio** | `filter_ratio` (survivors ÷ proposals) — consumed by `RetryPolicy::decide()` |
+
+### Coordinator sequence
+
+```mermaid
+sequenceDiagram
+    participant E as engine.rs (Coordinator)
+    participant PH as phases/ (pre-loop)
+    participant C as MapeKController
+    participant P as ExecutionPipeline
+
+    E->>PH: bootstrap::run()
+    PH-->>E: BootstrapOutput
+    E->>PH: complexity::run()
+    PH-->>E: ComplexityOutput
+    E->>PH: domain_coverage::run()
+    PH-->>E: DomainCovOutput
+
+    E->>C: MapeKController::new(input, bootstrap, complexity)
+    E->>P: ExecutionPipeline::new(input, bootstrap, complexity, domain_cov)
+
+    loop retry_count = 0 .. max_autonomic_retries
+        E->>C: params()
+        C-->>E: PipelineParams (immutable snapshot)
+        E->>P: run(params, retry_count)
+        P-->>E: PipelineWaveResult { outcome, events }
+        E->>C: observe(wave)
+        Note over C: aggregates WaveEvents,\nupdates SRANI state,\nfeeds Talagrand/optimizer
+        E->>C: decide(outcome, retry_count, filter_ratio)
+        alt MapeKDecision::Return
+            C-->>E: EngineOutput
+            E-->>E: return Ok(output)
+        else MapeKDecision::Retry
+            C-->>E: Retry
+            Note over E: continue loop
+        else MapeKDecision::Fail
+            C-->>E: EngineError
+            E-->>E: mark_failed, return Err
+        end
+    end
+```
+
+### Calibration and async safety
+
+`EigenCalibration::from_cg_matrix` and `EigenCalibration::from_cosine_matrix` perform symmetric eigendecomposition via nalgebra on an N×N matrix (N = adapter pool size, typically 2–8). Both calls are offloaded to `tokio::task::spawn_blocking` in `h2ai-autonomic/src/calibration.rs` so the async executor thread is never stalled by CPU-bound matrix math.
 
 ---
 
@@ -545,9 +695,9 @@ On each iteration the agent:
 
 1. Builds the running context (instructions + tool observations accumulated so far).
 2. Calls `IComputeAdapter::execute()` with the current τ and context.
-3. Attempts to parse the response as `{"tool": "<name>", "input": {...}}`. If parsing succeeds, dispatches the tool call via `ToolRegistry::execute(AgentTool, input_json)` and records a `ToolCallRecord {tool, input_json, output, iteration}`.
-4. If parsing fails (the model produced natural language, not a tool call), treats the response as the final answer and terminates.
-5. Appends the observation to context and repeats. Stops when the final answer is found or `agent_max_tool_iterations` (default 5) is reached.
+3. Attempts to extract a tool call from the response via `extract_tool_call()` — a three-strategy pipeline: (a) direct JSON parse, (b) parse after stripping a markdown code fence (` ```json … ``` `), (c) parse of the first balanced `{…}` object found anywhere in the text (handles preamble prose). If extraction succeeds and the tool name is registered, dispatches via `ToolRegistry::execute(AgentTool, input_json)` and records a `ToolCallRecord {tool, input_json, output, iteration}`.
+4. If no valid tool call is found, treats the response as the final answer and terminates.
+5. Truncates the tool observation to at most `agent_max_observation_chars` (default 8192) bytes before appending to context — oversized shell dumps that would cause `MaxTokensExceeded` on the next iteration are capped with a `…[truncated N → max chars]` suffix. The full untruncated output is preserved in `ToolCallRecord.output` for audit. Stops when the final answer is found or `agent_max_tool_iterations` (default 5) is reached.
 
 ### ToolRegistry and WaveMode
 
@@ -886,9 +1036,13 @@ h2ai-types          Pure value types + math primitives (USL, EigenCalibration, E
                     MergeStrategy, MultiplicationConditionFailure, EpistemicYieldEvent, FailureMode,
                     H2AIEvent enum, AgentTool, WaveMode, TaskPayload, TaskResult, ToolCallRecord,
                     SubtaskId, SubtaskPlan, SubtaskResult, PlanStatus).
+                    TenantId (identity scope), TaskReasoningCheckpoint + ReasoningCheckpointPhase +
+                    TaskMetaState + ArchetypeResult (reasoning memory Phase 1 types).
 
 h2ai-config         Layered config loading (reference.toml + env overrides). Single source of truth.
                     Includes WebSearchConfig, McpFilesystemConfig, WasmExecutorConfig.
+                    ReasoningMemoryConfig (induction scheduling, retrieval thresholds). StateConfig
+                    extended with per-tenant bucket prefixes.
 
 h2ai-adapters       Adapter trait + per-provider implementations (Anthropic, OpenAI, Gemini, Ollama,
                     LlamaCpp, CloudGeneric, A2a, Mock, SequencedMockAdapter for TAO loop testing).
@@ -927,6 +1081,8 @@ h2ai-provisioner    Static / NATS / Kubernetes agent providers.
 
 h2ai-state          CRDT-friendly TaskState, ProposalSet (LUB by generation, then score),
                     snapshot/replay machinery.
+                    NatsClient reasoning memory methods: ensure_tenant_reasoning_buckets,
+                    put/get_reasoning_checkpoint, put/get/list_task_meta_states.
 
 h2ai-telemetry      tracing→OTLP plumbing, structured spans for every phase.
                     RedactionMiddleware — scrubs secrets from AgentTelemetryEvent before audit.
@@ -1056,6 +1212,10 @@ When the gate fires, the task is *parked*: instead of emitting `MergeResolved` a
 
 The `ApprovalDecision` (`operator_id`, `reviewer_note`, `decided_at_ms`) is appended to `TaskAttributionEvent` for permanent compliance audit trail.
 
+### 9.6 Reasoning checkpoint (Phase 1)
+
+See §10 for the `TaskReasoningCheckpoint` system, which runs in parallel with `TaskCheckpoint`. The two checkpoints are independent: `TaskCheckpoint` is the recovery source for execution-phase replay; `TaskReasoningCheckpoint` captures reasoning artifacts for the Persistent Reasoning Memory system. Both are written fire-and-forget and neither blocks task completion.
+
 #### Cross-node TaskStore consistency
 
 `TaskStore` is in-memory per node. When the approval endpoint is served by a different node than the one that parked the task, the handling node publishes `ApprovalResolved` and `TaskFailed`/`TaskCompleted` to JetStream. Every node's event consumer loop (already subscribed to `h2ai.tasks.>` for SSE fan-out) handles these events and calls `mark_resolved` or `mark_failed` on its local store. JetStream at-least-once delivery bounds the inconsistency window to cluster delivery latency (typically < 100 ms).
@@ -1081,15 +1241,77 @@ for (approval_record, revision) in scanned_records {
 
 ---
 
-## 10. A2A Explorer Adapter
+## 10. Persistent Reasoning Memory — Phase 1
 
-### 10.1 Diversity axis
+### Overview
+
+H2AI previously discarded all per-task reasoning artifacts on resolution. Phase 1 introduces a four-layer **Persistent Reasoning Memory** system. Only Layers 1a and 1b are live; Layers 2–4 are planned.
+
+| Layer | Status | Responsibility |
+|---|---|---|
+| 1a. TaskReasoningCheckpoint | ✅ Phase 1 | Progressive checkpoint at each engine phase gate |
+| 1b. TaskMetaState | ✅ Phase 1 | Immutable projection at resolution; feeds induction |
+| 2. InductionScheduler | Planned | Batch distillation of TaskMetaStates into TenantMemoryStore |
+| 3. Thinking loop integration | Planned | Warm priors at task start from TenantMemoryStore |
+| 4. Hybrid retrieval | Planned | Tag-gate + embedding rerank at scale |
+
+### Tenant model
+
+`TenantId` (a newtype wrapping `String`) is the scope boundary for all reasoning memory storage. Each tenant's data lives in its own NATS KV buckets — isolation is enforced by construction, not by query filter. `TaskManifest.tenant_id` defaults to `TenantId::default_tenant()` for backward compatibility with single-tenant deployments.
+
+### TaskReasoningCheckpoint vs. TaskCheckpoint
+
+Two distinct checkpoint types coexist:
+
+| Type | Location | Purpose | Storage |
+|---|---|---|---|
+| `TaskCheckpoint` | `H2AI_TASK_CHECKPOINTS` | Execution-phase recovery (proposals, auditor survivors, resolved output) | zstd + delta encoding |
+| `TaskReasoningCheckpoint` | `H2AI_CHECKPOINT_{tenant_id}` | Reasoning artifact capture (thinking loop, archetype selection, retry context) + warm-start recovery | zstd, 7-day TTL |
+
+`TaskReasoningCheckpoint.phase` uses `ReasoningCheckpointPhase` (Created → ThinkingDone → WaveCompleted(k) → MergeDone → Resolved), enabling future phase-level skip logic on crash recovery.
+
+### TaskMetaState
+
+At `MapeKDecision::Return` (task resolution), `TaskReasoningCheckpoint::into_meta_state()` projects the checkpoint into a `TaskMetaState` — wave-level detail stripped, reasoning artifacts kept:
+
+- `shared_understanding`, `tensions`, `archetype_results` — from the thinking loop
+- `retry_count`, `retry_context_that_resolved`, `tried_topologies`, `tau_values_that_converged` — retry history
+- `system_context_with_rubric_hash`, `constraint_corpus_fingerprint` — rubric fingerprints for retrieval
+
+`TaskMetaState` is written to `H2AI_META_{tenant_id}` (no TTL) and will be consumed by the `InductionScheduler` in Phase 2.
+
+### Configuration
+
+```toml
+[reasoning_memory]
+enabled                     = false   # all checkpoint writes skipped when false
+induction_batch_size        = 10
+induction_max_interval_secs = 86400
+induction_max_tasks_per_run = 50
+tag_gate_threshold          = 0.2
+max_archetype_boost         = 0.15
+max_archetype_penalty       = 0.20
+
+[state]
+reasoning_checkpoint_bucket_prefix = "H2AI_CHECKPOINT"
+task_meta_state_bucket_prefix      = "H2AI_META"
+```
+
+### Fire-and-forget writes
+
+All reasoning checkpoint writes are fire-and-forget: a write failure logs a warning at `h2ai.engine` level but never blocks task resolution. The control path is never affected by NATS unavailability for reasoning memory.
+
+---
+
+## 11. A2A Explorer Adapter
+
+### 11.1 Diversity axis
 
 H2AI's existing diversity signals measure differences *within* the LLM world: Hamming CG captures constraint-profile independence, cosine N_eff captures semantic independence. Both are bounded by the homogeneity of the LLM model family. Cross-framework diversity — running a planning agent built with LangChain, a reasoning agent built with AutoGen, and an H2AI ensemble as explorer peers — is a new N_eff axis that existing adapters cannot provide.
 
 The `A2aExplorerAdapter` (`crates/h2ai-adapters/src/a2a.rs`) implements the `IComputeAdapter` trait and makes any [Agent2Agent (A2A)](https://a2aprotocol.ai) compatible remote agent a first-class ensemble participant. No changes to the orchestrator, planner, or calibration harness are required — the adapter is just another element in the `explorer_adapters` vector.
 
-### 10.2 Agent Card discovery and caching
+### 11.2 Agent Card discovery and caching
 
 On first use (and after `agent_card_cache_ttl_s` seconds), the adapter fetches the remote agent's capability manifest:
 
@@ -1101,7 +1323,7 @@ The parsed `AgentCard` is held in a `tokio::sync::RwLock<Option<CachedCard>>`. O
 
 Cache invalidation: any `failed` or `rejected` poll response resets the cached entry to `None`, forcing a fresh fetch before the next attempt.
 
-### 10.3 Task delegation and polling
+### 11.3 Task delegation and polling
 
 The adapter delegates via JSON-RPC 2.0 over HTTPS:
 
@@ -1123,7 +1345,7 @@ Terminal state mapping:
 | Agent Card unreachable | `Unavailable` |
 | Empty extraction | `EmptyOutput` |
 
-### 10.4 Artifact extraction pipeline
+### 11.4 Artifact extraction pipeline
 
 External agents produce inconsistent artifact formatting. Raw text from a markdown-fenced output would corrupt the Condorcet synthesis if passed directly into the merge phase. The adapter runs a 4-stage pipeline, stopping at the first successful extraction:
 
@@ -1134,11 +1356,11 @@ External agents produce inconsistent artifact formatting. Raw text from a markdo
 
 `token_cost: 0` is reported — A2A agents do not expose token cost.
 
-### 10.5 Authentication
+### 11.5 Authentication
 
 `auth_scheme` is `"bearer"`, `"api_key"`, or `"none"`. The `auth_token_env` env var is resolved **at adapter construction time** (fail-fast at server startup, not at first request). This follows the same startup-panic contract as `validate_tool_configs` for other tool executors.
 
-### 10.6 Configuration
+### 11.6 Configuration
 
 ```toml
 [[adapter_profiles]]
@@ -1157,7 +1379,7 @@ agent_card_cache_ttl_s = 3600
 
 ---
 
-## 11. What H2AI does *not* do better
+## 12. What H2AI does *not* do better
 
 The control plane is honest about its boundaries. The system does *not* compete with:
 

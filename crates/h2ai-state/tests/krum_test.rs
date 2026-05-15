@@ -326,8 +326,10 @@ async fn mean_pairwise_distance_zero_for_identical_pair() {
 }
 
 #[tokio::test]
-async fn cluster_coherent_tight_cluster_returns_true() {
-    // Proposals with substantial token overlap → mean distance well below 0.7
+async fn cluster_coherent_no_embedding_always_returns_false() {
+    // Without an embedding model, cluster_coherent returns false regardless of content.
+    // Token Jaccard cannot reliably satisfy the BFT cluster assumption for LLM outputs;
+    // the merger must fall back to ConsensusMedian in this configuration.
     let proposals = vec![
         prop("stateless jwt auth token ADR-001"),
         prop("stateless jwt authentication token ADR-001"),
@@ -336,8 +338,8 @@ async fn cluster_coherent_tight_cluster_returns_true() {
         prop("jwt bearer stateless authentication ADR-001"),
     ];
     assert!(
-        cluster_coherent(&proposals, None).await,
-        "tight jwt cluster must be cluster_coherent"
+        !cluster_coherent(&proposals, None).await,
+        "cluster_coherent must return false when no embedding model is provided"
     );
 }
 
@@ -358,9 +360,10 @@ async fn cluster_coherent_diverse_proposals_returns_false() {
 }
 
 #[tokio::test]
-async fn cluster_coherent_single_proposal_returns_true() {
-    // Zero distance for 1 proposal → trivially coherent
-    assert!(cluster_coherent(&[prop("anything here")], None).await);
+async fn cluster_coherent_single_proposal_no_embedding_returns_false() {
+    // No embedding model → false even for a single proposal.
+    // The merger falls back to ConsensusMedian (which also picks the one proposal).
+    assert!(!cluster_coherent(&[prop("anything here")], None).await);
 }
 
 #[test]

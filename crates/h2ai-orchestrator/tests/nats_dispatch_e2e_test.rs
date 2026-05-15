@@ -37,6 +37,7 @@ impl IComputeAdapter for FixedCostAdapter {
                 model: None,
             },
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 

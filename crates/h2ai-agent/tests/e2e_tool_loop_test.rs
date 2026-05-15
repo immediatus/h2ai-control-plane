@@ -131,6 +131,7 @@ async fn tao_agent_three_tool_registry_injects_all_schemas_into_system_context()
                     model: None,
                 },
                 tokens_used: None,
+                reasoning_trace: None,
             })
         }
         fn kind(&self) -> &AdapterKind {

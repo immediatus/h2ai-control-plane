@@ -48,13 +48,14 @@ Submits a task manifest. Returns immediately with `task_id`. Progress is observe
   "constraints": ["ADR-001", "ADR-007"],
   "constraint_tags": ["eu_data", "financial_report"],
   "require_approval": false,
-  "context": "optional"
+  "context": "optional",
+  "tenant_id": "default"
 }
 ```
 
 `pareto_weights.{diversity, containment, throughput}` must sum to 1.0. `topology.kind` is `"auto"`, `"ensemble"`, or `"hierarchical_tree"`. When `explorers.roles[]` is non-empty the system always selects `TeamSwarmHybrid`. `explorers.count` is requested — the system reduces to `N_max` if the request exceeds the calibrated ceiling.
 
-`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5).
+`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5). `tenant_id` is optional; when omitted it defaults to `"default"`. It scopes all `TaskReasoningCheckpoint` and `TaskMetaState` writes to a per-tenant NATS KV bucket (see §10).
 
 **Response:** `202 Accepted` with `{"task_id": "...", "events_url": "/tasks/.../events"}`.
 
@@ -570,6 +571,7 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | Field | Default | Purpose |
 |---|---|---|
 | `agent_max_tool_iterations` | `5` | Maximum tool-call turns the TAO agent may execute per wave. Prevents runaway tool loops. |
+| `agent_max_observation_chars` | `8192` | Maximum UTF-8 byte length of a single tool observation appended to the agent context. Observations exceeding the limit are truncated with a diagnostic suffix `…[truncated N → max chars]`. Set to `0` to disable truncation entirely. Prevents `MaxTokensExceeded` on large shell or search outputs. |
 | `tao.per_turn_timeout_secs` | `120` | Per-turn adapter call timeout in seconds. Increase for slow local models. Cloud models typically need 30s; 11B local models generating 1024-token responses need ≥120s. |
 | `tao.repetition_threshold` | `0.92` | Token-overlap similarity threshold above which two consecutive responses are considered stuck (loop detected). Range [0.0, 1.0]. |
 
@@ -602,6 +604,8 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `H2AI_APPROVALS` | KV | `{task_id}` | 1 h | `ApprovalRecord` for tasks parked at the HITL gate. |
 | `H2AI_CONSTRAINT_WIKI` | KV | `wiki_cache` | — | Serialised `WikiCache` (context_map + metas). Loaded at startup; `constraint_wiki.enabled = true` required. History=5. |
 | `H2AI_CONSTRAINT_PAYLOADS` | Object Store | `{id}@{version}` | — | Full predicate payloads for non-Static constraints (LlmJudge, Oracle). Fetched lazily at Phase 4. |
+| `H2AI_CHECKPOINT_{tenant_id}` | KV store | `task_id` string | 7 days | `TaskReasoningCheckpoint` (zstd-compressed). Per-tenant; bucket created on first task for each tenant. |
+| `H2AI_META_{tenant_id}` | KV store | `task_id` string | no TTL | `TaskMetaState` projections (uncompressed JSON). Per-tenant; consumed by InductionScheduler (Phase 2). |
 
 `TaskCheckpoint` schema (written after each phase boundary):
 
@@ -660,6 +664,36 @@ cache_max_entries = 200
 | `{task_id}/seq/latest` | Plain u32 seq number | CAS-updated after every write (3-retry loop) |
 
 `seq=0` and every multiple of `base_interval` store a `CheckpointKind::Base(Box<TaskCheckpoint>)` (full snapshot). All other seqs store `CheckpointKind::Delta(Vec<PatchOperation>)` — the RFC 6902 diff against the nearest base. On read, `reconstruct_at_seq` fetches the base entry then applies the patch chain. Legacy flat-key checkpoints (pre-delta, no `/seq/` component) are detected by key format and read as a Base without migration.
+
+### Reasoning Memory
+
+```toml
+[reasoning_memory]
+enabled                     = false   # all checkpoint writes skipped when false
+induction_batch_size        = 10
+induction_max_interval_secs = 86400
+induction_max_tasks_per_run = 50
+tag_gate_threshold          = 0.2
+max_archetype_boost         = 0.15
+max_archetype_penalty       = 0.20
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Master switch. When `false`, all `TaskReasoningCheckpoint` and `TaskMetaState` writes are skipped; no NATS buckets are created. |
+| `induction_batch_size` | `10` | Number of `TaskMetaState` records consumed per `InductionScheduler` batch run (Phase 2). |
+| `induction_max_interval_secs` | `86400` | Maximum interval between scheduled induction runs (Phase 2). |
+| `induction_max_tasks_per_run` | `50` | Hard cap on tasks processed in a single induction run (Phase 2). |
+| `tag_gate_threshold` | `0.2` | Minimum tag-overlap score for a `TaskMetaState` to be retrieved as a prior (Phase 2). |
+| `max_archetype_boost` | `0.15` | Maximum score boost applied to an archetype with a strong positive prior (Phase 2). |
+| `max_archetype_penalty` | `0.20` | Maximum score penalty applied to an archetype with a strong negative prior (Phase 2). |
+
+Per-tenant NATS KV bucket name prefixes are configured under `[state]`:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `state.reasoning_checkpoint_bucket_prefix` | `"H2AI_CHECKPOINT"` | Prefix for per-tenant reasoning checkpoint buckets (`{prefix}_{tenant_id}`). |
+| `state.task_meta_state_bucket_prefix` | `"H2AI_META"` | Prefix for per-tenant meta-state buckets (`{prefix}_{tenant_id}`). |
 
 ### Oracle Gate
 

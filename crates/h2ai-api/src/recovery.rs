@@ -4,7 +4,7 @@ use h2ai_orchestrator::task_store::{TaskPhase, TaskState};
 use h2ai_types::checkpoint::TaskCheckpoint;
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
 use h2ai_types::events::{H2AIEvent, MergeResolvedEvent};
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::TaskManifest;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -147,8 +147,20 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
         let bandit = Arc::clone(&state.bandit_state);
 
         // --- Build owned adapter arcs so we can take short-lived references into EngineInput ---
-        let explorer = state.explorer_adapter.clone();
-        let explorer2 = state.explorer2_adapter.clone();
+        let pool_arcs: Vec<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>> =
+            state.adapter_pool.clone();
+        let pool_len = pool_arcs.len().max(1);
+        let count = manifest.explorers.count;
+        let diversity_ids: Vec<u32> = if manifest.explorers.diversity_ids.is_empty() {
+            (0..count as u32).collect()
+        } else {
+            manifest.explorers.diversity_ids.clone()
+        };
+        let explorer_arcs: Vec<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>> =
+            diversity_ids
+                .iter()
+                .map(|id| pool_arcs[*id as usize % pool_len].clone())
+                .collect();
         let verifier = state.verification_adapter.clone();
         let auditor = state.auditor_adapter.clone();
         let registry = state.registry();
@@ -158,7 +170,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             task_id: task_id.clone(),
             manifest,
             calibration,
-            explorer_adapters: vec![explorer.as_ref(), explorer2.as_ref(), explorer.as_ref()],
+            explorer_adapters: explorer_arcs.iter().map(|a| a.as_ref()).collect(),
             verification_adapter: verifier.as_ref(),
             auditor_adapter: auditor.as_ref(),
             auditor_config: AuditorConfig {
@@ -183,6 +195,8 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             srani_count: 0,
             srani_grounding_chain: None,
             nats_raw: None,
+            tenant_id: TenantId::default_tenant(),
+            nats: None,
         };
 
         match ExecutionEngine::run_from_checkpoint(input, checkpoint.clone()).await {

@@ -48,6 +48,11 @@ pub struct TaoInput<'a> {
     /// MAPE-K retry-loop generation counter (0-based). Threaded into `ProposalEvent::generation`
     /// so `ProposalSet` can apply generation-first LUB semantics.
     pub generation: u64,
+    /// When `true`, the TAO retry loop is skipped: the adapter is called exactly once and
+    /// the result is returned unconditionally.  Use for models with built-in CoT (o1, o3,
+    /// DeepSeek R1) where injecting TAO memory over the model's own reasoning trace causes
+    /// an α-spike that collapses the USL N_max ceiling.
+    pub bypass_tao: bool,
 }
 
 /// Result produced by a completed TAO loop for one explorer.
@@ -186,6 +191,34 @@ impl TaoLoop {
     /// Returns `Err(EngineError::Adapter)` on timeout, invalid configuration, or a
     /// repetition-loop detection (consecutive outputs too similar).
     pub async fn run(input: TaoInput<'_>) -> Result<TaoProposal, EngineError> {
+        // Reasoning models have built-in CoT; injecting TAO memory over their own trace
+        // causes an α-spike.  Run exactly one turn and return unconditionally.
+        if input.bypass_tao {
+            let resp = timeout(
+                Duration::from_secs(input.config.per_turn_timeout_secs),
+                input.adapter.execute(input.initial_request.clone()),
+            )
+            .await
+            .map_err(|_| EngineError::Adapter("TAO timeout".into()))?
+            .map_err(|e| EngineError::Adapter(e.to_string()))?;
+
+            return Ok(TaoProposal {
+                event: ProposalEvent {
+                    task_id: input.task_id,
+                    explorer_id: input.explorer_id,
+                    tau: input.initial_request.tau,
+                    generation: input.generation,
+                    raw_output: resp.output,
+                    token_cost: resp.token_cost,
+                    adapter_kind: resp.adapter_kind,
+                    timestamp: Utc::now(),
+                },
+                tao_turns: 1,
+                iterations: vec![],
+                turn1_output: None,
+            });
+        }
+
         // Fix I-1: guard against max_turns == 0 before entering the loop
         if input.config.max_turns == 0 {
             return Err(EngineError::Adapter("TAO max_turns must be >= 1".into()));

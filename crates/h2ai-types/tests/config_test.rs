@@ -123,6 +123,7 @@ fn explorer_config_serde_round_trip() {
             model: None,
         },
         role: None,
+        is_reasoning_model: false,
     };
     let json = serde_json::to_string(&cfg).unwrap();
     let back: ExplorerConfig = serde_json::from_str(&json).unwrap();
@@ -142,6 +143,7 @@ fn explorer_config_with_role_serde_round_trip() {
             model: None,
         },
         role: Some(AgentRole::Evaluator),
+        is_reasoning_model: false,
     };
     let json = serde_json::to_string(&cfg).unwrap();
     let back: ExplorerConfig = serde_json::from_str(&json).unwrap();

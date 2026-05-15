@@ -11,17 +11,6 @@ Most multi-agent frameworks treat quality as an output property — something yo
 
 The core claim: **adding more agents past a measurable ceiling actively degrades output quality**. The Universal Scalability Law gives you that ceiling exactly. H2AI computes it per deployment, enforces it per task, and closes the feedback loop via a MAPE-K autonomic engine that adjusts ensemble topology before quality falls off the cliff.
 
-### Measured Results
-
-| Scenario | Baseline | H2AI | Uplift |
-|---|---|---|---|
-| Constraint-gap tasks (audit trail domain) | 48% pass rate | 72% pass rate | **+50%** |
-| Multi-constraint DSP onboarding | 64% pass rate | 80% pass rate | **+25%** |
-
-Constraint-gap tasks are the hardest class: the LLM has domain knowledge but the team's architectural decisions are not in its training data. Encoding those decisions as typed `ConstraintDoc` predicates lets the Auditor gate reject hallucinated proposals before they reach synthesis — not after the human reads the output.
-
----
-
 **H2AI Control Plane** is a distributed multi-agent orchestration runtime that prevents LLM agent swarms from degrading under their own coordination cost. It measures the overhead of making N agents agree, bounds ensemble size before that overhead exceeds the quality gain, and enforces typed constraints so agents share enough common ground to produce coherent results.
 
 Reference implementation of the framework defined in **[One Equation Governs CPU Caches, Human Teams, and AI Agent Systems](https://e-mindset.space/blog/coordination-constant-usl-human-ai-teams/)**.
@@ -189,115 +178,65 @@ This architecture is why H2AI is described as an **epistemic control plane** rat
 
 ## How It Works
 
-### 1. Calibration — measure the physics before spawning anything
+### 1. Calibration — measure the physics, then spawn
 
-The calibration harness runs representative tasks through the adapter pool and measures the two parameters that bound ensemble size:
+Before any agent runs, the calibration harness measures three parameters from the adapter pool:
 
-- `α` — the **serial bottleneck fraction**: time spent in planning, context compilation, and final synthesis — phases that serialize regardless of how many agents run in parallel. Measured as the fraction of total wall time that scales with N=1 behavior.
-- `β₀` — the **pairwise reconciliation cost**: how expensive it is to integrate each pair of agents' outputs into a coherent answer. Measured from merge phase timing and output divergence (CG_mean). Scales as N(N−1) in the USL model.
-- `CG(i,j)` — **Common Ground** between every Explorer pair: mean pairwise Hamming distance on the binary constraint-satisfaction fingerprints each agent produces (1 bit per constraint: pass/fail). High CG means agents satisfied the same constraints; low CG means they diverged and conflict reconciliation is costly. This is a metadata measurement — the control plane never compares raw LLM text to compute CG.
+- **α** — serial bottleneck fraction: time in planning, context compilation, and synthesis — phases that serialize regardless of N. Measured as the fraction of total wall time that scales with N=1 behavior.
+- **β₀** — pairwise reconciliation cost: how expensive it is to integrate each pair of agents' outputs into coherent agreement. Measured from merge-phase timing and output divergence. Scales N(N−1) in the USL model.
+- **CG(i,j)** — Common Ground between every Explorer pair: mean pairwise Hamming distance on binary constraint-satisfaction fingerprints (1 bit per constraint: pass/fail). High CG = agents satisfied compatible constraints; low CG = divergence is costly to reconcile. This is a metadata measurement — the control plane never compares raw LLM text.
 
-From these it derives `N_max = sqrt((1−α) / β_eff)` — the agent count at which Condorcet quality gain and reconciliation cost intersect. Beyond `N_max`, every additional agent makes results worse. No task proceeds without this data.
+These yield `N_max = sqrt((1−α) / β_eff)` where `β_eff = β₀ × (1 − CG_mean)`. Past `N_max`, every additional agent makes results worse. No task starts without this data — calibration is not optional and not a one-time setup.
 
-### 1.5. Thinking Loop (optional pre-execution coverage-convergence)
+### 2. Bootstrap — dark knowledge compiled into explicit gates
 
-When `thinking_loop.enabled = true`, a structured multi-archetype brainstorm runs before task decomposition. It iterates until `coverage_score ≥ coverage_threshold`, adaptively contracting the archetype count each iteration, linearly scheduling temperature from `tau_max → tau_min`, and injecting explicit tension-targeting instructions when prior iterations identify unresolved gaps. The synthesis (`shared_understanding` from `ThinkingReport`) is injected as `{thinking_context}` into the Phase 0 decomposition prompt. This improves decomposition quality on complex multi-domain tasks. Default: disabled.
+The task manifest arrives. The **Dark Knowledge Compiler** assembles an immutable `system_context` from your constraint corpus and the manifest. Every `ConstraintDoc` becomes either a hard gate (fail = reject the proposal) or a weighted compliance score (`constraint_error_cost = 1 − compliance`). Every agent — Explorer and Auditor alike — receives exactly this context and nothing else. Tacit knowledge is now explicit and enforceable.
 
-### 2. Bootstrap — compile Dark Knowledge into explicit constraints
+When `thinking_loop.enabled`, a structured multi-archetype brainstorm runs first — iterating until `coverage_score ≥ coverage_threshold`, with linear τ annealing and tension-targeted injection for unresolved gaps. The `ThinkingReport.shared_understanding` is injected into the decomposition prompt, improving decomposition quality on complex multi-domain tasks.
 
-You submit a task manifest. The **Dark Knowledge Compiler** assembles an immutable `system_context` from your constraint corpus and the task manifest. Every agent — Explorer and Auditor alike — receives exactly this context and nothing else.
+### 3. Provisioning — topology selected by physics, not gut feel
 
-### 3. Provisioning — topology selected by physics, not guesswork
+The MAPE-K controller reads `{α, β_eff, ParetoWeights}` and selects one of three topologies:
 
-The autonomic loop reads `{α, β_eff, ParetoWeights}` and selects one of three topologies:
-- **Ensemble + CRDT** — when `N ≤ N_max` and diversity weight dominates. No coordinator. All Explorers are peers. `O(N²)` edges, but structurally fine for small N. Pareto: T=84%, E=84%, D=90%.
-- **Hierarchical Tree** — when `N > N_max` or containment weight dominates. One Swarm Coordinator + k sub-groups. Branching factor `k_opt = floor(N_max^flat)`. Coordination cost drops from `O(N²)` to `O(N)`. Pareto: T=96%, E=96%, D=60%.
-- **Team-Swarm Hybrid** — when the manifest provides `explorers.roles[]`. Role-differentiated Explorers (Coordinator, Executor, Evaluator, Synthesizer) with declared review gates between specified pairs. The Evaluator forms a pre-Auditor gate that blocks Executor output. Pareto: T=84%, E=91%, D=95%.
+- **Ensemble + CRDT** — `N ≤ N_max`, diversity-weighted. All Explorers are peers. O(N²) edges — structurally fine for small N. Pareto: T=84%, E=84%, D=90%.
+- **Hierarchical Tree** — `N > N_max` or containment-weighted. One Swarm Coordinator + k sub-groups; `k_opt = floor(N_max^flat)`. Coordination cost drops from O(N²) to O(N). Pareto: T=96%, E=96%, D=60%.
+- **Team-Swarm Hybrid** — role-differentiated Explorers (Coordinator, Executor, Evaluator, Synthesizer) with declared review gates between specified pairs. The Evaluator forms a pre-Auditor gate that blocks Executor output before it can reach synthesis. Pareto: T=84%, E=91%, D=95%.
 
-Before spawning a single inference token, the **Multiplication Condition Gate** enforces all three conditions from Proposition 3: competence > 0.5, error decorrelation ρ < 0.9, Common Ground mean ≥ θ_coord. Fail any one → re-enter provisioning with adjusted parameters.
+Before spawning a single inference token, the **Multiplication Condition Gate** enforces Proposition 3: competence > 0.5, error decorrelation ρ < 0.9, `CG_mean ≥ θ_coord`. Fail any one → re-enter provisioning with adjusted parameters.
 
-### 4. Generation — parallel, isolated, bounded
+### 4. Generation — parallel, isolated, edge agents with full TAO loops
 
-N Explorers run in a `tokio::task::JoinSet` wrapped in `tokio::time::timeout`. Each Explorer calls `IComputeAdapter::execute()` with its assigned `τ` value and terminates. No Explorer reads another Explorer's output. Coordination cost during generation is structurally zero. Every Explorer gets a guaranteed terminal state — `ProposalEvent` on success, `ProposalFailedEvent` on crash/OOM/timeout. The stream always closes with `GenerationPhaseCompletedEvent`.
+N Explorers run in a `tokio::task::JoinSet`. No Explorer reads another's output — coordination cost during generation is structurally zero. Each Explorer is an **ephemeral, stateless edge agent** (`AgentDescriptor { model, tools }`) dispatched via NATS with a scoped NKey that expires when the task closes.
 
-For **Team-Swarm Hybrid** topologies, an additional Review Gate phase runs after generation: each Executor proposal is routed to its designated Evaluator (τ≈0.1, c_i≈0.9) before reaching the Auditor. Approved proposals proceed to Phase 5; blocked proposals are tombstoned at the gate with reason recorded (`ReviewGateBlockedEvent`) and visible in the Merge Authority UI.
-
-### How Explorers Execute — The Edge Agent Dispatch Pipeline
-
-The control plane never runs inference directly. Each Explorer is an **ephemeral, stateless edge agent** described by an `AgentDescriptor` and dispatched as a container over NATS. An agent is not a named product — it is any LLM-based container identified by the model it runs and the capabilities it has been granted:
-
-```rust
-pub struct AgentDescriptor {
-    pub model: String,         // "llama3-70b", "gpt-4o", "claude-3-opus", ...
-    pub tools: Vec<AgentTool>, // [] | [WebSearch] | [Shell, CodeExecution, FileSystem]
-}
-
-pub enum AgentTool {
-    Shell,
-    WebSearch,
-    CodeExecution,
-    FileSystem,
-}
-```
-
-**`tools` are capability flags, not features.** They directly affect three USL quantities that the system measures and controls:
+The `tools` field is not a feature flag — it directly affects USL quantities:
 
 | Tool set | Effect on α | Effect on β₀ | Default c_i | Typical role |
 |---|---|---|---|---|
-| `[]` (pure LLM) | near 0 | 0 (text only) | 0.1–0.3 | Coordinator / Synthesizer |
-| `[WebSearch]` | +0.01–0.02 | +0.005 (retrieval nondeterminism) | 0.2–0.4 | Evaluator |
-| `[FileSystem]` | +0.02–0.05 | +0.01 (shared state writes) | 0.4–0.6 | Executor |
-| `[CodeExecution]` | +0.03–0.08 | +0.015 (env side effects) | 0.5–0.7 | Executor |
-| `[Shell]` | +0.05–0.15 | +0.02 (arbitrary side effects) | 0.6–0.9 | Executor |
+| `[]` (pure LLM) | near 0 | 0 | 0.1–0.3 | Coordinator / Synthesizer |
+| `[WebSearch]` | +0.01–0.02 | +0.005 | 0.2–0.4 | Evaluator |
+| `[FileSystem]` | +0.02–0.05 | +0.01 | 0.4–0.6 | Executor |
+| `[CodeExecution]` | +0.03–0.08 | +0.015 | 0.5–0.7 | Executor |
+| `[Shell]` | +0.05–0.15 | +0.02 | 0.6–0.9 | Executor |
 
-A pure LLM agent is `f(context, τ) → text` — deterministic given its inputs, zero side effects, errors cost nothing to discard. A tool-using agent is `f(context, τ, external_state_t) → text + side_effects` — its output depends on the world at execution time, and wrong outputs may leave irreversible state.
+Inside each edge agent, `TaoAgent` runs a Thought→Action→Observation loop up to `agent_max_tool_iterations` turns. Each turn: the LLM is called with accumulated context and tool schemas in the system prompt; the response is parsed for a structured tool call `{"tool": "...", "input": {...}}` via a three-strategy pipeline (direct JSON parse → strip markdown fences → find first balanced `{...}` in text); the call is dispatched through `ToolRegistry::execute`; a `ToolCallRecord` is appended to the audit trail. Tool observations are UTF-8-safely truncated at `agent_max_observation_chars` (default 8192) before being injected back into context — preventing runaway context growth. The loop terminates when the LLM produces a final answer (no tool call) or the iteration budget is exhausted.
 
-This distinction flows directly into topology selection:
-- High c_i from tool-using agents drives `max(c_i) > 0.85`, switching `MergeStrategy` from `ScoreOrdered` to `ConsensusMedian` (Condorcet voting) or `OutlierResistant` (for `max(c_i) > 0.95`).
-- Tool-induced α increase lowers `N_max`, reducing the explorer count.
-- WebSearch nondeterminism raises CG variance, lowering `CG_mean`, raising `β_eff`.
-- High-c_i Executor agents trigger Review Gates in TeamSwarmHybrid topology — the wrong output cannot reach the Auditor by graph construction.
+**Security invariant:** Each edge agent can only publish to `h2ai.telemetry.{agent_id}` and `h2ai.results.{task_id}`. It cannot read other agents' payloads, write to the orchestration bus, or retain credentials after the task closes. Enforced at the NATS server level — not by application code. Shell commands execute via `Command::new(cmd).args(args)` — no shell interpreter, no metacharacter injection possible.
 
-The full dispatch-and-await loop per Explorer:
+### 5. MAPE-K gate — every wave reviewed, every retry typed
 
-1. **Context assembly** — `MemoryProvider::get_recent_history` retrieves prior session history; assembled into the `context` field of `TaskPayload`.
-2. **Payload construction** — `TaskPayload { task_id, agent: AgentDescriptor, instructions, context, τ, max_tokens, wave_mode: WaveMode }` is built. The full descriptor and `wave_mode` travel with the payload so the edge agent's `ToolRegistry` is scoped to the correct allowlist for this wave.
-3. **Capacity check** — `AgentProvider::ensure_agent_capacity(descriptor, task_load)` verifies the container pool. The provider selects the container image from `descriptor.model` and configures volume mounts and security contexts from `descriptor.tools` — no hardcoded image names in the orchestrator.
-4. **Dispatch** — `TaskPayload` is published to `h2ai.tasks.ephemeral.{task_id}` on the durable JetStream `H2AI_TASKS` stream. A scoped **NKey** for this `task_id` is injected into the container — the edge agent has no NATS credentials before this moment and none after. The NKey's `allowed_publish` set is sized to match the tool set.
-5. **TAO local tool loop** — inside the edge agent, `TaoAgent::run` iterates up to `agent_max_tool_iterations` turns. Each turn: call the LLM with accumulated context and all tool schemas injected into the system prompt; parse `{"tool": "...", "input": {...}}` from the response; dispatch to `ToolRegistry::execute(tool, input_json)`; append a `ToolCallRecord { tool, input_json, output, iteration }` to the audit trail. The loop terminates when the LLM produces a final answer (no tool field) or the iteration budget is exhausted.
-6. **Live telemetry** — the control plane subscribes to `h2ai.telemetry.{task_id}`. Every `AgentTelemetryEvent` (LLM calls, shell commands, errors) is routed through `RedactionMiddleware` (secrets scrubbed before logging) into `AuditProvider::record_event` in real time.
-7. **Result wait** — the control plane subscribes to `h2ai.results.{task_id}`. The edge agent publishes `TaskResult { answer, tool_calls: Vec<ToolCallRecord>, total_token_cost, .. }` when done and terminates. `tool_calls` carries the complete TAO iteration history for audit.
-8. **Memory commit** — on `TaskResult`, `MemoryProvider::commit_new_memories` persists the output for future context assembly. `AuditProvider::flush` drains the audit buffer.
-9. **NKey expiry** — the scoped NKey expires. The container loses all NATS permissions and is reaped.
+The Auditor spins up on `TopologyProvisionedEvent` — before generation starts. Proposals are validated as they arrive. Rejections become `BranchPrunedEvent` tombstones: permanently preserved with rejection reason and `constraint_error_cost`, visible in the Merge Authority UI. Failures are epistemic data, not noise.
 
-**Security invariant:** An edge agent can only publish to `h2ai.telemetry.{its agent_id}`, `audit.events.{its agent_id}`, and `h2ai.results.{its task_id}`. It cannot read other agents' payloads, write to the orchestration event bus, or retain credentials after its task closes. This is enforced at the NATS server level — not by application code.
-
-### 5. Auditor Gate — reactive, never idle
-
-The Auditor spins up on `TopologyProvisionedEvent` — before generation starts. It validates proposals as they arrive against the compiled `system_context`. Every constraint in your corpus is a potential rejection. Rejected proposals become `BranchPrunedEvent` tombstones: permanently preserved in the log with rejection reason and constraint cost (`c_i`), visible in the Merge Authority UI.
-
-If all proposals are pruned → `ZeroSurvivalEvent` → the MAPE-K loop adjusts `{N, τ}` and retries. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload.
+Zero survivors → `ZeroSurvivalEvent`. The three-layer MAPE-K engine engages: `ExecutionPipeline` runs the 12 per-wave phase modules in order (topology → multiply → diversity → generation → hallucination → SRANI → verify → audit → frontier → oracle → synthesis → merge), `MapeKController` maps the wave's `ExitReason` to one of three `MapeKDecision` variants — `Return(output)`, `Retry`, or `Fail(error)` — and `engine.rs` orchestrates the loop. The retry adjusts `{N, τ, topology}` and reruns. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload.
 
 ### 6. Merge — two layers, O(1) human decision
 
-The merge phase has two deliberately separate layers:
+**Layer 1 — Metadata consensus (CRDT semilattice, deterministic):** The control plane aggregates binary constraint-satisfaction fingerprints from surviving proposals into a semilattice. The BFT threshold (e.g. 0.67) is applied to fingerprint agreement rate — not raw text similarity. This layer never touches LLM output text.
 
-**Layer 1 — Metadata consensus (CRDT semilattice, fast, deterministic):** The control plane aggregates the binary constraint-satisfaction fingerprints from all surviving proposals into a semilattice. This computes, in lock-free Rust, which proposals agree on which constraints. The BFT threshold (e.g. 0.67) is applied to this fingerprint agreement rate — not to raw text similarity. This layer never touches LLM output text. This is where `ConsensusRequiredEvent` fires and `MergeStrategy` is selected.
+> The `bft_threshold` is a fractional agreement gate on constraint fingerprints — not PBFT. PBFT handles adversarial nodes with cryptographic guarantees at O(N²) message cost. Here the "Byzantine nodes" are stochastically diverging LLMs. A fractional threshold + Krum outlier rejection is the correct tool; full PBFT would be architectural overkill.
 
-> **Note on "BFT" in this system:** The `bft_threshold` is a fractional agreement gate (e.g. 0.67) on constraint fingerprints — not PBFT (Practical Byzantine Fault Tolerance). PBFT is designed for adversarial nodes with cryptographic guarantees and costs O(N²) network rounds. Here the "Byzantine nodes" are hallucinating LLMs — stochastic divergence, not malicious actors. A fractional threshold + Krum outlier rejection is the correct tool for epistemic fault tolerance. Full PBFT would be architectural overkill.
+**Layer 2 — Semantic reconciliation (synthesis LLM):** The synthesis LLM receives only validated proposals. Two passes: (1) **critique** at low τ produces a structured gap analysis; (2) **synthesis** reads proposals + critique and produces the final coherent output. Before synthesis runs, a diversity gate rejects mono-culture ensembles — if mean pairwise Hamming distance across fingerprints falls below `diversity_threshold`, a MAPE-K retry fires.
 
-**Layer 2 — Semantic reconciliation (synthesis LLM, slow, creative):** Once the metadata layer has identified which proposals cleared the BFT threshold, the synthesis LLM receives only those validated proposals. Synthesis runs in two passes: (1) a **critique pass** at low τ reads all verified proposals and produces a structured gap analysis; (2) a **synthesis pass** reads the proposals plus the critique and produces the final coherent output. The synthesis LLM does what CRDTs cannot: semantic reconciliation of natural-language proposals.
-
-**Diversity gate:** Before synthesis runs, the system checks that the verified proposals are not collectively hallucinated — if mean pairwise Hamming distance across their fingerprints falls below `diversity_threshold`, all proposals are too similar and a MAPE-K retry fires. Synthesis on a mono-culture ensemble produces false confidence.
-
-The **Merge Authority UI** presents:
-
-- **Valid proposals panel** — diff view grouped by target component, τ and adapter shown per proposal
-- **Tombstone panel** — every rejected proposal with Explorer ID, attempted output, rejection reason, and `c_i` weight of the violated constraint. Failures are epistemic data.
-- **Autonomic shift timeline** — every MAPE-K intervention rendered as a timeline node
-- **Physics panel** — live `θ_coord`, `β_eff`, `N_max`, current `MergeStrategy`
-
-The human makes one decision. `MergeResolvedEvent` closes the task.
+The **Merge Authority UI** presents the valid proposals panel, tombstone panel (every rejection with reason and `c_i`), MAPE-K intervention timeline, and live physics panel (`θ_coord`, `β_eff`, `N_max`, `MergeStrategy`). One human decision. `MergeResolvedEvent` closes the task.
 
 ---
 
@@ -377,96 +316,26 @@ AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable 
 
 ## Repository Layout
 
-```
-h2ai-control-plane/
-├── Dockerfile                      # multi-stage: builder (rust+clang) → runtime (debian-slim)
-├── typeshare.toml                  # typeshare CLI config (Rust→TypeScript/Swift/Kotlin; Go dropped in v1.13+)
-├── bindings/
-│   └── go/                         # hand-authored Go types (typeshare CLI dropped Go in v1.13+; maintained manually)
-├── crates/
-│   ├── h2ai-types/                 # Pure types boundary — zero I/O deps
-│   │                               # All 23 core events + AgentTelemetryEvent, IComputeAdapter,
-│   │                               # USL physics types, CoherencyCoefficients, MergeStrategy,
-│   │                               # AgentState, TaskPayload, TaskResult (typeshare-annotated)
-│   │                               # SubtaskId, SubtaskPlan, SubtaskResult, PlanStatus, Subtask
-│   │                               # ConstraintViolation (per-constraint failure record in BranchPrunedEvent)
-│   │                               # checkpoint_delta.rs — TaskCheckpointEntry, CheckpointKind (Base/Delta, RFC 6902)
-│   │                               # prompt_variant.rs — PromptVariant, AdapterOproState, ProfileTier
-│   ├── h2ai-nats/                  # NATS subject constants + scoped NKey provisioning per task_id
-│   ├── h2ai-config/                # H2AIConfig — physics thresholds and role defaults
-│   ├── h2ai-constraints/           # ConstraintDoc/ConstraintPredicate type system + sync evaluator
-│   │                               # VocabularyPresence/NegativeKeyword/RegexMatch/NumericThreshold/
-│   │                               # LlmJudge/Composite predicates; Hard/Soft/Advisory severity;
-│   │                               # compliance formula: hard_gate × soft_score
-│   ├── h2ai-provisioner/           # AgentProvider + SchedulingPolicy + NatsAgentProvider
-│   │                               # Capability filter + cost-tier ceiling + least-loaded scheduling
-│   ├── h2ai-memory/                # MemoryProvider trait + InMemoryCache + NatsKvStore
-│   │                               # Stateless edge agents: all context lives in the control plane
-│   ├── h2ai-planner/               # PlanningEngine::decompose + PlanReviewer::evaluate
-│   │                               # LLM-driven task decomposition into SubtaskPlan; structural
-│   │                               # cycle/empty checks before semantic LLM review
-│   ├── h2ai-telemetry/             # AuditProvider trait + DirectLogProvider + BrokerPublisherProvider
-│   │                               # Immutable audit log with secret redaction middleware
-│   │                               # ShellCommandExecuted.args redacted per-element
-│   ├── h2ai-orchestrator/          # DAG builder + Pareto topology router + NatsDispatchAdapter
-│   │                               # CompoundTaskEngine (decompose → review → schedule pipeline)
-│   │                               # SchedulingEngine (Kahn topo-sort wave execution)
-│   │                               # oracle_gate.rs — Phase 4.5 NATS request/reply gate + clarification suspension
-│   │                               # prompts.rs — resolve_prompt with 30s cache, NATS lookup, config fallback
-│   ├── h2ai-autonomic/             # MAPE-K loop + calibration harness + N_max calculator
-│   ├── h2ai-state/                 # CRDT semilattice + NATS JetStream I/O + task dispatch wire protocol
-│   │                               # Delta checkpoint encoding: JSON Patch RFC 6902 diffs (O(N) storage)
-│   │                               # NatsClient::connect_with_cfg(url, StateConfig); LRU cache 200 entries/60s TTL
-│   │                               # put_checkpoint_delta, get_latest_checkpoint, reconstruct_at_seq
-│   ├── h2ai-context/               # Dark Knowledge Compiler + constraint corpus loader
-│   │                               # corpus_keywords from ConstraintDoc::vocabulary()
-│   ├── h2ai-adapters/              # IComputeAdapter: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + AdapterFactory
-│   ├── h2ai-tools/                 # Tool executor framework: ToolExecutor trait, ToolRegistry, ToolError
-│   │                               # ShellExecutor (JSON contract, no shell interpreter, PGID kill on timeout)
-│   │                               # WebSearchExecutor (GoogleSearchBackend, max 10 results)
-│   │                               # McpExecutor (StdioMcpBackend, read_file/list_directory only)
-│   │                               # WasmExecutor (RealWasmBackend via wasmtime, fuel-bounded JS sandbox)
-│   │                               # ToolRegistry::for_wave(cfg, WaveMode) — live backends
-│   │                               # ToolRegistry::for_wave_with_mocks(cfg, WaveMode) — test helper
-│   ├── h2ai-api/                   # axum REST gateway + Merge Authority web UI
-│   │                               # bootstrap.rs — seeds Bayesian beta priors from AdapterProfile.tier at startup
-│   │                               # opro.rs — j_eff EMA tracking, OPRO cycle, Thompson-sampling bandit, variant storage
-│   └── h2ai-agent/                 # Edge agent binary — heartbeat + NATS task dispatch loop
-│                                   # TaoAgent: tool-call loop up to agent_max_tool_iterations turns
-│                                   # config_validation::validate_tool_configs — fail-fast at startup
-│                                   # builds ToolRegistry::for_wave(cfg, wave_mode) per task
-├── nats/
-│   ├── dev.conf                    # single-node JetStream config (Local Plan)
-│   └── cluster.conf                # 3-node cluster config (Server/Cloud Plan)
-├── deploy/
-│   ├── local/docker-compose.yml          # h2ai + NATS, single workstation
-│   ├── server/docker-compose.yml         # 3-node NATS + 2× h2ai + nginx + observability
-│   ├── cloud/                            # raw Kubernetes manifests
-│   └── helm/h2ai-control-plane/          # Helm chart for enterprise distribution
-├── .devcontainer/                  # devcontainer: Rust toolchain + NATS sidecar
-├── .github/workflows/
-│   ├── ci.yml                      # fmt → clippy -D warnings → nextest → docker → helm lint
-│   └── release.yml                 # image → ghcr.io, Helm chart → GitHub Pages, binary release
-├── tests/
-│   └── e2e/                        # E2E tests against a live server + local LLM + NATS
-│       ├── scenarios/              # per-scenario directories with task.json + expected results
-│       ├── constraints/            # 7 + 4 constraint docs (ads-platform corpus)
-│       ├── replay.py               # test runner + regression/analysis harness
-│       └── scripts/
-│           └── analyze_failed_run.py  # post-failure rubric improvement analysis
-└── docs/
-    └── architecture/               # 5-file consolidated documentation
-        ├── architecture.md         # System overview, crate boundaries, event vocabulary
-        ├── math.md                 # USL/CJT/j_eff foundations, formulas, calibration table
-        ├── reference.md            # API, configuration, metrics, adapters, constraint corpus
-        ├── operations.md           # Getting started, deployment, alerts, troubleshooting
-        ├── gaps.md                 # Open research gaps and innovation roadmap
-        └── research-state.md       # Thesis, implemented gaps, open questions, benchmarks
-```
+| Crate | Responsibility |
+|---|---|
+| `h2ai-types` | Pure types — all events, manifests, USL physics structs, `IComputeAdapter` trait; zero I/O deps |
+| `h2ai-config` | `H2AIConfig` — physics thresholds, role defaults, all tunable parameters |
+| `h2ai-constraints` | `ConstraintDoc` / `ConstraintPredicate` type system; Hard/Soft/Advisory severity; `compliance = hard_gate × soft_score` |
+| `h2ai-nats` | NATS subject constants + scoped NKey provisioning per `task_id` |
+| `h2ai-state` | CRDT semilattice, NATS JetStream I/O, checkpoint delta encoding (JSON Patch RFC 6902), per-tenant KV buckets |
+| `h2ai-context` | Dark Knowledge Compiler — assembles immutable `system_context` from constraint corpus + task manifest |
+| `h2ai-autonomic` | Calibration harness, USL solver (α/β/CG → N_max), eigenvalue computation (spawn_blocking) |
+| `h2ai-orchestrator` | MAPE-K engine (`engine.rs` + `ExecutionPipeline` + `MapeKController`), all 16 phase modules, compound + scheduling engines |
+| `h2ai-provisioner` | `AgentProvider` — container pool management, capability filter, cost-tier ceiling, least-loaded scheduling |
+| `h2ai-planner` | `PlanningEngine::decompose` + `PlanReviewer::evaluate` — LLM-driven task decomposition with structural cycle/empty checks |
+| `h2ai-memory` | `MemoryProvider` — context history assembly; all context lives in the control plane, edge agents are stateless |
+| `h2ai-telemetry` | `AuditProvider` — immutable audit log; secret redaction middleware; `ShellCommandExecuted.args` redacted per-element |
+| `h2ai-adapters` | `IComputeAdapter` implementations: Anthropic, OpenAI, Ollama, CloudGeneric, Mock + `AdapterFactory` |
+| `h2ai-tools` | `ToolExecutor` framework: `ShellExecutor` (JSON contract, no shell interpreter), `WebSearchExecutor`, `McpExecutor`, `WasmExecutor`; `ToolRegistry::for_wave(WaveMode)` |
+| `h2ai-api` | axum REST gateway, SSE event stream, Merge Authority web UI, OPRO cycle, Thompson-sampling bandit |
+| `h2ai-agent` | Edge agent binary — NATS task dispatch loop, `TaoAgent` TAO loop, `config_validation` fail-fast at startup |
 
-**Dependency rule:** `h2ai-types`, `h2ai-config`, and `h2ai-constraints` have zero external I/O dependencies — predicate evaluation is pure computation. `h2ai-planner` depends only on `h2ai-types` (LLM calls go through `IComputeAdapter` from `h2ai-types`; no NATS or HTTP deps). Six crates import `async-nats` directly, each on a dedicated subject namespace: `h2ai-nats` (subject constants + NKey provisioning), `h2ai-state` (task event log), `h2ai-memory` (context history), `h2ai-telemetry` (audit log), `h2ai-provisioner` (agent heartbeats + soft-kill), `h2ai-agent` (binary — heartbeat publisher + task subscriber). `h2ai-api` is the only crate that talks to HTTP. Nothing imports `h2ai-api`.
-
-**Compute isolation:** Cloud HTTP adapters (Anthropic, OpenAI, Ollama) run async on the main worker pool. Future llama.cpp FFI inference uses `spawn_blocking` with `max_blocking_threads` explicitly set so CPU-bound inference never starves NATS consumers or HTTP handlers.
+**Dependency rule:** `h2ai-types`, `h2ai-config`, `h2ai-constraints` are pure — zero I/O. Six crates use `async-nats` on dedicated subject namespaces: `h2ai-nats`, `h2ai-state`, `h2ai-memory`, `h2ai-telemetry`, `h2ai-provisioner`, `h2ai-agent`. `h2ai-api` is the only HTTP-facing crate; nothing imports it. Eigenvalue-intensive calibration paths use `tokio::task::spawn_blocking` so CPU-bound work never starves NATS consumers.
 
 ---
 
@@ -495,26 +364,6 @@ The system is **C-first**: the distributed cluster is the architectural foundati
 | **Local — Local dev** | Single workstation (128GB RAM) | Static binary + nats-server, no container runtime required |
 | **Server — Team node** | Dedicated server | 3-node NATS cluster + 2× h2ai + nginx + Prometheus + Grafana + Jaeger |
 | **Cloud — Kubernetes** | Multi-region cluster | Helm chart, NATS StatefulSet, h2ai Deployment + HPA, ServiceMonitor |
-
----
-
-## Constraint Corpus and Integration Examples
-
-The **Dark Knowledge Compiler** reads your team's `ConstraintDoc` files. Each document becomes a typed `ConstraintDoc` with a `ConstraintPredicate` (vocabulary presence, negative keywords, regex, numeric threshold, LLM judge, or composites) and a severity (`Hard`, `Soft`, or `Advisory`). Hard constraints gate the merge; Soft constraints contribute a weighted compliance score; `constraint_error_cost = 1.0 − compliance` feeds back into the BFT merge strategy selector.
-
-The bundled e2e corpus (`tests/e2e/constraints/`) is derived from the blog series **[Architecting Real-Time Ads Platform](https://e-mindset.space/series/architecting-ads-platforms/)**:
-
-| Constraint | Decision |
-|---|---|
-| CONSTRAINT-001 | Stateless request services — no per-user state across requests |
-| CONSTRAINT-002 | gRPC internal / REST external — JSON overhead consumes 20% of latency budget at 1M QPS |
-| CONSTRAINT-003 | Adaptive RTB timeouts via HdrHistogram — per-DSP P95, capped at 100ms global |
-| CONSTRAINT-004 | Budget pacing with idempotency — Redis Lua atomic check-and-set, 30s TTL |
-| CONSTRAINT-005 | Dual-ledger audit log — Kafka → ClickHouse append-only, 7-year retention, SOX |
-| CONSTRAINT-006 | Java 21 + Generational ZGC — 32GB heap, <2ms P99.9 GC pauses |
-| CONSTRAINT-007 | Tiered consistency — budget=strong, profiles=eventual, billing=linearizable |
-
-The task manifests in `tests/e2e/tasks/` drive the e2e tests. Run them against a live server: `python3 tests/e2e/run.py`.
 
 ---
 

@@ -24,6 +24,7 @@ fn make_input<'a>(
         config: cfg,
         schema_config,
         generation: 0,
+        bypass_tao: false,
     }
 }
 
@@ -50,6 +51,7 @@ async fn tao_loop_passes_on_first_turn_when_output_matches_pattern() {
         config: cfg,
         schema_config: None,
         generation: 0,
+        bypass_tao: false,
     })
     .await;
     assert!(result.is_ok());
@@ -82,6 +84,7 @@ async fn tao_loop_exhausts_turns_and_returns_best() {
         config: cfg,
         schema_config: None,
         generation: 0,
+        bypass_tao: false,
     })
     .await;
     assert!(result.is_ok());
@@ -113,6 +116,7 @@ async fn tao_memory_accumulates_on_failed_turns() {
         },
         schema_config: None,
         generation: 0,
+        bypass_tao: false,
     })
     .await;
 

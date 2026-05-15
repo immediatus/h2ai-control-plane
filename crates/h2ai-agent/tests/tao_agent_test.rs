@@ -236,6 +236,7 @@ impl IComputeAdapter for RecordingAdapter {
                 model: None,
             },
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &h2ai_types::config::AdapterKind {
@@ -373,4 +374,59 @@ async fn tao_agent_accumulates_token_cost_across_iterations() {
         "two adapter calls at token_cost=10 each must total 20; got {}",
         result.total_token_cost
     );
+}
+
+// ── Test 13: markdown-fenced tool call is executed ────────────────────────────
+#[tokio::test]
+async fn tao_agent_executes_tool_call_wrapped_in_markdown_fence() {
+    let fenced =
+        "```json\n{\"tool\":\"shell\",\"input\":{\"command\":\"echo\",\"args\":[\"hi\"]}}\n```";
+    let adapter = SequencedMockAdapter::new(vec![fenced.into(), "final answer".into()]);
+    let mut registry = ToolRegistry::new();
+    registry.register_shell(ShellExecutor::new(vec!["echo".into()], 5));
+
+    let result = TaoAgent::new(&adapter as &dyn IComputeAdapter, registry, &cfg())
+        .run(agent_input("run echo", ""))
+        .await;
+
+    assert_eq!(
+        result.tool_calls.len(),
+        1,
+        "fenced tool call must be dispatched"
+    );
+    assert_eq!(result.output, "final answer");
+}
+
+// ── Test 14: preamble + JSON tool call is executed ────────────────────────────
+#[tokio::test]
+async fn tao_agent_executes_tool_call_with_preamble_text() {
+    let with_preamble = "I'll run that command for you.\n\n{\"tool\":\"shell\",\"input\":{\"command\":\"echo\",\"args\":[\"hello\"]}}";
+    let adapter = SequencedMockAdapter::new(vec![with_preamble.into(), "final answer".into()]);
+    let mut registry = ToolRegistry::new();
+    registry.register_shell(ShellExecutor::new(vec!["echo".into()], 5));
+
+    let result = TaoAgent::new(&adapter as &dyn IComputeAdapter, registry, &cfg())
+        .run(agent_input("run echo", ""))
+        .await;
+
+    assert_eq!(
+        result.tool_calls.len(),
+        1,
+        "preamble must not prevent tool dispatch"
+    );
+    assert_eq!(result.output, "final answer");
+}
+
+// ── Test 15: plain-text without JSON still treated as final answer ─────────────
+#[tokio::test]
+async fn tao_agent_plain_text_not_mistaken_for_tool_call() {
+    let adapter = MockAdapter::new("Here is my answer: 42".into());
+    let registry = ToolRegistry::new();
+
+    let result = TaoAgent::new(&adapter as &dyn IComputeAdapter, registry, &cfg())
+        .run(agent_input("what is 6*7", ""))
+        .await;
+
+    assert!(result.tool_calls.is_empty());
+    assert_eq!(result.output, "Here is my answer: 42");
 }

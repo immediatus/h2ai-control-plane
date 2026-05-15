@@ -410,9 +410,9 @@ pub struct ShadowAuditorResultEvent {
     pub disagreement: bool,
     /// Task domain from `constraint_tags[0]`, or `"default"` when no tags are present.
     pub domain: String,
-    /// `AdapterFamily::to_string()` of the primary auditor.
+    /// `format!("{:?}", auditor_adapter.kind())` of the primary auditor.
     pub primary_family: String,
-    /// `AdapterFamily::to_string()` of the shadow auditor.
+    /// `format!("{:?}", shadow_adapter.kind())` of the shadow auditor.
     pub shadow_family: String,
     pub timestamp_ms: u64,
 }

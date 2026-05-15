@@ -79,6 +79,28 @@ pub struct CoherencyCoefficients {
 /// 7 days: a sample one week old contributes at e^−1 ≈ 37% weight (`exp(-t/τ)` at t=τ).
 pub const CG_HALFLIFE_SECS: u64 = 604_800;
 
+/// Maximum iterations for the context-aware N_max fixed-point solver.
+/// Empirically converges in ≤3 steps; 5 provides a safe margin.
+pub const USL_SOLVER_MAX_ITERS: usize = 5;
+
+/// Convergence tolerance (in agents) for the context-aware N_max solver.
+/// Loop exits when successive iterates differ by less than half an agent.
+pub const USL_SOLVER_CONVERGENCE_TOL: f64 = 0.5;
+
+/// Hard cap on recommended ensemble size across all calibration methods.
+/// Derived from the information-theoretic `n_it_optimal` formula: at typical
+/// LLM error-correlation values the marginal gain of a 10th adapter is negligible.
+pub const N_MAX_ENSEMBLE_CAP: usize = 9;
+
+/// Upper clamp on pairwise error correlation ρ to prevent Condorcet degeneracy.
+/// At ρ = 1.0 the Condorcet gain denominator collapses; 0.99 keeps it numerically stable.
+pub const RHO_UPPER_CLAMP: f64 = 0.99;
+
+/// Signed exponent coefficient for τ (creativity temperature) alignment.
+/// `tau_alignment(a,b) = exp(TAU_ALIGNMENT_DECAY_COEFF × |a−b|)`.
+/// Negative value: at |a−b| = 1.0 gives exp(−3) ≈ 0.05 (5% residual alignment).
+pub const TAU_ALIGNMENT_DECAY_COEFF: f64 = -3.0;
+
 impl CoherencyCoefficients {
     pub fn new(alpha: f64, beta_base: f64, cg_samples: Vec<f64>) -> Result<Self, PhysicsError> {
         Self::new_with_timestamps(alpha, beta_base, cg_samples, vec![])
@@ -176,13 +198,13 @@ impl CoherencyCoefficients {
         let beta_eff = self.beta_eff().max(f64::EPSILON);
         let alpha = self.alpha;
         let mut n = self.n_max();
-        for _ in 0..5 {
+        for _ in 0..USL_SOLVER_MAX_ITERS {
             let fill = (n * proposal_tokens / max_tokens).min(1.0);
             let beta_ctx = beta_eff * (1.0 + gamma * fill);
             let n_new = ((1.0 - alpha).max(0.0) / beta_ctx.max(f64::EPSILON))
                 .sqrt()
                 .round();
-            if (n_new - n).abs() < 0.5 {
+            if (n_new - n).abs() < USL_SOLVER_CONVERGENCE_TOL {
                 break;
             }
             n = n_new;
@@ -372,10 +394,10 @@ pub struct MultiplicationCondition;
 
 /// Exponential decay alignment between two τ (creativity temperature) values.
 ///
-/// `tau_alignment(a, b) = exp(-3 × |a − b|)`.
+/// `tau_alignment(a, b) = exp(TAU_ALIGNMENT_DECAY_COEFF × |a − b|)`.
 /// Same τ → 1.0. Difference of 1.0 → exp(−3) ≈ 0.05.
 pub fn tau_alignment(a: TauValue, b: TauValue) -> f64 {
-    (-3.0 * (a.value() - b.value()).abs()).exp()
+    (TAU_ALIGNMENT_DECAY_COEFF * (a.value() - b.value()).abs()).exp()
 }
 
 /// Condorcet Jury Theorem ensemble accuracy with error correlation.
@@ -540,7 +562,7 @@ impl EnsembleCalibration {
     /// `rho` is clamped to [0.0, 0.99] to prevent degenerate Condorcet computation.
     pub fn from_empirical(p_mean: f64, rho_empirical: f64, max_n: usize) -> Self {
         let p = p_mean.clamp(0.5, 1.0);
-        let rho = rho_empirical.clamp(0.0, 0.99);
+        let rho = rho_empirical.clamp(0.0, RHO_UPPER_CLAMP);
         let max_n = max_n.max(1);
         let (n_optimal, _) = (1..=max_n)
             .map(|n| {
@@ -597,10 +619,10 @@ pub fn n_it_optimal(rho: f64) -> usize {
         return 1;
     }
     if rho >= 1.0 - 1e-10 {
-        return 9;
+        return N_MAX_ENSEMBLE_CAP;
     }
     let n = 1.0 + 0.5_f64.ln() / (1.0 - rho).ln();
-    (n.ceil() as usize).clamp(1, 9)
+    (n.ceil() as usize).clamp(1, N_MAX_ENSEMBLE_CAP)
 }
 
 /// Eigenvalue-based ensemble calibration from the pairwise CG similarity matrix.

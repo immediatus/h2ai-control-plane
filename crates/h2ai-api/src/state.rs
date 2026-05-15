@@ -38,10 +38,9 @@ pub struct AppState {
     pub calibration: Arc<RwLock<Option<CalibrationCompletedEvent>>>,
     /// Append-only event journal; persists task-event sequences to NATS for replay.
     pub journal: Arc<SessionJournal>,
-    /// Primary LLM adapter used for Phase 1 exploration and as the default for all profiles.
-    pub explorer_adapter: Arc<dyn IComputeAdapter>,
-    /// Second explorer for USL timing Phase B. Defaults to `explorer_adapter` if not set.
-    pub explorer2_adapter: Arc<dyn IComputeAdapter>,
+    /// Ordered pool of compute adapters. Explorer slots are routed to `pool[diversity_id % pool.len()]`.
+    /// With a single adapter all diversity IDs collapse to the same slot (graceful degradation).
+    pub adapter_pool: Vec<Arc<dyn IComputeAdapter>>,
     /// Scores proposals in Phase 3.5. Returns `{"score": float, "reason": "..."}`.
     pub verification_adapter: Arc<dyn IComputeAdapter>,
     /// Approves/rejects proposals in Phase 4. Returns `{"approved": bool, "reason": "..."}`.
@@ -105,19 +104,19 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Construct the initial `AppState` with a single explorer and auditor adapter.
+    /// Construct the initial `AppState` with an adapter pool and auditor adapter.
     ///
-    /// Sets `explorer2_adapter` and `verification_adapter` to the same values as
-    /// `explorer_adapter` and `auditor_adapter` respectively; call [`with_explorer2`][Self::with_explorer2]
-    /// afterwards when the runtime needs a distinct second-explorer endpoint.
-    /// No same-family bias guard is applied here; that check lives in `main.rs` before
+    /// `adapter_pool` must be non-empty; panics at startup if empty.
+    /// `verification_adapter` is set to `auditor_adapter`.
+    /// No family bias guard is applied here; that check lives in `main.rs` before
     /// the adapters are wired together.
     pub fn new(
         nats: NatsClient,
         cfg: H2AIConfig,
-        explorer_adapter: Arc<dyn IComputeAdapter>,
+        adapter_pool: Vec<Arc<dyn IComputeAdapter>>,
         auditor_adapter: Arc<dyn IComputeAdapter>,
     ) -> Self {
+        assert!(!adapter_pool.is_empty(), "adapter_pool must be non-empty");
         let nats = Arc::new(nats);
         let snapshot_interval = cfg.snapshot_interval_events;
         let journal =
@@ -136,8 +135,7 @@ impl AppState {
             store: TaskStore::new(),
             calibration: Arc::new(RwLock::new(None)),
             journal,
-            explorer2_adapter: explorer_adapter.clone(),
-            explorer_adapter,
+            adapter_pool,
             verification_adapter: auditor_adapter.clone(),
             auditor_adapter,
             scoring_adapter: None,
@@ -182,17 +180,6 @@ impl AppState {
         self
     }
 
-    /// Override the second explorer adapter used in USL timing Phase B.
-    ///
-    /// USL Phase B measures inter-adapter latency to separate the σ (contention) and
-    /// κ (coherency) coefficients; using an adapter from the same provider family as
-    /// `explorer_adapter` would conflate the two signals.  Supply a distinct endpoint
-    /// here to ensure the calibration sees genuine cross-adapter round-trip cost.
-    pub fn with_explorer2(mut self, adapter: Arc<dyn IComputeAdapter>) -> Self {
-        self.explorer2_adapter = adapter;
-        self
-    }
-
     /// Configure a shadow auditor adapter for Phase 4 disagreement measurement (GAP-C2).
     ///
     /// The shadow adapter MUST be from a different family than `auditor_adapter`.
@@ -226,12 +213,12 @@ impl AppState {
 
     /// Build an [`AdapterRegistry`] from this state.
     ///
-    /// The reasoning adapter is always `explorer_adapter`.  When `scoring_adapter` is
-    /// `Some`, `TaskProfile::Scoring` requests are routed to it instead of the explorer,
+    /// The reasoning adapter is always `adapter_pool[0]`.  When `scoring_adapter` is
+    /// `Some`, `TaskProfile::Scoring` requests are routed to it instead of the pool,
     /// preventing scoring load from competing with exploration quota.  All other profiles
-    /// fall through to the explorer adapter.
+    /// fall through to `adapter_pool[0]`.
     pub fn registry(&self) -> AdapterRegistry {
-        let reg = AdapterRegistry::new(self.explorer_adapter.clone());
+        let reg = AdapterRegistry::new(self.adapter_pool[0].clone());
         match &self.scoring_adapter {
             Some(scoring) => reg.with_scoring(scoring.clone()),
             None => reg,

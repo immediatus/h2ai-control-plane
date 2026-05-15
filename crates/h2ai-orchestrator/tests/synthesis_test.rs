@@ -56,6 +56,7 @@ impl IComputeAdapter for FixedAdapter {
             token_cost: self.cost,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -99,6 +100,7 @@ impl IComputeAdapter for SequencedAdapter {
             token_cost: 100,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {

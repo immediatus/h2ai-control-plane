@@ -42,6 +42,48 @@ mathematical improvement, and simulation protocol for every open gap.
 
 **Infrastructure note (2026-05-14):** Delta checkpoint encoding (JSON Patch RFC 6902, `CheckpointKind::Base/Delta`, O(N) NATS KV storage) is now live in `h2ai-state`. Previously O(N²) checkpoint growth would have exhausted NATS KV space during the long multi-task experiment runs required by GAP-A6 and GAP-A1. This blocker is resolved; experiment runs are no longer storage-constrained.
 
+**Infrastructure note (2026-05-15):** Persistent Reasoning Memory Phase 1 is live: `TaskReasoningCheckpoint` written at each engine phase gate, `TaskMetaState` projected at resolution, per-tenant NATS KV buckets (`H2AI_CHECKPOINT_{tenant}` 7d TTL, `H2AI_META_{tenant}` 90d TTL). Crash recovery: `run_from_checkpoint` reads `CheckpointPhase` to skip completed phases. Phases 2–4 are designed and pending implementation.
+
+**Reasoning Memory — Pending Phases 2–4 Design**
+
+| Phase | Layers | Value |
+|-------|--------|-------|
+| Phase 2 | Induction | First induction cycle; `TenantMemoryStore` populated from `TaskMetaState` history |
+| Phase 3 | Thinking loop integration | Archetype priors + tension seeding; fewer iterations needed |
+| Phase 4 | Hybrid retrieval | Embedding rerank on top of tag-gate; precision at scale |
+
+**Layer 2 — Induction**
+
+Two components with strict separation: `InductionWorker` trait (pure computation — no I/O, testable with `MockInductionWorker`) and `InductionScheduler` (owns JetStream subscription, NATS KV reads/writes, CAS swap).
+
+`InductionScheduler` triggers a distillation cycle when ≥ `induction_batch_size` (10) resolved tasks accumulate, or `induction_max_interval_secs` (86400s) have elapsed. It loads up to `induction_max_tasks_per_run` (50) `TaskMetaState` records, calls `worker.distill()`, writes result to a staging key, then CAS-swaps `latest` only on full success — the previous snapshot is never touched on failure.
+
+`AlgorithmicInductionWorker` — pure Rust, no LLM calls. Distillation steps:
+1. **ArchetypePrior** — group `ArchetypeResult` entries by `archetype_name + domain_tags`; `net_confidence = weighted_mean(confidence, weight=2.0 if dominated_synthesis else 1.0)`; `avoid_for_tags` = tags where `net_confidence < 0.4` across ≥ 3 tasks.
+2. **TensionPattern** — collect all tension strings; cluster by cosine similarity (threshold 0.85) if `EmbeddingModel` is available, exact dedup otherwise; store `frequency` + `resolution_hint` from tasks that resolved the tension.
+3. **RetryHintPattern** — group `(trigger_tags, exit_reason_kind, retry_context_that_resolved)` tuples; keep top hint per pair by `success_rate`.
+4. **DecompositionTemplate** — group `shared_understanding` strings by `(quadrant, constraint_tags)`; select embedding centroid if model available, most recent otherwise.
+
+`TenantMemoryStore` lives in `H2AI_MEMORY_{tenant_id}` KV bucket. Schema: `{tenant_id, generated_at, task_count_seen, archetype_priors[], tension_patterns[], retry_hint_patterns[], decomposition_templates[]}`. Published event: `InductionCycleCompletedEvent` to `h2ai.telemetry.induction`.
+
+New files: `crates/h2ai-orchestrator/src/induction/mod.rs` (trait + mock), `induction/algorithmic.rs` (distillation), `induction/scheduler.rs` (I/O). New types: `crates/h2ai-types/src/memory.rs`.
+
+**Layer 3 — Thinking Loop Integration**
+
+Before the thinking loop runs, load `TenantMemoryStore` from `NatsClient::get_tenant_memory(&tenant_id)`. Thread as `Option<TenantMemoryStore>` into `ThinkingLoopInput`.
+
+- **Archetype priors** — `select_archetypes()` gives +0.15 weight boost to archetypes with `net_confidence > 0.6` + matching domain tags; -0.20 penalty to archetypes in `avoid_for_tags` matching current task.
+- **Tension seeding** — Iteration 0 is pre-loaded with top 3 `TensionPattern` entries matching constraint tags (Jaccard tag intersection). Injected as hypotheses: "previously observed tensions — validate, refute, or refine."
+- **Retry hint priming** — `MapeKController::new()` receives `Vec<RetryHintPattern>` matching task tags stored as `primed_retry_hints`. When `ZeroSurvival` or `HallucinationDetected` fires, checks `primed_retry_hints` before computing retry context from scratch.
+
+**Layer 4 — Hybrid Retrieval**
+
+Tag-gate (Layer 3 baseline): Jaccard `|tags_task ∩ tags_pattern| / |tags_task ∪ tags_pattern| ≥ 0.2`. O(1) per candidate — eliminates irrelevant patterns before any embedding work.
+
+Embedding rerank (Layer 4 addition, only when tag-gate returns > 5 candidates): embed current task description; compute cosine similarity against stored `TensionPattern.embedding`; final score = `0.6 × jaccard + 0.4 × cosine`. Return top 3. Pattern embeddings are precomputed during induction — no embedding call at query time for stored patterns.
+
+Config additions to `reference.toml`: `reasoning_memory_tag_gate_threshold = 0.2`, `reasoning_memory_max_tension_candidates = 3`, `reasoning_memory_max_archetype_boost = 0.15`, `reasoning_memory_max_archetype_penalty = 0.20`.
+
 ---
 
 ## Innovations Roadmap

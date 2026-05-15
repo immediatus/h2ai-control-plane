@@ -31,7 +31,12 @@ async fn boot_app() -> (String, tokio::task::JoinHandle<()>) {
     let auditor = Arc::new(MockAdapter::new(
         r#"{"approved":true,"score":0.9,"reason":"mock"}"#.into(),
     ));
-    let state = AppState::new(nats, cfg, explorer, auditor);
+    let state = AppState::new(
+        nats,
+        cfg,
+        vec![explorer as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        auditor,
+    );
 
     let app = axum::Router::new()
         .merge(task_router())
@@ -953,7 +958,11 @@ fn a2a_adapter_factory_builds_with_auth_none() {
         agent_card_cache_ttl_s: 3600,
     };
     let adapter = AdapterFactory::build(&kind).expect("factory must build A2A adapter");
-    assert_eq!(adapter.family().to_string(), "A2a");
+    // A2a adapter built successfully — verify it's an A2a kind
+    assert!(matches!(
+        adapter.kind(),
+        h2ai_types::config::AdapterKind::A2a { .. }
+    ));
 }
 
 #[test]

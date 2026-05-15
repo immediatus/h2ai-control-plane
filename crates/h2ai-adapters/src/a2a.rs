@@ -5,9 +5,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use tokio::sync::RwLock;
 
-use h2ai_types::adapter::{
-    AdapterError, AdapterFamily, ComputeRequest, ComputeResponse, IComputeAdapter,
-};
+use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 
 // ---------------------------------------------------------------------------
@@ -446,14 +444,11 @@ impl IComputeAdapter for A2aExplorerAdapter {
             token_cost: 0,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 
     fn kind(&self) -> &AdapterKind {
         &self.kind
-    }
-
-    fn family(&self) -> AdapterFamily {
-        AdapterFamily::A2a
     }
 }

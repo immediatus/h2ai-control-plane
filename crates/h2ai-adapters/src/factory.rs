@@ -75,8 +75,7 @@ impl AdapterFactory {
 
     /// Build an adapter by looking up `name` in `profiles`.
     ///
-    /// Returns `Err` if no profile with that name exists or if `build()` fails
-    /// for the matched profile's kind.
+    /// Returns `Err` if no profile with that name exists or if `build()` fails.
     pub fn build_from_profiles(
         name: &str,
         profiles: &[AdapterProfile],

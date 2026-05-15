@@ -25,7 +25,6 @@ use state::AppState;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::warn;
 
 fn adapter_kind_from_env(prefix: &str) -> AdapterKind {
     let provider = env::var(format!("H2AI_{prefix}_PROVIDER"))
@@ -74,17 +73,6 @@ fn adapter_kind_for_role(prefix: &str, profiles: &[AdapterProfile]) -> AdapterKi
         return profile.kind.clone();
     }
     adapter_kind_from_env(prefix)
-}
-
-fn adapter_family(kind: &AdapterKind) -> &'static str {
-    match kind {
-        AdapterKind::Anthropic { .. } => "anthropic",
-        AdapterKind::OpenAI { .. } => "openai",
-        AdapterKind::Ollama { .. } => "ollama",
-        AdapterKind::LocalLlamaCpp { .. } => "llamacpp",
-        AdapterKind::CloudGeneric { .. } => "cloudgeneric",
-        AdapterKind::A2a { .. } => "a2a",
-    }
 }
 
 fn build_adapter(kind: &AdapterKind, enable_thinking: bool) -> Arc<dyn IComputeAdapter> {
@@ -172,10 +160,36 @@ async fn main() {
     }
 
     let profiles = &cfg.adapter_profiles;
-    let explorer_kind = adapter_kind_for_role("EXPLORER", profiles);
-    let auditor_kind = adapter_kind_for_role("AUDITOR", profiles);
     let thinking = cfg.adapter_enable_thinking;
-    let explorer_adapter = build_adapter(&explorer_kind, thinking);
+
+    // Build adapter_pool: one adapter per profile (in order) if profiles are non-empty,
+    // otherwise fall back to env-var path (EXPLORER + EXPLORER2, deduplicated by pointer).
+    let adapter_pool: Vec<Arc<dyn IComputeAdapter>> = if !profiles.is_empty() {
+        profiles
+            .iter()
+            .map(|p| build_adapter(&p.kind, thinking))
+            .collect()
+    } else {
+        let explorer_kind = adapter_kind_for_role("EXPLORER", profiles);
+        let explorer2_provider = env::var("H2AI_EXPLORER2_PROVIDER")
+            .unwrap_or_else(|_| "same".into())
+            .to_lowercase();
+        let explorer_adapter = build_adapter(&explorer_kind, thinking);
+        if explorer2_provider == "same" || explorer2_provider.is_empty() {
+            vec![explorer_adapter]
+        } else {
+            let explorer2_kind = adapter_kind_for_role("EXPLORER2", profiles);
+            let explorer2_adapter = build_adapter(&explorer2_kind, thinking);
+            // Deduplicate by pointer identity
+            if Arc::ptr_eq(&explorer_adapter, &explorer2_adapter) {
+                vec![explorer_adapter]
+            } else {
+                vec![explorer_adapter, explorer2_adapter]
+            }
+        }
+    };
+
+    let auditor_kind = adapter_kind_for_role("AUDITOR", profiles);
     let auditor_adapter = build_adapter(&auditor_kind, thinking);
 
     let scoring_kind_opt = {
@@ -191,21 +205,6 @@ async fn main() {
     let scoring_adapter: Option<Arc<dyn IComputeAdapter>> = scoring_kind_opt
         .as_ref()
         .map(|k| build_adapter(k, thinking));
-
-    let explorer2_kind_opt = {
-        let provider = env::var("H2AI_EXPLORER2_PROVIDER")
-            .unwrap_or_else(|_| "same".into())
-            .to_lowercase();
-        if provider == "same" || provider.is_empty() {
-            None
-        } else {
-            Some(adapter_kind_for_role("EXPLORER2", profiles))
-        }
-    };
-    let explorer2_adapter: Arc<dyn IComputeAdapter> = explorer2_kind_opt
-        .as_ref()
-        .map(|k| build_adapter(k, thinking))
-        .unwrap_or_else(|| explorer_adapter.clone());
 
     let shadow_auditor_kind_opt = {
         let provider = env::var("H2AI_SHADOW_AUDITOR_PROVIDER")
@@ -235,34 +234,13 @@ async fn main() {
         .as_ref()
         .map(|k| build_adapter(k, thinking));
 
-    tracing::info!(target: "h2ai.startup", adapter = ?explorer_kind, "explorer adapter");
-    tracing::info!(target: "h2ai.startup", adapter = ?explorer2_kind_opt.as_ref().unwrap_or(&explorer_kind), "explorer2 adapter");
+    tracing::info!(target: "h2ai.startup", pool_size = adapter_pool.len(), "adapter pool");
     tracing::info!(target: "h2ai.startup", adapter = ?auditor_kind, "auditor adapter");
     tracing::info!(target: "h2ai.startup", adapter = ?scoring_kind_opt, "scoring adapter");
     tracing::info!(target: "h2ai.startup", adapter = ?shadow_auditor_kind_opt, "shadow adapter");
     tracing::info!(target: "h2ai.startup", adapter = ?researcher_kind_opt, "researcher adapter");
 
-    if let Some(ref sk) = shadow_auditor_kind_opt {
-        if adapter_family(sk) == adapter_family(&auditor_kind) {
-            tracing::error!(target: "h2ai.startup",
-                family = %adapter_family(sk),
-                "shadow_auditor and auditor are the same family — shadow mode requires a different family. \
-                 Set H2AI_SHADOW_AUDITOR_PROVIDER to a different provider.");
-            std::process::exit(1);
-        }
-    }
-
-    if adapter_family(&explorer_kind) == adapter_family(&auditor_kind) {
-        warn!(
-            target: "h2ai.verification",
-            family = adapter_family(&explorer_kind),
-            "verification_adapter and explorer_adapter are the same family — \
-             self-preference bias likely. Configure a different model family for verification."
-        );
-    }
-
-    let mut app_state = AppState::new(nats, cfg, explorer_adapter, auditor_adapter)
-        .with_explorer2(explorer2_adapter);
+    let mut app_state = AppState::new(nats, cfg, adapter_pool, auditor_adapter);
     if let Some(sa) = scoring_adapter {
         app_state.scoring_adapter = Some(sa);
     }
@@ -337,38 +315,29 @@ async fn main() {
     // Always run calibration at startup so USL coefficients reflect current hardware.
     // Persisted calibration (loaded above) remains as fallback if the LLM is unreachable.
     {
-        use h2ai_types::adapter::AdapterFamily;
-        use std::collections::HashSet;
-
-        let pre_families: HashSet<AdapterFamily> = [
-            app_state.explorer_adapter.family(),
-            app_state.explorer2_adapter.family(),
-            app_state.verification_adapter.family(),
-        ]
-        .into_iter()
-        .filter(|f| *f != AdapterFamily::Mock)
-        .collect();
-        let single_family_warning = pre_families.len() == 1;
+        // With the adapter_pool model, diversity is enforced via modulo IDs rather than
+        // diversity tags. Single-pool warning is based on pool size.
+        let single_family_warning = app_state.adapter_pool.len() == 1;
         if single_family_warning {
             match app_state.cfg.safety.family_constraint {
                 FamilyConstraint::RequireDiverse => {
-                    tracing::error!("all non-Mock adapters share one family — aborting");
+                    tracing::error!("adapter pool has only one adapter — RequireDiverse policy requires multiple adapters with distinct diversity IDs; aborting");
                     std::process::exit(1);
                 }
                 FamilyConstraint::SingleFamilyOk => {
                     tracing::warn!(
-                        "single-family adapter pool: correlated hallucination protection degraded"
+                        "single-adapter pool: correlated hallucination protection degraded"
                     );
                 }
                 FamilyConstraint::Disabled => {}
             }
         }
-        let mut adapter_families: Vec<String> =
-            pre_families.iter().map(|f| f.to_string()).collect();
-        adapter_families.sort();
-        let explorer_verification_family_match = app_state.explorer_adapter.family()
-            == app_state.verification_adapter.family()
-            && app_state.explorer_adapter.family() != AdapterFamily::Mock;
+        let adapter_families: Vec<String> = app_state
+            .adapter_pool
+            .iter()
+            .map(|a| format!("{:?}", a.kind()))
+            .collect();
+        let explorer_verification_family_match = false; // enforced via modulo IDs now
 
         let had_calibration = app_state.calibration.read().await.is_some();
         tracing::info!(target: "h2ai.startup", "running startup calibration");

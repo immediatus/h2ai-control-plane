@@ -47,32 +47,6 @@ impl OpenAIAdapter {
     }
 }
 
-/// Translate tau into llama.cpp-compatible sampling parameters.
-///
-/// Three regimes keyed on tau (temperature):
-/// - Low  (< 0.35): tight top_k=20, conservative nucleus — deterministic quality
-/// - Mid  (0.35–0.65): standard top_k=40, balanced nucleus
-/// - High (> 0.65): top_k disabled, Mirostat 2.0 — coherent high-entropy diversity
-fn sampling_extras(tau: f64) -> serde_json::Value {
-    if tau < 0.35 {
-        serde_json::json!({
-            "top_k": 20, "top_p": 0.85, "min_p": 0.05,
-            "repeat_penalty": 1.1, "repeat_last_n": 64
-        })
-    } else if tau <= 0.65 {
-        serde_json::json!({
-            "top_k": 40, "top_p": 0.95, "min_p": 0.03,
-            "repeat_penalty": 1.05, "repeat_last_n": 64
-        })
-    } else {
-        serde_json::json!({
-            "top_k": 0,
-            "mirostat": 2, "mirostat_tau": 5.0, "mirostat_eta": 0.1,
-            "repeat_penalty": 1.1, "repeat_last_n": 64
-        })
-    }
-}
-
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
@@ -98,17 +72,24 @@ struct Message {
     reasoning_content: Option<String>,
 }
 
-/// Select the answer text from a completed choice — same logic as cloud.rs.
-fn extract_output(choice: Choice) -> Result<String, AdapterError> {
+/// Extract the answer and optional reasoning trace from a completed choice.
+///
+/// - Two-phase models (e.g. future OpenAI o-series with separate reasoning field):
+///   `content` holds the answer; `reasoning_content` is returned as the trace.
+/// - Reasoning-only models: `content` is empty; `reasoning_content` is the full output.
+///   The trace is promoted to `output`; no separate trace is returned.
+/// - `finish_reason == "length"` with empty content: model exhausted tokens inside the
+///   thinking phase — the answer was never generated; fail fast.
+fn extract_output(choice: Choice) -> Result<(String, Option<String>), AdapterError> {
     if !choice.message.content.is_empty() {
-        return Ok(choice.message.content);
+        return Ok((choice.message.content, choice.message.reasoning_content));
     }
     if choice.finish_reason == "length" {
         return Err(AdapterError::NetworkError(
             "model hit max_tokens during thinking phase; increase max_tokens and retry".into(),
         ));
     }
-    Ok(choice.message.reasoning_content.unwrap_or_default())
+    Ok((choice.message.reasoning_content.unwrap_or_default(), None))
 }
 
 #[derive(Deserialize)]
@@ -131,11 +112,6 @@ impl IComputeAdapter for OpenAIAdapter {
             "temperature": req.tau.value(),
             "max_tokens":  req.max_tokens
         });
-
-        let extras = sampling_extras(req.tau.value());
-        body.as_object_mut()
-            .unwrap()
-            .extend(extras.as_object().unwrap().clone());
 
         if !self.enable_thinking {
             body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
@@ -168,43 +144,18 @@ impl IComputeAdapter for OpenAIAdapter {
             chat.choices.into_iter().next().ok_or_else(|| {
                 AdapterError::NetworkError("no choices in OpenAI response".into())
             })?;
-        let output = extract_output(choice)?;
+        let (output, reasoning_trace) = extract_output(choice)?;
 
         Ok(ComputeResponse {
             output,
             token_cost: chat.usage.total_tokens,
             adapter_kind: self.kind.clone(),
             tokens_used: Some(chat.usage.total_tokens),
+            reasoning_trace,
         })
     }
 
     fn kind(&self) -> &AdapterKind {
         &self.kind
-    }
-}
-
-#[cfg(test)]
-mod sampling_tests {
-    use super::sampling_extras;
-
-    #[test]
-    fn low_tau_uses_tight_top_k() {
-        let v = sampling_extras(0.2);
-        assert_eq!(v["top_k"], 20);
-        assert!(v.get("mirostat").is_none());
-    }
-
-    #[test]
-    fn mid_tau_uses_standard_top_k() {
-        let v = sampling_extras(0.5);
-        assert_eq!(v["top_k"], 40);
-        assert!(v.get("mirostat").is_none());
-    }
-
-    #[test]
-    fn high_tau_uses_mirostat() {
-        let v = sampling_extras(0.8);
-        assert_eq!(v["top_k"], 0);
-        assert_eq!(v["mirostat"], 2);
     }
 }

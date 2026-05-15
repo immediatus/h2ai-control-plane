@@ -528,7 +528,7 @@ async fn merge_n_input_proposals_includes_pruned_count() {
 }
 
 #[tokio::test]
-async fn krum_selects_semantically_central_with_semantic_variant() {
+async fn krum_select_semantic_returns_none_without_embedding_model() {
     use h2ai_state::krum::krum_select_semantic;
 
     let task_id = TaskId::new();
@@ -548,7 +548,8 @@ async fn krum_selects_semantically_central_with_semantic_variant() {
         timestamp: Utc::now(),
     };
 
-    // 4 similar proposals + 1 outlier → Krum should NOT select the outlier
+    // Without an embedding model, krum_select_semantic must refuse to run.
+    // Token Jaccard cannot satisfy the BFT cluster assumption for real LLM outputs.
     let proposals = vec![
         make("the quick brown fox"),
         make("a quick brown fox"),
@@ -558,10 +559,9 @@ async fn krum_selects_semantically_central_with_semantic_variant() {
     ];
 
     let result = krum_select_semantic(&proposals, 1, None).await;
-    assert!(result.is_some(), "krum_select_semantic must return Some");
-    let selected = result.unwrap();
-    assert_ne!(
-        selected.raw_output, "completely unrelated output about blockchain cryptocurrency",
-        "Krum must not select the outlier"
+    assert!(
+        result.is_none(),
+        "krum_select_semantic must return None when no embedding model is provided; \
+         callers must fall back to ConsensusMedian"
     );
 }

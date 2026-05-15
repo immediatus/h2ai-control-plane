@@ -152,6 +152,11 @@ pub struct AdapterProfile {
     /// Model capability tier for Bayesian priors and OPRO triggering.
     #[serde(default)]
     pub tier: ProfileTier,
+    /// Set to `true` for models with built-in chain-of-thought (o1, o3, o4-mini, DeepSeek R1).
+    /// Bypasses the TAO retry loop — these models' internal reasoning is the retry mechanism;
+    /// injecting TAO memory over their own trace causes an α-spike that collapses USL N_max.
+    #[serde(default)]
+    pub is_reasoning_model: bool,
 }
 
 /// Error returned by `H2AIConfig::load_layered` and `H2AIConfig::load_from_file`.
@@ -457,6 +462,69 @@ pub struct ThinkingModelTiers {
     pub capable: String,
 }
 
+/// Configuration for the Persistent Reasoning Memory system (Phase 1–4).
+///
+/// Controls whether reasoning checkpoints are written, per-tenant KV bucket
+/// TTLs, and induction cycle scheduling parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningMemoryConfig {
+    /// Enable reasoning checkpoint writes and TaskMetaState projection.
+    /// When `false`, all checkpoint writes are skipped (no NATS calls).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum resolved-task count before triggering an induction cycle. Default: 10.
+    #[serde(default = "default_induction_batch_size")]
+    pub induction_batch_size: usize,
+    /// Maximum seconds between induction cycles regardless of task count. Default: 86400 (24h).
+    #[serde(default = "default_induction_max_interval_secs")]
+    pub induction_max_interval_secs: u64,
+    /// Maximum TaskMetaState records loaded per induction run. Default: 50.
+    #[serde(default = "default_induction_max_tasks_per_run")]
+    pub induction_max_tasks_per_run: usize,
+    /// Jaccard tag-gate threshold for retrieval in Layer 3. Default: 0.2.
+    #[serde(default = "default_tag_gate_threshold")]
+    pub tag_gate_threshold: f64,
+    /// Maximum archetype confidence boost from memory priors. Default: 0.15.
+    #[serde(default = "default_max_archetype_boost")]
+    pub max_archetype_boost: f64,
+    /// Maximum archetype confidence penalty from avoid_for_tags. Default: 0.20.
+    #[serde(default = "default_max_archetype_penalty")]
+    pub max_archetype_penalty: f64,
+}
+
+fn default_induction_batch_size() -> usize {
+    10
+}
+fn default_induction_max_interval_secs() -> u64 {
+    86_400
+}
+fn default_induction_max_tasks_per_run() -> usize {
+    50
+}
+fn default_tag_gate_threshold() -> f64 {
+    0.2
+}
+fn default_max_archetype_boost() -> f64 {
+    0.15
+}
+fn default_max_archetype_penalty() -> f64 {
+    0.20
+}
+
+impl Default for ReasoningMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            induction_batch_size: default_induction_batch_size(),
+            induction_max_interval_secs: default_induction_max_interval_secs(),
+            induction_max_tasks_per_run: default_induction_max_tasks_per_run(),
+            tag_gate_threshold: default_tag_gate_threshold(),
+            max_archetype_boost: default_max_archetype_boost(),
+            max_archetype_penalty: default_max_archetype_penalty(),
+        }
+    }
+}
+
 /// Configuration for the pre-execution thinking loop (spec: 2026-05-13-thinking-loop-design.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThinkingLoopConfig {
@@ -602,6 +670,14 @@ pub struct StateConfig {
     pub constraint_payloads_bucket: String,
     #[serde(default = "default_approvals_bucket")]
     pub approvals_bucket: String,
+    /// NATS KV bucket name prefix for per-tenant reasoning checkpoints.
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_CHECKPOINT".
+    #[serde(default = "default_reasoning_checkpoint_bucket_prefix")]
+    pub reasoning_checkpoint_bucket_prefix: String,
+    /// NATS KV bucket name prefix for per-tenant task meta-state records.
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_META".
+    #[serde(default = "default_task_meta_state_bucket_prefix")]
+    pub task_meta_state_bucket_prefix: String,
     // JetStream stream names
     #[serde(default = "default_tasks_stream")]
     pub tasks_stream: String,
@@ -652,6 +728,12 @@ fn default_constraint_payloads_bucket() -> String {
 fn default_approvals_bucket() -> String {
     "H2AI_APPROVALS".to_string()
 }
+fn default_reasoning_checkpoint_bucket_prefix() -> String {
+    "H2AI_CHECKPOINT".to_string()
+}
+fn default_task_meta_state_bucket_prefix() -> String {
+    "H2AI_META".to_string()
+}
 fn default_tasks_stream() -> String {
     "H2AI_TASKS".to_string()
 }
@@ -678,6 +760,8 @@ impl Default for StateConfig {
             constraint_meta_bucket: default_constraint_meta_bucket(),
             constraint_payloads_bucket: default_constraint_payloads_bucket(),
             approvals_bucket: default_approvals_bucket(),
+            reasoning_checkpoint_bucket_prefix: default_reasoning_checkpoint_bucket_prefix(),
+            task_meta_state_bucket_prefix: default_task_meta_state_bucket_prefix(),
             tasks_stream: default_tasks_stream(),
             telemetry_stream: default_telemetry_stream(),
             results_stream: default_results_stream(),
@@ -873,6 +957,10 @@ pub struct H2AIConfig {
     /// After this limit the agent returns whatever output the LLM produced last. Default: 5.
     /// Valid range: 1–255. A value of 0 is rejected by the TaoAgent and treated as 1.
     pub agent_max_tool_iterations: u8,
+    /// Maximum UTF-8 byte length of a single tool observation appended to the agent
+    /// context. Observations longer than this are truncated with a suffix noting the
+    /// original and capped lengths. Default: 8192. Set to 0 to disable truncation.
+    pub agent_max_observation_chars: usize,
     /// Google Custom Search configuration. Absent = WebSearch executor disabled.
     #[serde(default)]
     pub web_search: Option<WebSearchConfig>,
@@ -944,6 +1032,9 @@ pub struct H2AIConfig {
     /// Controls synthetic prior weight for calibration initialization.
     #[serde(default)]
     pub calibration_bootstrap: CalibrationBootstrapConfig,
+    /// Persistent Reasoning Memory configuration — checkpoint writes, induction cycles, retrieval.
+    #[serde(default)]
+    pub reasoning_memory: ReasoningMemoryConfig,
 }
 
 fn default_correlated_hallucination_cv_threshold() -> f64 {

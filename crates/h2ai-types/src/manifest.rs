@@ -1,4 +1,5 @@
 use crate::config::{ParetoWeights, ReviewGate, RoleSpec};
+use crate::identity::TenantId;
 use crate::sizing::OracleSpec;
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +114,9 @@ pub struct TaskManifest {
     /// enable only for A/B measurement runs.
     #[serde(default)]
     pub measure_verifier_ab: bool,
+    /// Tenant scope for this task. Defaults to `TenantId::default_tenant()` when absent.
+    #[serde(default)]
+    pub tenant_id: TenantId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +155,12 @@ pub struct ExplorerRequest {
     /// they do NOT bypass decomposition. Leave empty unless adding task-specific experts.
     #[serde(default)]
     pub slot_configs: Vec<ExplorerSlotConfig>,
+    /// Adapter diversity IDs for this task. Each element maps to `pool[id % pool.len()]`.
+    /// When empty, defaults to `[0, 1, ..., count-1]` (one distinct slot per explorer).
+    /// Example: `[1, 2, 3]` → 3 explorers, each on a different pool adapter (if pool.len() ≥ 3).
+    /// Example: `[1, 1, 2, 2, 3]` → 5 explorers, IDs 1 and 2 run twice.
+    #[serde(default)]
+    pub diversity_ids: Vec<u32>,
 }
 
 /// POST /tasks 202 response

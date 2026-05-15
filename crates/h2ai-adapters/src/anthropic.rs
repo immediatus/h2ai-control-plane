@@ -115,6 +115,7 @@ impl IComputeAdapter for AnthropicAdapter {
             token_cost: parsed.usage.input_tokens + parsed.usage.output_tokens,
             adapter_kind: self.kind.clone(),
             tokens_used: Some(parsed.usage.input_tokens + parsed.usage.output_tokens),
+            reasoning_trace: None,
         })
     }
 

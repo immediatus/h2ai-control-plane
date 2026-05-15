@@ -24,6 +24,7 @@ fn manifest() -> TaskManifest {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -31,6 +32,7 @@ fn manifest() -> TaskManifest {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     }
 }
 

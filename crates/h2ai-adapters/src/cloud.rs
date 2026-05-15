@@ -58,23 +58,24 @@ struct ChatResponse {
     usage: Usage,
 }
 
-/// Select the answer text from a completed choice.
+/// Extract the answer and optional reasoning trace from a completed choice.
 ///
-/// - Prefer `content` when non-empty (two-phase thinking models, standard models).
-/// - Fall back to `reasoning_content` only when `finish_reason == "stop"` and
-///   `content` is empty — this is the reasoning-only model design (DeepSeek R1 etc.).
-/// - Return an error when `finish_reason == "length"` and `content` is empty: the
-///   model ran out of tokens mid-thinking; the answer was never generated.
-fn extract_output(choice: Choice) -> Result<String, AdapterError> {
+/// - Two-phase models: `content` holds the answer; `reasoning_content` is returned as the trace
+///   so downstream components (e.g. Auditor Gate) can inspect the chain-of-thought.
+/// - Reasoning-only models (DeepSeek R1 etc.): `content` is empty; `reasoning_content` is the
+///   full output.  Promoted to `output`; no separate trace.
+/// - `finish_reason == "length"` with empty content: model ran out of tokens in the thinking
+///   phase — answer was never generated; fail fast to prevent poisoning the ensemble.
+fn extract_output(choice: Choice) -> Result<(String, Option<String>), AdapterError> {
     if !choice.message.content.is_empty() {
-        return Ok(choice.message.content);
+        return Ok((choice.message.content, choice.message.reasoning_content));
     }
     if choice.finish_reason == "length" {
         return Err(AdapterError::NetworkError(
             "model hit max_tokens during thinking phase; increase max_tokens and retry".into(),
         ));
     }
-    Ok(choice.message.reasoning_content.unwrap_or_default())
+    Ok((choice.message.reasoning_content.unwrap_or_default(), None))
 }
 
 #[derive(Deserialize)]
@@ -172,12 +173,13 @@ impl IComputeAdapter for CloudGenericAdapter {
             .into_iter()
             .next()
             .ok_or_else(|| AdapterError::NetworkError("no choices in response".into()))?;
-        let output = extract_output(choice)?;
+        let (output, reasoning_trace) = extract_output(choice)?;
         Ok(ComputeResponse {
             output,
             token_cost: chat.usage.total_tokens,
             adapter_kind: self.kind.clone(),
             tokens_used: Some(chat.usage.total_tokens),
+            reasoning_trace,
         })
     }
 

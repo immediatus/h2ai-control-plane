@@ -13,7 +13,7 @@ use h2ai_tools::web_search::{
 };
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig};
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
 
@@ -47,6 +47,7 @@ fn rate_limit_manifest() -> TaskManifest {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -54,6 +55,7 @@ fn rate_limit_manifest() -> TaskManifest {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     }
 }
 
@@ -99,6 +101,8 @@ async fn system_chain_absent_task_completes_without_panic() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -148,6 +152,8 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         srani_count: 0,
         srani_grounding_chain: Some(chain),
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -504,6 +510,8 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         srani_count: 5,
         srani_grounding_chain: Some(chain),
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

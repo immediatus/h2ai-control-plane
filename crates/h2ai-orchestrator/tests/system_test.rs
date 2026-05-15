@@ -12,7 +12,7 @@ use h2ai_types::adapter::{
 use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, RoleSpec, TaoConfig, VerificationConfig,
 };
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use h2ai_types::sizing::MergeStrategy;
 use std::sync::Arc;
@@ -75,6 +75,7 @@ impl IComputeAdapter for TokenCostAdapter {
             token_cost: self.cost,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -122,6 +123,7 @@ fn default_manifest(count: usize) -> TaskManifest {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -129,6 +131,7 @@ fn default_manifest(count: usize) -> TaskManifest {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     }
 }
 
@@ -202,6 +205,8 @@ async fn system_solves_well_formed_problem() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -279,6 +284,8 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -345,6 +352,8 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -403,6 +412,7 @@ async fn system_resolves_conflict_via_bft_consensus() {
             ],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -410,6 +420,7 @@ async fn system_resolves_conflict_via_bft_consensus() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
@@ -446,6 +457,8 @@ async fn system_resolves_conflict_via_bft_consensus() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -508,6 +521,7 @@ impl IComputeAdapter for ShadowAdapter {
             token_cost: 1,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -565,6 +579,8 @@ async fn system_shadow_mode_agreement_resolves_task() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -628,6 +644,8 @@ async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -697,6 +715,8 @@ async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -735,6 +755,7 @@ impl IComputeAdapter for IdenticalOutputAdapter {
             token_cost: 10,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -792,6 +813,8 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -870,6 +893,8 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -944,6 +969,8 @@ async fn system_c3_degraded_event_when_domains_uncovered() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

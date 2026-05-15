@@ -341,6 +341,10 @@ shell_timeout_secs = 5
 # After this limit the agent returns whatever output the LLM produced last. Default: 5.
 agent_max_tool_iterations = 5
 
+# Maximum bytes of a single tool observation appended to the agent context.
+# Larger observations are truncated. Set to 0 to disable. Default: 8192.
+agent_max_observation_chars = 8192
+
 # ── Enterprise executor capabilities ─────────────────────────────────────────
 # Uncomment and configure any section to enable the corresponding tool.
 # Absent sections = executor silently omitted from registry.
@@ -584,6 +588,17 @@ graduation_tasks           = 20
 promotion_margin           = 0.05
 ema_window                 = 10
 
+# ── Persistent Reasoning Memory ─────────────────────────────────────────────
+# Disabled by default; enable once NATS is confirmed available.
+[reasoning_memory]
+enabled                     = false
+induction_batch_size        = 10
+induction_max_interval_secs = 86400
+induction_max_tasks_per_run = 50
+tag_gate_threshold          = 0.2
+max_archetype_boost         = 0.15
+max_archetype_penalty       = 0.20
+
 # ── Calibration Bootstrap ───────────────────────────────────────────────────
 # Configuration for synthetic prior weight in calibration initialization.
 [calibration_bootstrap]
@@ -603,7 +618,9 @@ prompt_variants_bucket     = "H2AI_PROMPT_VARIANTS"
 constraint_wiki_bucket     = "H2AI_CONSTRAINT_WIKI"
 constraint_meta_bucket     = "H2AI_CONSTRAINT_META"
 constraint_payloads_bucket = "H2AI_CONSTRAINT_PAYLOADS"
-approvals_bucket           = "H2AI_APPROVALS"
+approvals_bucket                    = "H2AI_APPROVALS"
+reasoning_checkpoint_bucket_prefix  = "H2AI_CHECKPOINT"
+task_meta_state_bucket_prefix       = "H2AI_META"
 tasks_stream               = "H2AI_TASKS"
 telemetry_stream           = "H2AI_TELEMETRY"
 results_stream             = "H2AI_RESULTS"

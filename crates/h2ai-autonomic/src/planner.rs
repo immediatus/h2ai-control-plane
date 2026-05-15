@@ -168,6 +168,7 @@ impl TopologyPlanner {
                     tau,
                     adapter: input.explorer_adapter.clone(),
                     role: Some(rs.role.clone()),
+                    is_reasoning_model: false,
                 }
             })
             .collect();

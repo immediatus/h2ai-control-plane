@@ -29,6 +29,7 @@ fn compute_response_serde_round_trip() {
             model: None,
         },
         tokens_used: None,
+        reasoning_trace: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let back: ComputeResponse = serde_json::from_str(&json).unwrap();
@@ -71,6 +72,7 @@ impl h2ai_types::adapter::IComputeAdapter for LabelAdapter {
             token_cost: 0,
             adapter_kind: self.1.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &h2ai_types::config::AdapterKind {

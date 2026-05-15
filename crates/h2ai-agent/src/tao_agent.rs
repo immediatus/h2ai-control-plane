@@ -84,10 +84,103 @@ fn tool_system_block(registry: &ToolRegistry) -> String {
     block
 }
 
+/// Truncate the observation body to at most `max_chars` UTF-8 bytes,
+/// then append a diagnostic suffix. The returned string will therefore
+/// be slightly longer than `max_chars` when truncation occurs.
+///
+/// When `max_chars` is 0, no truncation is applied.
+fn truncate_observation(observation: &str, max_chars: usize) -> String {
+    if max_chars == 0 || observation.len() <= max_chars {
+        return observation.to_owned();
+    }
+    let boundary = observation.floor_char_boundary(max_chars);
+    format!(
+        "{}…[truncated {} → {} chars]",
+        &observation[..boundary],
+        observation.len(),
+        max_chars
+    )
+}
+
+/// Strip a single layer of markdown code fences (```json or ```) from `text`.
+/// Returns `None` when no fence is detected.
+fn strip_fence(text: &str) -> Option<&str> {
+    let t = text.trim();
+    let inner = if let Some(rest) = t.strip_prefix("```json") {
+        rest.strip_suffix("```")?
+    } else if let Some(rest) = t.strip_prefix("```") {
+        rest.strip_suffix("```")?
+    } else {
+        return None;
+    };
+    Some(inner.trim())
+}
+
+/// Find the first balanced `{ ... }` JSON-object substring in `text`.
+/// Returns the slice from the first `{` through its matching `}`.
+fn find_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let tail = &text[start..];
+    let mut depth: usize = 0;
+    // Simple bracket counter — does not handle `}` inside string literals,
+    // but strategy 1 (direct parse) handles those cases first.
+    for (i, b) in tail.bytes().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&tail[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Attempt to extract and deserialise a `ToolCallRequest` from LLM output.
+///
+/// Tries in order:
+/// 1. Direct parse (fast path — well-behaved LLM, raw JSON).
+/// 2. Parse after stripping a markdown code fence.
+/// 3. Parse of the first balanced `{…}` object found anywhere in the text
+///    (handles preamble prose before the JSON).
+///
+/// Returns `None` when no valid `ToolCallRequest` with a known tool name is found,
+/// so callers treat the output as a final answer.
+fn extract_tool_call(text: &str) -> Option<ToolCallRequest> {
+    let fence_stripped = strip_fence(text);
+    let json_object = find_json_object(text);
+
+    // Avoid re-parsing text if find_json_object returned the whole trimmed input
+    // (which happens when text is already a bare JSON object with no preamble).
+    let deduped_object = json_object.filter(|&s| s != text.trim());
+
+    let candidates: &[&str] = &[
+        text,
+        fence_stripped.unwrap_or(""),
+        deduped_object.unwrap_or(""),
+    ];
+
+    for &candidate in candidates {
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Ok(r) = serde_json::from_str::<ToolCallRequest>(candidate) {
+            if agent_tool_from_name(&r.tool).is_some() {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
 pub struct TaoAgent<'a> {
     adapter: &'a dyn IComputeAdapter,
     registry: ToolRegistry,
     max_iterations: u8,
+    max_observation_chars: usize,
 }
 
 impl<'a> TaoAgent<'a> {
@@ -97,6 +190,7 @@ impl<'a> TaoAgent<'a> {
             registry,
             // Guard: 0 is invalid — treat as 1 so the agent always runs at least once.
             max_iterations: cfg.agent_max_tool_iterations.max(1),
+            max_observation_chars: cfg.agent_max_observation_chars,
         }
     }
 
@@ -133,18 +227,9 @@ impl<'a> TaoAgent<'a> {
             total_token_cost += resp.token_cost;
             let output = resp.output.trim().to_owned();
 
-            // Detect tool call: deserialize as ToolCallRequest (requires object `input`
-            // field — null or absent `input` is rejected by the Map deserialiser) and
-            // verify the tool name is registered.
-            let call: Option<ToolCallRequest> = serde_json::from_str::<ToolCallRequest>(&output)
-                .ok()
-                .and_then(|r| {
-                    if agent_tool_from_name(&r.tool).is_some() {
-                        Some(r)
-                    } else {
-                        None
-                    }
-                });
+            // Detect tool call: try direct parse, then fence-stripped, then first JSON
+            // object found in the text (handles preamble prose and markdown fences).
+            let call: Option<ToolCallRequest> = extract_tool_call(&output);
 
             match call {
                 None => {
@@ -170,12 +255,13 @@ impl<'a> TaoAgent<'a> {
                     tool_calls.push(ToolCallRecord {
                         tool,
                         input_json,
-                        output: observation.clone(),
+                        output: observation.clone(), // full output preserved for audit; context gets truncated copy
                         iteration,
                     });
 
+                    let capped = truncate_observation(&observation, self.max_observation_chars);
                     context.push_str(&format!(
-                        "\n\n[TOOL RESULT — iteration {iteration}]\n{observation}"
+                        "\n\n[TOOL RESULT — iteration {iteration}]\n{capped}"
                     ));
                     last_output = observation;
 
@@ -200,5 +286,77 @@ impl<'a> TaoAgent<'a> {
             truncated,
             adapter_failed,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_observation_short_input_unchanged() {
+        let s = "hello world";
+        assert_eq!(truncate_observation(s, 100), s);
+    }
+
+    #[test]
+    fn truncate_observation_at_exact_limit_unchanged() {
+        let s = "abcde";
+        assert_eq!(truncate_observation(s, 5), s);
+    }
+
+    #[test]
+    fn truncate_observation_over_limit_contains_suffix() {
+        let s = "a".repeat(200);
+        let result = truncate_observation(&s, 50);
+        assert!(
+            result.contains("[truncated 200 → 50 chars]"),
+            "got: {result}"
+        );
+        assert!(result.len() < 200);
+    }
+
+    #[test]
+    fn truncate_observation_zero_max_no_truncation() {
+        let s = "a".repeat(100_000);
+        assert_eq!(truncate_observation(&s, 0).len(), 100_000);
+    }
+
+    #[test]
+    fn truncate_observation_multibyte_no_panic() {
+        // 'é' is 2 UTF-8 bytes; max_chars=1 must not panic
+        let result = truncate_observation("é", 1);
+        assert!(result.contains("[truncated"), "got: {result}");
+    }
+
+    #[test]
+    fn strip_fence_json_code_block() {
+        let fenced = "```json\n{\"tool\":\"shell\"}\n```";
+        assert_eq!(strip_fence(fenced), Some("{\"tool\":\"shell\"}"));
+    }
+
+    #[test]
+    fn strip_fence_plain_code_block() {
+        let fenced = "```\n{\"tool\":\"shell\"}\n```";
+        assert_eq!(strip_fence(fenced), Some("{\"tool\":\"shell\"}"));
+    }
+
+    #[test]
+    fn strip_fence_no_fence_returns_none() {
+        assert_eq!(strip_fence("{\"tool\":\"shell\"}"), None);
+    }
+
+    #[test]
+    fn find_json_object_extracts_from_preamble() {
+        let text = "Sure thing!\n\n{\"tool\":\"shell\",\"input\":{}}";
+        assert_eq!(
+            find_json_object(text),
+            Some("{\"tool\":\"shell\",\"input\":{}}")
+        );
+    }
+
+    #[test]
+    fn find_json_object_none_when_no_braces() {
+        assert_eq!(find_json_object("just plain text"), None);
     }
 }

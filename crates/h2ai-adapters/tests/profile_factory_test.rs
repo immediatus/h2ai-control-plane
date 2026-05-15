@@ -11,6 +11,7 @@ fn build_from_profiles_finds_named_profile() {
             model: "llama3".into(),
         },
         tier: h2ai_config::ProfileTier::Standard,
+        is_reasoning_model: false,
     }];
     // Just check it resolves without error — we can't call execute() without a server.
     let result = AdapterFactory::build_from_profiles("my-mock", &profiles);
@@ -35,6 +36,7 @@ fn build_from_profiles_errors_on_llama_cpp() {
             n_threads: 8,
         },
         tier: h2ai_config::ProfileTier::Standard,
+        is_reasoning_model: false,
     }];
     let result = AdapterFactory::build_from_profiles("local", &profiles);
     assert!(result.is_err());

@@ -127,6 +127,7 @@ impl IComputeAdapter for NatsDispatchAdapter {
             token_cost: result.token_cost,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 }

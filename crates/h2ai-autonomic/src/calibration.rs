@@ -208,10 +208,14 @@ impl CalibrationHarness {
                     sigma[(j, i)] = cg_ij;
                 }
             }
-            Some(EigenCalibration::from_cg_matrix(
-                &sigma,
-                input.cfg.eigen_n_eff_delta,
-            ))
+            let sigma_clone = sigma.clone();
+            let eigen_delta = input.cfg.eigen_n_eff_delta;
+            let ec = tokio::task::spawn_blocking(move || {
+                EigenCalibration::from_cg_matrix(&sigma_clone, eigen_delta)
+            })
+            .await
+            .expect("CG eigenvalue computation panicked");
+            Some(ec)
         } else {
             None
         };
@@ -246,8 +250,14 @@ impl CalibrationHarness {
                 // C[i][j] = mean over K prompts; normalise K_norm = C_avg / N so trace = 1
                 let c_avg = c / k_prompts as f64;
                 let k_norm = c_avg / n as f64;
-                EigenCalibration::from_cosine_matrix(&k_norm, input.cfg.eigen_n_eff_delta)
-                    .n_effective
+                let k_clone = k_norm.clone();
+                let cosine_delta = input.cfg.eigen_n_eff_delta;
+                tokio::task::spawn_blocking(move || {
+                    EigenCalibration::from_cosine_matrix(&k_clone, cosine_delta)
+                })
+                .await
+                .expect("cosine eigenvalue computation panicked")
+                .n_effective
             } else {
                 1.0
             }
@@ -740,5 +750,54 @@ mod tests {
             "n_optimal must be ≤ calibration_max_ensemble_size=3, got {}",
             ec.n_optimal
         );
+    }
+
+    #[tokio::test]
+    async fn from_cg_matrix_runs_on_blocking_thread() {
+        let n = 3usize;
+        let mut sigma = DMatrix::<f64>::identity(n, n);
+        sigma[(0, 1)] = 0.5;
+        sigma[(1, 0)] = 0.5;
+        sigma[(0, 2)] = 0.3;
+        sigma[(2, 0)] = 0.3;
+        sigma[(1, 2)] = 0.2;
+        sigma[(2, 1)] = 0.2;
+        let delta = 0.01_f64;
+        let sigma_clone = sigma.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            EigenCalibration::from_cg_matrix(&sigma_clone, delta)
+        })
+        .await
+        .expect("eigenvalue task panicked");
+        // n_effective must be in (0, N]
+        assert!(result.n_effective > 0.0);
+        assert!(result.n_effective <= n as f64 + 1e-9);
+    }
+
+    #[tokio::test]
+    async fn from_cosine_matrix_runs_on_blocking_thread() {
+        let n = 3usize;
+        // Construct a valid normalised cosine matrix (trace = 1, symmetric, values in [0,1])
+        let mut c = DMatrix::<f64>::zeros(n, n);
+        for i in 0..n {
+            c[(i, i)] = 1.0;
+        }
+        c[(0, 1)] = 0.6;
+        c[(1, 0)] = 0.6;
+        c[(0, 2)] = 0.4;
+        c[(2, 0)] = 0.4;
+        c[(1, 2)] = 0.3;
+        c[(2, 1)] = 0.3;
+        // Normalise: divide by n so trace = 1
+        let k_norm = c / n as f64;
+        let delta = 0.01_f64;
+        let k_clone = k_norm.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            EigenCalibration::from_cosine_matrix(&k_clone, delta)
+        })
+        .await
+        .expect("cosine eigenvalue task panicked");
+        assert!(result.n_effective > 0.0);
+        assert!(result.n_effective <= n as f64 + 1e-9);
     }
 }

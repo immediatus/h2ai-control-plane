@@ -17,7 +17,7 @@ use h2ai_types::events::{
     CoherenceIncompleteEvent, H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent,
     ThinkingLoopCompletedEvent,
 };
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use h2ai_types::prompts::ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT;
 use h2ai_types::sizing::TaskQuadrant;
@@ -139,8 +139,7 @@ pub async fn submit_task(
         .store
         .insert(task_id.clone(), TaskState::new(task_id.clone()));
 
-    let explorer = state.explorer_adapter.clone();
-    let explorer2 = state.explorer2_adapter.clone();
+    let adapter_pool = state.adapter_pool.clone();
     let verifier = state.verification_adapter.clone();
     let auditor = state.auditor_adapter.clone();
     let shadow_auditor_adapter = state.shadow_auditor_adapter.clone();
@@ -220,7 +219,7 @@ pub async fn submit_task(
             research_context: "",
             n_archetypes: state_clone.cfg.thinking_loop.max_archetypes,
             cfg: &state_clone.cfg.thinking_loop,
-            adapter: explorer.as_ref(),
+            adapter: adapter_pool[0].as_ref(),
             embedding_model: state_clone.embedding_model.as_deref(),
             nats_client: Some(thinking_nats_client),
             task_id: &thinking_task_id,
@@ -251,7 +250,7 @@ pub async fn submit_task(
             &manifest_clone.pareto_weights,
             n_target,
             n_max.max(1),
-            explorer.as_ref(),
+            adapter_pool[0].as_ref(),
             state_clone.embedding_model.as_deref(),
             state_clone.cfg.decomposition_step_max_tokens,
             state_clone.cfg.decomposition_json_max_tokens,
@@ -360,6 +359,18 @@ pub async fn submit_task(
         let (srani_ema_cfi, srani_count) = *state_clone.srani_state.read().await;
 
         let calibration_for_merge = calibration_clone.clone();
+        let diversity_ids: Vec<u32> = if manifest_clone.explorers.diversity_ids.is_empty() {
+            (0..manifest_clone.explorers.count as u32).collect()
+        } else {
+            manifest_clone.explorers.diversity_ids.clone()
+        };
+        let pool_len = adapter_pool.len().max(1);
+        // Resolve Arc refs for each diversity ID so they outlive the EngineInput borrow.
+        let explorer_arcs: Vec<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>> =
+            diversity_ids
+                .iter()
+                .map(|id| adapter_pool[*id as usize % pool_len].clone())
+                .collect();
         let input = EngineInput {
             task_id: task_id_clone,
             manifest: {
@@ -368,7 +379,7 @@ pub async fn submit_task(
                 m
             },
             calibration: calibration_clone,
-            explorer_adapters: vec![explorer.as_ref(), explorer2.as_ref(), explorer.as_ref()],
+            explorer_adapters: explorer_arcs.iter().map(|a| a.as_ref()).collect(),
             verification_adapter: verifier.as_ref(),
             auditor_adapter: auditor.as_ref(),
             auditor_config: h2ai_types::config::AuditorConfig {
@@ -404,6 +415,8 @@ pub async fn submit_task(
             srani_count,
             srani_grounding_chain: state_clone.srani_grounding_chain.clone(),
             nats_raw: None,
+            tenant_id: TenantId::default_tenant(),
+            nats: None,
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -867,7 +880,7 @@ pub async fn submit_task(
                 if let Some(j_eff_value) = j_eff {
                     let opro_nats = std::sync::Arc::clone(&state_clone.nats);
                     let opro_cfg = std::sync::Arc::clone(&state_clone.cfg);
-                    let opro_adapter = std::sync::Arc::clone(&state_clone.explorer_adapter);
+                    let opro_adapter = std::sync::Arc::clone(&state_clone.adapter_pool[0]);
                     let opro_adapter_name = state_clone
                         .cfg
                         .adapter_profiles

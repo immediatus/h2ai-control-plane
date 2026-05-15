@@ -281,6 +281,7 @@ impl IComputeAdapter for MockDecompositionAdapter {
                 model: None,
             },
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -471,6 +472,7 @@ impl IComputeAdapter for CapturingAdapter {
                 model: None,
             },
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -637,6 +639,7 @@ impl IComputeAdapter for SequentialMockAdapter {
                 model: None,
             },
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {

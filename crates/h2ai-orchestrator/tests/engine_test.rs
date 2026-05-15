@@ -13,7 +13,7 @@ use h2ai_types::adapter::{
 use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, RoleSpec, TaoConfig, VerificationConfig,
 };
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
 
@@ -51,6 +51,7 @@ impl IComputeAdapter for SequencedAdapter {
             token_cost: 100,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -112,6 +113,7 @@ async fn engine_runs_ensemble_to_semilattice() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -119,6 +121,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let adapter2 = mock_adapter2();
@@ -161,6 +164,8 @@ async fn engine_runs_ensemble_to_semilattice() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -205,6 +210,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -212,6 +218,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -249,6 +256,8 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -288,6 +297,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -295,6 +305,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -332,6 +343,8 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -371,6 +384,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -378,6 +392,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -415,6 +430,8 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -453,6 +470,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -460,6 +478,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let input = EngineInput {
@@ -493,6 +512,8 @@ async fn engine_output_contains_talagrand_diagnostic() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -554,6 +575,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
             ],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -561,6 +583,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -602,6 +625,8 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -640,6 +665,7 @@ async fn engine_output_contains_suggested_next_params() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -647,6 +673,7 @@ async fn engine_output_contains_suggested_next_params() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let input = EngineInput {
@@ -677,6 +704,8 @@ async fn engine_output_contains_suggested_next_params() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -777,6 +806,7 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into(), "SIG-BASE".into(), "SIG-JWT".into()],
         context: None,
@@ -784,6 +814,7 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let valid_critique = r#"{"proposal_critiques":[{"proposal_id":"p1","strengths":["s1"],"weaknesses":[],"verdict":"partial"},{"proposal_id":"p2","strengths":["s2"],"weaknesses":[],"verdict":"strong"}],"contradictions":[],"synthesis_guidance":"Use p2."}"#;
@@ -833,6 +864,8 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -899,6 +932,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -906,6 +940,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
@@ -943,6 +978,8 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1029,6 +1066,7 @@ impl IComputeAdapter for FamilyAdapter {
             token_cost: 10,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
     fn kind(&self) -> &AdapterKind {
@@ -1075,6 +1113,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -1082,13 +1121,18 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let input = EngineInput {
         task_id: TaskId::new(),
         manifest,
         calibration: cal,
-        explorer_adapters: vec![&explorer as &dyn IComputeAdapter],
+        // Two slots, same adapter pointer → distinct.len() == 1 → triggers monoculture error
+        explorer_adapters: vec![
+            &explorer as &dyn IComputeAdapter,
+            &explorer as &dyn IComputeAdapter,
+        ],
         verification_adapter: &verifier as &dyn IComputeAdapter,
         auditor_adapter: &auditor as &dyn IComputeAdapter,
         auditor_config: AuditorConfig {
@@ -1118,14 +1162,16 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let err = ExecutionEngine::run_offline(input).await.unwrap_err();
     match err {
         EngineError::MultiplicationConditionFailed(msg) => {
             assert!(
-                msg.contains("VerifierExplorerFamilyConflict") || msg.contains("monoculture"),
-                "error message should name the conflict, got: {msg}"
+                msg.contains("same adapter") || msg.contains("diversity"),
+                "error message should name the monoculture condition, got: {msg}"
             );
         }
         other => panic!("expected MultiplicationConditionFailed, got: {other:?}"),
@@ -1163,6 +1209,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -1170,6 +1217,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let input = EngineInput {
@@ -1209,6 +1257,8 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
@@ -1267,6 +1317,7 @@ impl IComputeAdapter for CapturingAdapter {
             token_cost: 10,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 
@@ -1336,6 +1387,7 @@ async fn engine_hint_injected_into_explorer_on_retry() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["C-HINT".into()],
         context: None,
@@ -1343,6 +1395,7 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let registry = AdapterRegistry::new(
@@ -1383,6 +1436,8 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1439,6 +1494,7 @@ fn make_manifest_with_constraint_tags(tags: Vec<String>) -> TaskManifest {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -1446,6 +1502,7 @@ fn make_manifest_with_constraint_tags(tags: Vec<String>) -> TaskManifest {
         require_approval: false,
         constraint_tags: tags,
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     }
 }
 
@@ -1507,6 +1564,8 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1566,6 +1625,8 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1630,6 +1691,8 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1702,6 +1765,8 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -1781,6 +1846,8 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1830,6 +1897,7 @@ async fn c3_no_event_when_corpus_empty() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -1837,6 +1905,7 @@ async fn c3_no_event_when_corpus_empty() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -1873,6 +1942,8 @@ async fn c3_no_event_when_corpus_empty() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1938,6 +2009,7 @@ async fn c3_fires_degraded_event_when_coverage_low() {
                 constraint_domains: vec![],
                 ..Default::default()
             }],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -1945,6 +2017,7 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -1981,6 +2054,8 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2045,6 +2120,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
                 constraint_domains: vec![],
                 ..Default::default()
             }],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2052,6 +2128,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let input = EngineInput {
         task_id,
@@ -2088,6 +2165,8 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -2117,6 +2196,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
                 token_cost: 10,
                 adapter_kind: self.kind.clone(),
                 tokens_used: None,
+                reasoning_trace: None,
             })
         }
         fn kind(&self) -> &AdapterKind {
@@ -2171,6 +2251,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
                 search_enabled: true,
                 ..Default::default()
             }],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2178,6 +2259,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let input = EngineInput {
         task_id,
@@ -2214,6 +2296,8 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     let calls = researcher_calls.lock().unwrap();
@@ -2276,6 +2360,7 @@ async fn c1_no_warning_for_diverse_proposals() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2283,6 +2368,7 @@ async fn c1_no_warning_for_diverse_proposals() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let input = EngineInput {
         task_id: TaskId::new(),
@@ -2319,6 +2405,8 @@ async fn c1_no_warning_for_diverse_proposals() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2342,6 +2430,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
                 token_cost: 10,
                 adapter_kind: self.kind.clone(),
                 tokens_used: None,
+                reasoning_trace: None,
             })
         }
         fn kind(&self) -> &AdapterKind {
@@ -2403,6 +2492,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2410,6 +2500,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let input = EngineInput {
         task_id: TaskId::new(),
@@ -2446,6 +2537,8 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     match result {
@@ -2509,6 +2602,7 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2516,6 +2610,7 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let registry = AdapterRegistry::new(
@@ -2559,6 +2654,8 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2633,6 +2730,7 @@ async fn srani_silent_when_entities_grounded_in_spec() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2640,6 +2738,7 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let registry = AdapterRegistry::new(
@@ -2683,6 +2782,8 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2747,6 +2848,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2754,6 +2856,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(
         Arc::new(MockAdapter::new("registry".into())) as Arc<dyn IComputeAdapter>
@@ -2796,6 +2899,8 @@ async fn srani_adaptive_fires_and_updates_ema() {
         srani_count: 10,     // past cold-start threshold
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -2877,6 +2982,7 @@ async fn srani_cold_start_uses_config_midpoint() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2884,6 +2990,7 @@ async fn srani_cold_start_uses_config_midpoint() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(
         Arc::new(MockAdapter::new("registry".into())) as Arc<dyn IComputeAdapter>
@@ -2926,6 +3033,8 @@ async fn srani_cold_start_uses_config_midpoint() {
         srani_count: 2,      // cold start: count < 5
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -2984,6 +3093,7 @@ async fn srani_adaptive_false_uses_static_thresholds() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -2991,6 +3101,7 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(
         Arc::new(MockAdapter::new("registry".into())) as Arc<dyn IComputeAdapter>
@@ -3033,6 +3144,8 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         srani_count: 10,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3089,6 +3202,7 @@ async fn srani_ema_formula_verified_numerically() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -3096,6 +3210,7 @@ async fn srani_ema_formula_verified_numerically() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let registry = AdapterRegistry::new(
         Arc::new(MockAdapter::new("registry".into())) as Arc<dyn IComputeAdapter>
@@ -3138,6 +3253,8 @@ async fn srani_ema_formula_verified_numerically() {
         srani_count: 10,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3184,6 +3301,7 @@ fn cockroachdb_manifest() -> TaskManifest {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -3191,6 +3309,7 @@ fn cockroachdb_manifest() -> TaskManifest {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     }
 }
 
@@ -3260,6 +3379,8 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -3310,6 +3431,8 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         srani_count: 0,
         srani_grounding_chain: Some(chain),
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3371,6 +3494,8 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         srani_count: 0,
         srani_grounding_chain: Some(chain),
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3430,6 +3555,8 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         srani_count: 0,
         srani_grounding_chain: Some(chain),
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;

@@ -4,8 +4,9 @@ use h2ai_config::StateConfig;
 use h2ai_types::checkpoint::TaskCheckpoint;
 use h2ai_types::checkpoint_delta::{CheckpointKind, TaskCheckpointEntry};
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
+use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
 use h2ai_types::sizing::OracleObservation;
 use lru::LruCache;
 use std::num::NonZeroUsize;
@@ -1587,6 +1588,181 @@ impl NatsClient {
     ) -> Result<Option<TaskCheckpoint>, NatsError> {
         self.get_task_checkpoint(task_id).await
     }
+
+    // ── per-tenant reasoning memory ─────────────────────────────────────────
+
+    /// Create per-tenant reasoning checkpoint and meta-state KV buckets if they
+    /// do not already exist. Safe to call multiple times (get_or_create semantics).
+    pub async fn ensure_tenant_reasoning_buckets(
+        &self,
+        tenant_id: &TenantId,
+        checkpoint_prefix: &str,
+        meta_state_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let checkpoint_bucket = tenant_bucket_name(checkpoint_prefix, tenant_id);
+        let meta_bucket = tenant_bucket_name(meta_state_prefix, tenant_id);
+
+        self.ensure_kv_bucket(kv::Config {
+            bucket: checkpoint_bucket,
+            description: format!("Reasoning checkpoints for tenant {tenant_id}"),
+            history: 1,
+            storage: stream::StorageType::File,
+            max_age: std::time::Duration::from_secs(7 * 86_400),
+            ..Default::default()
+        })
+        .await?;
+
+        self.ensure_kv_bucket(kv::Config {
+            bucket: meta_bucket,
+            description: format!("Task meta-state records for tenant {tenant_id}"),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    /// Write (or overwrite) a `TaskReasoningCheckpoint` to the tenant-scoped bucket.
+    /// Key: task_id string. Compressed with zstd level 3.
+    pub async fn put_reasoning_checkpoint(
+        &self,
+        checkpoint: &TaskReasoningCheckpoint,
+        checkpoint_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let bucket = tenant_bucket_name(checkpoint_prefix, &checkpoint.tenant_id);
+        let json =
+            serde_json::to_vec(checkpoint).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let compressed = zstd::encode_all(json.as_slice(), 3)
+            .map_err(|e| NatsError::Serialize(format!("zstd encode: {e}")))?;
+        let kv = self
+            .jetstream
+            .get_key_value(&bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put(&checkpoint.task_id.to_string(), compressed.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load a `TaskReasoningCheckpoint` by task_id. Returns `None` if not found.
+    pub async fn get_reasoning_checkpoint(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        checkpoint_prefix: &str,
+    ) -> Result<Option<TaskReasoningCheckpoint>, NatsError> {
+        let bucket = tenant_bucket_name(checkpoint_prefix, tenant_id);
+        let kv = self
+            .jetstream
+            .get_key_value(&bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(&task_id.to_string()).await {
+            Ok(Some(bytes)) => {
+                let decompressed = zstd::decode_all(bytes.as_ref())
+                    .map_err(|e| NatsError::Serialize(format!("zstd decode: {e}")))?;
+                let cp = serde_json::from_slice::<TaskReasoningCheckpoint>(&decompressed)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(cp))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Write an immutable `TaskMetaState` projection to the tenant-scoped meta-state bucket.
+    /// Key: task_id string. Not compressed (small records, queried frequently).
+    pub async fn put_task_meta_state(
+        &self,
+        meta: &TaskMetaState,
+        meta_state_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let bucket = tenant_bucket_name(meta_state_prefix, &meta.tenant_id);
+        let json = serde_json::to_vec(meta).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value(&bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put(&meta.task_id.to_string(), json.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load a `TaskMetaState` by task_id. Returns `None` if not found.
+    pub async fn get_task_meta_state(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        meta_state_prefix: &str,
+    ) -> Result<Option<TaskMetaState>, NatsError> {
+        let bucket = tenant_bucket_name(meta_state_prefix, tenant_id);
+        let kv = self
+            .jetstream
+            .get_key_value(&bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(&task_id.to_string()).await {
+            Ok(Some(bytes)) => {
+                let meta = serde_json::from_slice::<TaskMetaState>(&bytes)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(meta))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// List up to `limit` `TaskMetaState` records for a tenant.
+    /// Entries that fail to deserialize are skipped with a warning.
+    pub async fn list_task_meta_states(
+        &self,
+        tenant_id: &TenantId,
+        meta_state_prefix: &str,
+        limit: usize,
+    ) -> Vec<TaskMetaState> {
+        use futures::TryStreamExt;
+
+        let bucket = tenant_bucket_name(meta_state_prefix, tenant_id);
+        let kv = match self.jetstream.get_key_value(&bucket).await {
+            Ok(kv) => kv,
+            Err(e) => {
+                tracing::warn!("list_task_meta_states: KV open failed: {e}");
+                return vec![];
+            }
+        };
+        let keys: Vec<String> = match kv.keys().await {
+            Ok(stream) => stream.try_collect().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("list_task_meta_states: keys() failed: {e}");
+                return vec![];
+            }
+        };
+        let mut result = Vec::with_capacity(keys.len().min(limit));
+        for key in keys.iter().take(limit) {
+            match kv.get(key).await {
+                Ok(Some(bytes)) => match serde_json::from_slice::<TaskMetaState>(&bytes) {
+                    Ok(meta) => result.push(meta),
+                    Err(e) => {
+                        tracing::warn!("list_task_meta_states: deserialize failed for {key}: {e}")
+                    }
+                },
+                Ok(None) => {}
+                Err(e) => tracing::warn!("list_task_meta_states: get failed for {key}: {e}"),
+            }
+        }
+        result
+    }
+}
+
+// ── tenant-scoped bucket helpers ────────────────────────────────────────────
+
+fn tenant_bucket_name(prefix: &str, tenant_id: &TenantId) -> String {
+    format!("{}_{}", prefix, tenant_id.bucket_safe())
 }
 
 // ── delta encoding helpers ──────────────────────────────────────────────────
@@ -1944,5 +2120,24 @@ mod delta_cache_unit_tests {
             lru.get("c").is_some(),
             "'c' should be present (just inserted)"
         );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_checkpoint_tests {
+    use super::*;
+    use h2ai_types::identity::TenantId;
+
+    #[test]
+    fn tenant_bucket_name_default() {
+        let name = tenant_bucket_name("H2AI_CHECKPOINT", &TenantId::default_tenant());
+        assert_eq!(name, "H2AI_CHECKPOINT_default");
+    }
+
+    #[test]
+    fn tenant_bucket_name_sanitizes_hyphens() {
+        let t = TenantId::from("acme-corp");
+        let name = tenant_bucket_name("H2AI_META", &t);
+        assert_eq!(name, "H2AI_META_acme_corp");
     }
 }

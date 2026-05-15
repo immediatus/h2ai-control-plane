@@ -78,6 +78,7 @@ async fn tao_loop_detects_repetition_and_returns_err() {
         },
         schema_config: None,
         generation: 0,
+        bypass_tao: false,
     })
     .await;
 
@@ -111,6 +112,7 @@ async fn tao_loop_allows_similar_but_passing_output() {
         },
         schema_config: None,
         generation: 0,
+        bypass_tao: false,
     })
     .await;
 
@@ -140,6 +142,7 @@ async fn tao_loop_disabled_repetition_exhausts_turns() {
         },
         schema_config: None,
         generation: 0,
+        bypass_tao: false,
     })
     .await;
 

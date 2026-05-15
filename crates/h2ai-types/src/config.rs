@@ -135,6 +135,11 @@ pub struct ExplorerConfig {
     pub tau: TauValue,
     pub adapter: AdapterKind,
     pub role: Option<AgentRole>,
+    /// When `true`, the TAO retry loop is bypassed and the adapter is called exactly once.
+    /// Set this for models with built-in chain-of-thought (DeepSeek R1, o1, o3, o4-mini)
+    /// to avoid α-spike from injecting the model's own reasoning trace back as TAO memory.
+    #[serde(default)]
+    pub is_reasoning_model: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -167,5 +167,6 @@ fn build_subtask_manifest(
         require_approval: false,
         constraint_tags: parent.constraint_tags.clone(),
         measure_verifier_ab: parent.measure_verifier_ab,
+        tenant_id: parent.tenant_id.clone(),
     }
 }

@@ -9,7 +9,7 @@ use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{
     AdapterKind, AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig,
 };
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
 
@@ -54,6 +54,7 @@ async fn make_engine_input<'a>(
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -61,6 +62,7 @@ async fn make_engine_input<'a>(
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     EngineInput {
@@ -98,6 +100,8 @@ async fn make_engine_input<'a>(
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     }
 }
 

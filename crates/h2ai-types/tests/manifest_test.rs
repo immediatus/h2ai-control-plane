@@ -43,6 +43,7 @@ fn task_manifest_roundtrip() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -50,6 +51,7 @@ fn task_manifest_roundtrip() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let json = serde_json::to_string(&m).unwrap();
     let back: TaskManifest = serde_json::from_str(&json).unwrap();
@@ -144,6 +146,7 @@ fn manifest_with_slot_configs_roundtrips_json() {
                     ..Default::default()
                 },
             ],
+            diversity_ids: vec![],
         },
         constraints: vec!["ADR-001".into()],
         context: None,
@@ -151,6 +154,7 @@ fn manifest_with_slot_configs_roundtrips_json() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
     let json = serde_json::to_string(&m).unwrap();
     let back: TaskManifest = serde_json::from_str(&json).unwrap();

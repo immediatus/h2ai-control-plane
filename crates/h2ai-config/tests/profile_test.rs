@@ -18,6 +18,7 @@ fn config_with_profiles_round_trips_json() {
                 model: "llama3".into(),
             },
             tier: ProfileTier::Standard,
+            is_reasoning_model: false,
         }],
         ..Default::default()
     };
@@ -38,6 +39,7 @@ fn load_from_file_round_trips_adapter_profiles() {
                 model: "mistral".into(),
             },
             tier: ProfileTier::Standard,
+            is_reasoning_model: false,
         }],
         ..H2AIConfig::default()
     };

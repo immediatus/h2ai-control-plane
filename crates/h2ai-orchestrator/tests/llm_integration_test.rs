@@ -24,7 +24,7 @@ use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{
     AdapterKind, AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig,
 };
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
 
@@ -174,6 +174,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -181,6 +182,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     let input = EngineInput {
@@ -218,6 +220,8 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         srani_count: 0,
         srani_grounding_chain: None,
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let max_allowed_proposals = n_max_floor * (cfg.max_autonomic_retries + 1);
@@ -326,6 +330,7 @@ async fn engine_full_pipeline_debug_trace() {
             roles: vec![],
             review_gates: vec![],
             slot_configs: vec![],
+            diversity_ids: vec![],
         },
         constraints: vec![],
         context: None,
@@ -333,6 +338,7 @@ async fn engine_full_pipeline_debug_trace() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
     // ── Phase 2: SRANI grounding chain ──────────────────────────────────────
@@ -387,6 +393,8 @@ async fn engine_full_pipeline_debug_trace() {
         srani_count: 5,
         srani_grounding_chain: Some(chain),
         nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
     };
 
     let output = match ExecutionEngine::run_offline(input).await {

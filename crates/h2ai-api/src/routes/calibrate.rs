@@ -30,23 +30,10 @@ pub(crate) async fn run_calibration_core(
         "What is a good API boundary?".into(),
     ];
     let pool: Vec<&dyn h2ai_types::adapter::IComputeAdapter> = {
-        use h2ai_types::adapter::AdapterFamily;
         use std::collections::HashSet;
-        let explorer_family = state.explorer_adapter.family();
-        let candidates = [
-            state.explorer_adapter.as_ref(),
-            state.explorer2_adapter.as_ref(),
-            state.verification_adapter.as_ref(),
-        ];
         let mut seen: HashSet<*const dyn h2ai_types::adapter::IComputeAdapter> = HashSet::new();
         let mut distinct = Vec::new();
-        for a in candidates {
-            // Skip remote/cloud adapters that belong to a different family than the explorer.
-            // USL calibration measures local LLM throughput; probing a remote API distorts
-            // the fit and wastes rate-limited quota.
-            if a.family() != explorer_family && a.family() != AdapterFamily::Mock {
-                continue;
-            }
+        for a in state.adapter_pool.iter().map(|arc| arc.as_ref()) {
             let ptr = a as *const dyn h2ai_types::adapter::IComputeAdapter;
             if seen.insert(ptr) {
                 distinct.push(a);
@@ -146,44 +133,46 @@ pub async fn start_calibration(
         );
     }
 
-    // ── Multi-family enforcement (before spawn so we can return an HTTP error) ─
-    use h2ai_types::adapter::AdapterFamily;
-    use std::collections::HashSet;
-    let pre_families: HashSet<AdapterFamily> = [
-        state.explorer_adapter.family(),
-        state.explorer2_adapter.family(),
-        state.verification_adapter.family(),
-    ]
-    .into_iter()
-    .filter(|f| *f != AdapterFamily::Mock)
-    .collect();
-    let single_family_warning = pre_families.len() == 1;
+    // ── Pool diversity enforcement (before spawn so we can return an HTTP error) ─────
+    let single_family_warning = {
+        use std::collections::HashSet;
+        let ptrs: HashSet<usize> = state
+            .adapter_pool
+            .iter()
+            .map(|a| {
+                a.as_ref() as *const dyn h2ai_types::adapter::IComputeAdapter as *const () as usize
+            })
+            .collect();
+        ptrs.len() == 1
+    };
     if single_family_warning {
         use h2ai_config::FamilyConstraint;
         match state.cfg.safety.family_constraint {
             FamilyConstraint::RequireDiverse => {
-                let family = pre_families
-                    .iter()
-                    .next()
-                    .map(|f| f.to_string())
+                let family = state
+                    .adapter_pool
+                    .first()
+                    .map(|a| format!("{:?}", a.kind()))
                     .unwrap_or_default();
                 return Err(ApiError::SingleFamilyPool { family });
             }
             FamilyConstraint::SingleFamilyOk => {
                 tracing::warn!(
                     target: "h2ai.calibration",
-                    "single-family adapter pool: correlated hallucination protection degraded"
+                    "single-adapter pool: correlated hallucination protection degraded"
                 );
             }
             FamilyConstraint::Disabled => {}
         }
     }
-    let mut adapter_families: Vec<String> = pre_families.iter().map(|f| f.to_string()).collect();
+    let mut adapter_families: Vec<String> = state
+        .adapter_pool
+        .iter()
+        .map(|a| format!("{:?}", a.kind()))
+        .collect();
     adapter_families.sort();
-    let explorer_verification_family_match = state.explorer_adapter.family()
-        == state.verification_adapter.family()
-        && state.explorer_adapter.family() != AdapterFamily::Mock;
-    // ──────────────────────────────────────────────────────────────────────────
+    let explorer_verification_family_match = false; // enforced via modulo IDs
+                                                    // ──────────────────────────────────────────────────────────────────────────
 
     tokio::spawn(run_calibration_core(
         state.clone(),

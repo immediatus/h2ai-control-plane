@@ -1,7 +1,5 @@
 use async_trait::async_trait;
-use h2ai_types::adapter::{
-    AdapterError, AdapterFamily, ComputeRequest, ComputeResponse, IComputeAdapter,
-};
+use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 
 #[derive(Debug)]
@@ -31,15 +29,12 @@ impl IComputeAdapter for MockAdapter {
             token_cost: 0,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 
     fn kind(&self) -> &AdapterKind {
         &self.kind
-    }
-
-    fn family(&self) -> AdapterFamily {
-        AdapterFamily::Mock
     }
 }
 
@@ -100,15 +95,12 @@ impl IComputeAdapter for DecompositionMockAdapter {
             token_cost: 10,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 
     fn kind(&self) -> &AdapterKind {
         &self.kind
-    }
-
-    fn family(&self) -> AdapterFamily {
-        AdapterFamily::Mock
     }
 }
 
@@ -149,14 +141,11 @@ impl IComputeAdapter for SequencedMockAdapter {
             token_cost: 10,
             adapter_kind: self.kind.clone(),
             tokens_used: None,
+            reasoning_trace: None,
         })
     }
 
     fn kind(&self) -> &AdapterKind {
         &self.kind
-    }
-
-    fn family(&self) -> AdapterFamily {
-        AdapterFamily::Mock
     }
 }

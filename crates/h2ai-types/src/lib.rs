@@ -29,6 +29,11 @@ pub mod events;
 pub mod identity;
 pub mod manifest;
 pub mod memory;
+pub mod reasoning_checkpoint;
+pub use reasoning_checkpoint::{
+    AdapterWaveOutput, ArchetypeResult, ArchetypeSelection, CompletedWave,
+    ReasoningCheckpointPhase, TaskMetaState, TaskReasoningCheckpoint,
+};
 pub mod plan;
 pub mod prompt_variant;
 pub mod prompts;
