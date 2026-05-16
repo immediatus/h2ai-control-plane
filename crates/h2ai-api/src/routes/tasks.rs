@@ -1,4 +1,6 @@
 use crate::{error::ApiError, state::AppState};
+
+const THINKING_LOOP_SECTION: &str = "## Thinking Loop Analysis";
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -73,9 +75,12 @@ fn compute_j_eff(
 /// for each scored proposal, followed by a single `H2AIEvent::TaskAttribution` event
 /// with quality metrics and waste analysis, then marks the task resolved in the store.
 pub async fn submit_task(
+    Path(tenant_id): Path<String>,
     State(state): State<AppState>,
-    Json(manifest): Json<TaskManifest>,
+    Json(mut manifest): Json<TaskManifest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Path tenant_id is authoritative — override whatever the body may contain.
+    manifest.tenant_id = h2ai_types::identity::TenantId::from(tenant_id.as_str());
     if (manifest.pareto_weights.diversity
         + manifest.pareto_weights.containment
         + manifest.pareto_weights.throughput
@@ -88,8 +93,13 @@ pub async fn submit_task(
         ));
     }
 
+    let task_tenant_id = manifest.tenant_id.clone();
+    state
+        .seed_calibration_from_default_if_needed(&task_tenant_id)
+        .await;
+    let ts = state.tenant_state(&task_tenant_id);
     let calibration = {
-        let cal = state.calibration.read().await;
+        let cal = ts.calibration.read().await;
         cal.clone().ok_or(ApiError::CalibrationRequired)?
     };
 
@@ -135,9 +145,10 @@ pub async fn submit_task(
 
     // Pre-insert so GET /tasks/{id}/status succeeds immediately after this response.
     use h2ai_orchestrator::task_store::TaskState;
-    state
-        .store
-        .insert(task_id.clone(), TaskState::new(task_id.clone()));
+    state.store.insert(
+        task_id.clone(),
+        TaskState::new(task_id.clone(), manifest.tenant_id.clone()),
+    );
 
     let adapter_pool = state.adapter_pool.clone();
     let verifier = state.verification_adapter.clone();
@@ -151,6 +162,8 @@ pub async fn submit_task(
     let evaluated_ids_for_checkpoint: Vec<String> = corpus.iter().map(|d| d.id.clone()).collect();
 
     let state_clone = state.clone();
+    let ts_clone = std::sync::Arc::clone(&ts);
+    let task_tenant_id_clone = task_tenant_id.clone();
     let manifest_clone = manifest.clone();
     let calibration_clone = calibration.clone();
     let store_clone = state.store.clone();
@@ -158,13 +171,11 @@ pub async fn submit_task(
 
     tokio::spawn(async move {
         let _permit = permit; // dropped when this task completes, freeing semaphore slot
-        let tao_multiplier = state_clone
-            .tao_multiplier_estimator
-            .read()
-            .await
-            .multiplier();
-        let tao_multiplier_estimator = std::sync::Arc::clone(&state_clone.tao_multiplier_estimator);
-        let bandit = std::sync::Arc::clone(&state_clone.bandit_state);
+        let ts = ts_clone;
+        let task_tenant_id = task_tenant_id_clone;
+        let tao_multiplier = ts.tao_multiplier_estimator.read().await.multiplier();
+        let tao_multiplier_estimator = std::sync::Arc::clone(&ts.tao_multiplier_estimator);
+        let bandit = std::sync::Arc::clone(&ts.bandit_state);
         let task_id_for_failure = task_id_clone.clone();
         let oracle_spec_clone = manifest_clone.oracle.clone();
         let require_approval_clone = manifest_clone.require_approval;
@@ -356,7 +367,7 @@ pub async fn submit_task(
             }
         });
 
-        let (srani_ema_cfi, srani_count) = *state_clone.srani_state.read().await;
+        let (srani_ema_cfi, srani_count) = *ts.srani_state.read().await;
 
         let calibration_for_merge = calibration_clone.clone();
         let diversity_ids: Vec<u32> = if manifest_clone.explorers.diversity_ids.is_empty() {
@@ -376,6 +387,16 @@ pub async fn submit_task(
             manifest: {
                 let mut m = manifest_clone.clone();
                 m.explorers.slot_configs = slot_configs;
+                // Inject thinking loop shared_understanding into context so explorers address
+                // the specific requirements the thinking loop identified.
+                if !thinking_context.is_empty() {
+                    m.context = Some(match m.context.as_deref() {
+                        Some(ctx) if !ctx.is_empty() => {
+                            format!("{}\n\n{}\n{}", ctx, THINKING_LOOP_SECTION, thinking_context)
+                        }
+                        _ => format!("{}\n{}", THINKING_LOOP_SECTION, thinking_context),
+                    });
+                }
                 m
             },
             calibration: calibration_clone,
@@ -389,12 +410,14 @@ pub async fn submit_task(
             tao_config: TaoConfig::default(),
             verification_config: if use_adversarial_verifier {
                 VerificationConfig {
+                    threshold: state_clone.cfg.verify_threshold,
                     evaluator_system_prompt: ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.into(),
                     record_adversarial_comparison: manifest_clone.measure_verifier_ab,
                     ..VerificationConfig::default()
                 }
             } else {
                 VerificationConfig {
+                    threshold: state_clone.cfg.verify_threshold,
                     record_adversarial_comparison: manifest_clone.measure_verifier_ab,
                     ..VerificationConfig::default()
                 }
@@ -417,6 +440,9 @@ pub async fn submit_task(
             nats_raw: None,
             tenant_id: manifest_clone.tenant_id.clone(),
             nats: None,
+            prev_assembled_contexts: Vec::new(),
+            compression_adapter: None,
+            stable_cache: None,
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -453,6 +479,11 @@ pub async fn submit_task(
                             evaluated_ids: evaluated_ids_for_checkpoint,
                             violation_ids: vec![],
                         }),
+                        j_eff: compute_j_eff(
+                            output.selection_resolved.valid_proposals.len(),
+                            manifest_clone.explorers.count,
+                            &calibration_for_merge,
+                        ),
                     };
                     if let Err(e) = state_clone
                         .nats
@@ -488,13 +519,18 @@ pub async fn submit_task(
                     // 1. Write approval record to KV
                     let record = ApprovalRecord {
                         task_id: output.task_id.to_string(),
+                        tenant_id: task_tenant_id.clone(),
                         proposed_output: output.resolved_output.clone(),
                         q_confidence: output.attribution.q_confidence,
                         triggered_by: triggered_by.clone(),
                         created_at_ms: now_ms,
                         timeout_at_ms,
                     };
-                    if let Err(e) = state_clone.nats.put_approval_record(&record).await {
+                    if let Err(e) = state_clone
+                        .nats
+                        .put_approval_record(&task_tenant_id, &record)
+                        .await
+                    {
                         tracing::warn!(task_id = %output.task_id, "failed to write approval record: {e}");
                         // Fall through to normal resolution if KV write fails
                     } else {
@@ -578,8 +614,10 @@ pub async fn submit_task(
                     .await
                 {
                     Ok(seq) => {
-                        if let Some(ts) = state_clone.store.get(&output.task_id) {
-                            state_clone.journal.note_event(&output.task_id, seq, &ts);
+                        if let Some(task_state) = state_clone.store.get(&output.task_id) {
+                            state_clone
+                                .journal
+                                .note_event(&output.task_id, seq, &task_state);
                         }
                     }
                     Err(e) => {
@@ -595,8 +633,10 @@ pub async fn submit_task(
                         .await
                     {
                         Ok(seq) => {
-                            if let Some(ts) = state_clone.store.get(&output.task_id) {
-                                state_clone.journal.note_event(&output.task_id, seq, &ts);
+                            if let Some(task_state) = state_clone.store.get(&output.task_id) {
+                                state_clone
+                                    .journal
+                                    .note_event(&output.task_id, seq, &task_state);
                             }
                         }
                         Err(e) => {
@@ -615,7 +655,7 @@ pub async fn submit_task(
 
                     if scores.len() >= 2 {
                         let p_mean = {
-                            let cal = state_clone.calibration.read().await;
+                            let cal = ts.calibration.read().await;
                             cal.as_ref()
                                 .and_then(|c| c.ensemble.as_ref())
                                 .map(|e| e.p_mean)
@@ -634,14 +674,14 @@ pub async fn submit_task(
                         }
 
                         let n_obs = {
-                            let mut rho_ema = state_clone.rho_ema.write().await;
+                            let mut rho_ema = ts.rho_ema.write().await;
                             rho_ema.update(&pairs, 0.10);
                             rho_ema.n_observations
                         };
 
                         if n_obs >= 30 {
-                            let rho_empirical = state_clone.rho_ema.read().await.rho_mean();
-                            let mut cal = state_clone.calibration.write().await;
+                            let rho_empirical = ts.rho_ema.read().await.rho_mean();
+                            let mut cal = ts.calibration.write().await;
                             if let Some(ref mut event) = *cal {
                                 if let Some(ref existing_ec) = event.ensemble {
                                     use h2ai_types::sizing::EnsembleCalibration;
@@ -664,8 +704,10 @@ pub async fn submit_task(
                         .await
                     {
                         Ok(seq) => {
-                            if let Some(ts) = state_clone.store.get(&output.task_id) {
-                                state_clone.journal.note_event(&output.task_id, seq, &ts);
+                            if let Some(task_state) = state_clone.store.get(&output.task_id) {
+                                state_clone
+                                    .journal
+                                    .note_event(&output.task_id, seq, &task_state);
                             }
                         }
                         Err(e) => tracing::warn!("failed to publish VerificationScoredEvent: {e}"),
@@ -680,8 +722,10 @@ pub async fn submit_task(
                         .await
                     {
                         Ok(seq) => {
-                            if let Some(ts) = state_clone.store.get(&output.task_id) {
-                                state_clone.journal.note_event(&output.task_id, seq, &ts);
+                            if let Some(task_state) = state_clone.store.get(&output.task_id) {
+                                state_clone
+                                    .journal
+                                    .note_event(&output.task_id, seq, &task_state);
                             }
                         }
                         Err(e) => tracing::warn!("failed to publish ProposalFailedEvent: {e}"),
@@ -695,8 +739,10 @@ pub async fn submit_task(
                     .await
                 {
                     Ok(seq) => {
-                        if let Some(ts) = state_clone.store.get(&output.task_id) {
-                            state_clone.journal.note_event(&output.task_id, seq, &ts);
+                        if let Some(task_state) = state_clone.store.get(&output.task_id) {
+                            state_clone
+                                .journal
+                                .note_event(&output.task_id, seq, &task_state);
                         }
                     }
                     Err(e) => tracing::warn!("failed to publish SelectionResolvedEvent: {e}"),
@@ -710,7 +756,7 @@ pub async fn submit_task(
                             if let (Ok(before), Ok(after)) =
                                 (opt.before.parse::<f64>(), opt.after.parse::<f64>())
                             {
-                                let mut est = state_clone.tau_spread_estimator.write().await;
+                                let mut est = ts.tau_spread_estimator.write().await;
                                 // Use the verify_threshold change as a proxy for τ spread shift.
                                 // before/after are verify_threshold values scaled to [0,1].
                                 est.update(before.min(after), before.max(after));
@@ -744,8 +790,10 @@ pub async fn submit_task(
                     .await
                 {
                     Ok(seq) => {
-                        if let Some(ts) = state_clone.store.get(&output.task_id) {
-                            state_clone.journal.note_event(&output.task_id, seq, &ts);
+                        if let Some(task_state) = state_clone.store.get(&output.task_id) {
+                            state_clone
+                                .journal
+                                .note_event(&output.task_id, seq, &task_state);
                         }
                     }
                     Err(e) => tracing::warn!("failed to publish TaskAttributionEvent: {e}"),
@@ -805,12 +853,16 @@ pub async fn submit_task(
                 if output.srani_count_updated != srani_count {
                     if let Err(e) = state_clone
                         .nats
-                        .put_srani_state(output.srani_ema_cfi_updated, output.srani_count_updated)
+                        .put_srani_state(
+                            &task_tenant_id,
+                            output.srani_ema_cfi_updated,
+                            output.srani_count_updated,
+                        )
                         .await
                     {
                         tracing::warn!("failed to persist srani state: {e}");
                     }
-                    *state_clone.srani_state.write().await =
+                    *ts.srani_state.write().await =
                         (output.srani_ema_cfi_updated, output.srani_count_updated);
                 }
                 // Publish researcher grounding events
@@ -854,6 +906,34 @@ pub async fn submit_task(
                         .await
                     {
                         tracing::warn!("failed to publish CoherenceIncompleteEvent: {e}");
+                    }
+                }
+                // Publish leader election events.
+                for ev in &output.leader_elected_events {
+                    if let Err(e) = state_clone
+                        .nats
+                        .publish_event_seq(&output.task_id, &H2AIEvent::LeaderElected(ev.clone()))
+                        .await
+                    {
+                        tracing::warn!(
+                            task_id = %output.task_id,
+                            "failed to publish LeaderElectedEvent: {e}"
+                        );
+                    }
+                }
+                for ev in &output.socratic_diagnosis_events {
+                    if let Err(e) = state_clone
+                        .nats
+                        .publish_event_seq(
+                            &output.task_id,
+                            &H2AIEvent::SocraticDiagnosis(ev.clone()),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            task_id = %output.task_id,
+                            "failed to publish SocraticDiagnosisEvent: {e}"
+                        );
                     }
                 }
                 // Publish MergeResolved so SSE clients receive the terminal event and close.
@@ -989,23 +1069,26 @@ pub async fn submit_task(
         }
 
         // Persist estimator state to NATS — fire-and-forget.
-        if let Some((ema, count)) = state_clone
-            .tao_multiplier_estimator
-            .read()
-            .await
-            .persist_state()
-        {
-            if let Err(e) = state_clone.nats.put_tao_estimator_state(ema, count).await {
+        if let Some((ema, count)) = ts.tao_multiplier_estimator.read().await.persist_state() {
+            if let Err(e) = state_clone
+                .nats
+                .put_tao_estimator_state(&task_tenant_id, ema, count)
+                .await
+            {
                 tracing::warn!("failed to persist tao_estimator: {e}");
             }
         }
 
         // Persist updated bandit state.
         {
-            let bandit = state_clone.bandit_state.read().await;
+            let bandit = ts.bandit_state.read().await;
             match serde_json::to_vec(&*bandit) {
                 Ok(bytes) => {
-                    if let Err(e) = state_clone.nats.put_bandit_state(bytes).await {
+                    if let Err(e) = state_clone
+                        .nats
+                        .put_bandit_state(&task_tenant_id, bytes)
+                        .await
+                    {
                         tracing::warn!("failed to persist bandit state: {e}");
                     }
                 }
@@ -1013,7 +1096,7 @@ pub async fn submit_task(
             }
         }
     });
-    let events_url = format!("/tasks/{task_id_str}/events");
+    let events_url = format!("/tenants/{}/tasks/{task_id_str}/events", manifest.tenant_id);
 
     let response = TaskAccepted {
         task_id: task_id_str,
@@ -1028,11 +1111,12 @@ pub async fn submit_task(
 }
 
 pub async fn task_events(
-    Path(task_id): Path<String>,
+    Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> axum::response::Response {
     use axum::response::sse::KeepAlive;
     use futures::StreamExt;
+    use h2ai_types::identity::TenantId;
 
     let tid_uuid = match uuid::Uuid::parse_str(&task_id) {
         Ok(u) => u,
@@ -1043,6 +1127,12 @@ pub async fn task_events(
         }
     };
     let tid = TaskId::from_uuid(tid_uuid);
+    let tenant = TenantId::from(tenant_id.as_str());
+
+    // Validate ownership before streaming
+    if state.store.get_for_tenant(&tid, &tenant).is_none() {
+        return (StatusCode::NOT_FOUND, "task not found for this tenant").into_response();
+    }
     let from_seq: u64 = 0;
 
     let nats = state.nats.clone();
@@ -1091,15 +1181,17 @@ pub async fn task_events(
 }
 
 pub async fn task_status(
-    Path(task_id): Path<String>,
+    Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiError> {
+    use h2ai_types::identity::TenantId;
     let tid_uuid = uuid::Uuid::parse_str(&task_id)
         .map_err(|_| ApiError::InvalidRequest(format!("invalid task_id: {task_id}")))?;
     let tid = TaskId::from_uuid(tid_uuid);
+    let tenant = TenantId::from(tenant_id.as_str());
     let ts = state
         .store
-        .get(&tid)
+        .get_for_tenant(&tid, &tenant)
         .ok_or_else(|| ApiError::TaskNotFound(task_id.clone()))?;
     Ok(Json(json!({
         "task_id": ts.task_id.to_string(),
@@ -1115,16 +1207,18 @@ pub async fn task_status(
 }
 
 pub async fn merge_task(
-    Path(task_id): Path<String>,
+    Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
     Json(body): Json<MergeRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    use h2ai_types::identity::TenantId;
     let tid_uuid = uuid::Uuid::parse_str(&task_id)
         .map_err(|_| ApiError::InvalidRequest(format!("invalid task_id: {task_id}")))?;
     let tid = TaskId::from_uuid(tid_uuid);
+    let tenant = TenantId::from(tenant_id.as_str());
     let ts = state
         .store
-        .get(&tid)
+        .get_for_tenant(&tid, &tenant)
         .ok_or_else(|| ApiError::TaskNotFound(task_id.clone()))?;
     if ts.status == "resolved" {
         return Err(ApiError::TaskAlreadyResolved(task_id));
@@ -1153,10 +1247,31 @@ pub struct ClarifyRequest {
 }
 
 pub async fn clarify_task(
+    Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
-    Path(task_id): Path<String>,
     Json(body): Json<ClarifyRequest>,
 ) -> impl IntoResponse {
+    use h2ai_types::identity::TenantId;
+    let tenant = TenantId::from(tenant_id.as_str());
+    let tid_uuid = match uuid::Uuid::parse_str(&task_id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid task_id"})),
+            )
+                .into_response();
+        }
+    };
+    let tid = TaskId::from_uuid(tid_uuid);
+    // Validate ownership before accepting clarification
+    if state.store.get_for_tenant(&tid, &tenant).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "task not found for this tenant"})),
+        )
+            .into_response();
+    }
     let waiters = state.clarification_waiters.lock().unwrap();
     if let Some((notify, answer_slot)) = waiters.get(&task_id) {
         *answer_slot.lock().unwrap() = Some(body.answer);
@@ -1165,11 +1280,13 @@ pub async fn clarify_task(
             StatusCode::OK,
             Json(serde_json::json!({"status": "clarification received"})),
         )
+            .into_response()
     } else {
         (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "no pending clarification for this task"})),
         )
+            .into_response()
     }
 }
 

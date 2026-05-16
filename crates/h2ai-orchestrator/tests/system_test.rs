@@ -207,6 +207,9 @@ async fn system_solves_well_formed_problem() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -286,6 +289,9 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -354,6 +360,9 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -459,6 +468,9 @@ async fn system_resolves_conflict_via_bft_consensus() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -581,6 +593,9 @@ async fn system_shadow_mode_agreement_resolves_task() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -646,6 +661,9 @@ async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -717,6 +735,9 @@ async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -815,6 +836,9 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -895,6 +919,9 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -971,6 +998,9 @@ async fn system_c3_degraded_event_when_domains_uncovered() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

@@ -1,5 +1,7 @@
 {
+  "_tenant_id": "rtb-team",
   "description": "Design the DSP onboarding flow for a new bidding partner (BidStream Inc.) that has highly variable response latency — P50 is 45ms but P99 is 320ms. We need to integrate them into the RTB auction without degrading the 150ms P95 SLO for ad requests that include their bids. The integration must not require changes to the global RTB timeout. BidStream's engineering team reports they are working on latency improvements but cannot commit to a timeline.",
+  "constraint_tags": ["rtb", "latency"],
   "pareto_weights": {
     "diversity": 0.5,
     "containment": 0.4,
@@ -35,6 +37,7 @@
         "text": "Does the proposal use per-DSP P95 (not P99 or mean) as the adaptive timeout signal?"
       }
     ],
+    "srani_cfi_check": false,
     "checks_pass_threshold": 2,
     "should_prune": [
       {

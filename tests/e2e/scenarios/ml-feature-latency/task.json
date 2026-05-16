@@ -1,4 +1,5 @@
 {
+  "_tenant_id": "ml-infra",
   "description": "The ML Inference Service P99 latency has risen from 38ms to 67ms over the past two weeks as the user base grew from 300M to 400M DAU. Root cause analysis points to L2 Redis cache miss rate increasing from 8% to 22% — the feature store is being hit more frequently for user profiles that are less frequently requested (long tail of less-active users). Design a solution that brings P99 back to under 45ms without compromising the consistency model for budget data or violating GC constraints on the JVM heap.",
   "pareto_weights": {
     "diversity": 0.5,
@@ -10,6 +11,7 @@
     "tau_min": 0.3,
     "tau_max": 0.9
   },
+  "constraint_tags": ["ml", "caching", "jvm"],
   "constraints": [
     "CONSTRAINT-001",
     "CONSTRAINT-006",
@@ -21,6 +23,8 @@
   "_expected": {
     "j_eff_min": 0,
     "valid_proposals_min": 1,
+    "thinking_loop_ran": true,
+    "thinking_loop_coverage_min": 0.40,
     "checks": [
       {
         "id": "C-006/1",

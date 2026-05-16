@@ -1,0 +1,15 @@
+id: C-005
+title: "Audit Trail Before Execution"
+severity: hard
+domains:
+  - financial_systems
+  - audit
+related_to:
+  - C-004
+criteria:
+  pass: "Audit record is written and acknowledged before transfer executes."
+  fail: "Transfer executes before or without an audit record."
+failure_modes:
+  - id: FM-003
+    name: Silent Spend
+    description: "Money moves without an audit record"

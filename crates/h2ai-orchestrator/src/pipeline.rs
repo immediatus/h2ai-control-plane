@@ -375,6 +375,10 @@ impl<'a> ExecutionPipeline<'a> {
                 provisioned,
                 pending_tombstone: params.pending_tombstone.clone(),
                 adapter_rotation_offset: params.adapter_rotation_offset,
+                leader_context: params.leader_context.clone(),
+                prev_assembled_contexts: params.prev_assembled_contexts.clone(),
+                compression_adapter: self.input.compression_adapter.clone(),
+                stable_cache: self.input.stable_cache.clone(),
             })
             .await,
             events
@@ -386,6 +390,7 @@ impl<'a> ExecutionPipeline<'a> {
         events
             .researcher_grounding_events
             .extend(gen_out.researcher_grounding_events.iter().cloned());
+        events.assembled_contexts = gen_out.assembled_contexts.clone();
         let tau_values = gen_out.tau_values.clone();
         let tao_turns_mean = gen_out.tao_turns_mean;
         let all_raw_texts_this_wave = gen_out.all_raw_texts.clone();
@@ -438,6 +443,18 @@ impl<'a> ExecutionPipeline<'a> {
             .researcher_grounding_events
             .extend(srani_out.researcher_grounding_events.iter().cloned());
         let gen_out = srani_out.generation;
+
+        // Save proposal texts so the MAPE-K loop can carry them forward for the
+        // next wave's leader context injection.
+        {
+            let texts: std::collections::HashMap<h2ai_types::identity::ExplorerId, String> =
+                gen_out
+                    .proposals
+                    .iter()
+                    .map(|p| (p.explorer_id.clone(), p.raw_output.clone()))
+                    .collect();
+            events.wave_proposal_texts = texts;
+        }
 
         // ── Phase 3.5: Verification (LLM-as-Judge) ──────────────────────────────
         let verify_out = phase!(

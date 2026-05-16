@@ -1,0 +1,36 @@
+id: topic:financial-systems
+depth: topic
+domains:
+  - financial_systems
+synthesis: >
+  These constraints prevent the Budget Cascade failure mode: C-004
+  enforces atomic check-and-deduct, C-008 bans distributed locks on
+  the charge path, C-005 requires the audit trail before execution.
+  All three must hold simultaneously.
+invariants:
+  - "No debit without prior idempotency check"
+  - "Audit record precedes transfer execution"
+  - "No cross-node lock on charge path"
+failure_modes_covered:
+  - FM-001
+  - FM-003
+tensions:
+  - domain: distributed-systems
+    reason: >
+      Partition tolerance requires local-only fallback, which conflicts
+      with C-004 global atomicity under split-brain scenarios.
+entry_points:
+  - C-004
+  - C-008
+constraints:
+  - C-004
+  - C-005
+  - C-008
+cross_references:
+  - id: C-007
+    domain: audit
+    reason: "C-005 and C-007 together cover the full audit chain"
+related:
+  - C-004
+  - C-005
+  - C-008

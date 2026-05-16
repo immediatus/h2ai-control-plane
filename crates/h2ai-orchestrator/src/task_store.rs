@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use std::sync::Arc;
 
 #[repr(u8)]
@@ -90,6 +90,7 @@ impl TaskPhase {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskState {
     pub task_id: TaskId,
+    pub tenant_id: TenantId,
     pub status: String,
     pub phase: u8,
     pub phase_name: String,
@@ -101,9 +102,10 @@ pub struct TaskState {
 }
 
 impl TaskState {
-    pub fn new(task_id: TaskId) -> Self {
+    pub fn new(task_id: TaskId, tenant_id: TenantId) -> Self {
         Self {
             task_id,
+            tenant_id,
             status: "pending".into(),
             phase: TaskPhase::Bootstrap as u8,
             phase_name: TaskPhase::Bootstrap.name_str().into(),
@@ -130,6 +132,17 @@ impl TaskStore {
 
     pub fn get(&self, id: &TaskId) -> Option<TaskState> {
         self.0.get(&id.to_string()).map(|r| r.value().clone())
+    }
+
+    /// Return the task state only when it belongs to `tenant_id`.
+    ///
+    /// Returns `None` when the task doesn't exist or belongs to a different tenant.
+    /// Use this on external-facing routes to prevent cross-tenant task enumeration.
+    pub fn get_for_tenant(&self, id: &TaskId, tenant_id: &TenantId) -> Option<TaskState> {
+        self.0
+            .get(&id.to_string())
+            .filter(|r| &r.tenant_id == tenant_id)
+            .map(|r| r.value().clone())
     }
 
     pub fn set_phase(&self, id: &TaskId, phase: TaskPhase, explorer_count: u32, retries: u32) {
@@ -180,5 +193,47 @@ impl TaskStore {
             entry.phase_name = TaskPhase::AwaitingApproval.name_str().into();
             entry.status = TaskPhase::AwaitingApproval.status_str().into();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use h2ai_types::identity::{TaskId, TenantId};
+
+    #[test]
+    fn get_for_tenant_returns_none_for_wrong_tenant() {
+        let store = TaskStore::new();
+        let task_id = TaskId::new();
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::from("acme")),
+        );
+        assert!(store
+            .get_for_tenant(&task_id, &TenantId::from("beta"))
+            .is_none());
+    }
+
+    #[test]
+    fn get_for_tenant_returns_state_for_owner() {
+        let store = TaskStore::new();
+        let task_id = TaskId::new();
+        let tenant = TenantId::from("acme");
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), tenant.clone()),
+        );
+        assert!(store.get_for_tenant(&task_id, &tenant).is_some());
+    }
+
+    #[test]
+    fn get_without_tenant_still_works_for_backward_compat() {
+        let store = TaskStore::new();
+        let task_id = TaskId::new();
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
+        assert!(store.get(&task_id).is_some());
     }
 }

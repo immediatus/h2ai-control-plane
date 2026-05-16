@@ -1,0 +1,11 @@
+depth: global
+synthesis: >
+  This corpus enforces financial safety and audit integrity.
+  Hard constraints prevent Budget Cascade and audit-gap failure modes.
+domains_covered:
+  - financial_systems
+  - audit
+  - distributed_systems
+key_invariants:
+  - "Every debit is atomic, idempotent, and pre-audited"
+  - "No partition can cause silent overspend"

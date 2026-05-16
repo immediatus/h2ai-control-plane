@@ -51,7 +51,7 @@ C4Context
     System_Ext(mcp, "MCP Filesystem Server", "Model Context Protocol\nstdio server")
     System_Ext(prom, "Prometheus / Grafana", "5 control-loop metrics\n+ OTLP traces")
 
-    Rel(operator, h2ai, "POST /tasks, GET /events", "HTTPS / SSE")
+    Rel(operator, h2ai, "POST /:tenant_id/tasks, GET /events", "HTTPS / SSE")
     Rel(h2ai, llm_apis, "Adapter calls", "HTTPS / local FFI")
     Rel(h2ai, nats, "Event log, KV, agent dispatch", "NATS protocol")
     Rel(h2ai, corpus, "Reads constraints", "Filesystem mount")
@@ -87,7 +87,7 @@ C4Container
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
     ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
 
-    Rel(client, api, "POST /tasks\nGET /events", "HTTPS")
+    Rel(client, api, "POST /:tenant_id/tasks\nGET /:tenant_id/tasks/:task_id/events", "HTTPS")
     Rel(api, orchestrator, "spawn ExecutionEngine", "in-process")
     Rel(orchestrator, planner, "topology selection", "function call")
     Rel(orchestrator, autonomic, "calibration data", "function call")
@@ -130,6 +130,8 @@ Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motiv
 ### Phase 1 — Bootstrap
 
 The orchestrator compiles the task description and the active constraint corpus into an immutable `system_context`. The `J_eff` gate enforces a minimum context-fill fraction; tasks below the threshold are rejected with `ContextUnderflow` rather than run with insufficient grounding. Emits `TaskBootstrapped`. For the constraint corpus markdown format, predicate kinds, severity levels, and ConstraintSource abstraction, see reference.md §7.
+
+**Knowledge Provider (optional enrichment):** When `[knowledge]` is configured in `H2AIConfig`, `AppState.knowledge_provider` holds a `Bm25WikiProvider` that was built at startup by indexing the constraint YAML corpus plus any `wiki/` topic nodes. During context assembly, the provider is queried for the task description and returns hierarchical nodes: `NodeDepth::Global` nodes are injected as `SectionTag::GlobalKnowledge` (importance=1.0, preserve=true — survives all compression); `NodeDepth::Topic` nodes as `SectionTag::TopicKnowledge` (importance=0.8, preserve=false). When `[knowledge]` is absent, a `PassthroughProvider` is used instead, which delegates to `ConstraintResolver` with no behaviour change. The wiring from the knowledge provider into `generation.rs` is pending (as of 2026-05-18); the provider is built and stored in `AppState` but not yet called during generation phases.
 
 ### Phase 2 — Topology Provisioning
 
@@ -233,7 +235,7 @@ When `oracle_gate.enabled = true`, a NATS `request()` call is made to `cfg.oracl
 
 **On pass** (`gate_passed = true`): the result is attached to the merge output as `oracle_gate_passed = Some(true)`. If the thinking loop produced a candidate solution that the oracle approved, `oracle_confidence_bonus` is added to the synthesis weight.
 
-**On fail** (`gate_passed = false, confidence < min_confidence`): if a matching `ClarificationTemplate` pattern fires, a `PendingClarificationEvent` is published and the engine suspends via `clarification_waiters`. `POST /tasks/{id}/clarify` resumes it with an operator-supplied answer.
+**On fail** (`gate_passed = false, confidence < min_confidence`): if a matching `ClarificationTemplate` pattern fires, a `PendingClarificationEvent` is published and the engine suspends via `clarification_waiters`. `POST /{tenant_id}/tasks/{id}/clarify` resumes it with an operator-supplied answer.
 
 **On timeout**: behaviour is controlled by `on_timeout`: `pass` (treat as approved), `fail` (treat as rejected), or `skip` (proceed without oracle result, no `oracle_gate_passed` field).
 
@@ -388,6 +390,7 @@ Phase modules only classify failures — they never call `RetryPolicy`. The cont
 | `srani_tier` | SRANI escalation tier: 0 = SpecAnchor, 1 = Researcher, 2 = WebSearch |
 | `srani_last_wave_fired` | Whether SRANI fired on the immediately preceding wave |
 | `pending_tombstone` | Constraint tombstone injected at the topology phase on retry |
+| `leader_context` | `Option<LeaderContextSnapshot>` — Krum-elected leader's prior proposal text, Socratic question, and per-slot constraint aspect assignment; `None` when `leader_enabled = false` or first wave |
 
 ### WaveEvents — cross-wave aggregation
 
@@ -403,6 +406,39 @@ Phase modules only classify failures — they never call `RetryPolicy`. The cont
 | **Constraint frontier** | `ConstraintFrontierEvent` (static constraint satisfaction matrix) |
 | **SRANI state mutations** | Updated EMA-CFI, tier, count, and retry context — fed back into `PipelineParams` for the next wave |
 | **Gate ratio** | `filter_ratio` (survivors ÷ proposals) — consumed by `RetryPolicy::decide()` |
+| **Proposal texts** | `wave_proposal_texts: Vec<(SlotId, String)>` — raw proposal text per slot, carried forward so `prepare_leader_election()` can build the leader's prior-proposal prefix for the next wave |
+
+### Epistemic Leader — cross-wave guidance
+
+The Epistemic Leader is an optional cross-wave guidance layer that runs between `observe()` and the next call to `params()` in `engine.rs`. Its purpose is to prevent the retry loop from repeating the same failed approach by injecting a Socratic diagnostic question and targeted constraint-aspect context into the next wave's generation prompts.
+
+**Election.** After each failed wave, `prepare_leader_election()` selects the leader by argmax over verification scores from the most recent `VerificationScoredEvent` set — the slot with the highest score becomes leader; the second-highest becomes the runner-up and is stored for rotation. This is a lightweight Krum-consistent selection: it uses the same verified score used by the merge engine, so no additional LLM call is needed for election.
+
+**Socratic diagnosis.** The leader's slot config and failed proposal text are passed to a short LLM re-prompt that generates `leader_eig_candidates` candidate questions. Questions are ranked by an EIG (Expected Information Gain) proxy — the question whose semantic embedding is most orthogonal to previously asked questions scores highest. A belief buffer (per-task `Vec<BeliefRecord>`) deduplicates via FNV-1a hash: any candidate whose hash matches a prior record is skipped before EIG ranking. The surviving top question is stored as `LeaderState.current_question` and emitted as `SocraticDiagnosisEvent`.
+
+**Context injection.** `LeaderContextSnapshot` is attached to `PipelineParams.leader_context` before the next wave. The `generation` phase reads it and applies per-slot prompt prefixes: the leader slot receives its own prior proposal text plus the Socratic question; each follower slot receives the question plus an assigned constraint aspect (round-robin over the task's constraint corpus domains). This splits the search space so leader and followers explore different facets of the same diagnostic hypothesis. Injection is a pure string prefix — it does not alter TAO tool configuration or τ values.
+
+**Credibility and rotation.** The leader carries a `credibility: f32` score initialised at `1.0`. On each wave where the best verification score does not improve by more than `leader_stagnation_threshold`, credibility decays by `leader_credibility_decay_rate`. When credibility falls below `leader_credibility_warn_threshold`, a warning is logged. After `leader_stagnation_waves` consecutive stagnant waves, `apply_leader_result()` rotates leadership to the stored runner-up and resets credibility. A wave that improves the best score by at least `leader_stagnation_threshold` partially recovers credibility (`+= decay_rate * (1.0 - credibility)`). The `LeaderElectedEvent` is emitted on both initial election and rotation.
+
+**Config knobs (`reference.toml`):**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `leader_enabled` | `false` | Enable the Epistemic Leader subsystem |
+| `leader_stagnation_threshold` | `0.02` | Minimum score improvement to count a wave as non-stagnant |
+| `leader_stagnation_waves` | `1` | Consecutive stagnant waves before leadership rotates to runner-up |
+| `leader_diagnosis_max_tokens` | `128` | Token budget for the Socratic question LLM call |
+| `leader_diagnosis_tau` | `0.3` | Temperature for the diagnosis LLM call (low for focused output) |
+| `leader_eig_candidates` | `3` | Number of candidate questions generated before EIG ranking |
+| `leader_credibility_decay_rate` | `0.2` | Credibility decrease per stagnant wave |
+| `leader_credibility_warn_threshold` | `0.4` | Credibility level below which a warning event is logged |
+
+**Events emitted:**
+
+- `LeaderElectedEvent` — fired by `prepare_leader_election()` on initial election and on runner-up rotation; carries `leader_slot_id`, `credibility`, and `wave_index`.
+- `SocraticDiagnosisEvent` — fired after EIG ranking; carries the elected question text, its EIG score, and the count of belief-buffer entries that were skipped as duplicates.
+
+**Implementation files:** `crates/h2ai-orchestrator/src/leader.rs` (`LeaderState`, `LeaderContextSnapshot`, `LeaderElectionPlan`, `BeliefRecord`); `crates/h2ai-orchestrator/src/mape_k.rs` (`MapeKController.leader`, `prepare_leader_election()`, `apply_leader_result()`); `crates/h2ai-orchestrator/src/engine.rs` (async election block between `observe()` and `decide()`); `crates/h2ai-orchestrator/src/phases/generation.rs` (per-slot prefix injection).
 
 ### Coordinator sequence
 
@@ -465,7 +501,7 @@ sequenceDiagram
     participant Agent as h2ai-agent (×N)
     participant Adapter as LLM Adapter
 
-    C->>API: POST /tasks {description, weights, explorers}
+    C->>API: POST /:tenant_id/tasks {description, weights, explorers}
     API->>NATS: load H2AI_CALIBRATION KV
     NATS-->>API: CalibrationCompletedEvent
     API-->>C: 202 Accepted {task_id, events_url}
@@ -473,7 +509,7 @@ sequenceDiagram
 
     Note over Orch: Phase 1 — Bootstrap
     Orch->>NATS: publish TaskBootstrapped
-    C->>API: GET /tasks/{id}/events (SSE)
+    C->>API: GET /:tenant_id/tasks/{id}/events (SSE)
     API-->>C: SSE stream open
 
     Note over Orch: Phase 2 — Topology Provisioning
@@ -544,11 +580,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    C[Client] -->|"POST /tasks: description, pareto_weights, explorers, constraints, context"| A[h2ai-api]
+    C[Client] -->|"POST /:tenant_id/tasks: description, pareto_weights, explorers, constraints, context"| A[h2ai-api]
 ```
 
 1. **Validation** — weights must sum to 1.0; manifest structure must be valid. `503` if no current calibration in `H2AI_CALIBRATION` KV.
-2. **task_id allocation** — a `TaskId` (UUID) is minted. Response is `202 Accepted` with `{"task_id": ..., "events_url": "/tasks/{id}/events"}`.
+2. **task_id allocation** — a `TaskId` (UUID) is minted. Response is `202 Accepted` with `{"task_id": ..., "events_url": "/{tenant_id}/tasks/{id}/events"}`.
 3. **ExecutionEngine::run** — spawned as a Tokio task. Loads `CalibrationCompletedEvent` from `H2AI_CALIBRATION` KV.
 4. **Dark Knowledge compilation** — `h2ai-context` assembles the constraint corpus, task description, and prior session memory (from `H2AI_AGENT_MEMORY` KV) into a single immutable `system_context` string.
 5. **TaskBootstrapped** published to `h2ai.tasks.{task_id}` on `H2AI_TASKS` stream.
@@ -996,7 +1032,7 @@ Three observability layers run concurrently and independently of the control pat
 
 **OpenTelemetry** — `h2ai-telemetry` emits structured spans for every phase transition. Root span: `task.{task_id}`. Child spans per phase: `phase.bootstrap`, `phase.provisioning`, `phase.generation`, `phase.verification`, `phase.audit`, `phase.merge`, `phase.synthesis`. Adapter latency is a sub-span of `phase.generation`. Exported via OTLP.
 
-**SSE event stream** — `GET /tasks/:task_id/events` exposes the raw `H2AIEvent` sequence as Server-Sent Events. Every event carries its NATS sequence number as the SSE `id` field. Clients reconnect with `Last-Event-ID: <sequence>` to resume without replaying the full log.
+**SSE event stream** — `GET /:tenant_id/tasks/:task_id/events` exposes the raw `H2AIEvent` sequence as Server-Sent Events. Every event carries its NATS sequence number as the SSE `id` field. Clients reconnect with `Last-Event-ID: <sequence>` to resume without replaying the full log.
 
 ### 6.6 Multi-region considerations
 
@@ -1064,6 +1100,18 @@ h2ai-constraints    Constraint corpus parser (markdown ADR format), predicate ty
                     WikiCache — in-memory hot-path index (context_map, metas, revision).
                     ConstraintMeta / ConstraintPayload / PredicateKind for wiki delivery.
 
+h2ai-knowledge      Hierarchical BM25+/PPR knowledge retrieval layer (pure crate, no I/O deps beyond
+                    serde_yaml at startup). KnowledgeSource trait (all_items, wiki_nodes, global_node).
+                    KnowledgeProvider trait (query, global_summary, is_ready, kind).
+                    Bm25WikiProvider — BM25+ scoring (Lv & Zhai δ=1.0, K1=1.5, B=0.75) over a
+                    Global→Topic→Leaf tree; dual RAPTOR modes: TreeTraversal (topic cluster routing
+                    first) + CollapsedTree (all levels simultaneously). ConstraintGraph — adjacency
+                    from constraint `related:` fields; Personalized PageRank (power iteration, α=0.15)
+                    for multi-hop expansion. YamlDirSource — loads constraint YAML + optional wiki/
+                    subdirectory. PassthroughProvider — delegates to ConstraintResolver (zero-change
+                    fallback when [knowledge] not configured). ScoringConfig — 8 tunable parameters,
+                    all serde-defaulted. Imported by h2ai-config and h2ai-api.
+
 h2ai-autonomic      Calibration harness, epistemic diagnostics (compute_n_eff_cosine,
                     classify_failure_mode, synthesize_tombstone), ensemble calibration plumbing,
                     Talagrand rank histogram, Thompson Sampling bandit over N.
@@ -1107,8 +1155,8 @@ h2ai-agent          Edge agent binary.
                     config_validation::validate_tool_configs — fail-fast startup check.
                     HeartbeatTask — liveness signalling to h2ai.agent.heartbeat.
 
-h2ai-api            Axum HTTP server: POST /tasks, SSE event stream, calibration endpoints,
-                    health/ready/metrics, HITL approval gate (POST /approve, GET /approval),
+h2ai-api            Axum HTTP server: POST /:tenant_id/tasks, SSE event stream, calibration endpoints,
+                    health/ready/metrics, HITL approval gate (POST /:tenant_id/tasks/:id/approve, GET /approval),
                     Merge Authority UI assets.
                     NatsWikiConstraintSource — NATS-backed ConstraintSource (KV + Object Store).
                     AppState::constraint_source() — returns the active source based on config.
@@ -1119,7 +1167,7 @@ h2ai-api            Axum HTTP server: POST /tasks, SSE event stream, calibration
 
 ```mermaid
 flowchart TD
-    POST["POST /tasks to h2ai-api"] --> EE["ExecutionEngine::run: one Tokio task per task_id"]
+    POST["POST /:tenant_id/tasks to h2ai-api"] --> EE["ExecutionEngine::run: one Tokio task per task_id"]
     EE --> P1["Phase 1: h2ai-constraints + h2ai-context compile system_context"]
     P1 --> P2["Phase 2: h2ai-planner ParetoRouter::select"]
     P2 --> P25["Phase 2.5/2.6: MultiplicationChecker + diversity guard"]
@@ -1134,7 +1182,7 @@ flowchart TD
     P5 --> EV["h2ai-nats publishes each H2AIEvent to H2AI_TASKS stream"]
     EV --> ZS{"zero survival?"}
     ZS -->|"yes: RetryPolicy, MAPE-K, up to max_autonomic_retries"| P2
-    ZS -->|no| SSE["GET /tasks/:id/events: SSE stream (reconnect with Last-Event-ID)"]
+    ZS -->|no| SSE["GET /:tenant_id/tasks/:id/events: SSE stream (reconnect with Last-Event-ID)"]
 ```
 
 ---
@@ -1207,7 +1255,7 @@ When the gate fires, the task is *parked*: instead of emitting `MergeResolved` a
 
 #### Approval endpoint and concurrent-write safety
 
-`POST /tasks/{id}/approve` accepts `{approved, reviewer_note, operator_id}`. The handler:
+`POST /{tenant_id}/tasks/{id}/approve` accepts `{approved, reviewer_note, operator_id}`. The handler:
 
 1. Loads the `ApprovalRecord` from `H2AI_APPROVALS` **along with its KV revision**.
 2. Returns `410 Gone` if `timeout_at_ms` has passed.
@@ -1385,7 +1433,71 @@ agent_card_cache_ttl_s = 3600
 
 ---
 
-## 12. What H2AI does *not* do better
+## 12. Multi-tenancy
+
+H2AI supports multiple isolated tenants within a single control plane deployment. Tenant identity is a first-class routing primitive, carried as a URL path segment.
+
+### 12.1 HTTP routing
+
+All task-level routes include `:tenant_id` as a path segment. The path value is authoritative — any `tenant_id` field in the request body is overridden by it.
+
+```
+POST   /:tenant_id/tasks
+GET    /:tenant_id/tasks/:task_id/events
+GET    /:tenant_id/tasks/:task_id
+POST   /:tenant_id/tasks/:task_id/merge
+POST   /:tenant_id/tasks/:task_id/approve
+GET    /:tenant_id/tasks/:task_id/approval
+POST   /:tenant_id/tasks/:task_id/clarify
+GET    /:tenant_id/tasks/:task_id/recover
+```
+
+Global endpoints (`/calibrate`, `/health`, `/ready`, `/metrics`) are not tenant-scoped. Single-tenant deployments use `default` as the tenant ID.
+
+### 12.2 Tenant isolation model
+
+Each tenant has isolated runtime state created lazily on first request:
+
+**`TenantState`** — created by `TenantRegistry::get_or_create` on first use, holds six `Arc<RwLock<…>>` fields:
+
+| Field | Type | Scope |
+|---|---|---|
+| `calibration` | `Option<CalibrationCompletedEvent>` | seeded from default tenant on first task |
+| `tao_multiplier_estimator` | `TaoMultiplierEstimator` | learns per-tenant TAO timing |
+| `tau_spread_estimator` | `TauSpreadEstimator` | per-tenant τ adaptation |
+| `bandit_state` | `BanditState` | per-tenant Thompson bandit for adapter selection |
+| `srani_state` | `(ema_cfi, count)` | per-tenant SRANI adaptive EMA |
+| `rho_ema` | `RhoEmaState` | per-tenant coherence EMA |
+
+**NATS KV isolation** — all per-tenant KV keys are prefixed with `{tenant_id.bucket_safe()}/` (hyphens replaced with underscores):
+
+```
+default/tao        default/bandit        default/srani
+acme_corp/tao      acme_corp/bandit      acme_corp/srani
+acme_corp/{task_id}   ← approval records
+```
+
+**Task ownership** — `TaskStore::get_for_tenant(task_id, tenant_id)` returns `None` for cross-tenant access. An HTTP handler querying another tenant's task ID receives `404 Not Found` regardless of whether the task exists.
+
+**Approval records** — `ApprovalRecord.tenant_id` is written at creation time from the URL path tenant. The approval reaper uses the embedded tenant ID when publishing events — it never reconstructs the tenant from context.
+
+### 12.3 Calibration: global-by-design
+
+Calibration measures the adapter pool, not individual tenant workloads. A single global `CalibrationCompletedEvent` lives in `H2AI_CALIBRATION` KV (no tenant prefix). On first task submission for a non-default tenant, `AppState::seed_calibration_from_default_if_needed` copies the default tenant's calibration into the new tenant's `TenantState`. This gives new tenants an immediate N_max budget without requiring a dedicated calibration run.
+
+### 12.4 Adding a tenant
+
+No administrative step is required. Any previously unused tenant ID in the URL path creates a tenant on first request:
+
+```bash
+curl -X POST http://localhost:8080/v1/acme/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"description": "...", "pareto_weights": {...}, "explorers": {...}}'
+```
+
+---
+
+## 13. What H2AI does *not* do better
 
 The control plane is honest about its boundaries. The system does *not* compete with:
 

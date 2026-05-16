@@ -27,7 +27,7 @@ pub struct CorpusComplexityMetadata {
 
 /// Number of distinct ConstraintPredicate variants tracked for type diversity.
 /// Must stay in sync with `predicate_variant_name`'s match arms.
-const N_PREDICATE_VARIANTS: usize = 9;
+const N_PREDICATE_VARIANTS: usize = 12;
 
 /// Default TCC_structural coefficients — theoretical initial priors from the GAP-A1
 /// solution spec (§2.3). Fitted values will replace these after the GAP-A1 experiment.
@@ -120,6 +120,9 @@ fn predicate_variant_name(pred: &crate::types::ConstraintPredicate) -> &'static 
         OracleExecution { .. } => "OracleExecution",
         JsonSchema { .. } => "JsonSchema",
         LengthRange { .. } => "LengthRange",
+        SemanticPresence { .. } => "SemanticPresence",
+        SemanticOrdering { .. } => "SemanticOrdering",
+        SemanticExclusion { .. } => "SemanticExclusion",
     }
 }
 
@@ -193,8 +196,8 @@ mod tests {
         assert_eq!(meta.n_constraints, 2);
         assert!((meta.soft_fraction).abs() < 1e-9);
         assert!((meta.heavy_fraction).abs() < 1e-9);
-        // 2 distinct types (VocabularyPresence, RegexMatch) out of N_PREDICATE_VARIANTS=9
-        // tcc = 1.0 + 0 + K_TYPE * (2/9) + 0 = 1.0 + 1.0 * 0.2222 ≈ 1.222
+        // 2 distinct types (VocabularyPresence, RegexMatch) out of N_PREDICATE_VARIANTS=12
+        // tcc = 1.0 + 0 + K_TYPE * (2/12) + 0 = 1.0 + 1.0 * 0.1667 ≈ 1.167
         let expected = 1.0 + K_TYPE * (2.0 / N_PREDICATE_VARIANTS as f64);
         assert!(
             (meta.tcc_structural - expected).abs() < 1e-6,

@@ -2,6 +2,7 @@
 //   NATS_URL=nats://localhost:4222 cargo nextest run -p h2ai-state --test nats_infra_test
 
 use h2ai_state::nats::NatsClient;
+use h2ai_types::identity::TenantId;
 
 #[tokio::test]
 #[ignore]
@@ -81,8 +82,12 @@ async fn put_and_get_tao_estimator_roundtrip() {
     };
     client.ensure_infrastructure().await.expect("infra");
 
-    client.put_tao_estimator_state(0.75, 25).await.expect("put");
-    let back = client.get_tao_estimator_state().await.expect("get");
+    let tid = TenantId::default_tenant();
+    client
+        .put_tao_estimator_state(&tid, 0.75, 25)
+        .await
+        .expect("put");
+    let back = client.get_tao_estimator_state(&tid).await.expect("get");
     assert!(back.is_some());
     let (ema, count) = back.unwrap();
     assert_eq!(ema, 0.75);

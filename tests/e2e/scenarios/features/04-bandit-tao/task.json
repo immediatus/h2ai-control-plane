@@ -1,0 +1,37 @@
+{
+  "_tenant_id": "platform-team",
+  "description": "Design a caching architecture for a high-traffic content delivery API. The API serves 10 million unique content items (articles, product pages, media metadata) to 500,000 requests per second. Content is personalized per user tier (free vs premium), has variable TTLs (breaking news expires in 60s, product catalog in 24h), and must support instant cache invalidation when content is updated. The system runs across 20 pods.",
+  "pareto_weights": {
+    "diversity": 0.7,
+    "containment": 0.2,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.15,
+    "tau_max": 0.85
+  },
+  "context": "This is an open-ended architecture decision. Many valid approaches exist spanning the conservative-to-creative spectrum. Conservative approaches: simple Redis LRU with fixed TTLs and full cache-aside pattern. Standard approaches: multi-tier cache (L1 in-process + L2 Redis), tag-based invalidation groups, probabilistic early expiry (XFetch). Creative approaches: content-addressed immutable cache entries with version pointers, edge caching via CDN with surrogate keys, adaptive TTL based on content update frequency. The evaluator should reward proposals that cover multiple caching dimensions: eviction, invalidation, personalization isolation, and operational observability.",
+  "_timeout_s": 2400,
+  "_expected": {
+    "valid_proposals_min": 2,
+    "checks": [
+      {
+        "id": "BT/1",
+        "text": "Does the proposal describe a cache eviction or expiry strategy appropriate to variable TTL content (e.g., per-content-type TTL, LRU with TTL, probabilistic early expiry, or equivalent) — not a single global TTL for all content?"
+      },
+      {
+        "id": "BT/2",
+        "text": "Does the proposal address cache invalidation when content is updated — using tag-based invalidation, pub/sub events, surrogate keys, versioned cache keys, or an equivalent mechanism that avoids stale content delivery?"
+      },
+      {
+        "id": "BT/3",
+        "text": "Does the proposal isolate personalized content variants per user tier (free vs premium) so that a free-tier user cannot receive premium-tier cached content — via separate cache namespaces, key prefixes, or equivalent isolation?"
+      }
+    ],
+    "checks_pass_threshold": 2,
+    "should_pass": [
+      "Proposal using a two-tier cache (L1 in-process LRU + L2 Redis) with per-content-type TTL (60s for news, 24h for catalog). Cache keys include user tier suffix (content:{id}:free / content:{id}:premium) for personalization isolation. On content update, publishes invalidation event to Redis Pub/Sub; all pods subscribe and evict matching L1 and L2 entries. Observability via cache hit-rate metrics per content type."
+    ]
+  }
+}

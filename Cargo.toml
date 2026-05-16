@@ -17,6 +17,7 @@ members = [
     "crates/h2ai-agent",
     "crates/h2ai-constraints",
     "crates/h2ai-eval",
+    "crates/h2ai-knowledge",
 ]
 resolver = "2"
 
@@ -62,6 +63,7 @@ sha2            = "0.10"
 hex             = "0.4"
 zstd            = "0.13"
 hostname        = "0.4"
+h2ai-knowledge  = { path = "crates/h2ai-knowledge" }
 
 # ort-sys 2.0.0-rc.12 introduced breaking API changes (size_t removal, fn-pointer types)
 # and a mandatory TLS feature gate, both incompatible with ort 2.0.0-rc.4 used by fastembed.

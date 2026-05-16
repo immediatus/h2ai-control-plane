@@ -87,6 +87,32 @@ pub enum ConstraintPredicate {
         min_chars: Option<usize>,
         max_chars: Option<usize>,
     },
+    /// Binary gate: does the response contain evidence of concept X?
+    /// Async-only — eval_sync returns 1.0 (pass-through) so the Composite And engine defers it.
+    SemanticPresence {
+        concept: String,
+        #[serde(default = "default_binary_passes")]
+        passes: u8,
+    },
+    /// Binary gate: does `first` occur before `then` in the response?
+    /// Async-only — eval_sync returns 1.0 (pass-through).
+    SemanticOrdering {
+        first: String,
+        then: String,
+        #[serde(default = "default_binary_passes")]
+        passes: u8,
+    },
+    /// Binary gate: is `pattern` absent from the response?
+    /// Async-only — eval_sync returns 1.0 (pass-through). Result is inverted: YES found → 0.0.
+    SemanticExclusion {
+        pattern: String,
+        #[serde(default = "default_binary_passes")]
+        passes: u8,
+    },
+}
+
+fn default_binary_passes() -> u8 {
+    3
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -184,7 +210,10 @@ impl ConstraintDoc {
 fn predicate_tier(pred: &ConstraintPredicate) -> ConstraintTier {
     match pred {
         ConstraintPredicate::OracleExecution { .. } => ConstraintTier::Heavy,
-        ConstraintPredicate::LlmJudge { .. } => ConstraintTier::Light,
+        ConstraintPredicate::LlmJudge { .. }
+        | ConstraintPredicate::SemanticPresence { .. }
+        | ConstraintPredicate::SemanticOrdering { .. }
+        | ConstraintPredicate::SemanticExclusion { .. } => ConstraintTier::Light,
         ConstraintPredicate::Composite { children, .. } => children
             .iter()
             .map(predicate_tier)

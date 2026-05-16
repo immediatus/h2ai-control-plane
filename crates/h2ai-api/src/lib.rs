@@ -11,3 +11,4 @@ pub mod rho_ema;
 pub mod routes;
 pub mod shadow_auditor;
 pub mod state;
+pub mod tenant_registry;

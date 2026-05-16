@@ -1,0 +1,15 @@
+id: C-004
+title: "Budget Pacing — Idempotency Protection"
+severity: hard
+domains:
+  - financial_systems
+related_to:
+  - C-005
+  - C-008
+criteria:
+  pass: "Idempotency key plus atomic check-and-deduct using Redis Lua EVAL."
+  fail: "No idempotency key, or non-atomic check-then-act pattern."
+failure_modes:
+  - id: FM-001
+    name: Budget Cascade
+    description: "Multiple concurrent debits drain budget below zero"

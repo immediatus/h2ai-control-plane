@@ -102,6 +102,9 @@ async fn make_engine_input<'a>(
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     }
 }
 

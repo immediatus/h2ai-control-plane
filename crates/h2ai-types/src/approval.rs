@@ -1,10 +1,12 @@
 use crate::events::{ApprovalRiskLevel, ApprovalTrigger};
+use crate::identity::TenantId;
 use serde::{Deserialize, Serialize};
 
 /// Snapshot of a task output held pending human review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
     pub task_id: String,
+    pub tenant_id: TenantId,
     pub proposed_output: String,
     pub q_confidence: f64,
     pub triggered_by: ApprovalTrigger,

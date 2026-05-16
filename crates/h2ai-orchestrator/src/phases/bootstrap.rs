@@ -8,6 +8,8 @@ use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::TaskBootstrappedEvent;
 
+const TASK_CONTEXT_SECTION: &str = "## Task Context";
+
 pub struct Output {
     pub system_context: String,
     pub system_context_with_rubric: String,
@@ -18,9 +20,17 @@ pub struct Output {
 pub async fn run(input: &EngineInput<'_>) -> Result<Output, EngineError> {
     let task_id = input.task_id.clone();
 
-    let description = &input.manifest.description;
-    let compiled = compiler::compile(description, &input.constraint_corpus, false);
-    let compiled_with_rubric = compiler::compile(description, &input.constraint_corpus, true);
+    let manifest_text = match input.manifest.context.as_deref() {
+        Some(ctx) if !ctx.is_empty() => {
+            format!(
+                "{}\n\n{}\n{}",
+                input.manifest.description, TASK_CONTEXT_SECTION, ctx
+            )
+        }
+        _ => input.manifest.description.clone(),
+    };
+    let compiled = compiler::compile(&manifest_text, &input.constraint_corpus, false);
+    let compiled_with_rubric = compiler::compile(&manifest_text, &input.constraint_corpus, true);
 
     let adr_keywords: Vec<String> = input
         .constraint_corpus

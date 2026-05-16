@@ -1,0 +1,47 @@
+{
+  "_tenant_id": "platform-team",
+  "description": "Design a distributed session store for a multi-region web application. The system must support: (1) session lookup by user ID in under 5ms P99, (2) listing all active sessions for a given user (for concurrent login detection), (3) session expiry after 30 minutes of inactivity, (4) 50,000 active sessions at peak. The team uses Redis as the session backend.",
+  "pareto_weights": {
+    "diversity": 0.6,
+    "containment": 0.3,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.2,
+    "tau_max": 0.75
+  },
+  "context": "The concurrent login detection requirement (listing all sessions for a user) is the tricky part. A naive implementation uses Redis KEYS or SCAN to find all session:{user_id}:* keys — but KEYS is O(N) and blocks Redis, while SCAN is O(N) amortized and requires multiple round trips. The correct pattern is to maintain a secondary index: a Redis Set at sessions:user:{user_id} that holds all session IDs for that user. Session creation adds to the set; expiry removes from it. Listing is then O(1) per session via SMEMBERS. Note: KEYS is explicitly prohibited by the platform's Redis usage policy at 50K+ active sessions.",
+  "_timeout_s": 2400,
+  "_compare_semantics": "no_regression",
+  "_expected": {
+    "checks": [
+      {
+        "id": "SR/1",
+        "text": "Does the proposal avoid Redis KEYS command for listing sessions (KEYS is O(N) and blocks the Redis event loop at scale)?"
+      },
+      {
+        "id": "SR/2",
+        "text": "Does the proposal use a secondary index (e.g., a Redis Set per user) to enable O(1) session listing without scanning all keys?"
+      },
+      {
+        "id": "SR/3",
+        "text": "Does the proposal correctly handle session expiry in the secondary index — removing the session ID from the user's set when the session expires?"
+      }
+    ],
+    "checks_pass_threshold": 2,
+    "should_prune": [
+      {
+        "description": "Proposal that uses Redis KEYS 'session:{user_id}:*' to list sessions for a user",
+        "violates": "SR/1 — KEYS is O(N) blocking, prohibited at 50K+ sessions"
+      },
+      {
+        "description": "Proposal that uses Redis SCAN to list sessions without a secondary index",
+        "violates": "SR/2 — SCAN is O(N) amortized and requires multiple round trips; secondary index is required"
+      }
+    ],
+    "should_pass": [
+      "Proposal using two Redis structures per session: HSET session:{session_id} with user_id, created_at, last_active and EXPIRE; SADD sessions:user:{user_id} {session_id} for the secondary index. Listing sessions: SMEMBERS sessions:user:{user_id}. Expiry cleanup: use keyspace notifications or a cleanup job that calls SREM sessions:user:{user_id} {session_id} when session key expires."
+    ]
+  }
+}

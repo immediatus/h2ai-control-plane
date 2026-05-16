@@ -6,7 +6,7 @@ use axum::{
 };
 use h2ai_types::approval::ApprovalDecision;
 use h2ai_types::events::{ApprovalResolvedEvent, H2AIEvent};
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -16,21 +16,23 @@ pub struct ApproveRequest {
     pub operator_id: String,
 }
 
-/// `POST /tasks/{id}/approve`
+/// `POST /tenants/{tenant_id}/tasks/{task_id}/approve`
 ///
 /// Approve or reject a task awaiting human review.
 /// Returns 404 if no pending approval record exists.
 /// Returns 410 Gone (via InvalidRequest) if the review window has expired.
 /// Returns 409 Conflict (via InvalidRequest) on concurrent approval attempts.
 pub async fn approve_task(
-    Path(task_id): Path<String>,
+    Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
     Json(req): Json<ApproveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let tenant = TenantId::from(tenant_id.as_str());
     // 1. Load approval record with revision for CAS delete
+    let kv_key = format!("{}/{}", tenant.bucket_safe(), task_id);
     let (record, revision) = state
         .nats
-        .get_approval_record_with_revision(&task_id)
+        .get_approval_record_with_revision(&tenant, &task_id)
         .await
         .map_err(|e| ApiError::NatsUnavailable(e.to_string()))?
         .ok_or_else(|| ApiError::TaskNotFound(task_id.clone()))?;
@@ -60,7 +62,7 @@ pub async fn approve_task(
     // 4. Atomic delete of approval record — only the first caller wins
     state
         .nats
-        .delete_approval_record_if_revision(&task_id, revision)
+        .delete_approval_record_if_revision(&kv_key, revision)
         .await
         .map_err(|_| {
             ApiError::InvalidRequest(format!(
@@ -118,7 +120,7 @@ async fn finalize_approved_task(
     let merge_ev = H2AIEvent::MergeResolved(h2ai_types::events::MergeResolvedEvent {
         task_id: task_id.clone(),
         resolved_output: resolved_output.clone(),
-        j_eff: None,
+        j_eff: checkpoint.j_eff,
         timestamp: chrono::Utc::now(),
         oracle_gate_passed: None,
     });
@@ -161,17 +163,18 @@ async fn finalize_rejected_task(
     Ok(())
 }
 
-/// `GET /tasks/{id}/approval`
+/// `GET /tenants/{tenant_id}/tasks/{task_id}/approval`
 ///
 /// Returns the current `ApprovalRecord` if the task is awaiting approval.
 /// Returns 404 if no record exists.
 pub async fn get_approval(
-    Path(task_id): Path<String>,
+    Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let tenant = TenantId::from(tenant_id.as_str());
     let record = state
         .nats
-        .get_approval_record_with_revision(&task_id)
+        .get_approval_record_with_revision(&tenant, &task_id)
         .await
         .map_err(|e| ApiError::NatsUnavailable(e.to_string()))?
         .map(|(r, _)| r)

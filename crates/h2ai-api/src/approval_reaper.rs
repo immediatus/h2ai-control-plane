@@ -13,15 +13,19 @@ pub async fn run_approval_reaper(state: Arc<AppState>) {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        for (record, revision) in entries {
+        for (record, revision, kv_key) in entries {
             if now_ms > record.timeout_at_ms {
                 match state
                     .nats
-                    .delete_approval_record_if_revision(&record.task_id, revision)
+                    .delete_approval_record_if_revision(&kv_key, revision)
                     .await
                 {
                     Ok(()) => {
-                        tracing::info!(task_id = %record.task_id, "auto-rejecting timed-out approval");
+                        tracing::info!(
+                            task_id = %record.task_id,
+                            tenant_id = %record.tenant_id,
+                            "auto-rejecting timed-out approval"
+                        );
                         auto_reject(&state, &record).await;
                     }
                     Err(_) => {

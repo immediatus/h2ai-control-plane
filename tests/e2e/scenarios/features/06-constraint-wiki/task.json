@@ -1,0 +1,50 @@
+{
+  "_tenant_id": "ml-infra",
+  "description": "The ML Inference Service P99 latency has risen from 38ms to 67ms as the user base grew from 300M to 400M DAU. Root cause: L2 Redis cache miss rate increased from 8% to 22% for user targeting profiles due to long-tail users with infrequent activity. Design a solution that returns P99 to under 45ms without increasing the JVM heap beyond 32GB and without relaxing the consistency guarantee on budget enforcement data.",
+  "pareto_weights": {
+    "diversity": 0.5,
+    "containment": 0.4,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 2,
+    "tau_min": 0.3,
+    "tau_max": 0.8
+  },
+  "constraints": [
+    "CONSTRAINT-006",
+    "CONSTRAINT-007"
+  ],
+  "context": "Current state: L1 in-process cache TTL=60s (JVM heap, 32GB total), L2 Redis TTL=5min (hit rate dropped from 92% to 78%), feature store P99=180ms. Long-tail users (30% of DAU, 2% of requests) have features that fall out of both L1 and L2 between requests. Budget enforcement cache is a separate Redis cluster \u2014 its consistency model must not be touched. JVM heap is capped by ADR-006 at 32GB; increasing it triggers longer ZGC evacuation pauses that worsen P99 tail latency.",
+  "_timeout_s": 2400,
+  "_expected": {
+    "checks": [
+      {
+        "id": "CW/1",
+        "text": "Does the proposal keep the JVM heap at or below 32GB \u2014 explicitly avoiding an increase to accommodate a larger L1 cache?"
+      },
+      {
+        "id": "CW/2",
+        "text": "Does the proposal read budget balances from Redis atomic counters directly, not from the L1 or L2 feature cache?"
+      },
+      {
+        "id": "CW/3",
+        "text": "Does the proposal reference or acknowledge the ZGC constraint \u2014 that a larger heap increases GC evacuation pause duration?"
+      }
+    ],
+    "checks_pass_threshold": 2,
+    "should_prune": [
+      {
+        "description": "Proposal that increases the JVM heap from 32GB to 64GB to accommodate a larger L1 cache for long-tail users",
+        "violates": "CONSTRAINT-006 \u2014 heap must remain at 32GB; larger heaps increase ZGC evacuation pause duration"
+      },
+      {
+        "description": "Proposal that caches budget balances in L1 or L2 to reduce Redis reads",
+        "violates": "CONSTRAINT-007 \u2014 budget reads must come from Redis atomic counters directly, not from cache"
+      }
+    ],
+    "should_pass": [
+      "Proposal addressing long-tail cache miss by pre-warming L2 Redis for low-activity users during off-peak hours (e.g. 02:00\u201306:00 UTC batch job), or by increasing L2 TTL for ML features (not budget data), or by adding a probabilistic early re-caching mechanism (refresh when remaining TTL < 20% on read). None of these increase the JVM heap or touch budget cache consistency."
+    ]
+  }
+}

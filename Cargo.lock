@@ -1506,6 +1506,7 @@ name = "h2ai-config"
 version = "0.1.0"
 dependencies = [
  "config",
+ "h2ai-knowledge",
  "h2ai-types",
  "serde",
  "serde_json",
@@ -1564,6 +1565,7 @@ dependencies = [
  "h2ai-config",
  "h2ai-constraints",
  "h2ai-context",
+ "h2ai-knowledge",
  "h2ai-orchestrator",
  "h2ai-provisioner",
  "h2ai-state",
@@ -1601,6 +1603,20 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "h2ai-knowledge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "h2ai-constraints",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,22 +1,20 @@
 use crate::constraint_source::{NatsConstraintIndex, NatsConstraintStore};
-use crate::rho_ema::RhoEmaState;
+use crate::tenant_registry::{TenantRegistry, TenantState};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::resolver::ConstraintResolver;
 use h2ai_constraints::source::{FsConstraintIndex, FsConstraintStore};
 use h2ai_context::embedding::EmbeddingModel;
-use h2ai_orchestrator::bandit::BanditState;
+use h2ai_knowledge::provider::KnowledgeProvider;
 use h2ai_orchestrator::payload_store::{MemoryPayloadStore, PayloadStore};
-use h2ai_orchestrator::self_optimizer::TauSpreadEstimator;
 use h2ai_orchestrator::session_journal::SessionJournal;
-use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_provisioner::provider::AgentProvider;
 use h2ai_state::nats::NatsClient;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
-use h2ai_types::events::CalibrationCompletedEvent;
+use h2ai_types::identity::TenantId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{Notify, RwLock, Semaphore};
+use tokio::sync::{Notify, Semaphore};
 
 /// Answer slot and wakeup notifier for a single pending clarification.
 pub type ClarificationEntry = (Arc<Notify>, Arc<Mutex<Option<String>>>);
@@ -33,9 +31,9 @@ pub struct AppState {
     pub cfg: Arc<H2AIConfig>,
     /// In-memory task registry; tracks phase, status, and proposal counts per task ID.
     pub store: TaskStore,
-    /// Most recent calibration snapshot; populated by the calibration background loop.
-    /// Handlers return `ApiError::CalibrationRequired` when this is `None`.
-    pub calibration: Arc<RwLock<Option<CalibrationCompletedEvent>>>,
+    /// Per-tenant estimator registry. Single-tenant: always the "default" tenant.
+    /// Multi-tenant: lazy-created on first task submission per tenant.
+    pub tenant_registry: Arc<TenantRegistry>,
     /// Append-only event journal; persists task-event sequences to NATS for replay.
     pub journal: Arc<SessionJournal>,
     /// Ordered pool of compute adapters. Explorer slots are routed to `pool[diversity_id % pool.len()]`.
@@ -62,15 +60,6 @@ pub struct AppState {
     /// Optional embedding model for semantic similarity and Weiszfeld merge path.
     /// `None` disables embedding-dependent features (Weiszfeld, CG cosine agreement).
     pub embedding_model: Option<Arc<dyn EmbeddingModel>>,
-    /// Online estimator for the TAO loop per-turn quality factor. Accumulates
-    /// q_after/q_before ratios from Tier 1 verified tasks; returns heuristic 0.6 until 20 samples.
-    pub tao_multiplier_estimator: Arc<RwLock<TaoMultiplierEstimator>>,
-    /// EMA-tracked τ spread hint. Updated when SelfOptimizer suggests τ adjustments on
-    /// wasteful-but-successful tasks. User-specified τ bounds in task manifests always override.
-    pub tau_spread_estimator: Arc<RwLock<TauSpreadEstimator>>,
-    /// Thompson Sampling bandit for adaptive N selection. Learns optimal ensemble size
-    /// from task outcomes across runs. Persisted to NATS KV `H2AI_ESTIMATOR/bandit_state`.
-    pub bandit_state: Arc<RwLock<BanditState>>,
     /// In-memory Prometheus metrics state.
     pub metrics: std::sync::Arc<tokio::sync::RwLock<crate::metrics::MetricsState>>,
     /// When `Some`, `tasks.rs` builds a `NatsDispatchConfig` so explorer slots are
@@ -87,20 +76,18 @@ pub struct AppState {
     /// When `Some`, search-enabled slots get a pre-step and low-CV retries fetch contradiction evidence.
     /// When `None`, C1 falls back to hint-only without external web grounding.
     pub researcher_adapter: Option<Arc<dyn IComputeAdapter>>,
-    /// SRANI adaptive EMA state: (ema_cfi, count).
-    /// Loaded from NATS KV at startup; updated by tasks.rs after each engine run.
-    pub srani_state: Arc<tokio::sync::RwLock<(f64, usize)>>,
     /// SRANI grounding chain: spec anchor → LLM researcher → web search escalation.
     /// Built at startup from available adapters; `None` = spec anchor only (inline, no chain).
     pub srani_grounding_chain:
         Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
-    /// Online ρ EMA tracker for INNOVATION-3 (GAP-A3).
-    /// Updated after each engine run with pairwise centered score products.
-    pub rho_ema: Arc<RwLock<RhoEmaState>>,
     /// Pending human clarification waiters.
     /// Maps task_id → (Notify to wake the waiting engine, slot for the answer text).
     /// Populated by the engine when it suspends for clarification; resolved by POST /tasks/{id}/clarify.
     pub clarification_waiters: Arc<Mutex<HashMap<String, ClarificationEntry>>>,
+    /// Knowledge provider for hierarchical constraint retrieval.
+    /// Uses Bm25WikiProvider when [knowledge] config is present;
+    /// PassthroughProvider (delegates to ConstraintResolver) otherwise.
+    pub knowledge_provider: Arc<dyn KnowledgeProvider>,
 }
 
 impl AppState {
@@ -122,18 +109,11 @@ impl AppState {
         let journal =
             Arc::new(SessionJournal::new(nats.clone()).with_snapshot_interval(snapshot_interval));
         let max_tasks = cfg.max_concurrent_tasks;
-        let tau_spread = cfg.calibration_tau_spread;
-        let tao_ema_alpha = cfg.tao_estimator_ema_alpha;
-        let tao_warmup = cfg.tao_estimator_warmup;
-        let n_max_init = cfg.bandit_n_max_initial;
-        let bandit_n_max_arms = cfg.bandit_n_max_arms;
-        let bandit_prior_sigma = cfg.bandit_prior_sigma;
-        let bandit_prior_strength = cfg.bandit_prior_strength;
         Self {
             nats,
             cfg: Arc::new(cfg),
             store: TaskStore::new(),
-            calibration: Arc::new(RwLock::new(None)),
+            tenant_registry: Arc::new(TenantRegistry::new()),
             journal,
             adapter_pool,
             verification_adapter: auditor_adapter.clone(),
@@ -145,20 +125,6 @@ impl AppState {
             )),
             task_semaphore: Arc::new(Semaphore::new(max_tasks)),
             embedding_model: None,
-            tao_multiplier_estimator: Arc::new(RwLock::new(
-                TaoMultiplierEstimator::new_with_alpha(tao_ema_alpha).with_warmup(tao_warmup),
-            )),
-            tau_spread_estimator: Arc::new(RwLock::new(TauSpreadEstimator::new(
-                tau_spread[0],
-                tau_spread[1],
-            ))),
-            bandit_state: Arc::new(RwLock::new(BanditState::new(
-                n_max_init,
-                0,
-                bandit_n_max_arms,
-                bandit_prior_sigma,
-                bandit_prior_strength,
-            ))),
             metrics: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::metrics::MetricsState::default(),
             )),
@@ -166,11 +132,23 @@ impl AppState {
             payload_store: Arc::new(MemoryPayloadStore::new()),
             shadow_accumulator: None,
             researcher_adapter: None,
-            srani_state: Arc::new(tokio::sync::RwLock::new((0.0, 0))),
             srani_grounding_chain: None,
-            rho_ema: Arc::new(RwLock::new(RhoEmaState::default())),
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
+            knowledge_provider: {
+                use h2ai_knowledge::provider::PassthroughProvider;
+                // Default passthrough backed by empty corpus; overridden in main.rs
+                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
+                    ".",
+                )))
+            },
         }
+    }
+
+    /// Return isolated estimator state for the given tenant, creating it on first access.
+    ///
+    /// For single-tenant deployments: always call with `TenantId::default_tenant()`.
+    pub fn tenant_state(&self, id: &TenantId) -> Arc<TenantState> {
+        self.tenant_registry.get_or_create(id, &self.cfg)
     }
 
     #[cfg(feature = "fastembed-embed")]
@@ -225,114 +203,128 @@ impl AppState {
         }
     }
 
-    /// Load persisted TaoMultiplierEstimator state from NATS, if available.
-    /// Called once after construction. Silently falls back to the in-memory default on error.
-    pub async fn load_tao_estimator(&self) {
-        match self.nats.get_tao_estimator_state().await {
+    /// Seed calibration for a non-default tenant from the default tenant's calibration.
+    ///
+    /// Called at task submission time for non-default tenants. If the tenant has no
+    /// calibration yet and the default tenant does, copy the default calibration so the
+    /// new tenant can submit tasks immediately without a separate calibration run.
+    /// No-op if: the tenant already has calibration, the tenant IS the default, or
+    /// the default tenant has no calibration.
+    pub async fn seed_calibration_from_default_if_needed(&self, tenant_id: &TenantId) {
+        if *tenant_id == TenantId::default_tenant() {
+            return;
+        }
+        let ts = self.tenant_state(tenant_id);
+        {
+            let cal = ts.calibration.read().await;
+            if cal.is_some() {
+                return;
+            }
+        }
+        let default_ts = self.tenant_state(&TenantId::default_tenant());
+        let default_cal = default_ts.calibration.read().await.clone();
+        if let Some(cal) = default_cal {
+            *ts.calibration.write().await = Some(cal);
+            tracing::info!(
+                target: "h2ai.calibration",
+                %tenant_id,
+                "seeded calibration from default tenant"
+            );
+        }
+    }
+
+    /// Load persisted estimator state for `tenant_id` from NATS KV into the registry.
+    ///
+    /// Called at startup for the "default" tenant. New tenants start from cold defaults
+    /// and learn from their own tasks. Silently falls back to defaults on any error.
+    pub async fn load_tenant_state(&self, tenant_id: &TenantId) {
+        use h2ai_orchestrator::bandit::BanditState;
+        use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
+        use h2ai_types::events::CalibrationSource;
+
+        let ts = self.tenant_state(tenant_id);
+
+        // TAO multiplier
+        match self.nats.get_tao_estimator_state(tenant_id).await {
             Ok(Some((ema, count))) => {
                 let alpha = self.cfg.tao_estimator_ema_alpha;
-                // Reconstruct by deserializing the persisted fields, then restore alpha.
-                // warmup_sum is skipped in serde, so warm-up cannot be resumed mid-stream —
-                // documented in TaoMultiplierEstimator: put only persists when count >= 20.
+                // serde round-trip: TaoMultiplierEstimator serializes only {ema, count};
+                // alpha/warmup are #[serde(skip)] and restored via with_alpha().
                 let json = serde_json::json!({ "ema": ema, "count": count });
-                match serde_json::from_value::<h2ai_orchestrator::tao_loop::TaoMultiplierEstimator>(
-                    json,
-                ) {
-                    Ok(est) => {
-                        *self.tao_multiplier_estimator.write().await = est.with_alpha(alpha);
-                    }
+                match serde_json::from_value::<TaoMultiplierEstimator>(json) {
+                    Ok(est) => *ts.tao_multiplier_estimator.write().await = est.with_alpha(alpha),
                     Err(e) => {
-                        tracing::warn!(error = %e, "failed to deserialize tao_estimator; using default")
+                        tracing::warn!(error = %e, "tao_estimator deserialize failed; using default")
                     }
                 }
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "failed to load tao_estimator from NATS; using default")
+                tracing::warn!(error = %e, "tao_estimator load from NATS failed; using default")
             }
         }
-    }
 
-    /// Load persisted bandit state from NATS KV on startup.
-    /// No-op on first run (no entry yet) or on deserialization failure (uses default prior).
-    pub async fn load_bandit_state(&self) {
-        match self.nats.get_bandit_state().await {
+        // Bandit state
+        match self.nats.get_bandit_state(tenant_id).await {
             Ok(Some(bytes)) => match serde_json::from_slice::<BanditState>(&bytes) {
-                Ok(state) => {
-                    *self.bandit_state.write().await = state;
-                }
+                Ok(state) => *ts.bandit_state.write().await = state,
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to deserialize bandit state; using default prior")
+                    tracing::warn!(error = %e, "bandit state deserialize failed; using default")
                 }
             },
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "failed to load bandit state from NATS; using default prior")
+                tracing::warn!(error = %e, "bandit state load from NATS failed; using default")
             }
         }
-    }
 
-    /// Load persisted SRANI adaptive EMA state from NATS KV on startup.
-    /// On first run (no entry) or deserialization failure, falls back to cold-start defaults.
-    pub async fn load_srani_state(&self) {
-        match self.nats.get_srani_state().await {
+        // SRANI adaptive EMA
+        match self.nats.get_srani_state(tenant_id).await {
             Ok(Some((ema_cfi, count))) => {
-                *self.srani_state.write().await = (ema_cfi, count);
+                *ts.srani_state.write().await = (ema_cfi, count);
                 tracing::info!(
                     target: "h2ai.startup",
-                    ema_cfi,
-                    count,
+                    ema_cfi, count,
                     "srani adaptive state restored from NATS KV"
                 );
             }
             Ok(None) => {
                 let midpoint = self.cfg.srani.cold_start_midpoint();
-                *self.srani_state.write().await = (midpoint, 0);
+                *ts.srani_state.write().await = (midpoint, 0);
             }
             Err(e) => {
-                tracing::warn!(
-                    target: "h2ai.startup",
-                    error = %e,
-                    "failed to load srani state from NATS; using cold-start defaults"
-                );
+                tracing::warn!(target: "h2ai.startup", error = %e, "srani state load failed; using cold-start defaults");
                 let midpoint = self.cfg.srani.cold_start_midpoint();
-                *self.srani_state.write().await = (midpoint, 0);
+                *ts.srani_state.write().await = (midpoint, 0);
             }
         }
-    }
 
-    /// Restore persisted calibration from NATS KV into the in-memory field.
-    ///
-    /// Called once at startup. When calibration exists in NATS the server can accept
-    /// tasks immediately without requiring a POST /calibrate. When nothing is stored
-    /// the field stays `None` and the caller should run eager calibration before opening
-    /// for traffic.
-    pub async fn load_calibration(&self) {
+        // Calibration snapshot
+        // Calibration is currently a single global dataset per server — not per-tenant.
+        // A per-tenant calibration API is a future enhancement.
         match self.nats.get_calibration().await {
             Ok(Some(cal)) => {
                 let label = match cal.calibration_source {
-                    h2ai_types::events::CalibrationSource::Measured => "measured",
-                    h2ai_types::events::CalibrationSource::PartialFit => "partial_fit",
-                    h2ai_types::events::CalibrationSource::SyntheticPriors => "synthetic_priors",
+                    CalibrationSource::Measured => "measured",
+                    CalibrationSource::PartialFit => "partial_fit",
+                    CalibrationSource::SyntheticPriors => "synthetic_priors",
                 };
                 {
                     let mut metrics = self.metrics.write().await;
                     metrics.calibration_source_label = label.to_string();
                 }
-                if cal.calibration_source == h2ai_types::events::CalibrationSource::SyntheticPriors
-                {
+                if cal.calibration_source == CalibrationSource::SyntheticPriors {
                     tracing::warn!(
                         target: "h2ai.calibration",
-                        "stored calibration uses SyntheticPriors — N_max based on config defaults. \
-                         Run POST /calibrate to replace with real measurements."
+                        "stored calibration uses SyntheticPriors. Run POST /calibrate to replace."
                     );
                 }
-                *self.calibration.write().await = Some(cal);
+                *ts.calibration.write().await = Some(cal);
                 tracing::info!(target: "h2ai.calibration", "calibration restored from NATS KV");
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(target: "h2ai.calibration", error = %e, "failed to load calibration from NATS")
+                tracing::warn!(target: "h2ai.calibration", error = %e, "calibration load from NATS failed")
             }
         }
     }

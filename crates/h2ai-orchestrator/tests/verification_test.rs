@@ -1,5 +1,5 @@
 use chrono::Utc;
-use h2ai_adapters::mock::MockAdapter;
+use h2ai_adapters::mock::{MockAdapter, SequencedMockAdapter};
 use h2ai_constraints::types::aggregate_compliance_score;
 use h2ai_orchestrator::verification::{new_eval_cache, VerificationInput, VerificationPhase};
 use h2ai_types::config::{AdapterKind, VerificationConfig};
@@ -594,7 +594,426 @@ async fn panel_single_variant_matches_run_outcome() {
     assert_eq!(out.passed.len(), 1, "expected 1 passed proposal");
     assert_eq!(out.failed.len(), 0, "expected 0 failed proposals");
     // Single-variant → no panel disagreement possible.
-    assert!(uncertain_map.is_empty(), "single-variant panel must not produce uncertain constraints");
+    assert!(
+        uncertain_map.is_empty(),
+        "single-variant panel must not produce uncertain constraints"
+    );
+}
+
+// ── SemanticPresence ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn semantic_presence_yes_majority_passes() {
+    // All 3 passes return YES → majority satisfied → score 1.0 → Hard gate passes.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "presence_check".into(),
+        source_file: "test".into(),
+        description: "concept must be present".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticPresence {
+            concept: "idempotency".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec![
+        "YES, concept present".into(),
+        "YES, idempotency addressed".into(),
+        "YES".into(),
+    ]);
+    let proposal = make_proposal(TaskId::new(), "We use idempotency keys on every request.");
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.passed.len(), 1, "3/3 YES → majority passes");
+    assert_eq!(out.failed.len(), 0);
+    assert!((out.passed[0].1[0].score - 1.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn semantic_presence_no_majority_fails() {
+    // 1 YES, 2 NO → minority (1*2 < 3) → score 0.0 → Hard gate fails.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "presence_check".into(),
+        source_file: "test".into(),
+        description: "concept must be present".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticPresence {
+            concept: "idempotency".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator =
+        SequencedMockAdapter::new(vec!["YES".into(), "NO, not mentioned".into(), "NO".into()]);
+    let proposal = make_proposal(
+        TaskId::new(),
+        "We use a simple DECRBY without any idempotency.",
+    );
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.failed.len(), 1, "1/3 YES → minority fails");
+    assert_eq!(out.passed.len(), 0);
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+// ── SemanticOrdering ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn semantic_ordering_correct_order_passes() {
+    // Proposal correctly sequences debit then Kafka publish → 3/3 YES → score 1.0.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "C-005-ordering".into(),
+        source_file: "test".into(),
+        description: "debit before Kafka".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticOrdering {
+            first: "account debit".into(),
+            then: "Kafka publish".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec![
+        "YES, debit happens first then Kafka publish".into(),
+        "YES".into(),
+        "YES".into(),
+    ]);
+    let proposal = make_proposal(
+        TaskId::new(),
+        "Execute account debit atomically via Lua. After debit succeeds, publish to Kafka financial-events topic.",
+    );
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.passed.len(), 1, "correct ordering → passes");
+    assert!((out.passed[0].1[0].score - 1.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn semantic_ordering_wrong_order_fails() {
+    // Proposal publishes to Kafka before debiting → 0 YES → score 0.0 → Hard fails.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "C-005-ordering".into(),
+        source_file: "test".into(),
+        description: "debit before Kafka".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticOrdering {
+            first: "account debit".into(),
+            then: "Kafka publish".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec![
+        "NO, Kafka publish happens before the debit".into(),
+        "NO".into(),
+        "NO".into(),
+    ]);
+    let proposal = make_proposal(
+        TaskId::new(),
+        "Publish to Kafka first to record intent, then debit the account balance.",
+    );
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.failed.len(), 1, "wrong ordering → fails");
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn semantic_ordering_no_kafka_mention_fails() {
+    // Proposal uses Redis shadow log instead of Kafka → evaluator returns NO → score 0.0.
+    // This is the C-005/1 regression scenario: audit via Redis sorted set, not Kafka.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "C-005-ordering".into(),
+        source_file: "test".into(),
+        description: "debit before Kafka publish".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticOrdering {
+            first: "account debit".into(),
+            then: "Kafka publish".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec![
+        "NO, no Kafka mentioned — uses Redis sorted set instead".into(),
+        "NO".into(),
+        "NO".into(),
+    ]);
+    let proposal = make_proposal(
+        TaskId::new(),
+        "After debit, write audit record to Redis sorted set (ZADD shadow_log causal_seq record). No Kafka.",
+    );
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(
+        out.failed.len(),
+        1,
+        "Redis-only audit (no Kafka) must fail C-005 ordering gate"
+    );
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+// ── SemanticExclusion ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn semantic_exclusion_pattern_absent_passes() {
+    // Pattern not found → evaluator says NO (not present) → inverted → score 1.0 → passes.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "exclusion_check".into(),
+        source_file: "test".into(),
+        description: "no distributed locks on critical path".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticExclusion {
+            pattern: "distributed lock".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec![
+        "NO, no distributed lock present".into(),
+        "NO".into(),
+        "NO".into(),
+    ]);
+    let proposal = make_proposal(
+        TaskId::new(),
+        "Use Redis Lua script for atomic debit. No locking required.",
+    );
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.passed.len(), 1, "excluded pattern absent → passes");
+    assert!((out.passed[0].1[0].score - 1.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn semantic_exclusion_pattern_present_fails() {
+    // Pattern found → evaluator says YES (present) → inverted → score 0.0 → fails.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "exclusion_check".into(),
+        source_file: "test".into(),
+        description: "no distributed locks on critical path".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticExclusion {
+            pattern: "distributed lock".into(),
+            passes: 3,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec![
+        "YES, Redlock distributed lock is used".into(),
+        "YES".into(),
+        "YES".into(),
+    ]);
+    let proposal = make_proposal(
+        TaskId::new(),
+        "Acquire a Redlock distributed lock before each DECRBY to prevent concurrent debits.",
+    );
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.failed.len(), 1, "excluded pattern present → fails");
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+// ── Majority vote edge cases ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn majority_vote_tie_is_conservative_fail() {
+    // With passes=2: 1 YES, 1 NO → tie (1*2 == 2, not > 2) → conservative → score 0.0.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let doc = ConstraintDoc {
+        id: "tie_check".into(),
+        source_file: "test".into(),
+        description: "concept must be present".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticPresence {
+            concept: "idempotency".into(),
+            passes: 2,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let evaluator = SequencedMockAdapter::new(vec!["YES".into(), "NO".into()]);
+    let proposal = make_proposal(TaskId::new(), "Ambiguous proposal.");
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out.failed.len(), 1, "tie (1/2) must conservatively fail");
+    assert!((out.failed[0].1[0].score - 0.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn majority_vote_single_pass_requires_unanimous() {
+    // With passes=1: single YES → 1*2=2 > 1 → passes.
+    // With passes=1: single NO → 0*2=0 ≤ 1 → fails.
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    let make_doc = || ConstraintDoc {
+        id: "single_pass".into(),
+        source_file: "test".into(),
+        description: "single pass check".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticPresence {
+            concept: "idempotency".into(),
+            passes: 1,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    // YES path
+    let yes_eval = SequencedMockAdapter::new(vec!["YES".into()]);
+    let out_yes = VerificationPhase::run(VerificationInput {
+        proposals: vec![make_proposal(TaskId::new(), "Uses idempotency keys.")],
+        constraint_corpus: &[make_doc()],
+        evaluator: &yes_eval as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(
+        out_yes.passed.len(),
+        1,
+        "single YES with passes=1 must pass"
+    );
+
+    // NO path
+    let no_eval = SequencedMockAdapter::new(vec!["NO".into()]);
+    let out_no = VerificationPhase::run(VerificationInput {
+        proposals: vec![make_proposal(TaskId::new(), "No idempotency at all.")],
+        constraint_corpus: &[make_doc()],
+        evaluator: &no_eval as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    assert_eq!(out_no.failed.len(), 1, "single NO with passes=1 must fail");
+}
+
+// ── predicate_tier ────────────────────────────────────────────────────────────
+
+#[test]
+fn predicate_tier_semantic_variants_are_light() {
+    use h2ai_constraints::types::{ConstraintPredicate, ConstraintTier};
+    let cases = vec![
+        ConstraintPredicate::SemanticPresence {
+            concept: "x".into(),
+            passes: 3,
+        },
+        ConstraintPredicate::SemanticOrdering {
+            first: "a".into(),
+            then: "b".into(),
+            passes: 3,
+        },
+        ConstraintPredicate::SemanticExclusion {
+            pattern: "p".into(),
+            passes: 3,
+        },
+    ];
+    for pred in &cases {
+        let doc = h2ai_constraints::types::ConstraintDoc {
+            id: "t".into(),
+            source_file: "t".into(),
+            description: "t".into(),
+            severity: h2ai_constraints::types::ConstraintSeverity::Hard { threshold: 0.5 },
+            predicate: pred.clone(),
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        };
+        assert_eq!(
+            doc.tier(),
+            ConstraintTier::Light,
+            "{pred:?} must be Light, not Static"
+        );
+    }
 }
 
 #[tokio::test]
@@ -634,5 +1053,8 @@ async fn panel_all_pass_uncertain_map_is_empty() {
 
     assert_eq!(out.passed.len(), 2, "both proposals should pass");
     assert_eq!(out.failed.len(), 0);
-    assert!(uncertain_map.is_empty(), "all-pass verdicts must not populate uncertain_map");
+    assert!(
+        uncertain_map.is_empty(),
+        "all-pass verdicts must not populate uncertain_map"
+    );
 }

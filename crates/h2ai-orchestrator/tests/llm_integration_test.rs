@@ -152,7 +152,10 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
 
     let task_id = TaskId::new();
     let store = TaskStore::new();
-    store.insert(task_id.clone(), TaskState::new(task_id.clone()));
+    store.insert(
+        task_id.clone(),
+        TaskState::new(task_id.clone(), TenantId::default_tenant()),
+    );
 
     let explorer = make_adapter();
     let mock_verifier = MockAdapter::new(r#"{"score": 0.8, "reason": "compliant"}"#.into());
@@ -222,6 +225,9 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let max_allowed_proposals = n_max_floor * (cfg.max_autonomic_retries + 1);
@@ -356,7 +362,10 @@ async fn engine_full_pipeline_debug_trace() {
     eprintln!("\n── Phase 3: Engine run ──────────────────────────────────────────");
     let task_id = TaskId::new();
     let store = TaskStore::new();
-    store.insert(task_id.clone(), TaskState::new(task_id.clone()));
+    store.insert(
+        task_id.clone(),
+        TaskState::new(task_id.clone(), TenantId::default_tenant()),
+    );
 
     // Real LLM for exploration only. Mock verifier/auditor keep LLM call count low.
     let explorer = make_adapter();
@@ -395,6 +404,9 @@ async fn engine_full_pipeline_debug_trace() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = match ExecutionEngine::run_offline(input).await {

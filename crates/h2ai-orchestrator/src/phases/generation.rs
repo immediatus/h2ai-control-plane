@@ -27,6 +27,15 @@ pub struct Input<'a> {
     pub pending_tombstone: Option<String>,
     /// Adapter pool rotation offset (index modulo).
     pub adapter_rotation_offset: usize,
+    /// Leader context snapshot for per-slot prefix injection.
+    pub leader_context: Option<crate::leader::LeaderContextSnapshot>,
+    /// Assembled contexts from the previous wave for delta encoding.
+    pub prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
+    /// Compression adapter for LLM summarization pass.
+    pub compression_adapter: Option<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>>,
+    /// Cross-task stable context cache.
+    pub stable_cache:
+        Option<std::sync::Arc<crate::context_assembler::stable_cache::StableContextCache>>,
 }
 
 pub struct Output {
@@ -39,6 +48,8 @@ pub struct Output {
     pub researcher_grounding_events: Vec<ResearcherGroundingEvent>,
     /// Captured for epistemic yield — count of proposals dispatched.
     pub failed_count: u32,
+    /// Assembled contexts from this wave, for threading to next wave.
+    pub assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 }
 
 /// Run Phase 3: Parallel Generation.
@@ -117,68 +128,152 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
         }
     }
 
+    // ── Phase A: collect per-slot inputs (sync) ──────────────────────────────
+    struct SlotData {
+        slot_task: String,
+        leader_prefix: Option<String>,
+        role_frame: Option<String>,
+        mandate: Option<String>,
+        rejection_criteria: Option<String>,
+        grounding: Option<String>,
+        tombstone: Option<String>,
+    }
+
+    let slot_data: Vec<SlotData> = provisioned
+        .explorer_configs
+        .iter()
+        .enumerate()
+        .map(|(idx, explorer_cfg)| {
+            let slot_task = {
+                let configs = effective_slot_configs;
+                if configs.is_empty() {
+                    engine_input.manifest.description.clone()
+                } else {
+                    let sc = &configs[idx % configs.len()];
+                    let cot = sc.cot_style.instruction();
+                    if cot.is_empty() {
+                        engine_input.manifest.description.clone()
+                    } else {
+                        format!("{}\n\n{}", cot, engine_input.manifest.description)
+                    }
+                }
+            };
+
+            let (role_frame, mandate, rejection_criteria) = {
+                let configs = effective_slot_configs;
+                if configs.is_empty() {
+                    (None, None, None)
+                } else {
+                    let sc = &configs[idx % configs.len()];
+                    (
+                        if sc.role_frame.is_empty() {
+                            None
+                        } else {
+                            Some(sc.role_frame.clone())
+                        },
+                        if sc.focus_mandate.is_empty() {
+                            None
+                        } else {
+                            Some(sc.focus_mandate.clone())
+                        },
+                        if sc.rejection_criteria.is_empty() {
+                            None
+                        } else {
+                            Some(sc.rejection_criteria.clone())
+                        },
+                    )
+                }
+            };
+
+            let leader_prefix: Option<String> = input.leader_context.as_ref().and_then(|ls| {
+                if ls.term == 0 {
+                    return None;
+                }
+                if explorer_cfg.explorer_id == ls.leader_explorer_id {
+                    Some(crate::leader::build_leader_prefix(
+                        ls,
+                        &explorer_cfg.explorer_id,
+                    ))
+                } else {
+                    let follower_idx = {
+                        let mut fi = 0usize;
+                        let mut count = 0usize;
+                        for (j, ec) in provisioned.explorer_configs.iter().enumerate() {
+                            if ec.explorer_id != ls.leader_explorer_id {
+                                if j == idx {
+                                    fi = count;
+                                }
+                                count += 1;
+                            }
+                        }
+                        fi
+                    };
+                    Some(crate::leader::build_follower_prefix_with_aspect(
+                        ls,
+                        follower_idx,
+                        0.4,
+                    ))
+                }
+            });
+
+            let grounding = slot_groundings.get(idx).and_then(|g| g.as_ref()).cloned();
+            let tombstone = input.pending_tombstone.clone();
+
+            SlotData {
+                slot_task,
+                leader_prefix,
+                role_frame,
+                mandate,
+                rejection_criteria,
+                grounding,
+                tombstone,
+            }
+        })
+        .collect();
+
+    // ── Phase B: async context assembly ──────────────────────────────────────
+    use crate::context_assembler::{ContextAssembler, ContextAssemblerInput};
+
+    let assembled_ctx_futs: Vec<_> = slot_data
+        .iter()
+        .enumerate()
+        .map(|(idx, sd)| {
+            let assembler_input = ContextAssemblerInput {
+                active_ctx: active_ctx.as_str(),
+                retry_context: None,
+                leader_prefix: sd.leader_prefix.as_deref(),
+                grounding: sd.grounding.as_deref(),
+                tombstone: sd.tombstone.as_deref(),
+                role_frame: sd.role_frame.as_deref(),
+                mandate: sd.mandate.as_deref(),
+                rejection_criteria: sd.rejection_criteria.as_deref(),
+                prev_wave_blob: input
+                    .prev_assembled_contexts
+                    .get(idx)
+                    .and_then(|x| x.as_ref()),
+                budget: engine_input.cfg.context_budget_tokens,
+                quality_guard_ratio: engine_input.cfg.context_quality_guard_ratio,
+                compression_adapter: input.compression_adapter.as_deref(),
+                stable_cache: input.stable_cache.as_deref(),
+                global_knowledge: None,
+                topic_knowledge: None,
+            };
+            ContextAssembler::build(assembler_input)
+        })
+        .collect();
+
+    let assembled_contexts: Vec<crate::context_assembler::AssembledContext> =
+        join_all(assembled_ctx_futs).await;
+
+    // ── Phase C: build futures_vec using assembled contexts ───────────────────
     let futures_vec: Vec<ExplorerFuture<'_>> = provisioned
         .explorer_configs
         .iter()
         .enumerate()
         .map(|(idx, explorer_cfg)| {
-            let (slot_task, slot_system_ctx) = {
-                let configs = effective_slot_configs;
-                if configs.is_empty() {
-                    (
-                        engine_input.manifest.description.clone(),
-                        active_ctx.clone(),
-                    )
-                } else {
-                    let sc = &configs[idx % configs.len()];
-                    let cot = sc.cot_style.instruction();
-                    let task = if cot.is_empty() {
-                        engine_input.manifest.description.clone()
-                    } else {
-                        format!("{}\n\n{}", cot, engine_input.manifest.description)
-                    };
-                    let mut preamble = String::new();
-                    if !sc.role_frame.is_empty() {
-                        preamble.push_str(&sc.role_frame);
-                    }
-                    if !sc.focus_mandate.is_empty() {
-                        if !preamble.is_empty() {
-                            preamble.push_str("\n\n");
-                        }
-                        preamble.push_str("[MANDATE]: ");
-                        preamble.push_str(&sc.focus_mandate);
-                    }
-                    if !sc.rejection_criteria.is_empty() {
-                        if !preamble.is_empty() {
-                            preamble.push_str("\n\n");
-                        }
-                        preamble
-                            .push_str("[AFTER WRITING YOUR PROPOSAL, IDENTIFY THE BIGGEST RISK]: ");
-                        preamble.push_str(&sc.rejection_criteria);
-                    }
-                    let base_ctx = if preamble.is_empty() {
-                        active_ctx.clone()
-                    } else {
-                        format!("{}\n\n{}", preamble, active_ctx)
-                    };
-                    let ctx = if let Some(grounding) =
-                        slot_groundings.get(idx).and_then(|g| g.as_ref())
-                    {
-                        format!("{}\n\n{}", grounding, base_ctx)
-                    } else {
-                        base_ctx
-                    };
-                    (task, ctx)
-                }
-            };
-            let effective_ctx = if let Some(ref tombstone) = input.pending_tombstone {
-                format!("{}\n\n{}", slot_system_ctx, tombstone)
-            } else {
-                slot_system_ctx
-            };
             let req = ComputeRequest {
-                system_context: effective_ctx,
-                task: slot_task,
+                system_context: assembled_contexts[idx].text.clone(),
+                task: slot_data[idx].slot_task.clone(),
                 tau: explorer_cfg.tau,
                 max_tokens: engine_input.cfg.explorer_max_tokens,
             };
@@ -322,5 +417,6 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
         turn1_map,
         researcher_grounding_events,
         failed_count,
+        assembled_contexts: assembled_contexts.into_iter().map(Some).collect(),
     })
 }

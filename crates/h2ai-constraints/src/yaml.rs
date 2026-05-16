@@ -1,4 +1,6 @@
-use crate::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+use crate::types::{
+    CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity, NumericOp,
+};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -12,6 +14,70 @@ pub struct NumericCheck {
     pub op: String,
     /// Threshold value to compare against.
     pub value: f64,
+}
+
+/// A declarative structural predicate for binary (pass/fail) gate evaluation.
+/// Evaluated async via majority vote before LlmJudge in the And chain.
+#[derive(Debug, Deserialize)]
+pub struct StructuredPredicate {
+    #[serde(rename = "type")]
+    pub predicate_type: String,
+    /// Required for semantic_presence
+    pub concept: Option<String>,
+    /// Required for semantic_ordering: the event that must come first
+    pub first: Option<String>,
+    /// Required for semantic_ordering: the event that must come after `first`
+    pub then: Option<String>,
+    /// Required for semantic_exclusion
+    pub pattern: Option<String>,
+    /// Number of independent LLM passes for majority vote. Default 3.
+    #[serde(default = "default_binary_passes_yaml")]
+    pub passes: u8,
+}
+
+fn default_binary_passes_yaml() -> u8 {
+    3
+}
+
+/// A failure mode entry — enriches the LlmJudge rubric with known failure patterns.
+/// Accepts both (trigger/consequence) and (name/description/impact) field variants
+/// so the struct is compatible with existing constraint files.
+#[derive(Debug, Deserialize)]
+pub struct FailureModeYaml {
+    pub id: String,
+    /// Short label for the failure mode (alias: trigger)
+    #[serde(alias = "trigger")]
+    pub name: Option<String>,
+    /// Full description of what goes wrong (alias: consequence)
+    #[serde(alias = "consequence")]
+    pub description: Option<String>,
+    /// Impact of the failure (optional — not all existing files provide this)
+    pub impact: Option<String>,
+}
+
+/// An example entry (positive or negative) — enriches the LlmJudge rubric.
+/// Accepts both `scenario` and `description` field names for compatibility with existing files.
+#[derive(Debug, Deserialize)]
+pub struct ExampleYaml {
+    /// Scenario label (alias: description — used by existing constraint files)
+    #[serde(alias = "description")]
+    pub scenario: Option<String>,
+    pub code: Option<String>,
+    pub why_wrong: Option<String>,
+    pub why_correct: Option<String>,
+}
+
+impl ExampleYaml {
+    fn label(&self) -> &str {
+        self.scenario.as_deref().unwrap_or("")
+    }
+
+    fn rationale(&self) -> &str {
+        self.why_wrong
+            .as_deref()
+            .or(self.why_correct.as_deref())
+            .unwrap_or("")
+    }
 }
 
 /// Structured YAML constraint file — the canonical format for new constraints.
@@ -60,6 +126,23 @@ pub struct ConstraintYaml {
     pub numeric_checks: Vec<NumericCheck>,
 
     pub criteria: Criteria,
+
+    /// Declarative binary structural predicates — evaluated async before LlmJudge.
+    /// When non-empty, builds Composite(And([...structural, LlmJudge])).
+    #[serde(default)]
+    pub predicates: Vec<StructuredPredicate>,
+
+    /// Failure modes appended to the LlmJudge rubric for richer evaluator context.
+    #[serde(default)]
+    pub failure_modes: Vec<FailureModeYaml>,
+
+    /// Negative examples appended to the rubric to steer the model away from bad patterns.
+    #[serde(default)]
+    pub negative_examples: Vec<ExampleYaml>,
+
+    /// Positive examples appended to the rubric to reinforce correct patterns.
+    #[serde(default)]
+    pub positive_examples: Vec<ExampleYaml>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -95,8 +178,8 @@ impl ConstraintYaml {
     /// Assemble a LlmJudge rubric from structured criteria.
     ///
     /// The JSON response format lives in EVALUATOR_SYSTEM_PROMPT — not here.
-    /// Domain context and remediation guidance are appended when present so the
-    /// evaluator can recognise compliant solutions without guessing the intent.
+    /// Domain context, remediation guidance, failure modes, and examples are appended
+    /// so the evaluator can recognise compliant solutions without guessing the intent.
     pub fn build_rubric(&self) -> String {
         let partial = self.criteria.partial.as_deref().unwrap_or(
             "Partially satisfies the pass criteria, or intent is correct but a key detail is missing or unclear.",
@@ -123,10 +206,56 @@ impl ConstraintYaml {
                 self.criteria.checks.len()
             ));
         }
+        if !self.failure_modes.is_empty() {
+            rubric.push_str("\n\n--- Failure Modes ---");
+            for fm in &self.failure_modes {
+                let name = fm.name.as_deref().unwrap_or("");
+                let desc = fm.description.as_deref().unwrap_or("");
+                let impact_str = fm
+                    .impact
+                    .as_deref()
+                    .map(|i| format!(" Impact: {i}"))
+                    .unwrap_or_default();
+                rubric.push_str(&format!("\n{} ({}): {}{}", fm.id, name, desc, impact_str));
+            }
+        }
+        if !self.negative_examples.is_empty() {
+            rubric.push_str("\n\n--- Negative Examples (DO NOT generate) ---");
+            for ex in &self.negative_examples {
+                let label = ex.label();
+                if !label.is_empty() {
+                    rubric.push_str(&format!("\nScenario: {label}"));
+                }
+                if let Some(code) = &ex.code {
+                    rubric.push_str(&format!("\n```\n{code}\n```"));
+                }
+                let rationale = ex.rationale();
+                if !rationale.is_empty() {
+                    rubric.push_str(&format!("\nWhy wrong: {rationale}"));
+                }
+            }
+        }
+        if !self.positive_examples.is_empty() {
+            rubric.push_str("\n\n--- Positive Examples (generate patterns like these) ---");
+            for ex in &self.positive_examples {
+                let label = ex.label();
+                if !label.is_empty() {
+                    rubric.push_str(&format!("\nScenario: {label}"));
+                }
+                if let Some(code) = &ex.code {
+                    rubric.push_str(&format!("\n```\n{code}\n```"));
+                }
+                let rationale = ex.rationale();
+                if !rationale.is_empty() {
+                    rubric.push_str(&format!("\nWhy correct: {rationale}"));
+                }
+            }
+        }
         rubric
     }
 
     pub fn into_constraint_doc(self) -> ConstraintDoc {
+        let constraint_id = self.id.clone();
         let rubric = self.build_rubric();
         let severity = match self.severity {
             SeverityKind::Hard => ConstraintSeverity::Hard {
@@ -137,46 +266,88 @@ impl ConstraintYaml {
             },
             SeverityKind::Advisory => ConstraintSeverity::Advisory,
         };
+
+        let structural_predicates: Vec<ConstraintPredicate> = self
+            .predicates
+            .into_iter()
+            .filter_map(|p| match p.predicate_type.as_str() {
+                "semantic_ordering" => {
+                    let first = p.first.filter(|s| !s.is_empty())?;
+                    let then = p.then.filter(|s| !s.is_empty())?;
+                    Some(ConstraintPredicate::SemanticOrdering {
+                        first,
+                        then,
+                        passes: p.passes,
+                    })
+                }
+                "semantic_presence" => {
+                    let concept = p.concept.filter(|s| !s.is_empty())?;
+                    Some(ConstraintPredicate::SemanticPresence {
+                        concept,
+                        passes: p.passes,
+                    })
+                }
+                "semantic_exclusion" => {
+                    let pattern = p.pattern.filter(|s| !s.is_empty())?;
+                    Some(ConstraintPredicate::SemanticExclusion {
+                        pattern,
+                        passes: p.passes,
+                    })
+                }
+                other => {
+                    tracing::warn!(
+                        constraint_id = %constraint_id,
+                        predicate_type = other,
+                        "unknown predicate type; skipping"
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        let predicate = if self.numeric_checks.is_empty() && structural_predicates.is_empty() {
+            ConstraintPredicate::LlmJudge { rubric }
+        } else {
+            let mut children: Vec<ConstraintPredicate> = self
+                .numeric_checks
+                .iter()
+                .map(|nc| {
+                    let op = match nc.op.as_str() {
+                        "lt" => NumericOp::Lt,
+                        "le" => NumericOp::Le,
+                        "eq" => NumericOp::Eq,
+                        "ge" => NumericOp::Ge,
+                        "gt" => NumericOp::Gt,
+                        other => {
+                            tracing::warn!(
+                                "unknown numeric_check op '{}'; defaulting to le",
+                                other
+                            );
+                            NumericOp::Le
+                        }
+                    };
+                    ConstraintPredicate::NumericThreshold {
+                        field_pattern: nc.pattern.clone(),
+                        op,
+                        value: nc.value,
+                    }
+                })
+                .collect();
+            // Structural predicates run before LlmJudge — a 0.0 gate short-circuits it
+            children.extend(structural_predicates);
+            children.push(ConstraintPredicate::LlmJudge { rubric });
+            ConstraintPredicate::Composite {
+                op: CompositeOp::And,
+                children,
+            }
+        };
+
         ConstraintDoc {
             id: self.id.clone(),
             source_file: self.id.clone(),
             description: self.title,
             severity,
-            predicate: if self.numeric_checks.is_empty() {
-                ConstraintPredicate::LlmJudge { rubric }
-            } else {
-                use crate::types::{CompositeOp, NumericOp};
-                let mut children: Vec<ConstraintPredicate> = self
-                    .numeric_checks
-                    .iter()
-                    .map(|nc| {
-                        let op = match nc.op.as_str() {
-                            "lt" => NumericOp::Lt,
-                            "le" => NumericOp::Le,
-                            "eq" => NumericOp::Eq,
-                            "ge" => NumericOp::Ge,
-                            "gt" => NumericOp::Gt,
-                            other => {
-                                tracing::warn!(
-                                    "unknown numeric_check op '{}'; defaulting to le",
-                                    other
-                                );
-                                NumericOp::Le
-                            }
-                        };
-                        ConstraintPredicate::NumericThreshold {
-                            field_pattern: nc.pattern.clone(),
-                            op,
-                            value: nc.value,
-                        }
-                    })
-                    .collect();
-                children.push(ConstraintPredicate::LlmJudge { rubric });
-                ConstraintPredicate::Composite {
-                    op: CompositeOp::And,
-                    children,
-                }
-            },
+            predicate,
             remediation_hint: self.remediation_hint,
             domains: self.domains,
             mandatory_for_tags: self.mandatory_for_tags,

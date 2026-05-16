@@ -34,11 +34,11 @@ fn make_resolver() -> ConstraintResolver {
 fn corpus_loads_all_yaml_constraints() {
     let (store, _) = load_corpus();
     let docs = store.all_docs_sorted();
-    // 7 original ads-platform constraints + 4 CACHE constraints added for agent-comparison experiment
+    // 8 original ads-platform constraints + 4 CACHE constraints added for agent-comparison experiment
     assert_eq!(
         docs.len(),
-        11,
-        "ads-platform corpus must contain exactly 11 constraints; got {}: {:?}",
+        12,
+        "ads-platform corpus must contain exactly 12 constraints; got {}: {:?}",
         docs.len(),
         docs.iter().map(|d| &d.id).collect::<Vec<_>>()
     );

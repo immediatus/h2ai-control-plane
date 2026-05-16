@@ -1,0 +1,48 @@
+{
+  "_tenant_id": "billing-team",
+  "description": "Design the budget check-and-deduct operation for a real-time bidding platform. Campaigns have daily budgets stored in Redis. When a bid opportunity arrives, the system must check if remaining budget ≥ bid amount and, if so, atomically deduct it. The system processes 80,000 bid requests per second across 12 pods. Design the budget check-and-deduct that prevents overspend under concurrent load.",
+  "pareto_weights": {
+    "diversity": 0.4,
+    "containment": 0.4,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.2,
+    "tau_max": 0.75
+  },
+  "constraints": ["CONSTRAINT-004", "CONSTRAINT-005"],
+  "context": "Current broken implementation: GET budget; if budget >= bid: DECRBY budget bid. This has a TOCTOU race: two pods can both read budget=100 and both deduct 80, resulting in -60 overspend. The fix must be atomic. Redis version: 7.2. Kafka topic 'financial-events' is available for audit. Each bid deduction must be traceable — write an audit event to Kafka after every successful deduction.",
+  "_timeout_s": 2400,
+  "_compare_semantics": "no_regression",
+  "_expected": {
+    "checks": [
+      {
+        "id": "VC/1",
+        "text": "Does the proposal use a single atomic Redis operation (Lua script, MULTI/EXEC, or similar) for the check-and-deduct — not a separate GET followed by a conditional DECRBY?"
+      },
+      {
+        "id": "VC/2",
+        "text": "Does the proposal explicitly explain why non-atomic check-then-deduct fails under concurrent load (race condition / TOCTOU)?"
+      },
+      {
+        "id": "VC/3",
+        "text": "Does the proposal publish a bid deduction event to Kafka (financial-events or similar audit topic) after each successful deduction?"
+      }
+    ],
+    "checks_pass_threshold": 2,
+    "should_prune": [
+      {
+        "description": "Proposal that reads budget with GET then conditionally decrements with DECRBY as two separate commands",
+        "violates": "CONSTRAINT-004 — budget check-and-deduct must be atomic; two-command pattern has TOCTOU race"
+      },
+      {
+        "description": "Proposal that uses Redis WATCH/MULTI/EXEC optimistic lock but retries indefinitely under high contention without a circuit breaker",
+        "violates": "CONSTRAINT-004 — under 80K TPS, unbounded retry loops cause cascading latency spikes"
+      }
+    ],
+    "should_pass": [
+      "Proposal using Redis Lua script: atomically checks remaining budget >= bid_amount, decrements if true, returns new balance. After successful Lua deduction, publishes {campaign_id, bid_amount, timestamp, request_id} to Kafka financial-events topic. Idempotency key prevents double-deduction on retry."
+    ]
+  }
+}

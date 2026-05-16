@@ -10,14 +10,26 @@ use axum::Router;
 pub fn task_router() -> Router<AppState> {
     use axum::routing::{get, post};
     Router::new()
-        .route("/tasks", post(tasks::submit_task))
-        .route("/tasks/:task_id/events", get(tasks::task_events))
-        .route("/tasks/:task_id", get(tasks::task_status))
-        .route("/tasks/:task_id/merge", post(tasks::merge_task))
-        .route("/tasks/:task_id/recover", get(recovery::recover_task))
-        .route("/tasks/:task_id/approve", post(approval::approve_task))
-        .route("/tasks/:task_id/approval", get(approval::get_approval))
-        .route("/tasks/:task_id/clarify", post(tasks::clarify_task))
+        .route("/:tenant_id/tasks", post(tasks::submit_task))
+        .route("/:tenant_id/tasks/:task_id/events", get(tasks::task_events))
+        .route("/:tenant_id/tasks/:task_id", get(tasks::task_status))
+        .route("/:tenant_id/tasks/:task_id/merge", post(tasks::merge_task))
+        .route(
+            "/:tenant_id/tasks/:task_id/recover",
+            get(recovery::recover_task),
+        )
+        .route(
+            "/:tenant_id/tasks/:task_id/approve",
+            post(approval::approve_task),
+        )
+        .route(
+            "/:tenant_id/tasks/:task_id/approval",
+            get(approval::get_approval),
+        )
+        .route(
+            "/:tenant_id/tasks/:task_id/clarify",
+            post(tasks::clarify_task),
+        )
 }
 
 pub fn calibrate_router() -> Router<AppState> {

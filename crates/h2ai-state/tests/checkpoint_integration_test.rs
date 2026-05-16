@@ -19,6 +19,7 @@ fn make_checkpoint(task_id: &str) -> TaskCheckpoint {
         created_at_ms: 1000,
         updated_at_ms: 1000,
         constraint_snapshot: None,
+        j_eff: None,
     }
 }
 

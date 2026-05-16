@@ -1,5 +1,6 @@
 pub mod prompts;
 
+use h2ai_knowledge::factory::KnowledgeConfig;
 use h2ai_types::config::AdapterKind;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -585,10 +586,18 @@ pub struct JudgePanelConfig {
     pub ambiguity_threshold: usize,
 }
 
-fn default_judge_panel_quorum_fraction() -> f64 { 0.67 }
-fn default_judge_panel_uncertainty_weight() -> f64 { 0.7 }
-fn default_judge_panel_persona_temperatures() -> [f32; 3] { [0.0, 0.2, 0.4] }
-fn default_judge_panel_ambiguity_threshold() -> usize { 2 }
+fn default_judge_panel_quorum_fraction() -> f64 {
+    0.67
+}
+fn default_judge_panel_uncertainty_weight() -> f64 {
+    0.7
+}
+fn default_judge_panel_persona_temperatures() -> [f32; 3] {
+    [0.0, 0.2, 0.4]
+}
+fn default_judge_panel_ambiguity_threshold() -> usize {
+    2
+}
 
 impl Default for JudgePanelConfig {
     fn default() -> Self {
@@ -912,12 +921,30 @@ pub struct H2AIConfig {
     pub adapter_enable_thinking: bool,
     /// Temperature used for all calibration adapter probes. Range [0, 1].
     pub calibration_tau: f64,
+    /// Initial verification pass threshold applied to each proposal's aggregate compliance score. Range [0, 1].
+    pub verify_threshold: f64,
     /// Step size for `verify_threshold` reduction suggestions from the self-optimizer. Range (0, 1).
     pub optimizer_threshold_step: f64,
     /// Floor for `verify_threshold` reductions; the threshold never drops below this value.
     pub optimizer_threshold_floor: f64,
     /// Maximum autonomic MAPE-K retry iterations before a task is declared failed.
     pub max_autonomic_retries: u32,
+    /// Enable Raft-style cross-wave epistemic leader election. Default: false.
+    pub leader_enabled: bool,
+    /// Minimum q_confidence improvement per wave to avoid stagnation. Range [0,1].
+    pub leader_stagnation_threshold: f64,
+    /// Consecutive stagnant waves before leadership rotates to runner-up.
+    pub leader_stagnation_waves: u32,
+    /// Max tokens for the leader's diagnosis re-prompt.
+    pub leader_diagnosis_max_tokens: u64,
+    /// Temperature for leader diagnosis re-prompt. Range [0,1].
+    pub leader_diagnosis_tau: f64,
+    /// Number of EIG candidate questions generated per diagnosis round.
+    pub leader_eig_candidates: u32,
+    /// Credibility decay/recovery rate per wave. Range [0.0, 1.0].
+    pub leader_credibility_decay_rate: f64,
+    /// Credibility threshold below which follower context is marked low-confidence.
+    pub leader_credibility_warn_threshold: f64,
     /// USL α contention constant: fraction of work that must serialise regardless of parallelism. Also accepts the alias `calibration_alpha_single_adapter`.
     #[serde(alias = "calibration_alpha_single_adapter")]
     pub alpha_contention: f64,
@@ -1068,6 +1095,20 @@ pub struct H2AIConfig {
     pub hitl: HitlConfig,
     /// Constraint wiki configuration — tag routing, NATS KV storage.
     pub constraint_wiki: ConstraintWikiConfig,
+    /// Token budget for per-slot context assembly. `None` disables compression.
+    /// When set, rule-based dedup + importance trimming run on every wave.
+    /// LLM summarization triggers only when rule-based pass still exceeds budget.
+    #[serde(default)]
+    pub context_budget_tokens: Option<usize>,
+    /// Minimum compression ratio before the quality guard stops further compression.
+    /// 0.4 means stop if more than 60 % of the original context would be removed.
+    /// `None` uses the default of 0.4.
+    #[serde(default)]
+    pub context_quality_guard_ratio: Option<f32>,
+    /// Adapter profile name to use for the LLM summarization pass.
+    /// When absent, the first explorer adapter is used.
+    #[serde(default)]
+    pub compression_adapter: Option<String>,
     /// Safety profile — groups all safety-relevant fields.
     /// When `profile != custom`, `apply_safety_profile()` in `load_layered()` overwrites
     /// all safety field values from the profile definition.
@@ -1133,6 +1174,10 @@ pub struct H2AIConfig {
     /// Judge panel configuration for Phase 3.5 multi-variant evaluation (GAP-A7).
     #[serde(default)]
     pub judge_panel: JudgePanelConfig,
+    /// Knowledge provider configuration. When absent, uses PassthroughProvider
+    /// (delegates to existing ConstraintResolver — zero behaviour change).
+    #[serde(default)]
+    pub knowledge: Option<KnowledgeConfig>,
 }
 
 fn default_correlated_hallucination_cv_threshold() -> f64 {
@@ -1584,6 +1629,18 @@ pub fn apply_safety_profile(cfg: &mut H2AIConfig) {
             cfg.safety.shadow_auditor.enabled = true;
         }
         SafetyProfile::Custom => {}
+    }
+}
+
+#[cfg(test)]
+mod leader_config_tests {
+    use super::*;
+    #[test]
+    fn leader_fields_present_in_default_config() {
+        let cfg = H2AIConfig::default();
+        assert!(!cfg.leader_enabled);
+        assert_eq!(cfg.leader_stagnation_waves, 1);
+        assert_eq!(cfg.leader_eig_candidates, 3);
     }
 }
 

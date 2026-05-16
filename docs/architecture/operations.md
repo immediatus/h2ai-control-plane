@@ -99,6 +99,53 @@ fuel_budget           = 1_000_000
 
 ---
 
+## 1c. Multi-tenancy
+
+H2AI supports multiple isolated tenants within a single control plane deployment. Every task, estimator, and approval record is scoped to a tenant. Tenant identity is carried as a URL path segment — not a header or query parameter.
+
+### HTTP routing
+
+All task routes include `:tenant_id` as a path segment:
+
+```
+POST   /:tenant_id/tasks
+GET    /:tenant_id/tasks/:task_id/events
+GET    /:tenant_id/tasks/:task_id
+POST   /:tenant_id/tasks/:task_id/merge
+POST   /:tenant_id/tasks/:task_id/approve
+GET    /:tenant_id/tasks/:task_id/approval
+POST   /:tenant_id/tasks/:task_id/clarify
+GET    /:tenant_id/tasks/:task_id/recover
+```
+
+Calibration and health endpoints (`/calibrate`, `/health`, `/ready`, `/metrics`) are global — they are not tenant-scoped.
+
+Single-tenant deployments use `default` as the tenant ID. The `tenant_id` field in the request body is always overridden by the URL path value — it is ignored if supplied.
+
+### Tenant isolation guarantees
+
+| Layer | Mechanism |
+|---|---|
+| Estimators | `TenantRegistry` — `DashMap<TenantId, Arc<TenantState>>`, lazily created per tenant |
+| NATS KV keys | Per-tenant prefix: `{tenant_id}/tao`, `{tenant_id}/bandit`, `{tenant_id}/srani`, `{tenant_id}/{task_id}` (approvals) |
+| Task ownership | `TaskStore::get_for_tenant()` returns `None` for cross-tenant access |
+| Approval records | `ApprovalRecord.tenant_id` stored in the record; reaper uses the embedded tenant, never the URL |
+| Calibration | Shared (global) — calibration runs measure the adapter pool, not tenant workloads. New tenants inherit the default tenant's calibration on first task submission |
+
+### Adding a tenant
+
+No administrative step required. A new tenant ID in the URL path is enough:
+
+```bash
+curl -X POST http://localhost:8080/v1/acme/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"description": "...", "pareto_weights": {...}, "explorers": {...}}'
+```
+
+The `TenantRegistry` creates isolated estimator state on first access. Calibration is seeded from the default tenant automatically.
+
+---
+
 ## 2. NATS configuration
 
 NATS is the authoritative event log and the KV backing store. The runtime expects the following streams and KV buckets to exist (created by the control plane on first startup if absent):
@@ -110,7 +157,7 @@ NATS is the authoritative event log and the KV backing store. The runtime expect
 | `H2AI_TELEMETRY` (`h2ai.telemetry.>`) | File | MaxAge 7d, MaxBytes 10 GB | 3 | Adapter telemetry. |
 | `H2AI_CALIBRATION` KV | — | TTL none (invalidated by `POST /calibrate`) | 3 | Latest calibration. |
 | `H2AI_AGENT_MEMORY` KV | — | per-session keys | 3 | Session memory. |
-| `H2AI_ESTIMATOR` KV | — | — | 1 | TAO multiplier estimator + bandit state + SRANI adaptive EMA (`srani_adaptive_state` key). |
+| `H2AI_ESTIMATOR` KV | — | — | 1 | TAO multiplier estimator + bandit state + SRANI adaptive EMA. Keys are prefixed by `{tenant_id}/` (e.g. `default/tao`, `acme/bandit`). |
 | `H2AI_SNAPSHOTS` KV | — | History 1 | 1 | Per-task snapshots. |
 
 JetStream message size limit defaults to 1 MB. `payload_offload_threshold_bytes` (default 524 288) governs when `system_context` is written to a content-addressed blob and replaced with a hash reference (`ContextPayload::Ref`) so the NATS message stays well under the limit.
@@ -254,7 +301,7 @@ nats stream backup H2AI_TASKS /backup/h2ai-tasks-$(date +%Y%m%d)/
 nats stream restore /backup/h2ai-tasks-20260101/
 ```
 
-`GET /tasks/:task_id/recover` triggers a manual snapshot+replay for a specific task — useful when investigating a stuck task.
+`GET /:tenant_id/tasks/:task_id/recover` triggers a manual snapshot+replay for a specific task — useful when investigating a stuck task.
 
 ---
 
@@ -295,3 +342,70 @@ These are the system's hard limits. They are not bugs; they are physical or desi
 | All proposals fail with `TAO timeout` | `tao.per_turn_timeout_secs` too short for model response time | Raise `per_turn_timeout_secs` in `[tao]` config; 11B local models generating 1024-token outputs typically need ≥120s |
 | All proposals pruned with low vocabulary scores (~0.2–0.4) | `## constraints` threshold (0.20 default) may be too strict if corpus uses compound identifiers | Lower the threshold or add `## key terms` to constraint files; compound tokens like `idem:campaign_{id}` are split on delimiters before matching |
 | Calibration fails with `env var LLAMACPP_API_KEY not set` | CloudGeneric adapter reads API key from env even for local servers | Set `LLAMACPP_API_KEY=local` (any non-empty value); the server ignores the key but the adapter client requires the env var to be present |
+
+---
+
+## 9. Knowledge Provider
+
+The `[knowledge]` section is optional. When absent, `PassthroughProvider` wraps the existing `ConstraintResolver` — behaviour is identical to pre-knowledge operation. Add `[knowledge]` to opt into hierarchical BM25+/PPR retrieval via `Bm25WikiProvider`.
+
+### Enabling the Bm25Wiki provider
+
+```toml
+[knowledge]
+provider = "Bm25Wiki"
+
+[knowledge.source]
+YamlDir = { path = "/path/to/constraints" }
+```
+
+`YamlDir.path` is resolved relative to the process working directory. The provider is built synchronously at startup (no background reload). Startup time scales with corpus size — a 200-constraint corpus indexes in under 100ms.
+
+### Corpus layout
+
+```
+constraints/
+  CONSTRAINT-001.yaml        # standard constraint leaf files
+  CONSTRAINT-002.yaml
+  wiki/
+    financial-systems.yaml   # topic node (depth: topic)
+    _overview.yaml           # optional global overview (depth: global)
+```
+
+When `wiki/` is absent or empty, a synthetic global node is built from constraint summaries at startup. When `wiki/_overview.yaml` is absent, the synthetic global node has `NodeSource::Synthetic`; its `synthesis` field is the first 600 characters of each constraint's `description` joined by newlines (truncated to `global_synthesis_max_chars`).
+
+**Topic YAML schema** (`wiki/<topic>.yaml`):
+```yaml
+id: financial-systems
+depth: topic
+synthesis: "Financial systems constraints cover atomicity, idempotency, and audit-log requirements..."
+domains: [financial, payments]
+entry_points: [CONSTRAINT-004, CONSTRAINT-005]
+invariants: "All financial operations must be idempotent under retry."
+failure_modes: "Non-idempotent debit on retry causes double-charge."
+```
+
+**Global YAML schema** (`wiki/_overview.yaml`):
+```yaml
+id: global-overview
+depth: global
+synthesis: "This constraint corpus covers financial systems, ML inference, and distributed systems..."
+domains: [financial, ml, distributed]
+```
+
+### Tuning ScoringConfig
+
+All fields are optional; omitting `[knowledge.scoring]` applies the defaults shown in `reference.md §4 Knowledge Provider`. The most impactful parameters:
+
+- **`global_synthesis_max_chars`** — trim if the global node consumes too much context budget (default 600 chars)
+- **`topic_cluster_top_k`** — raise to 5 on diverse corpora; lower to 1 on narrow single-domain corpora
+- **`ppr_alpha`** — higher alpha (0.25+) reduces graph diffusion and keeps results closer to direct BM25 hits; lower alpha (0.10) allows more multi-hop expansion
+- **`leaf_score_multiplier`** — raise toward 1.0 if you want direct BM25 hits to dominate PPR-expanded results
+
+### Signals to watch
+
+| Signal | Meaning |
+|---|---|
+| Server log `building knowledge provider (Bm25Wiki)` | Provider built successfully at startup |
+| Server log `knowledge provider: passthrough` | No `[knowledge]` configured; using passthrough |
+| `checks_present` below threshold in e2e results | Content checks may target knowledge that BM25 retrieval misses — try raising `topic_cluster_top_k` or adding `wiki/` topic nodes for the relevant domain |

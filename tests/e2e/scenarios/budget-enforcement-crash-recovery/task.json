@@ -1,4 +1,5 @@
 {
+  "_tenant_id": "billing-team",
   "description": "We have observed double-billing events in production. Post-incident analysis shows the pattern: Ad Server processes a request, the Redis budget deduction succeeds, the Ad Server pod is OOM-killed before returning a response, the client retries, and the retry debits the budget a second time. This is happening at a rate of approximately 200 double-debits per hour during peak traffic. Design the fix that eliminates double-billing by construction without adding more than 1ms to the critical path budget check.",
   "pareto_weights": {
     "diversity": 0.4,
@@ -10,6 +11,8 @@
     "tau_min": 0.1,
     "tau_max": 0.8
   },
+  "require_approval": true,
+  "constraint_tags": ["financial", "redis", "idempotency"],
   "constraints": [
     "CONSTRAINT-004",
     "CONSTRAINT-005"
@@ -20,6 +23,9 @@
   "_expected": {
     "j_eff_min": 0,
     "valid_proposals_min": 2,
+    "thinking_loop_ran": true,
+    "thinking_loop_coverage_min": 0.40,
+    "hitl_gate_fired": true,
     "checks": [
       {
         "id": "C-004/1",

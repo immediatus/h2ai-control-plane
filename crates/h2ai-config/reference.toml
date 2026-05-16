@@ -156,6 +156,11 @@ baseline_accuracy_proxy = 0.0
 
 # ── Self-optimizer ────────────────────────────────────────────────────────────
 
+# Initial verification pass threshold applied to each proposal's aggregate compliance score.
+# Range [0, 1]. Set to 0.0 in test scenarios where the HITL gate (not verification quality)
+# is the primary assertion.
+verify_threshold = 0.45
+
 # Step size for verify_threshold reduction suggestions. Range (0, 1).
 optimizer_threshold_step = 0.1
 
@@ -171,6 +176,32 @@ optimizer_waste_threshold = 0.5
 
 # Maximum autonomic retry iterations before a task is declared failed.
 max_autonomic_retries = 2
+
+# ── Epistemic Leader ──────────────────────────────────────────────────────────
+
+# Enable Raft-style cross-wave leader election with Socratic diagnosis.
+leader_enabled = false
+
+# Minimum q_confidence improvement per wave to avoid stagnation signal.
+leader_stagnation_threshold = 0.02
+
+# Consecutive stagnant waves before leadership rotates to runner-up.
+leader_stagnation_waves = 1
+
+# Max tokens for the leader's diagnosis re-prompt (Socratic question only).
+leader_diagnosis_max_tokens = 128
+
+# Temperature for leader diagnosis re-prompt.
+leader_diagnosis_tau = 0.3
+
+# Number of EIG candidate questions generated per diagnosis round.
+leader_eig_candidates = 3
+
+# Credibility decay/recovery rate per wave [0.0, 1.0].
+leader_credibility_decay_rate = 0.2
+
+# Credibility threshold below which follower context is marked low-confidence.
+leader_credibility_warn_threshold = 0.4
 
 # Maximum concurrent task executions. Requests beyond this limit receive 503.
 max_concurrent_tasks = 8

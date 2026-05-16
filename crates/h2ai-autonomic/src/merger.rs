@@ -98,10 +98,12 @@ impl MergeEngine {
                     // Without: ConsensusMedian handles honest divergence without requiring a cluster.
                     match embedding_model {
                         Some(model) => {
-                            let embeddings: Vec<Vec<f32>> = proposals
-                                .iter()
-                                .map(|p| model.embed(&p.raw_output))
-                                .collect();
+                            let embeddings: Vec<Vec<f32>> = tokio::task::block_in_place(|| {
+                                proposals
+                                    .iter()
+                                    .map(|p| model.embed(&p.raw_output))
+                                    .collect()
+                            });
                             let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
                             proposals
                                 .get(idx)
@@ -135,10 +137,12 @@ impl MergeEngine {
                     // Without: ConsensusMedian handles honest stochastic divergence.
                     match embedding_model {
                         Some(model) => {
-                            let embeddings: Vec<Vec<f32>> = proposals
-                                .iter()
-                                .map(|p| model.embed(&p.raw_output))
-                                .collect();
+                            let embeddings: Vec<Vec<f32>> = tokio::task::block_in_place(|| {
+                                proposals
+                                    .iter()
+                                    .map(|p| model.embed(&p.raw_output))
+                                    .collect()
+                            });
                             let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
                             proposals
                                 .get(idx)

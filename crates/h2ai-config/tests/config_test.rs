@@ -1,4 +1,6 @@
-use h2ai_config::{ConfigLoadError, FamilyConstraint, H2AIConfig, JudgePanelConfig, SafetyProfile, SchedulerPolicy};
+use h2ai_config::{
+    ConfigLoadError, FamilyConstraint, H2AIConfig, JudgePanelConfig, SafetyProfile, SchedulerPolicy,
+};
 use std::io::Write;
 
 // ── defaults ─────────────────────────────────────────────────────────────────
@@ -736,4 +738,103 @@ fn judge_panel_config_defaults_are_sane() {
 fn h2ai_config_default_includes_judge_panel() {
     let cfg = H2AIConfig::default();
     assert!((cfg.judge_panel.quorum_fraction - 0.67).abs() < 1e-9);
+}
+
+#[test]
+fn load_layered_thinking_loop_enabled_overrides_reference_default() {
+    let toml = "[thinking_loop]\nenabled = true\n";
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert!(
+        cfg.thinking_loop.enabled,
+        "thinking_loop.enabled=true in override must win over reference.toml default=false"
+    );
+}
+
+#[test]
+fn load_layered_srani_disabled_overrides_reference_default() {
+    let toml = "[srani]\nenabled = false\n";
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert!(
+        !cfg.srani.enabled,
+        "srani.enabled=false in override must win over reference.toml default=true"
+    );
+}
+
+#[test]
+fn load_layered_hitl_enabled_overrides_reference_default() {
+    let toml = "[hitl]\nenabled = true\nconfidence_threshold = 0.50\n";
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert!(
+        cfg.hitl.enabled,
+        "hitl.enabled=true in override must win over reference.toml default=false"
+    );
+}
+
+#[test]
+fn h2ai_config_knowledge_defaults_to_none() {
+    let cfg = H2AIConfig::load_layered(None).unwrap();
+    assert!(cfg.knowledge.is_none(), "knowledge must default to None");
+}
+
+#[test]
+fn h2ai_config_knowledge_bm25wiki_deserializes() {
+    use h2ai_knowledge::factory::{KnowledgeConfig, ProviderKind, SourceKind};
+    let json_str =
+        r#"{"provider":"Bm25Wiki","source":{"YamlDir":{"path":"tests/e2e/constraints"}}}"#;
+    let parsed: KnowledgeConfig =
+        serde_json::from_str(json_str).expect("KnowledgeConfig must deserialize");
+    assert_eq!(parsed.provider, ProviderKind::Bm25Wiki);
+    assert!(matches!(parsed.source, SourceKind::YamlDir { .. }));
+}
+
+#[test]
+fn h2ai_config_knowledge_loads_from_toml_file() {
+    use h2ai_knowledge::factory::{ProviderKind, SourceKind};
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    write!(
+        f,
+        r#"
+nats_url = "nats://localhost:4222"
+calibration_max_tokens = 512
+calibration_adapter_count = 1
+
+[safety]
+profile = "development"
+
+[knowledge]
+provider = "Bm25Wiki"
+
+[knowledge.source]
+YamlDir = {{ path = "tests/e2e/constraints" }}
+
+[constraint_wiki]
+enabled = false
+
+[[adapter_profiles]]
+name = "local"
+[adapter_profiles.kind.CloudGeneric]
+endpoint = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled = false
+"#
+    )
+    .unwrap();
+
+    let cfg = H2AIConfig::load_layered(Some(f.path())).expect("must load with [knowledge] section");
+    let k = cfg.knowledge.expect("knowledge must be Some");
+    assert_eq!(k.provider, ProviderKind::Bm25Wiki);
+    assert!(matches!(k.source, SourceKind::YamlDir { .. }));
 }

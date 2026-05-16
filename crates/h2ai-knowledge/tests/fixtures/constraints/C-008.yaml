@@ -1,0 +1,11 @@
+id: C-008
+title: "No Distributed Lock on Charge Path"
+severity: hard
+domains:
+  - financial_systems
+  - distributed_systems
+related_to:
+  - C-004
+criteria:
+  pass: "Charge path uses local-only atomicity; no cross-node lock."
+  fail: "Charge path acquires a distributed lock, risking deadlock on partition."

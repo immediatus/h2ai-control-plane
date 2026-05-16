@@ -1,0 +1,17 @@
+[package]
+name        = "h2ai-knowledge"
+version     = "0.1.0"
+edition     = "2021"
+
+[dependencies]
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_yaml  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+h2ai-constraints = { path = "../h2ai-constraints" }
+
+[dev-dependencies]
+tokio    = { workspace = true, features = ["macros", "rt"] }
+tempfile = "3"

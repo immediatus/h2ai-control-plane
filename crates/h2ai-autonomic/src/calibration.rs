@@ -317,19 +317,13 @@ impl CalibrationHarness {
                     .collect()
             },
             explorer_verification_family_match: {
-                let families: std::collections::HashSet<_> = input
-                    .adapters
-                    .iter()
-                    .map(|a| a.kind().family())
-                    .collect();
+                let families: std::collections::HashSet<_> =
+                    input.adapters.iter().map(|a| a.kind().family()).collect();
                 families.len() > 1
             },
             single_family_warning: {
-                let families: std::collections::HashSet<_> = input
-                    .adapters
-                    .iter()
-                    .map(|a| a.kind().family())
-                    .collect();
+                let families: std::collections::HashSet<_> =
+                    input.adapters.iter().map(|a| a.kind().family()).collect();
                 families.len() == 1
             },
             n_max_lo,

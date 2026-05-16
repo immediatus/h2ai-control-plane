@@ -84,18 +84,19 @@ impl ConsensusMedian {
         let n = proposals.len();
         let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
 
-        // Pre-embed every proposal once (O(N) calls) then compute pair similarities
-        // from cached vectors (pure dot products). The naive pair loop would call
-        // embed 2×N(N-1)/2 times — for N=9 that is 72 redundant ONNX passes.
-        // EmbeddingModel::embed takes &self so it cannot be moved into spawn_blocking;
-        // at N≤9 (max 9 ONNX passes) the bounded sync section is acceptable.
+        // Pre-embed every proposal once (O(N) ONNX passes) then compute pair
+        // similarities from cached vectors (pure dot products). The naive pair loop
+        // would call embed 2×N(N-1)/2 times — for N=9 that is 72 redundant passes.
+        // block_in_place signals Tokio to move other tasks off this thread for the
+        // duration of the ONNX inference so the executor is not starved.
         let pairs: Vec<(usize, usize)> = (0..n)
             .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
             .collect();
 
         let pair_sims: Vec<f64> = match embedding_model {
             Some(m) => {
-                let embeddings: Vec<Vec<f32>> = outputs.iter().map(|s| m.embed(s)).collect();
+                let embeddings: Vec<Vec<f32>> =
+                    tokio::task::block_in_place(|| outputs.iter().map(|s| m.embed(s)).collect());
                 pairs
                     .iter()
                     .map(|&(i, j)| {

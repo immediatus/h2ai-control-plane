@@ -1,0 +1,69 @@
+{
+  "_tenant_id": "billing-team",
+  "description": "A payment processor handles 50,000 TPS through a shared Redis budget ledger. Under a network partition, nodes continue accepting charges against a stale counter — causing overspend. Design a system that: (1) eliminates overspend by construction under partial failures, (2) adds no more than 0.5ms to P99 on the charge path, (3) produces an immutable audit log for every debit event, and (4) degrades gracefully when the audit log backend is unavailable. The fix must not introduce distributed locking on the critical charge path.",
+  "require_approval": true,
+  "constraint_tags": ["financial", "redis", "idempotency", "concurrency", "latency"],
+  "pareto_weights": {
+    "diversity": 0.4,
+    "containment": 0.4,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 2,
+    "tau_min": 0.3,
+    "tau_max": 0.8
+  },
+  "constraints": [
+    "CONSTRAINT-004",
+    "CONSTRAINT-005",
+    "CONSTRAINT-008"
+  ],
+  "context": "Current state: Redis DECRBY with no idempotency. Under partition, 3-node Redis cluster operates in degraded mode — some replicas serve stale reads. Charge path: receive request → Redis DECRBY → async Kafka event → CockroachDB ledger update. During OOM-kill + client retry, budget can be debited twice. During partition, stale-read nodes overspend the budget. P99 budget check latency budget: 0.5ms. Kafka audit topic: financial-events (compacted, append-only). Kafka is available 99.99% — during the 0.01% unavailability, charges must still be processable but must be durably queued for audit delivery.",
+
+  "_timeout_s": 3600,
+  "_expected": {
+    "thinking_loop_ran": true,
+    "thinking_loop_coverage_min": 0.35,
+    "hitl_gate_fired": true,
+    "checks": [
+      {
+        "id": "C-004/1",
+        "text": "Does the proposal use a single atomic Redis Lua EVAL or MULTI/EXEC — not separate read-then-write commands — to check and debit the budget?"
+      },
+      {
+        "id": "C-004/2",
+        "text": "Does the proposal include an idempotency mechanism (idempotency key with TTL) that prevents a retried request from debiting the budget a second time?"
+      },
+      {
+        "id": "C-005/1",
+        "text": "Does the proposal publish every debit event to Kafka (financial-events topic) rather than writing directly to CockroachDB or logging to files?"
+      },
+      {
+        "id": "C-008/1",
+        "text": "Does the proposal avoid distributed locking mechanisms (Redlock, SETNX advisory lock, database advisory lock) on the critical charge path?"
+      },
+      {
+        "id": "C-008/2",
+        "text": "Does the proposal address the partition scenario (stale Redis replica reads) without requiring a distributed lock on every charge request?"
+      }
+    ],
+    "checks_pass_threshold": 3,
+    "should_prune": [
+      {
+        "description": "Proposal that acquires a Redlock distributed lock before each Redis DECRBY to prevent concurrent debits",
+        "violates": "CONSTRAINT-008 — no distributed locks on critical charge path"
+      },
+      {
+        "description": "Proposal that reads from CockroachDB on every charge request to verify the budget balance",
+        "violates": "CONSTRAINT-004 — budget checks must use Redis atomic counters, not CockroachDB reads on critical path"
+      },
+      {
+        "description": "Proposal that logs debit events to application log files instead of publishing to Kafka",
+        "violates": "CONSTRAINT-005 — every billing event must be published to Kafka financial-events topic"
+      }
+    ],
+    "should_pass": [
+      "Proposal using Redis Lua EVAL for atomic idempotency-check-and-debit: check idem:{campaign_id}:{request_id} with SETNX, if exists return cached result, if not DECRBY budget and SETEX idempotency key in same script. Partition handling via Redis cluster's read-from-primary for budget operations. Kafka publish with local retry queue for audit resilience."
+    ]
+  }
+}

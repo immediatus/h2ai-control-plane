@@ -58,7 +58,7 @@
 /// are too lexically diverse for Krum's BFT proof to apply.
 pub const MAX_CLUSTER_DIAMETER: f64 = 0.7;
 
-use h2ai_context::embedding::semantic_jaccard;
+use h2ai_context::embedding::cosine_similarity;
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::events::ProposalEvent;
 use std::collections::HashSet;
@@ -106,9 +106,9 @@ pub fn quorum_satisfied(n: usize, f: usize) -> bool {
 
 /// Mean pairwise semantic distance across all proposal pairs.
 ///
-/// Uses `semantic_jaccard` for pairwise similarity so that lexically-distinct
-/// but semantically-equivalent proposals (synonyms, paraphrases) are recognised
-/// as close. All pairs are scored in parallel via `join_all`.
+/// Pre-embeds all proposals once with `block_in_place` (O(N) ONNX passes) then
+/// computes pairwise cosine distances from cached vectors.  Falls back to token
+/// Jaccard when no embedding model is provided.
 ///
 /// Returns 0.0 for fewer than 2 proposals (trivially coherent).
 pub async fn mean_pairwise_distance(
@@ -119,19 +119,13 @@ pub async fn mean_pairwise_distance(
     if n < 2 {
         return 0.0;
     }
-    let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
-    let pairs: Vec<(usize, usize)> = (0..n)
+    let dist = semantic_distance_matrix(proposals, embedding_model).await;
+    let pairs_count = n * (n - 1) / 2;
+    let total: f64 = (0..n)
         .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
-        .collect();
-    let similarities: Vec<f64> = pairs
-        .iter()
-        .map(|&(i, j)| match embedding_model {
-            Some(m) => semantic_jaccard(outputs[i], outputs[j], Some(m)),
-            None => token_jaccard(outputs[i], outputs[j]),
-        })
-        .collect();
-    let total: f64 = similarities.iter().map(|s| 1.0 - s).sum();
-    total / similarities.len() as f64
+        .map(|(i, j)| dist[i][j])
+        .sum();
+    total / pairs_count as f64
 }
 
 /// Returns `true` if proposals form a sufficiently tight cluster for Krum's BFT
@@ -192,30 +186,49 @@ pub fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
 
 /// Build the n×n pairwise distance matrix from cosine-based semantic similarity.
 ///
-/// Each entry `d[i][j] = 1 − semantic_jaccard(i, j)` converts a similarity in [0, 1]
-/// to a distance in [0, 1] suitable for the Jaccard-metric Krum proof.
-/// Falls back to token Jaccard when `embedding_model` is `None`.
+/// Pre-embeds all N proposals in a single `block_in_place` call (O(N) ONNX passes),
+/// then computes pairwise cosine distances from cached vectors (pure dot products,
+/// no further blocking).  Falls back to token Jaccard when `embedding_model` is `None`.
 async fn semantic_distance_matrix(
     proposals: &[ProposalEvent],
     embedding_model: Option<&dyn EmbeddingModel>,
 ) -> Vec<Vec<f64>> {
     let n = proposals.len();
-    let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
-    let pairs: Vec<(usize, usize)> = (0..n)
-        .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
-        .collect();
-    let similarities: Vec<f64> = pairs
-        .iter()
-        .map(|&(i, j)| match embedding_model {
-            Some(m) => semantic_jaccard(outputs[i], outputs[j], Some(m)),
-            None => token_jaccard(outputs[i], outputs[j]),
-        })
-        .collect();
     let mut d = vec![vec![0.0f64; n]; n];
-    for (k, &(i, j)) in pairs.iter().enumerate() {
-        let dist = 1.0 - similarities[k];
-        d[i][j] = dist;
-        d[j][i] = dist;
+
+    match embedding_model {
+        Some(m) => {
+            let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
+            // One block_in_place for all N embeds — avoids O(N²) redundant ONNX passes
+            // and signals Tokio to migrate other tasks off this thread.
+            let embeddings: Vec<Vec<f32>> =
+                tokio::task::block_in_place(|| outputs.iter().map(|s| m.embed(s)).collect());
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let sim = if embeddings[i].is_empty() || embeddings[j].is_empty() {
+                        if outputs[i] == outputs[j] {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        cosine_similarity(&embeddings[i], &embeddings[j]).max(0.0)
+                    };
+                    d[i][j] = 1.0 - sim;
+                    d[j][i] = 1.0 - sim;
+                }
+            }
+        }
+        None => {
+            let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dist = 1.0 - token_jaccard(outputs[i], outputs[j]);
+                    d[i][j] = dist;
+                    d[j][i] = dist;
+                }
+            }
+        }
     }
     d
 }

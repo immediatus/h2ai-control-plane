@@ -51,10 +51,7 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
     // ── Conflict rate: computed before proposals are consumed by VerificationPhase ─
     let conflict_rate = {
         let texts: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
-        h2ai_autonomic::calibration::compute_conflict_rate(
-            &texts,
-            &engine_input.constraint_corpus,
-        )
+        h2ai_autonomic::calibration::compute_conflict_rate(&texts, &engine_input.constraint_corpus)
     };
 
     // ── Phase 3.5: Verification Loop (LLM-as-Judge) ──────────────────
@@ -78,11 +75,7 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             }
         })
         .collect();
-    let panel = JudgePanel::build(
-        engine_input.verification_adapter,
-        &additional,
-        panel_cfg,
-    );
+    let panel = JudgePanel::build(engine_input.verification_adapter, &additional, panel_cfg);
 
     let ver_input = VerificationInput {
         proposals,

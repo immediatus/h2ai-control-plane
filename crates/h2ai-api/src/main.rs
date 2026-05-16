@@ -12,6 +12,7 @@ mod rho_ema;
 mod routes;
 mod shadow_auditor;
 mod state;
+mod tenant_registry;
 
 use axum::Router;
 use h2ai_adapters::factory::AdapterFactory;
@@ -293,10 +294,29 @@ async fn main() {
         );
     }
 
-    app_state.load_tao_estimator().await;
-    app_state.load_bandit_state().await;
-    app_state.load_srani_state().await;
-    app_state.load_calibration().await;
+    // Wire knowledge provider
+    app_state.knowledge_provider = {
+        use h2ai_knowledge::factory::KnowledgeProviderFactory;
+        use h2ai_knowledge::provider::PassthroughProvider;
+        match &app_state.cfg.knowledge {
+            Some(k_cfg) => {
+                tracing::info!(target: "h2ai.startup", "building knowledge provider (Bm25Wiki)");
+                KnowledgeProviderFactory::build_provider(k_cfg).await
+            }
+            None => {
+                tracing::info!(
+                    target: "h2ai.startup",
+                    "knowledge provider: passthrough (no [knowledge] config)"
+                );
+                let resolver = app_state.constraint_resolver();
+                std::sync::Arc::new(PassthroughProvider::new(resolver))
+            }
+        }
+    };
+
+    app_state
+        .load_tenant_state(&h2ai_types::identity::TenantId::default_tenant())
+        .await;
 
     // Restore promoted shadow-audit domains persisted before last restart.
     {
@@ -312,11 +332,10 @@ async fn main() {
         }
     }
 
-    // Always run calibration at startup so USL coefficients reflect current hardware.
+    // Spawn calibration in the background so the TCP listener can bind immediately.
     // Persisted calibration (loaded above) remains as fallback if the LLM is unreachable.
+    // Tasks submitted before calibration completes are rejected with CalibrationRequired.
     {
-        // With the adapter_pool model, diversity is enforced via modulo IDs rather than
-        // diversity tags. Single-pool warning is based on pool size.
         let single_family_warning = app_state.adapter_pool.len() == 1;
         if single_family_warning {
             match app_state.cfg.safety.family_constraint {
@@ -339,27 +358,33 @@ async fn main() {
             .collect();
         let explorer_verification_family_match = false; // enforced via modulo IDs now
 
-        let had_calibration = app_state.calibration.read().await.is_some();
-        tracing::info!(target: "h2ai.startup", "running startup calibration");
-        crate::routes::calibrate::run_calibration_core(
-            app_state.clone(),
-            single_family_warning,
-            explorer_verification_family_match,
-            adapter_families,
-            None,
-        )
-        .await;
-
-        if app_state.calibration.read().await.is_none() {
-            if had_calibration {
-                tracing::warn!(target: "h2ai.startup", "startup calibration failed (LLM unreachable?); using persisted calibration");
+        let calibration_app_state = app_state.clone();
+        let default_tenant = h2ai_types::identity::TenantId::default_tenant();
+        let default_ts = calibration_app_state.tenant_state(&default_tenant);
+        let had_calibration = default_ts.calibration.read().await.is_some();
+        tracing::info!(target: "h2ai.startup", "spawning startup calibration in background");
+        tokio::spawn(async move {
+            crate::routes::calibrate::run_calibration_core(
+                calibration_app_state.clone(),
+                single_family_warning,
+                explorer_verification_family_match,
+                adapter_families,
+                None,
+            )
+            .await;
+            let default_ts = calibration_app_state
+                .tenant_state(&h2ai_types::identity::TenantId::default_tenant());
+            if default_ts.calibration.read().await.is_none() {
+                if had_calibration {
+                    tracing::warn!(target: "h2ai.startup", "startup calibration failed (LLM unreachable?); using persisted calibration");
+                } else {
+                    tracing::warn!(target: "h2ai.startup",
+                        "startup calibration did not complete (LLM unreachable?); tasks will be rejected until POST /calibrate succeeds");
+                }
             } else {
-                tracing::warn!(target: "h2ai.startup",
-                    "startup calibration did not complete (LLM unreachable?); tasks will be rejected until POST /calibrate succeeds");
+                tracing::info!(target: "h2ai.startup", "startup calibration complete — ready to accept tasks");
             }
-        } else {
-            tracing::info!(target: "h2ai.startup", "startup calibration complete — ready to accept tasks");
-        }
+        });
     }
 
     // Wire NATS dispatch when H2AI_NATS_DISPATCH=true.
@@ -392,15 +417,17 @@ async fn main() {
     // Spawn Phase 6 oracle accumulator — subscribes to h2ai.oracle.results
     // and accumulates calibration residuals in NATS KV.
     {
+        let default_oracle_ts =
+            app_state.tenant_state(&h2ai_types::identity::TenantId::default_tenant());
         let accumulator = crate::oracle::OracleAccumulator {
             nats_raw: app_state.nats.client.clone(),
             nats_state: app_state.nats.clone(),
-            bandit: app_state.bandit_state.clone(),
+            bandit: default_oracle_ts.bandit_state.clone(),
             metrics: app_state.metrics.clone(),
             oracle_window_size: app_state.cfg.oracle_window_size,
             oracle_ece_alert_threshold: app_state.cfg.oracle_ece_alert_threshold,
             oracle_pass_rate_floor: app_state.cfg.oracle_pass_rate_floor,
-            calibration: app_state.calibration.clone(),
+            calibration: default_oracle_ts.calibration.clone(),
             calibration_max_ensemble_size: app_state.cfg.calibration_max_ensemble_size,
         };
         tokio::spawn(accumulator.run());

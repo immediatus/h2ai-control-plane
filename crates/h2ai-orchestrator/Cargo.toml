@@ -6,6 +6,10 @@ edition.workspace    = true
 authors.workspace    = true
 license.workspace    = true
 
+[features]
+# Expose test-only constructors for integration tests in the `tests/` directory.
+testing = []
+
 [dependencies]
 h2ai-types       = { path = "../h2ai-types" }
 h2ai-state       = { path = "../h2ai-state" }

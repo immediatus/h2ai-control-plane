@@ -6,7 +6,7 @@ use h2ai_types::events::{
     BranchPrunedEvent, H2AIEvent, MergeResolvedEvent, ProposalEvent, TaskBootstrappedEvent,
     TaskFailedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
 };
-use h2ai_types::identity::{ExplorerId, TaskId};
+use h2ai_types::identity::{ExplorerId, TaskId, TenantId};
 use h2ai_types::sizing::{RoleErrorCost, TauValue};
 
 fn task_id() -> TaskId {
@@ -26,7 +26,7 @@ fn pareto_weights() -> ParetoWeights {
 #[test]
 fn apply_bootstrapped_sets_pending() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     SessionJournal::apply_event(
         &mut state,
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
@@ -49,7 +49,7 @@ fn apply_bootstrapped_sets_pending() {
 #[test]
 fn apply_proposal_increments_completed_and_sets_generating() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.explorers_completed, 0);
     SessionJournal::apply_event(
         &mut state,
@@ -81,7 +81,7 @@ fn apply_proposal_increments_completed_and_sets_generating() {
 #[test]
 fn apply_verification_scored_passed_increments_valid() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.proposals_valid, 0);
     SessionJournal::apply_event(
         &mut state,
@@ -104,7 +104,7 @@ fn apply_verification_scored_passed_increments_valid() {
 #[test]
 fn apply_verification_scored_failed_increments_pruned() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.proposals_pruned, 0);
     SessionJournal::apply_event(
         &mut state,
@@ -127,7 +127,7 @@ fn apply_verification_scored_failed_increments_pruned() {
 #[test]
 fn apply_zero_survival_increments_retries() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.autonomic_retries, 0);
     SessionJournal::apply_event(
         &mut state,
@@ -147,7 +147,7 @@ fn apply_zero_survival_increments_retries() {
 #[test]
 fn apply_merge_resolved_sets_resolved() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     SessionJournal::apply_event(
         &mut state,
         H2AIEvent::MergeResolved(MergeResolvedEvent {
@@ -171,7 +171,7 @@ fn apply_merge_resolved_sets_resolved() {
 #[test]
 fn apply_task_failed_sets_failed() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     SessionJournal::apply_event(
         &mut state,
         H2AIEvent::TaskFailed(TaskFailedEvent {
@@ -193,7 +193,7 @@ fn apply_task_failed_sets_failed() {
 #[test]
 fn apply_branch_pruned_increments_proposals_pruned() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     SessionJournal::apply_event(
         &mut state,
         H2AIEvent::BranchPruned(BranchPrunedEvent {
@@ -214,7 +214,7 @@ fn apply_branch_pruned_increments_proposals_pruned() {
 #[test]
 fn task_state_serde_roundtrip() {
     let tid = task_id();
-    let mut state = TaskState::new(tid.clone());
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     state.status = "generating".into();
     state.phase = TaskPhase::ParallelGeneration as u8;
     state.phase_name = "ParallelGeneration".into();
@@ -334,7 +334,7 @@ async fn snapshot_written_and_recovered_via_replay() {
         .expect("publish_event_seq");
 
     // Manually write a snapshot as if note_event had fired.
-    let state_before = TaskState::new(tid.clone());
+    let state_before = TaskState::new(tid.clone(), TenantId::default_tenant());
     let snap = h2ai_types::events::TaskSnapshot {
         task_id: tid.clone(),
         last_sequence: seq,

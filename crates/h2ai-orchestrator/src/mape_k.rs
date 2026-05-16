@@ -27,6 +27,10 @@ pub struct PipelineParams {
     pub srani_tier: usize,
     pub srani_last_wave_fired: bool,
     pub pending_tombstone: Option<String>,
+    /// Leader context snapshot for per-slot context injection in generation.
+    pub leader_context: Option<crate::leader::LeaderContextSnapshot>,
+    /// Assembled contexts from the previous wave for cross-wave delta encoding.
+    pub prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 }
 
 /// Talagrand feedback stored in WaveEvents.
@@ -80,6 +84,10 @@ pub struct WaveEvents {
     /// Mean pairwise constraint-conflict rate across all proposals in this wave.
     /// `None` when fewer than 2 proposals were generated or corpus is empty.
     pub conflict_rate: Option<f64>,
+    /// Proposal texts keyed by explorer ID — populated in pipeline.rs before verification.
+    pub wave_proposal_texts: std::collections::HashMap<h2ai_types::identity::ExplorerId, String>,
+    /// AssembledContexts from this wave's generation phase, for next-wave delta encoding.
+    pub assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 }
 
 impl Default for WaveEvents {
@@ -104,6 +112,8 @@ impl Default for WaveEvents {
             filter_ratio: 1.0,
             pruned_events: Vec::new(),
             conflict_rate: None,
+            wave_proposal_texts: std::collections::HashMap::new(),
+            assembled_contexts: Vec::new(),
         }
     }
 }
@@ -220,6 +230,18 @@ pub struct MapeKController {
     pub(crate) calibration_ensemble: Option<h2ai_types::sizing::EnsembleCalibration>,
     pub(crate) cfg_ref: std::sync::Arc<h2ai_config::H2AIConfig>,
     pub(crate) task_deadline: Option<std::time::Instant>,
+
+    // ── Epistemic Leader ─────────────────────────────────────────────────────
+    pub leader: Option<crate::leader::LeaderState>,
+    pub(crate) last_wave_verification_events: Vec<h2ai_types::events::VerificationScoredEvent>,
+    pub(crate) last_wave_proposal_texts:
+        std::collections::HashMap<h2ai_types::identity::ExplorerId, String>,
+    pub(crate) pending_leader_elected_events: Vec<h2ai_types::events::LeaderElectedEvent>,
+    pub(crate) pending_socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
+    pub(crate) last_wave_violated_constraint_ids: Vec<String>,
+    /// AssembledContexts from the most recently completed wave.
+    /// Passed as `prev_assembled_contexts` to the next wave's generation phase.
+    pub(crate) prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 }
 
 impl MapeKController {
@@ -314,6 +336,13 @@ impl MapeKController {
             calibration_ensemble: input.calibration.ensemble.clone(),
             cfg_ref: std::sync::Arc::new(input.cfg.clone()),
             task_deadline,
+            leader: None,
+            last_wave_verification_events: Vec::new(),
+            last_wave_proposal_texts: std::collections::HashMap::new(),
+            pending_leader_elected_events: Vec::new(),
+            pending_socratic_diagnosis_events: Vec::new(),
+            last_wave_violated_constraint_ids: Vec::new(),
+            prev_assembled_contexts: Vec::new(),
         }
     }
 
@@ -335,6 +364,11 @@ impl MapeKController {
             srani_tier: self.srani_tier,
             srani_last_wave_fired: self.srani_last_wave_fired,
             pending_tombstone: self.pending_tombstone.clone(),
+            leader_context: self
+                .leader
+                .as_ref()
+                .map(|ls| ls.to_snapshot(self.last_wave_violated_constraint_ids.clone())),
+            prev_assembled_contexts: self.prev_assembled_contexts.clone(),
         }
     }
 
@@ -375,6 +409,23 @@ impl MapeKController {
         self.last_wave_pruned = e.pruned_events.clone();
         // Accumulate pruned events so RetryPolicy::decide can extract remediation hints.
         self.all_pruned.extend(e.pruned_events.iter().cloned());
+        // Epistemic leader: snapshot last-wave verification events and proposal texts.
+        self.last_wave_verification_events = e.verification_events.clone();
+        self.last_wave_proposal_texts = e.wave_proposal_texts.clone();
+        self.last_wave_violated_constraint_ids = self
+            .last_wave_pruned
+            .iter()
+            .flat_map(|p| {
+                p.violated_constraints
+                    .iter()
+                    .map(|v| v.constraint_id.clone())
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        // Capture assembled contexts from this wave for use as prev_assembled_contexts
+        // in the next wave's generation phase.
+        self.prev_assembled_contexts = e.assembled_contexts.clone();
     }
 
     // ── Decide ─────────────────────────────────────────────────────────────────
@@ -620,7 +671,7 @@ impl MapeKController {
 
     /// Assemble the final `EngineOutput` from a successful merge result and the
     /// cross-wave accumulators held in the controller.
-    pub fn finalize(&self, merge_out: MergeOutput) -> EngineOutput {
+    pub fn finalize(&mut self, merge_out: MergeOutput) -> EngineOutput {
         let run_scores: Vec<f64> = self
             .all_verification_events
             .iter()
@@ -656,6 +707,8 @@ impl MapeKController {
             srani_ema_cfi_updated: self.srani_ema,
             srani_count_updated: self.srani_count as usize,
             oracle_gate_passed: merge_out.oracle_gate_passed,
+            leader_elected_events: std::mem::take(&mut self.pending_leader_elected_events),
+            socratic_diagnosis_events: std::mem::take(&mut self.pending_socratic_diagnosis_events),
         }
     }
 
@@ -693,6 +746,223 @@ impl MapeKController {
         self.current_params = suggested;
     }
 
+    // ── Epistemic Leader ───────────────────────────────────────────────────────
+
+    /// Compute a `LeaderElectionPlan` from the last wave's verification events.
+    /// Returns `None` when no verification events are available yet.
+    pub fn prepare_leader_election(
+        &self,
+        cfg: &h2ai_config::H2AIConfig,
+    ) -> Option<crate::leader::LeaderElectionPlan> {
+        use crate::leader::{
+            assign_follower_aspects, select_best_and_runner_up, should_rotate, update_credibility,
+        };
+
+        if self.last_wave_verification_events.is_empty() {
+            return None;
+        }
+
+        let scores: Vec<(h2ai_types::identity::ExplorerId, f64)> = self
+            .last_wave_verification_events
+            .iter()
+            .map(|e| (e.explorer_id.clone(), e.score))
+            .collect();
+
+        let (winner_id, runner_up_id) = select_best_and_runner_up(&scores)?;
+
+        let do_rotate = match &self.leader {
+            Some(ls) => should_rotate(
+                ls,
+                cfg.leader_stagnation_threshold,
+                cfg.leader_stagnation_waves,
+            ),
+            None => false,
+        };
+
+        let leader_id = if do_rotate {
+            runner_up_id.clone().unwrap_or_else(|| winner_id.clone())
+        } else {
+            winner_id.clone()
+        };
+
+        let prior_proposal = self
+            .last_wave_proposal_texts
+            .get(&leader_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let violated_ids = self.last_wave_violated_constraint_ids.clone();
+
+        let n_followers = scores.len().saturating_sub(1);
+        let follower_aspects = assign_follower_aspects(&violated_ids, n_followers);
+
+        let q_confidence = scores
+            .iter()
+            .find(|(id, _)| *id == leader_id)
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
+
+        let term = self.leader.as_ref().map(|ls| ls.term + 1).unwrap_or(1);
+
+        let existing_credibility = if do_rotate {
+            1.0
+        } else {
+            match &self.leader {
+                Some(ls) => {
+                    let improved = self.quality_history.len() >= 2 && {
+                        let n = self.quality_history.len();
+                        let delta = self.quality_history[n - 1].q_confidence
+                            - self.quality_history[n - 2].q_confidence;
+                        delta >= cfg.leader_stagnation_threshold
+                    };
+                    update_credibility(
+                        ls.credibility_score,
+                        improved,
+                        cfg.leader_credibility_decay_rate,
+                    )
+                }
+                None => 1.0,
+            }
+        };
+
+        let existing_buffer = if do_rotate {
+            vec![]
+        } else {
+            self.leader
+                .as_ref()
+                .map(|ls| ls.belief_buffer.clone())
+                .unwrap_or_default()
+        };
+
+        Some(crate::leader::LeaderElectionPlan {
+            task_id: self.task_id.clone(),
+            term,
+            leader_explorer_id: leader_id,
+            runner_up_explorer_id: runner_up_id,
+            prior_proposal,
+            violated_constraint_ids: violated_ids,
+            q_confidence,
+            should_rotate: do_rotate,
+            follower_aspects,
+            existing_belief_buffer: existing_buffer,
+            existing_credibility,
+        })
+    }
+
+    /// Apply a completed `LeaderElectionPlan` (after async Socratic diagnosis) to
+    /// update `self.leader` and push the corresponding telemetry events.
+    pub fn apply_leader_result(
+        &mut self,
+        plan: crate::leader::LeaderElectionPlan,
+        question: String,
+        eig_rank: u32,
+        dedup_candidates_tried: u32,
+        cfg: &h2ai_config::H2AIConfig,
+    ) {
+        use crate::leader::{fnv1a, BeliefRecord};
+        use h2ai_types::events::RotationReason;
+
+        let rotation_reason = if plan.should_rotate {
+            Some(RotationReason::Stagnation)
+        } else {
+            None
+        };
+
+        let elected_ev = h2ai_types::events::LeaderElectedEvent {
+            task_id: plan.task_id.clone(),
+            term: plan.term,
+            leader_explorer_id: plan.leader_explorer_id.clone(),
+            q_confidence: plan.q_confidence,
+            credibility_score: plan.existing_credibility,
+            rotation_reason,
+            timestamp: chrono::Utc::now(),
+        };
+        self.pending_leader_elected_events.push(elected_ev);
+
+        let diagnosis_ev = h2ai_types::events::SocraticDiagnosisEvent {
+            task_id: plan.task_id.clone(),
+            term: plan.term,
+            question: question.clone(),
+            violated_constraints: plan.violated_constraint_ids.clone(),
+            eig_rank,
+            dedup_candidates_tried,
+            timestamp: chrono::Utc::now(),
+        };
+        self.pending_socratic_diagnosis_events.push(diagnosis_ev);
+
+        let n = self.quality_history.len();
+        let improved = n >= 2 && {
+            let delta =
+                self.quality_history[n - 1].q_confidence - self.quality_history[n - 2].q_confidence;
+            delta >= cfg.leader_stagnation_threshold
+        };
+        let stagnation_count = if plan.should_rotate {
+            0
+        } else {
+            match &self.leader {
+                Some(ls) => {
+                    if improved {
+                        0
+                    } else {
+                        ls.stagnation_count + 1
+                    }
+                }
+                None => {
+                    if improved {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            }
+        };
+
+        let mut belief_buffer = plan.existing_belief_buffer;
+        let outcomes: Vec<f64> = self
+            .last_wave_verification_events
+            .iter()
+            .map(|e| e.score)
+            .collect();
+        belief_buffer.push(BeliefRecord {
+            question_hash: fnv1a(&question),
+            question_text: question.clone(),
+            outcome_scores: outcomes,
+        });
+
+        let mut confidence_history = self
+            .leader
+            .as_ref()
+            .map(|ls| ls.confidence_history.clone())
+            .unwrap_or_default();
+        confidence_history.push(plan.q_confidence);
+
+        self.leader = Some(crate::leader::LeaderState {
+            term: plan.term,
+            leader_explorer_id: plan.leader_explorer_id,
+            prior_proposal: plan.prior_proposal,
+            socratic_question: question,
+            confidence_history,
+            stagnation_count,
+            belief_buffer,
+            credibility_score: plan.existing_credibility,
+            follower_aspects: plan.follower_aspects,
+        });
+    }
+
+    /// Drain and return the pending leader telemetry events accumulated since the
+    /// last call.  Called by `engine.rs` after each wave to publish to the event bus.
+    pub fn take_leader_events(
+        &mut self,
+    ) -> (
+        Vec<h2ai_types::events::LeaderElectedEvent>,
+        Vec<h2ai_types::events::SocraticDiagnosisEvent>,
+    ) {
+        (
+            std::mem::take(&mut self.pending_leader_elected_events),
+            std::mem::take(&mut self.pending_socratic_diagnosis_events),
+        )
+    }
+
     // ── Coordinator helpers ────────────────────────────────────────────────────
 
     /// Returns the task deadline for the coordinator's deadline check.
@@ -707,7 +977,6 @@ impl MapeKController {
 
     // ── Test helpers ───────────────────────────────────────────────────────────
 
-    #[cfg(test)]
     pub fn new_for_test(cfg: h2ai_config::H2AIConfig) -> Self {
         use crate::tao_loop::TaoMultiplierEstimator;
         use h2ai_types::events::TaskComplexityAssessedEvent;
@@ -782,6 +1051,13 @@ impl MapeKController {
             calibration_ensemble: None,
             cfg_ref: std::sync::Arc::new(cfg),
             task_deadline: None,
+            leader: None,
+            last_wave_verification_events: Vec::new(),
+            last_wave_proposal_texts: std::collections::HashMap::new(),
+            pending_leader_elected_events: Vec::new(),
+            pending_socratic_diagnosis_events: Vec::new(),
+            last_wave_violated_constraint_ids: Vec::new(),
+            prev_assembled_contexts: Vec::new(),
         }
     }
 
@@ -882,6 +1158,12 @@ mod tests {
     fn wave_events_default_has_none_conflict_rate() {
         let events = WaveEvents::default();
         assert!(events.conflict_rate.is_none());
+    }
+
+    #[test]
+    fn leader_state_is_none_on_new_controller() {
+        let ctrl = default_controller();
+        assert!(ctrl.leader.is_none());
     }
 
     #[test]

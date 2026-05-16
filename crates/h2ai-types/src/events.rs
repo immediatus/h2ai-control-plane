@@ -946,6 +946,43 @@ pub struct PromptVariantPromotedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Reason for leadership rotation in a MAPE-K retry wave.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationReason {
+    /// First election — no prior leader existed.
+    FirstElection,
+    /// Leader rotated due to confidence stagnation.
+    Stagnation,
+}
+
+/// Emitted when a Krum-elected leader is installed or rotated for a new wave term.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaderElectedEvent {
+    pub task_id: TaskId,
+    pub term: u32,
+    pub leader_explorer_id: ExplorerId,
+    pub q_confidence: f64,
+    pub credibility_score: f64,
+    /// `None` = first election; `Some(reason)` = rotation cause.
+    pub rotation_reason: Option<RotationReason>,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when the leader formulates its Socratic diagnostic question for the next wave.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocraticDiagnosisEvent {
+    pub task_id: TaskId,
+    pub term: u32,
+    pub question: String,
+    pub violated_constraints: Vec<String>,
+    /// Which EIG candidate rank was selected (1 = best).
+    pub eig_rank: u32,
+    /// Candidates skipped due to belief-buffer deduplication.
+    pub dedup_candidates_tried: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
 ///
 /// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
@@ -1055,6 +1092,10 @@ pub enum H2AIEvent {
     PromptVariantPromoted(PromptVariantPromotedEvent),
     /// Corpus quality signal: judge panel disagreement persistent across proposals in a wave.
     ConstraintAmbiguity(ConstraintAmbiguityEvent),
+    /// Wraps [`LeaderElectedEvent`]: Krum-elected leader installed or rotated for a new wave term.
+    LeaderElected(LeaderElectedEvent),
+    /// Wraps [`SocraticDiagnosisEvent`]: leader's Socratic diagnostic question for the current wave.
+    SocraticDiagnosis(SocraticDiagnosisEvent),
 }
 
 impl H2AIEvent {

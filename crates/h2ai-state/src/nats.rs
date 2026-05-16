@@ -430,7 +430,12 @@ impl NatsClient {
     }
 
     /// Persist the TaoMultiplierEstimator EMA state so it survives process restarts.
-    pub async fn put_tao_estimator_state(&self, ema: f64, count: usize) -> Result<(), NatsError> {
+    pub async fn put_tao_estimator_state(
+        &self,
+        tenant_id: &TenantId,
+        ema: f64,
+        count: usize,
+    ) -> Result<(), NatsError> {
         #[derive(serde::Serialize)]
         struct State {
             ema: f64,
@@ -443,14 +448,18 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        kv.put("tao_multiplier/state", payload.into())
+        let key = format!("{}/tao", tenant_id.bucket_safe());
+        kv.put(&key, payload.into())
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         Ok(())
     }
 
     /// Retrieve the persisted TaoMultiplierEstimator EMA state, or `None` if absent.
-    pub async fn get_tao_estimator_state(&self) -> Result<Option<(f64, usize)>, NatsError> {
+    pub async fn get_tao_estimator_state(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<(f64, usize)>, NatsError> {
         #[derive(serde::Deserialize)]
         struct State {
             ema: f64,
@@ -461,7 +470,8 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv.get("tao_multiplier/state").await {
+        let key = format!("{}/tao", tenant_id.bucket_safe());
+        match kv.get(&key).await {
             Ok(Some(entry)) => {
                 let s: State = serde_json::from_slice(&entry)
                     .map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -473,7 +483,12 @@ impl NatsClient {
     }
 
     /// Persist the SRANI adaptive EMA state so it survives process restarts.
-    pub async fn put_srani_state(&self, ema_cfi: f64, count: usize) -> Result<(), NatsError> {
+    pub async fn put_srani_state(
+        &self,
+        tenant_id: &TenantId,
+        ema_cfi: f64,
+        count: usize,
+    ) -> Result<(), NatsError> {
         #[derive(serde::Serialize)]
         struct State {
             ema_cfi: f64,
@@ -486,14 +501,18 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        kv.put("srani_adaptive_state", payload.into())
+        let key = format!("{}/srani", tenant_id.bucket_safe());
+        kv.put(&key, payload.into())
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         Ok(())
     }
 
     /// Retrieve the persisted SRANI adaptive EMA state, or `None` if absent.
-    pub async fn get_srani_state(&self) -> Result<Option<(f64, usize)>, NatsError> {
+    pub async fn get_srani_state(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<(f64, usize)>, NatsError> {
         #[derive(serde::Deserialize)]
         struct State {
             ema_cfi: f64,
@@ -504,7 +523,8 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv.get("srani_adaptive_state").await {
+        let key = format!("{}/srani", tenant_id.bucket_safe());
+        match kv.get(&key).await {
             Ok(Some(entry)) => {
                 let s: State = serde_json::from_slice(&entry)
                     .map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -515,15 +535,20 @@ impl NatsClient {
         }
     }
 
-    /// Persist raw JSON bytes to the `H2AI_ESTIMATOR` bucket under key `bandit_state`.
+    /// Persist raw JSON bytes to the `H2AI_ESTIMATOR` bucket under key `{tenant_safe}/bandit`.
     /// Callers are responsible for serialization (avoids a circular crate dependency).
-    pub async fn put_bandit_state(&self, json_bytes: Vec<u8>) -> Result<(), NatsError> {
+    pub async fn put_bandit_state(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError> {
         let kv = self
             .jetstream
             .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        kv.put("bandit_state", json_bytes.into())
+        let key = format!("{}/bandit", tenant_id.bucket_safe());
+        kv.put(&key, json_bytes.into())
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         Ok(())
@@ -531,13 +556,17 @@ impl NatsClient {
 
     /// Retrieve raw JSON bytes for `BanditState` from the `H2AI_ESTIMATOR` bucket.
     /// Returns `None` when no entry exists (first run). Callers deserialize the bytes.
-    pub async fn get_bandit_state(&self) -> Result<Option<Vec<u8>>, NatsError> {
+    pub async fn get_bandit_state(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<Vec<u8>>, NatsError> {
         let kv = self
             .jetstream
             .get_key_value(&self.state_cfg.estimator_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv.get("bandit_state").await {
+        let key = format!("{}/bandit", tenant_id.bucket_safe());
+        match kv.get(&key).await {
             Ok(Some(entry)) => Ok(Some(entry.to_vec())),
             Ok(None) => Ok(None),
             Err(e) => Err(NatsError::KvError(e.to_string())),
@@ -1011,6 +1040,7 @@ impl NatsClient {
     /// Store an approval record pending human review.
     pub async fn put_approval_record(
         &self,
+        tenant_id: &TenantId,
         record: &h2ai_types::approval::ApprovalRecord,
     ) -> Result<u64, NatsError> {
         let payload =
@@ -1020,8 +1050,9 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.approvals_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/{}", tenant_id.bucket_safe(), record.task_id);
         let rev = kv
-            .put(&record.task_id, payload.into())
+            .put(&key, payload.into())
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         Ok(rev)
@@ -1031,6 +1062,7 @@ impl NatsClient {
     /// The revision is required for the CAS delete in the reaper.
     pub async fn get_approval_record_with_revision(
         &self,
+        tenant_id: &TenantId,
         task_id: &str,
     ) -> Result<Option<(h2ai_types::approval::ApprovalRecord, u64)>, NatsError> {
         let kv = self
@@ -1038,7 +1070,8 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.approvals_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv.entry(task_id).await {
+        let key = format!("{}/{}", tenant_id.bucket_safe(), task_id);
+        match kv.entry(&key).await {
             Ok(Some(entry)) => {
                 // Deleted/purged entries still return Some — treat them as not found.
                 if entry.operation != async_nats::jetstream::kv::Operation::Put {
@@ -1055,11 +1088,12 @@ impl NatsClient {
         }
     }
 
-    /// List all approval records with their revisions.
-    /// Used by the reaper to find expired records.
+    /// List all approval records with their revisions and KV keys.
+    /// Returns `(record, revision, kv_key)` where `kv_key` is `"{tenant_safe}/{task_id}"`.
+    /// The reaper passes `kv_key` directly to `delete_approval_record_if_revision`.
     pub async fn list_approval_records_with_revision(
         &self,
-    ) -> Vec<(h2ai_types::approval::ApprovalRecord, u64)> {
+    ) -> Vec<(h2ai_types::approval::ApprovalRecord, u64, String)> {
         use futures::TryStreamExt;
         let kv = match self
             .jetstream
@@ -1081,8 +1115,16 @@ impl NatsClient {
         };
         let mut result = Vec::with_capacity(keys.len());
         for key in &keys {
-            if let Ok(Some(pair)) = self.get_approval_record_with_revision(key).await {
-                result.push(pair);
+            if let Ok(Some(entry)) = kv.entry(key.as_str()).await {
+                if entry.operation != async_nats::jetstream::kv::Operation::Put {
+                    continue;
+                }
+                match serde_json::from_slice::<h2ai_types::approval::ApprovalRecord>(&entry.value) {
+                    Ok(record) => result.push((record, entry.revision, key.clone())),
+                    Err(e) => {
+                        tracing::warn!("list_approval_records: deserialize failed for {key}: {e}")
+                    }
+                }
             }
         }
         result
@@ -1092,9 +1134,10 @@ impl NatsClient {
     ///
     /// Returns `Ok(())` only if this node won the CAS race.
     /// Returns `Err` if another node already deleted or updated the record.
+    /// `kv_key` is the full KV key: `"{tenant_safe}/{task_id}"`.
     pub async fn delete_approval_record_if_revision(
         &self,
-        task_id: &str,
+        kv_key: &str,
         expected_revision: u64,
     ) -> Result<(), NatsError> {
         let kv = self
@@ -1103,13 +1146,13 @@ impl NatsClient {
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         // Use update with empty bytes as the atomic claim — only succeeds if revision matches.
-        kv.update(task_id, vec![].into(), expected_revision)
+        kv.update(kv_key, vec![].into(), expected_revision)
             .await
             .map_err(|e| {
                 NatsError::KvError(format!("CAS delete failed (revision mismatch): {e}"))
             })?;
         // Clean up the tombstone entry
-        kv.delete(task_id)
+        kv.delete(kv_key)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         Ok(())
@@ -1996,6 +2039,7 @@ mod delta_encoding_tests {
             created_at_ms: 1_000_000,
             updated_at_ms: 1_000_000,
             constraint_snapshot: None,
+            j_eff: None,
         }
     }
 
@@ -2098,6 +2142,7 @@ mod delta_cache_unit_tests {
             created_at_ms: 1000,
             updated_at_ms: 1000,
             constraint_snapshot: None,
+            j_eff: None,
         }
     }
 
@@ -2184,6 +2229,37 @@ mod delta_cache_unit_tests {
             lru.get("c").is_some(),
             "'c' should be present (just inserted)"
         );
+    }
+}
+
+#[cfg(test)]
+mod tenant_key_tests {
+    use h2ai_types::identity::TenantId;
+
+    fn kv_key(tenant: &TenantId, suffix: &str) -> String {
+        format!("{}/{}", tenant.bucket_safe(), suffix)
+    }
+
+    #[test]
+    fn hyphen_sanitized_to_underscore() {
+        assert_eq!(
+            kv_key(&TenantId::from("acme-corp"), "srani"),
+            "acme_corp/srani"
+        );
+    }
+
+    #[test]
+    fn default_tenant_key() {
+        assert_eq!(
+            kv_key(&TenantId::default_tenant(), "bandit"),
+            "default/bandit"
+        );
+    }
+
+    #[test]
+    fn approval_key_includes_task_id() {
+        let tenant = TenantId::from("acme");
+        assert_eq!(kv_key(&tenant, "abc-123"), "acme/abc-123");
     }
 }
 

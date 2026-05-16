@@ -37,6 +37,13 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
             // Must be evaluated via async path; sync path is a pass-through.
             1.0
         }
+        ConstraintPredicate::SemanticPresence { .. }
+        | ConstraintPredicate::SemanticOrdering { .. }
+        | ConstraintPredicate::SemanticExclusion { .. } => {
+            // Async-only binary predicates. Returning 1.0 causes the Composite And engine
+            // to place them in the deferred list alongside LlmJudge.
+            1.0
+        }
         ConstraintPredicate::OracleExecution { .. } => {
             // Requires an async HTTP call; sync path always returns 0.0 (safe degradation).
             // Use eval_async in h2ai-orchestrator::verification for oracle predicates.

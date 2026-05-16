@@ -166,6 +166,9 @@ async fn engine_runs_ensemble_to_semilattice() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -258,6 +261,9 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -345,6 +351,9 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -432,6 +441,9 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -514,6 +526,9 @@ async fn engine_output_contains_talagrand_diagnostic() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -627,6 +642,9 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -706,6 +724,9 @@ async fn engine_output_contains_suggested_next_params() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -866,6 +887,9 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -980,6 +1004,9 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1164,6 +1191,9 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let err = ExecutionEngine::run_offline(input).await.unwrap_err();
@@ -1259,6 +1289,9 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
@@ -1438,6 +1471,9 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1566,6 +1602,9 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1627,6 +1666,9 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1693,6 +1735,9 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1767,6 +1812,9 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -1848,6 +1896,9 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1944,6 +1995,9 @@ async fn c3_no_event_when_corpus_empty() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2056,6 +2110,9 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2167,6 +2224,9 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -2298,6 +2358,9 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     let calls = researcher_calls.lock().unwrap();
@@ -2407,6 +2470,9 @@ async fn c1_no_warning_for_diverse_proposals() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2539,6 +2605,9 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     match result {
@@ -2656,6 +2725,9 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2784,6 +2856,9 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2901,6 +2976,9 @@ async fn srani_adaptive_fires_and_updates_ema() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3035,6 +3113,9 @@ async fn srani_cold_start_uses_config_midpoint() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3146,6 +3227,9 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3255,6 +3339,9 @@ async fn srani_ema_formula_verified_numerically() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3381,6 +3468,9 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -3433,6 +3523,9 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3496,6 +3589,9 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3557,6 +3653,9 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;

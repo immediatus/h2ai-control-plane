@@ -419,3 +419,75 @@ The math used in this system is calibrated to specific assumptions. They are lis
 - **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 (cosine N_eff diversity guard), Phase 3.1 (token-Jaccard CV joint check), and Phase 3.2 (SRANI entity-level CFI with sigmoid-gated grounding) each add a layer of mitigation. None can eliminate shared pre-training data as a source of correlated failure — they reduce the surface, not eliminate it.
 - **Synthesis gain is local.** `synthesis_gain` is measured against the same verification adapter that scored the individual proposals. A verifier blind spot inflates both terms equally and cancels out.
 - **No oracle.** Without a `q_measured` from an external oracle, `q_confidence` is the only quality signal and it measures the system's self-confidence, not correctness. The bootstrap interval reflects CG variance, not ground-truth uncertainty.
+
+---
+
+## 13. Epistemic Leader
+
+The Epistemic Leader subsystem runs inside the thinking loop. At the start of each wave it selects a leader adapter, generates a Socratic question intended to surface the most information about the violated constraints, distributes the remaining constraint dimensions to follower adapters, and rotates leadership when the current leader stagnates.
+
+### 13.1 Expected Information Gain (EIG)
+
+The heuristic EIG score for a candidate Socratic question `q` given violated constraint set `C` and belief buffer `B`:
+
+```
+EIG(q, C, B) = 0                                                      if fnv1a(q) ∈ {fnv1a(b.question) : b ∈ B}
+EIG(q, C, B) = |{c ∈ C : c ∈ q}| + 0.5·(1 − sim(q, B))              otherwise
+
+where sim(q, B) = |{b ∈ B : overlap(q, b.question) > 3 tokens}| / |B|
+```
+
+The argmax over `N` candidates is the selected question:
+
+```
+q* = argmax_{q₁…qₙ} EIG(qᵢ, C, B)
+```
+
+The first term rewards coverage: questions that reference more violated constraints score higher. The second term rewards novelty: `sim(q, B)` is the fraction of buffered past questions that overlap `q` by more than 3 tokens, so `1 − sim` is the per-candidate diversity score, weighted at 0.5.
+
+The zero case short-circuits duplicate questions via an FNV-1a content hash so the same surface-form question is never asked twice within a session.
+
+Phase 1 uses a token-overlap proxy for information-theoretic diversity. Phase 2 path: replace with embedding cosine distance for more principled diversity measurement.
+
+### 13.2 SPRT-inspired rotation criterion
+
+Leadership rotation fires when confidence improvement stagnates for `leader_stagnation_waves` consecutive waves:
+
+```
+rotate ← stagnation_count ≥ leader_stagnation_waves
+          AND |confidence_history| ≥ 2
+          AND confidence_history[-1] − confidence_history[-2] < leader_stagnation_threshold
+```
+
+This approximates a Sequential Probability Ratio Test stopping criterion: the null hypothesis (leader is improving) is rejected when the most recent Δ`q_confidence` falls below the minimum detectable effect `leader_stagnation_threshold`. Once rotation fires, the next adapter in the round-robin pool is promoted and `stagnation_count` resets to zero.
+
+### 13.3 Credibility update
+
+Leader credibility is a scalar in [0, 1] updated at each wave:
+
+```
+credibility_{t+1} = clamp(credibility_t + rate · improved_t, 0, 1)
+
+where improved_t = (q_confidence_t − q_confidence_{t-1}) ≥ leader_stagnation_threshold
+      rate = +leader_credibility_decay_rate   if improved_t
+           = −leader_credibility_decay_rate   otherwise
+```
+
+| Symbol | Meaning |
+|---|---|
+| `credibility_t` | Scalar credibility of the current leader before wave `t` |
+| `improved_t` | Boolean: confidence improved by at least the stagnation threshold |
+| `leader_credibility_decay_rate` | Step size for credibility updates (config) |
+| `leader_credibility_warn_threshold` | Floor below which followers receive a low-confidence prefix (config) |
+
+When `credibility < leader_credibility_warn_threshold`, follower context is prefixed with a low-confidence warning, preventing followers from over-anchoring on a stale leader signal.
+
+### 13.4 Follower aspect assignment
+
+Violated constraint IDs are distributed to `N_follower` follower slots round-robin:
+
+```
+aspect(i) = violated_constraints[i mod |violated_constraints|]
+```
+
+This enforces Tree-of-Thoughts-style forced diversity: each follower explores a different constraint dimension in the same wave, preventing mode collapse to a single repair strategy. When `|violated_constraints| < N_follower`, constraint IDs wrap around so every follower still receives an assigned dimension.

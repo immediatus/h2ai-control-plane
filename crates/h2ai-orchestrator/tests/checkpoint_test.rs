@@ -32,6 +32,7 @@ fn checkpoint_serializes_and_deserializes() {
         created_at_ms: 1000,
         updated_at_ms: 2000,
         constraint_snapshot: None,
+        j_eff: None,
     };
     let json = serde_json::to_string(&c).unwrap();
     let back: TaskCheckpoint = serde_json::from_str(&json).unwrap();
@@ -53,6 +54,7 @@ fn checkpoint_with_resolved_output_roundtrips() {
         created_at_ms: 3000,
         updated_at_ms: 4000,
         constraint_snapshot: None,
+        j_eff: None,
     };
     let json = serde_json::to_string(&c).unwrap();
     let back: TaskCheckpoint = serde_json::from_str(&json).unwrap();
@@ -106,6 +108,7 @@ fn checkpoint_payload_compresses_and_decompresses() {
         created_at_ms: 1000,
         updated_at_ms: 2000,
         constraint_snapshot: None,
+        j_eff: None,
     };
 
     let json = serde_json::to_vec(&c).unwrap();

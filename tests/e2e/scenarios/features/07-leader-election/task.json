@@ -1,0 +1,34 @@
+{
+  "_tenant_id": "platform-team",
+  "description": "Design a distributed rate limiting system for a multi-tenant API gateway. Requirements: (1) per-tenant rate limits configurable independently, (2) limit enforcement within 100ms of a burst being detected across multiple gateway nodes, (3) graceful degradation when the rate-limit coordination service is unavailable — gateway must not become a single point of failure, (4) audit log of every rate limit decision written before the request is allowed or rejected.",
+  "pareto_weights": {
+    "diversity": 0.5,
+    "containment": 0.4,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 2,
+    "tau_min": 0.4,
+    "tau_max": 0.8
+  },
+  "context": "Current state: simple in-memory per-node rate limiting with no cross-node coordination. Problem: a burst of 1000 req/s from tenant A hits node 1 while tenant A's quota is 200 req/s globally — other nodes don't know and allow the full quota each, so effective limit is 200 × N nodes. Coordination latency budget: 100ms. Graceful degradation: if coordination unavailable, fall back to per-node limits (accept more traffic rather than drop all). Audit requirement: write the decision record to an append-only log before sending the HTTP response.",
+  "_timeout_s": 2400,
+  "_expected": {
+    "leader_election_ran": true,
+    "checks_pass_threshold": 0,
+    "checks": [
+      {
+        "id": "LE/1",
+        "text": "Does the proposal describe cross-node coordination for rate limit enforcement within 100ms?"
+      },
+      {
+        "id": "LE/2",
+        "text": "Does the proposal provide graceful degradation when the coordination service is unavailable (fallback to per-node limits rather than complete failure)?"
+      },
+      {
+        "id": "LE/3",
+        "text": "Does the proposal write the audit log entry before allowing or rejecting the request?"
+      }
+    ]
+  }
+}

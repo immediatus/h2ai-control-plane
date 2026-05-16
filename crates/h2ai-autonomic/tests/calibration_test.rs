@@ -540,10 +540,7 @@ async fn adapter_families_same_family_sets_single_family_warning() {
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["prompt one".into()],
-        adapters: vec![
-            &a as &dyn IComputeAdapter,
-            &b as &dyn IComputeAdapter,
-        ],
+        adapters: vec![&a as &dyn IComputeAdapter, &b as &dyn IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &[],
         embedding_model: None,
@@ -577,10 +574,7 @@ async fn adapter_families_cross_family_sets_verification_match() {
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["prompt".into()],
-        adapters: vec![
-            &a as &dyn IComputeAdapter,
-            &b as &dyn IComputeAdapter,
-        ],
+        adapters: vec![&a as &dyn IComputeAdapter, &b as &dyn IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &[],
         embedding_model: None,

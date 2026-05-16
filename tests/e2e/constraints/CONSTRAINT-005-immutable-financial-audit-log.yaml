@@ -8,6 +8,10 @@ related_to:
   - CONSTRAINT-004  # budget deductions are the events that must reach the audit log
   - CONSTRAINT-007  # billing event timestamps must use HLC (linearizable), not wall clock
 remediation_hint: "Publish billing events to Kafka before acknowledging the debit request (at-least-once guarantee). Project into ClickHouse or equivalent append-only columnar store for analytics. Never use UPDATE or DELETE on financial event records — treat the event log as the ledger of record."
+predicates:
+  - type: semantic_ordering
+    first: "account debit"
+    then: "Kafka publish"
 criteria:
   pass: |
     Financial/billing events are written to a storage system where records cannot be modified
@@ -22,3 +26,76 @@ criteria:
     - Is the ClickHouse audit table append-only (no UPDATE or DELETE mutations permitted)?
     - Does the proposal maintain a 7-year retention policy for the immutable audit trail?
     - "Does the proposal use a dual-ledger model: CockroachDB for operational state, ClickHouse for immutable audit?"
+
+failure_modes:
+  - id: FM-005-1
+    trigger: "Kafka unavailable (0.01% of time per SLA)"
+    consequence: |
+      If the charge path requires a synchronous Kafka publish before acknowledging the
+      debit, Kafka downtime blocks all charges. If the publish is skipped during
+      downtime, debits occur without audit records — creating an unreconcilable gap.
+    correct_handling: |
+      Use a local durable retry queue (e.g., WAL-backed in-process queue or
+      a local RocksDB sidecar). Debit proceeds; the event is written to the local
+      queue synchronously; a background publisher drains the queue to Kafka with
+      at-least-once delivery. The audit trail is complete after Kafka recovers.
+  - id: FM-005-2
+    trigger: "Direct CockroachDB write on the charge path instead of Kafka publish"
+    consequence: |
+      CockroachDB reads on the critical path add 1-5ms of latency (violates P99 budget).
+      CockroachDB records can be updated or deleted — the audit trail is not tamper-evident.
+      Database-level audit is not a substitute for an immutable event stream.
+    correct_handling: |
+      Kafka publish (fire-and-forget with local retry) adds <0.1ms to the charge path.
+      CockroachDB is updated asynchronously by a Kafka consumer — never on the charge path.
+  - id: FM-005-3
+    trigger: "Application log file as audit record"
+    consequence: |
+      Log files are mutable (log rotation deletes records), not queryable for compliance
+      reporting, and not retained for 7 years without expensive log aggregation pipelines.
+      This does not satisfy audit requirements.
+    correct_handling: |
+      Kafka topic with compaction disabled and retention.ms = 7 years. Project into
+      ClickHouse for analytics queries. Log files are for debugging only, not compliance.
+
+negative_examples:
+  - description: "Write billing event to CockroachDB on the charge path"
+    code: |
+      // WRONG — CockroachDB on critical path, mutable, high latency
+      db.Execute("INSERT INTO billing_events VALUES ($1, $2, $3)", id, amount, ts)
+      redis.Eval(debitScript, key, amount)
+      return OK
+    why_wrong: |
+      CockroachDB write adds 2-5ms latency. Records can be deleted. The audit write
+      happens before the Redis debit — if Redis fails, the audit record is orphaned.
+      Order must be: debit first, then audit.
+  - description: "Skip Kafka publish when Kafka is temporarily unavailable"
+    code: |
+      // WRONG — silent audit gap during Kafka downtime
+      debit_result = redis.eval(debitScript, key, amount)
+      try:
+          kafka.produce("financial-events", event)
+      except KafkaException:
+          log.warn("Kafka down, skipping audit")  # ← audit gap
+      return debit_result
+    why_wrong: |
+      Any charge without an audit record creates an unreconcilable gap. During Kafka
+      downtime (even 30 seconds), hundreds of unaudited charges accumulate. Use a
+      local durable queue instead of skipping.
+
+positive_examples:
+  - description: "Debit then publish to Kafka with local retry queue fallback"
+    code: |
+      // CORRECT — debit first, audit second, never skip
+      debit_result = redis.eval(debitScript, key, amount, idempotency_key)
+      if debit_result.ok:
+          event = BillingEvent(id=idempotency_key, amount=amount, ts=hlc_now())
+          try:
+              kafka.produce("financial-events", event, timeout_ms=50)
+          except KafkaException:
+              local_retry_queue.append(event)  # drained by background thread
+      return debit_result
+    why_correct: |
+      Debit is atomic (Lua script). Kafka publish is best-effort with local fallback.
+      Background thread retries from queue with at-least-once semantics.
+      No audit gap possible; no latency added to the synchronous charge path.

@@ -8,12 +8,20 @@ from typing import Iterator
 
 BASE_URL = "http://localhost:8080"
 API_PREFIX = "/v1"
+DEFAULT_TENANT = "default"
 
 
-def submit_task(task: dict) -> str:
+def _task_url(tenant_id: str, *parts: str) -> str:
+    path = f"{API_PREFIX}/{tenant_id}/tasks"
+    if parts:
+        path += "/" + "/".join(parts)
+    return f"{BASE_URL}{path}"
+
+
+def submit_task(task: dict, tenant_id: str = DEFAULT_TENANT) -> str:
     payload = json.dumps(task).encode()
     req = urllib.request.Request(
-        f"{BASE_URL}{API_PREFIX}/tasks",
+        _task_url(tenant_id),
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -26,8 +34,8 @@ def submit_task(task: dict) -> str:
     return task_id
 
 
-def stream_events(task_id: str, timeout_s: int = 300) -> Iterator[dict]:
-    url = f"{BASE_URL}{API_PREFIX}/tasks/{task_id}/events"
+def stream_events(task_id: str, tenant_id: str = DEFAULT_TENANT, timeout_s: int = 300) -> Iterator[dict]:
+    url = _task_url(tenant_id, task_id, "events")
     req = urllib.request.Request(url)
     deadline = time.time() + timeout_s
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:

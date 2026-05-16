@@ -61,8 +61,10 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | State lives in the model | LLM context window (lossy) | Orchestrator owns state; models are stateless `f(ctx, τ) → text`. CRDTs track **constraint-satisfaction fingerprints** (metadata), never LLM text. Text is reconciled by the synthesis LLM. |
 | Safety is probabilistic | "Don't do X" in the prompt | Topological interlocks — invalid output cannot reach the human by graph construction |
 | More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
+| Retry loop repeats same failed approach | Hope next attempt differs | Epistemic Leader — Krum-elected leader generates Socratic diagnostic question per failed wave; follower context forced to distinct constraint dimensions; credibility-weighted rotation on stagnation |
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates; `constraint_error_cost = 1 − compliance` |
 | Constraint corpus is static and fragile | Bulk file reload loses history | Constraint Wiki (`H2AI_CONSTRAINT_WIKI` KV) — hot-reload via NATS KV watch; `ConstraintSource` trait decouples corpus access from storage; `ConstraintSnapshot` in every checkpoint records which wiki revision was active |
+| Flat constraint retrieval returns all-or-nothing | Inject entire corpus or keyword-match | Hierarchical Knowledge Provider — `Bm25WikiProvider` scores constraints via BM25+/PPR across a Global → Topic → Leaf tree; dual RAPTOR modes (TreeTraversal + CollapsedTree); PPR multi-hop expansion surfaces related constraints; `GlobalKnowledge` and `TopicKnowledge` context sections are injected at importance 1.0 and 0.8 respectively |
 | Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
 | Low-confidence outputs reach callers silently | Every output looks the same | HITL Approval Gate — `q_confidence < threshold` or `require_approval = true` parks the output in `H2AI_APPROVALS` KV; `PendingApprovalEvent` streams immediately; 30-minute reaper auto-rejects expired records |
 | Prompt quality drifts without feedback | Manually tune prompts per deployment | Adaptive Prompt Harness — OPRO (arXiv 2309.03409) auto-improves prompts when j_eff EMA falls; Thompson bandit selects best variant |
@@ -103,7 +105,8 @@ curl -X POST http://localhost:8080/calibrate
 # 3 pure LLM explorers reason in parallel about the architecture decision.
 # c_i ≈ 0.1 (text output, discard at zero cost) → CRDT merge.
 # CONSTRAINT-004 and CONSTRAINT-005 are loaded from the corpus; others are skipped.
-curl -X POST http://localhost:8080/tasks \
+# tenant_id is a URL path segment — use "default" for single-tenant deployments.
+curl -X POST http://localhost:8080/v1/default/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Design a budget enforcement mechanism that prevents double-billing during server restarts",
@@ -113,7 +116,7 @@ curl -X POST http://localhost:8080/tasks \
   }'
 
 # Task 2 — code generation (containment-weighted, tight τ band)
-curl -X POST http://localhost:8080/tasks \
+curl -X POST http://localhost:8080/v1/default/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Write and test a Redis Lua script for atomic budget check-and-decrement with 30s TTL idempotency",
@@ -123,11 +126,11 @@ curl -X POST http://localhost:8080/tasks \
   }'
 
 # Stream events in real time
-curl -sN http://localhost:8080/tasks/{task_id}/events
+curl -sN http://localhost:8080/v1/default/tasks/{task_id}/events
 
 # If the task suspends with PendingClarificationEvent (oracle gate + low confidence),
 # supply an operator answer to resume:
-curl -X POST http://localhost:8080/tasks/{task_id}/clarify \
+curl -X POST http://localhost:8080/v1/default/tasks/{task_id}/clarify \
   -H "Content-Type: application/json" \
   -d '{"answer": "your clarification here"}'
 
@@ -227,7 +230,7 @@ Inside each edge agent, `TaoAgent` runs a Thought→Action→Observation loop up
 
 The Auditor spins up on `TopologyProvisionedEvent` — before generation starts. Proposals are validated as they arrive. Rejections become `BranchPrunedEvent` tombstones: permanently preserved with rejection reason and `constraint_error_cost`, visible in the Merge Authority UI. Failures are epistemic data, not noise.
 
-Zero survivors → `ZeroSurvivalEvent`. The three-layer MAPE-K engine engages: `ExecutionPipeline` runs the 12 per-wave phase modules in order (topology → multiply → diversity → generation → hallucination → SRANI → verify → audit → frontier → oracle → synthesis → merge), `MapeKController` maps the wave's `ExitReason` to one of three `MapeKDecision` variants — `Return(output)`, `Retry`, or `Fail(error)` — and `engine.rs` orchestrates the loop. The retry adjusts `{N, τ, topology}` and reruns. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload.
+Zero survivors → `ZeroSurvivalEvent`. The three-layer MAPE-K engine engages: `ExecutionPipeline` runs the 12 per-wave phase modules in order (topology → multiply → diversity → generation → hallucination → SRANI → verify → audit → frontier → oracle → synthesis → merge), `MapeKController` maps the wave's `ExitReason` to one of three `MapeKDecision` variants — `Return(output)`, `Retry`, or `Fail(error)` — and `engine.rs` orchestrates the loop. The retry adjusts `{N, τ, topology}` and reruns. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload. The MAPE-K retry loop gains cross-wave guidance via an elected Epistemic Leader that diagnoses failures and formulates Socratic questions to prevent repeated mistakes. When `leader_enabled = true` (default: false), the highest-scoring Krum survivor is elected leader after each failed wave; it generates an EIG-ranked diagnostic question (deduplicated via belief buffer) that is injected as leader context in the next wave while followers receive the question paired with an assigned constraint aspect.
 
 ### 6. Merge — two layers, O(1) human decision
 
@@ -286,7 +289,7 @@ ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
 MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted; oracle_gate_passed: Option<bool>
 OracleGateResultEvent              → Phase 4.5 oracle gate: gate_passed, confidence, checked/passed counts
-PendingClarificationEvent          → engine suspended awaiting operator answer; POST /tasks/{id}/clarify to resume
+PendingClarificationEvent          → engine suspended awaiting operator answer; POST /{tenant_id}/tasks/{id}/clarify to resume
 OproTriggeredEvent                 → OPRO cycle started: j_eff_ema fell below threshold for adapter
 PromptVariantPromotedEvent         → Thompson bandit promoted best variant as new prompt default
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
@@ -295,7 +298,7 @@ VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.
 ConstraintAmbiguityEvent           → ≥ambiguity_threshold proposals produced uncertain votes on the same constraint; corpus quality signal
 TaskAttributionEvent               → q_confidence decomposition: baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain
 PendingApprovalEvent               → HITL gate fired; proposed_output held for review; risk_level (Medium|High); timeout_at_ms
-ApprovalResolvedEvent              → operator submitted POST /tasks/{id}/approve; approved bool + operator_id recorded
+ApprovalResolvedEvent              → operator submitted POST /{tenant_id}/tasks/{id}/approve; approved bool + operator_id recorded
 ```
 
 **Compound task events** (subject `h2ai.tasks.{task_id}`):
@@ -323,6 +326,7 @@ AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable 
 | `h2ai-types` | Pure types — all events, manifests, USL physics structs, `IComputeAdapter` trait, `AdapterFamily`, `JudgePersona`, `PanelDiversityKind`; zero I/O deps |
 | `h2ai-config` | `H2AIConfig` — physics thresholds, role defaults, all tunable parameters |
 | `h2ai-constraints` | `ConstraintDoc` / `ConstraintPredicate` type system; Hard/Soft/Advisory severity; `compliance = hard_gate × soft_score` |
+| `h2ai-knowledge` | Hierarchical BM25+/PPR knowledge provider — `KnowledgeSource` + `KnowledgeProvider` traits; `Bm25WikiProvider` (RAPTOR dual-mode: TreeTraversal + CollapsedTree); `ConstraintGraph` (Personalized PageRank multi-hop expansion); `YamlDirSource`; `PassthroughProvider` (delegates to `ConstraintResolver`); `ScoringConfig` (8 tunable parameters, all serde-defaulted); `KnowledgeProviderFactory` |
 | `h2ai-nats` | NATS subject constants + scoped NKey provisioning per `task_id` |
 | `h2ai-state` | CRDT semilattice, NATS JetStream I/O, checkpoint delta encoding (JSON Patch RFC 6902), per-tenant KV buckets |
 | `h2ai-context` | Dark Knowledge Compiler — assembles immutable `system_context` from constraint corpus + task manifest |
@@ -337,7 +341,7 @@ AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable 
 | `h2ai-api` | axum REST gateway, SSE event stream, Merge Authority web UI, OPRO cycle, Thompson-sampling bandit |
 | `h2ai-agent` | Edge agent binary — NATS task dispatch loop, `TaoAgent` TAO loop, `config_validation` fail-fast at startup |
 
-**Dependency rule:** `h2ai-types`, `h2ai-config`, `h2ai-constraints` are pure — zero I/O. Six crates use `async-nats` on dedicated subject namespaces: `h2ai-nats`, `h2ai-state`, `h2ai-memory`, `h2ai-telemetry`, `h2ai-provisioner`, `h2ai-agent`. `h2ai-api` is the only HTTP-facing crate; nothing imports it. Eigenvalue-intensive calibration paths use `tokio::task::spawn_blocking` so CPU-bound work never starves NATS consumers.
+**Dependency rule:** `h2ai-types`, `h2ai-config`, `h2ai-constraints`, `h2ai-knowledge` are pure — zero I/O (knowledge reads YAML at startup via std::fs, no async-nats dependency). Six crates use `async-nats` on dedicated subject namespaces: `h2ai-nats`, `h2ai-state`, `h2ai-memory`, `h2ai-telemetry`, `h2ai-provisioner`, `h2ai-agent`. `h2ai-api` is the only HTTP-facing crate; nothing imports it. Eigenvalue-intensive calibration paths use `tokio::task::spawn_blocking` so CPU-bound work never starves NATS consumers.
 
 ---
 

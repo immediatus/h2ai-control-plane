@@ -7,7 +7,7 @@ use axum::{
 };
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_types::events::H2AIEvent;
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::CalibrationAccepted;
 use serde_json::{json, Value};
 use std::convert::Infallible;
@@ -68,7 +68,8 @@ pub(crate) async fn run_calibration_core(
             event.explorer_verification_family_match = explorer_verification_family_match;
             event.single_family_warning = single_family_warning;
             {
-                let mut cal = state.calibration.write().await;
+                let ts = state.tenant_state(&TenantId::default_tenant());
+                let mut cal = ts.calibration.write().await;
                 *cal = Some(event.clone());
             }
             {
@@ -197,7 +198,8 @@ pub async fn calibrate_events(
 ) -> impl IntoResponse {
     use axum::response::sse::KeepAlive;
 
-    let cal_cache = state.calibration.clone();
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    let cal_cache = ts.calibration.clone();
     let stream = async_stream::stream! {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -214,7 +216,8 @@ pub async fn calibrate_events(
 }
 
 pub async fn current_calibration(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let cal = state.calibration.read().await;
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    let cal = ts.calibration.read().await;
     match cal.as_ref() {
         Some(c) => Ok(Json(json!({
             "calibration_id": c.calibration_id.to_string(),

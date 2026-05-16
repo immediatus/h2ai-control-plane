@@ -96,11 +96,23 @@ impl SessionJournal {
                             error = %e,
                             "snapshot deserialization failed, falling back to full replay"
                         );
-                        (TaskState::new(task_id.clone()), 0)
+                        (
+                            TaskState::new(
+                                task_id.clone(),
+                                h2ai_types::identity::TenantId::default_tenant(),
+                            ),
+                            0,
+                        )
                     }
                 }
             }
-            Ok(None) => (TaskState::new(task_id.clone()), 0),
+            Ok(None) => (
+                TaskState::new(
+                    task_id.clone(),
+                    h2ai_types::identity::TenantId::default_tenant(),
+                ),
+                0,
+            ),
             Err(e) => {
                 tracing::warn!(
                     target: "h2ai.journal",
@@ -108,7 +120,13 @@ impl SessionJournal {
                     error = %e,
                     "snapshot load failed, falling back to full replay"
                 );
-                (TaskState::new(task_id.clone()), 0)
+                (
+                    TaskState::new(
+                        task_id.clone(),
+                        h2ai_types::identity::TenantId::default_tenant(),
+                    ),
+                    0,
+                )
             }
         };
 

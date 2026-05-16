@@ -37,6 +37,9 @@ mathematical improvement, and simulation protocol for every open gap.
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
+| **GAP-F1 Knowledge provider not wired into generation pipeline** | 🟡 PARTIAL | High | `Bm25WikiProvider` built and stored in `AppState`; `GlobalKnowledge`/`TopicKnowledge` section tags added to context assembler; `generation.rs` does not yet call `knowledge_provider.query()` — retrieval does not reach explorer context |
+| **GAP-F2 SurfacedTension injection not implemented** | 🔴 OPEN | Medium | `KnowledgeResult.surfaced_tensions` computed but not injected into context as preserved `[CONSTRAINT CONFLICT: ...]` prefixes; requires new `SectionTag::ConstraintTension` |
+| **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
@@ -779,7 +782,7 @@ Closed by the Adaptive Prompt Harness (OPRO). `seed_all_bootstrap_priors` in `h2
 
 ### GAP-E1: Oracle Integration 🟢 WIRED — Blocking
 
-**Wired (2026-05-14).** Phase 4.5 oracle gate is live: NATS `request()` to `cfg.oracle_gate.subject` with configurable timeout before the Phase 5 merge step. The thinking loop Stage 2 (`brainstorm_one`) sends candidate solutions to the oracle inline; `synthesize` applies `oracle_confidence_bonus` when the oracle approved. On fail + low confidence, a matching `ClarificationTemplate` fires a `PendingClarificationEvent` that suspends the engine; `POST /tasks/{id}/clarify` resumes it with an operator answer. `oracle_gate_passed: Option<bool>` on `MergeResolvedEvent` tracks the gate outcome per task.
+**Wired (2026-05-14).** Phase 4.5 oracle gate is live: NATS `request()` to `cfg.oracle_gate.subject` with configurable timeout before the Phase 5 merge step. The thinking loop Stage 2 (`brainstorm_one`) sends candidate solutions to the oracle inline; `synthesize` applies `oracle_confidence_bonus` when the oracle approved. On fail + low confidence, a matching `ClarificationTemplate` fires a `PendingClarificationEvent` that suspends the engine; `POST /{tenant_id}/tasks/{id}/clarify` resumes it with an operator answer. `oracle_gate_passed: Option<bool>` on `MergeResolvedEvent` tracks the gate outcome per task.
 
 **Open.** Domain-specific automated test suites (code, factual QA, structured output) are the remaining work for automated oracle coverage.
 

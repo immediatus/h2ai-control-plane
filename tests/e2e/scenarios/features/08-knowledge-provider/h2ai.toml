@@ -1,0 +1,36 @@
+# Feature isolation: new knowledge provider (Bm25Wiki) ON
+# Verifies server starts with [knowledge] config and processes tasks without crashing.
+# The knowledge provider is built at startup but not yet injected into generation context
+# (pipeline wiring is a future step); this test confirms no startup regression.
+
+calibration_max_tokens = 512
+calibration_adapter_count = 1
+nats_url = "nats://localhost:4222"
+verifier_consensus_passes = 1
+
+[safety]
+profile = "development"
+
+[knowledge]
+provider = "Bm25Wiki"
+
+[knowledge.source]
+YamlDir = { path = "tests/e2e/constraints" }
+
+[constraint_wiki]
+enabled     = true
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled = false
+
+debug_log_path = "/tmp/h2ai-debug-08-knowledge-provider.ndjson"

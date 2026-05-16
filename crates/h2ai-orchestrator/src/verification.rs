@@ -262,36 +262,41 @@ impl VerificationPhase {
         // Evaluate each proposal independently.
         for proposal in input.proposals {
             // Pre-compute per-variant system prompts and caches.
-            let variant_contexts: Vec<(String, EvalCache)> = panel.variants.iter().map(|variant| {
-                let persona_prefix = variant.persona.system_prompt_prefix();
-                let sp = if persona_prefix.is_empty() {
-                    base_sp.clone()
-                } else {
-                    format!("{persona_prefix}\n\n{base_sp}")
-                };
-                (sp, new_eval_cache())
-            }).collect();
+            let variant_contexts: Vec<(String, EvalCache)> = panel
+                .variants
+                .iter()
+                .map(|variant| {
+                    let persona_prefix = variant.persona.system_prompt_prefix();
+                    let sp = if persona_prefix.is_empty() {
+                        base_sp.clone()
+                    } else {
+                        format!("{persona_prefix}\n\n{base_sp}")
+                    };
+                    (sp, new_eval_cache())
+                })
+                .collect();
 
             // Fire all variants in parallel per proposal.
-            let variant_results: Vec<Vec<ComplianceResult>> = join_all(
-                panel.variants.iter().zip(variant_contexts.iter()).map(|(variant, (sp, cache))| {
-                    Self::eval_all(
-                        corpus,
-                        &proposal.raw_output,
-                        variant.adapter,
-                        &rubric,
-                        sp,
-                        tau,
-                        max_tokens,
-                        cache,
-                        consensus_passes,
-                    )
-                }),
-            )
-            .await
-            .into_iter()
-            .map(|(results, _)| results)
-            .collect();
+            let variant_results: Vec<Vec<ComplianceResult>> =
+                join_all(panel.variants.iter().zip(variant_contexts.iter()).map(
+                    |(variant, (sp, cache))| {
+                        Self::eval_all(
+                            corpus,
+                            &proposal.raw_output,
+                            variant.adapter,
+                            &rubric,
+                            sp,
+                            tau,
+                            max_tokens,
+                            cache,
+                            consensus_passes,
+                        )
+                    },
+                ))
+                .await
+                .into_iter()
+                .map(|(results, _)| results)
+                .collect();
 
             // For each constraint index, aggregate votes across variants.
             let n_constraints = variant_results.first().map(|r| r.len()).unwrap_or(0);
@@ -580,6 +585,52 @@ impl VerificationPhase {
                     test_suite,
                     timeout_secs,
                 } => Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
+                ConstraintPredicate::SemanticOrdering {
+                    first,
+                    then,
+                    passes,
+                } => {
+                    Self::majority_binary_check(
+                        &format!(
+                            "Does the following response demonstrate that '{first}' occurs \
+                             BEFORE '{then}'? Answer with exactly one word: YES or NO.\n\n{output}"
+                        ),
+                        evaluator,
+                        sp,
+                        tau,
+                        *passes,
+                        false,
+                    )
+                    .await
+                }
+                ConstraintPredicate::SemanticPresence { concept, passes } => {
+                    Self::majority_binary_check(
+                        &format!(
+                            "Does the following response include or demonstrate '{concept}'? \
+                             Answer with exactly one word: YES or NO.\n\n{output}"
+                        ),
+                        evaluator,
+                        sp,
+                        tau,
+                        *passes,
+                        false,
+                    )
+                    .await
+                }
+                ConstraintPredicate::SemanticExclusion { pattern, passes } => {
+                    Self::majority_binary_check(
+                        &format!(
+                            "Does the following response contain '{pattern}'? \
+                             Answer with exactly one word: YES or NO.\n\n{output}"
+                        ),
+                        evaluator,
+                        sp,
+                        tau,
+                        *passes,
+                        true,
+                    )
+                    .await
+                }
                 ConstraintPredicate::Composite { op, children } => {
                     match op {
                         CompositeOp::And => {
@@ -589,7 +640,10 @@ impl VerificationPhase {
                             for child in children {
                                 match child {
                                     ConstraintPredicate::LlmJudge { .. }
-                                    | ConstraintPredicate::OracleExecution { .. } => {
+                                    | ConstraintPredicate::OracleExecution { .. }
+                                    | ConstraintPredicate::SemanticPresence { .. }
+                                    | ConstraintPredicate::SemanticOrdering { .. }
+                                    | ConstraintPredicate::SemanticExclusion { .. } => {
                                         deferred.push(child);
                                     }
                                     other => {
@@ -784,6 +838,54 @@ impl VerificationPhase {
                 tracing::warn!(target: "h2ai.verification", error = %e, "LlmJudge execute error; using neutral 0.7");
                 0.7
             }
+        }
+    }
+
+    /// Majority-vote binary check. Calls the evaluator `passes` times with a YES/NO prompt.
+    /// Returns 1.0 if strictly more than half answer YES, 0.0 otherwise (conservative: tie → fail).
+    /// If `invert` is true, YES means the pattern was FOUND → returns 0.0 (used for exclusion gates).
+    async fn majority_binary_check(
+        prompt: &str,
+        evaluator: &dyn IComputeAdapter,
+        sp: &str,
+        tau: h2ai_types::sizing::TauValue,
+        passes: u8,
+        invert: bool,
+    ) -> f64 {
+        let passes = passes.max(1) as usize;
+        let mut yes_count = 0usize;
+        for _ in 0..passes {
+            let req = ComputeRequest {
+                system_context: sp.to_owned(),
+                task: prompt.to_owned(),
+                tau,
+                max_tokens: 64,
+            };
+            let is_yes = match evaluator.execute(req).await {
+                Ok(resp) => resp.output.trim().to_uppercase().starts_with("YES"),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "h2ai.verification",
+                        error = %e,
+                        "binary predicate call failed; counting as NO (conservative)"
+                    );
+                    false
+                }
+            };
+            if is_yes {
+                yes_count += 1;
+            }
+        }
+        // Strict majority: tie → fail (conservative for structural constraints)
+        let raw = if yes_count * 2 > passes {
+            1.0_f64
+        } else {
+            0.0_f64
+        };
+        if invert {
+            1.0 - raw
+        } else {
+            raw
         }
     }
 }

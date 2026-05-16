@@ -48,4 +48,8 @@ pub struct TaskCheckpoint {
     /// None for tasks submitted before wiki integration was deployed.
     #[serde(default)]
     pub constraint_snapshot: Option<ConstraintSnapshot>,
+    /// Jury Efficiency computed at merge time; persisted for the HITL approval path.
+    /// `None` when n_agents = 0 (Condorcet undefined) or for checkpoints predating this field.
+    #[serde(default)]
+    pub j_eff: Option<f64>,
 }

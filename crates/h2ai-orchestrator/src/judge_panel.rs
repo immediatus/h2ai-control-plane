@@ -19,12 +19,17 @@ impl<'a> JudgePanel<'a> {
     /// Build a panel from the primary verification adapter plus optional cross-family adapters.
     ///
     /// `additional` is a slice of `(adapter, adapter_kind)` pairs from the explorer pool.
-    /// Deduplicates by family, selects cross-family first (cap 2 additional),
-    /// falls back to 3-persona PersonaOnly when no cross-family adapters available.
+    /// Deduplicates by family, selects cross-family first (cap 2 additional).
+    ///
+    /// When cross-family adapters are available: CrossFamily panel with quorum voting.
+    /// When no cross-family adapters exist: single-variant panel that routes to the
+    /// original single-judge path in `run_with_panel`. PersonaOnly diversification
+    /// cannot address preference leakage (same model family) and introduced a
+    /// regression by making unanimous agreement mandatory for borderline proposals.
     pub fn build(
         primary: &'a dyn IComputeAdapter,
         additional: &[(&'a dyn IComputeAdapter, &AdapterKind)],
-        cfg: &JudgePanelConfig,
+        _cfg: &JudgePanelConfig,
     ) -> Self {
         let primary_family = primary.kind().family();
         let mut seen_families = std::collections::HashSet::new();
@@ -60,25 +65,13 @@ impl<'a> JudgePanel<'a> {
                 diversity_kind: PanelDiversityKind::CrossFamily,
             }
         } else {
-            let temps = cfg.persona_temperatures;
+            // Single-family: single variant routes to original single-judge path.
             JudgePanel {
-                variants: vec![
-                    RuntimeJudgeVariant {
-                        adapter: primary,
-                        persona: JudgePersona::Literal,
-                        temperature_override: Some(temps[0]),
-                    },
-                    RuntimeJudgeVariant {
-                        adapter: primary,
-                        persona: JudgePersona::Contextual,
-                        temperature_override: Some(temps[1]),
-                    },
-                    RuntimeJudgeVariant {
-                        adapter: primary,
-                        persona: JudgePersona::Skeptical,
-                        temperature_override: Some(temps[2]),
-                    },
-                ],
+                variants: vec![RuntimeJudgeVariant {
+                    adapter: primary,
+                    persona: JudgePersona::Literal,
+                    temperature_override: None,
+                }],
                 diversity_kind: PanelDiversityKind::PersonaOnly,
             }
         }
@@ -89,13 +82,18 @@ impl<'a> JudgePanel<'a> {
 pub enum ConstraintVerdict {
     Pass,
     Fail,
-    Uncertain { votes_pass: usize, votes_fail: usize },
+    Uncertain {
+        votes_pass: usize,
+        votes_fail: usize,
+    },
 }
 
 /// Aggregate per-constraint votes into a `ConstraintVerdict`.
 ///
 /// CrossFamily: supermajority (quorum_fraction) required for confident verdict.
 /// PersonaOnly: unanimous agreement required; any split → Uncertain.
+/// (PersonaOnly panels are now always single-variant so this branch is unreachable
+/// in practice — kept for correctness in case a multi-persona panel is constructed.)
 pub fn aggregate_votes(
     votes_pass: usize,
     votes_fail: usize,

@@ -114,15 +114,17 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
         };
 
         // --- Re-register in store so status queries work immediately ---
-        state
-            .store
-            .insert(task_id.clone(), TaskState::new(task_id.clone()));
+        state.store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), manifest.tenant_id.clone()),
+        );
         if let Some(phase) = TaskPhase::try_from_name_str(&checkpoint.phase) {
             state.store.set_phase(&task_id, phase, 0, 0);
         }
 
         // --- Require calibration ---
-        let calibration = match state.calibration.read().await.clone() {
+        let ts = state.tenant_state(&manifest.tenant_id);
+        let calibration = match ts.calibration.read().await.clone() {
             Some(c) => c,
             None => {
                 tracing::warn!(
@@ -142,9 +144,9 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             .await;
 
         // --- Snapshot tao_multiplier before building input ---
-        let tao_multiplier = state.tao_multiplier_estimator.read().await.multiplier();
-        let tao_estimator = Arc::clone(&state.tao_multiplier_estimator);
-        let bandit = Arc::clone(&state.bandit_state);
+        let tao_multiplier = ts.tao_multiplier_estimator.read().await.multiplier();
+        let tao_estimator = Arc::clone(&ts.tao_multiplier_estimator);
+        let bandit = Arc::clone(&ts.bandit_state);
 
         // --- Build owned adapter arcs so we can take short-lived references into EngineInput ---
         let pool_arcs: Vec<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>> =
@@ -198,6 +200,9 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             nats_raw: None,
             tenant_id,
             nats: None,
+            prev_assembled_contexts: Vec::new(),
+            compression_adapter: None,
+            stable_cache: None,
         };
 
         match ExecutionEngine::run_from_checkpoint(input, checkpoint.clone()).await {

@@ -23,3 +23,68 @@ criteria:
     - Is the idempotency check atomic (Lua script or single Redis command — not a read-then-write sequence)?
     - Does the proposal set a TTL (≤30s) on idempotency keys to prevent unbounded Redis growth?
     - Is CockroachDB read absent from the critical request path for budget enforcement?
+
+failure_modes:
+  - id: FM-004-1
+    trigger: "OOM-kill + client retry (most common double-debit cause)"
+    consequence: |
+      Ad Server pod processes a request, Redis DECRBY succeeds, pod is OOM-killed before
+      returning response. Client retries. Without idempotency, the retry debits a second
+      time. Result: double-debit at ~200/hour at peak (1M QPS, 0.1% retry rate).
+    correct_handling: |
+      Before any debit, check if idem:{campaign_id}:{request_id} exists in Redis.
+      If it exists, return the cached result without debiting. If not, DECRBY and
+      SETEX the idempotency key in the same Lua script (single atomic operation).
+      TTL = retry window (≤30s). Both operations in one EVAL — never two separate commands.
+  - id: FM-004-2
+    trigger: "Two separate Redis commands: GET then DECRBY (race window)"
+    consequence: |
+      Between the GET (check idempotency key) and DECRBY (debit), a concurrent request
+      with the same request_id can also pass the GET check and also execute DECRBY.
+      Both requests debit. The race window is 50-200µs but fires at 50k TPS.
+    correct_handling: |
+      Use a single Lua EVAL that performs both operations atomically. Redis serializes
+      Lua scripts — no concurrent script can interleave between the check and the debit.
+  - id: FM-004-3
+    trigger: "Idempotency key with no TTL (or TTL = 0)"
+    consequence: |
+      Keys accumulate indefinitely — at 50k TPS with 30-byte keys, Redis grows by
+      ~1.5GB/hour. Redis OOM kills the instance, taking down budget enforcement.
+    correct_handling: |
+      SETEX with TTL = retry_window_seconds (≤30). Choose TTL to cover the longest
+      plausible retry window. Campaign_id prefix ensures Redis cluster sharding works.
+
+negative_examples:
+  - description: "Two-step check-then-debit (race window)"
+    code: |
+      -- WRONG — not atomic, race window between GET and DECRBY
+      local exists = redis.call('GET', 'idem:' .. campaign_id .. ':' .. request_id)
+      if exists then return cached_result end
+      -- Race window here: another identical request can pass this check
+      redis.call('DECRBY', budget_key, amount)
+      redis.call('SET', 'idem:' .. campaign_id .. ':' .. request_id, result)
+    why_wrong: |
+      Two separate commands. A concurrent request with the same request_id can pass
+      the GET check before the SET completes, resulting in a double-debit.
+  - description: "Idempotency key with no TTL"
+    code: |
+      -- WRONG — no TTL, keys grow forever
+      redis.call('SET', 'idem:' .. request_id, result)
+    why_wrong: |
+      Keys never expire. At 50k TPS, Redis memory exhaustion occurs within hours.
+
+positive_examples:
+  - description: "Single Lua script: atomic idempotency check + debit"
+    code: |
+      -- CORRECT — atomic check-and-debit in one EVAL
+      local idem_key = 'idem:' .. ARGV[3] .. ':' .. ARGV[4]  -- campaign_id:request_id
+      local cached = redis.call('GET', idem_key)
+      if cached then return {0, cached} end                   -- already processed
+      local balance = tonumber(redis.call('GET', KEYS[1]))
+      if balance < tonumber(ARGV[1]) then return {-1, 0} end  -- insufficient budget
+      redis.call('DECRBY', KEYS[1], ARGV[1])
+      redis.call('SETEX', idem_key, 30, ARGV[2])             -- TTL = 30s retry window
+      return {1, ARGV[2]}
+    why_correct: |
+      Single EVAL — Redis serializes execution. No race window. TTL prevents memory
+      growth. campaign_id prefix enables Redis cluster key-slot assignment.

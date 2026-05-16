@@ -6,6 +6,7 @@ use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::NatsClient;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
+use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{
     CalibrationCompletedEvent, ProposalFailedEvent, SelectionResolvedEvent,
     TaskComplexityAssessedEvent, VerificationScoredEvent,
@@ -15,7 +16,6 @@ use h2ai_types::manifest::TaskManifest;
 use h2ai_types::reasoning_checkpoint::{
     CompletedWave, ReasoningCheckpointPhase, TaskReasoningCheckpoint,
 };
-use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::sizing::TaskQuadrant;
 use thiserror::Error;
 
@@ -141,6 +141,14 @@ pub struct EngineInput<'a> {
     /// NATS client for reasoning checkpoint writes.
     /// When `Some` and `cfg.reasoning_memory.enabled`, writes fire-and-forget at each phase gate.
     pub nats: Option<std::sync::Arc<NatsClient>>,
+    /// Assembled contexts from the previous wave for cross-wave delta encoding.
+    /// Index corresponds to explorer slot index. None on wave 0.
+    pub prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
+    /// Optional adapter for the LLM summarization compression pass.
+    pub compression_adapter: Option<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>>,
+    /// Cross-task stable context cache shared across tasks for the same tenant.
+    pub stable_cache:
+        Option<std::sync::Arc<crate::context_assembler::stable_cache::StableContextCache>>,
 }
 
 /// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
@@ -222,6 +230,10 @@ pub struct EngineOutput {
     /// Result of the oracle gate check before merge. `None` when gate was disabled or
     /// no NATS client was provided. `Some(true)` = passed, `Some(false)` = failed.
     pub oracle_gate_passed: Option<bool>,
+    /// Leader elected events across all MAPE-K waves (empty when `leader_enabled = false`).
+    pub leader_elected_events: Vec<h2ai_types::events::LeaderElectedEvent>,
+    /// Socratic diagnosis events across all MAPE-K waves (empty when `leader_enabled = false`).
+    pub socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
 }
 
 async fn write_reasoning_checkpoint(
@@ -270,9 +282,10 @@ impl ExecutionEngine {
     /// all retries are exhausted or a non-retryable condition is encountered.
     pub async fn run_offline(input: EngineInput<'_>) -> Result<EngineOutput, EngineError> {
         let task_id = input.task_id.clone();
-        input
-            .store
-            .insert(task_id.clone(), TaskState::new(task_id.clone()));
+        input.store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), input.tenant_id.clone()),
+        );
 
         let rc_prefix = input.cfg.state.reasoning_checkpoint_bucket_prefix.clone();
         let ms_prefix = input.cfg.state.task_meta_state_bucket_prefix.clone();
@@ -365,11 +378,35 @@ impl ExecutionEngine {
                 .run(controller.params(), retry_count as usize)
                 .await;
             controller.observe(&wave);
+            // ── Epistemic Leader Election ────────────────────────────────────
+            if input.cfg.leader_enabled && !input.explorer_adapters.is_empty() {
+                if let Some(plan) = controller.prepare_leader_election(input.cfg) {
+                    let adapter = input.explorer_adapters[0];
+                    let (question, eig_rank, dedup_tried) =
+                        crate::leader::generate_socratic_question(
+                            adapter,
+                            &plan.prior_proposal,
+                            &plan.violated_constraint_ids,
+                            &plan.existing_belief_buffer,
+                            input.cfg,
+                        )
+                        .await;
+                    controller.apply_leader_result(
+                        plan,
+                        question,
+                        eig_rank,
+                        dedup_tried,
+                        input.cfg,
+                    );
+                }
+            }
             // Fire-and-forget: write conflict rate sample to per-tenant accumulator.
             if input.cfg.conflict_beta.enabled {
                 if let Some(rate) = wave.events.conflict_rate {
                     if let Some(nats) = &input.nats {
-                        let floor = input.calibration.beta_quality
+                        let floor = input
+                            .calibration
+                            .beta_quality
                             .unwrap_or(input.calibration.coefficients.beta_base);
                         let mut acc = nats
                             .get_conflict_accumulator(&input.tenant_id, &conflict_beta_prefix)
@@ -387,7 +424,10 @@ impl ExecutionEngine {
                             input.cfg.conflict_beta.halflife_secs,
                             input.cfg.conflict_beta.min_samples_for_override,
                         );
-                        if let Err(e) = nats.put_conflict_accumulator(&acc, &conflict_beta_prefix).await {
+                        if let Err(e) = nats
+                            .put_conflict_accumulator(&acc, &conflict_beta_prefix)
+                            .await
+                        {
                             tracing::warn!(
                                 target: "h2ai.engine",
                                 "conflict accumulator write failed (non-fatal): {e}"
@@ -590,6 +630,8 @@ impl ExecutionEngine {
                 srani_ema_cfi_updated: input.srani_ema_cfi,
                 srani_count_updated: input.srani_count,
                 oracle_gate_passed: None,
+                leader_elected_events: vec![],
+                socratic_diagnosis_events: vec![],
             })
         } else {
             // Earlier phase or unknown phase — restart from scratch

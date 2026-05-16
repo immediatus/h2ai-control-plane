@@ -103,6 +103,9 @@ async fn system_chain_absent_task_completes_without_panic() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -154,6 +157,9 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -512,6 +518,9 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

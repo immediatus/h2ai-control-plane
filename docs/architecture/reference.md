@@ -10,16 +10,18 @@ The Axum router is wired in `crates/h2ai-api/src/routes/mod.rs`. Authentication 
 
 ### Endpoint summary
 
+All task routes include `:tenant_id` as a URL path segment. The path value is authoritative — any `tenant_id` in the request body is overridden. Single-tenant deployments use `default` as the tenant ID (e.g. `/v1/default/tasks`).
+
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/tasks` | Submit a task manifest. |
-| `GET` | `/tasks/:task_id/events` | SSE stream of `H2AIEvent` for a task. |
-| `GET` | `/tasks/:task_id` | Current task status snapshot. |
-| `POST` | `/tasks/:task_id/merge` | Resolve a Merge Authority decision. |
-| `POST` | `/tasks/:task_id/approve` | Submit HITL approval decision (`approved`, `reviewer_note`, `operator_id`). |
-| `POST` | `/tasks/:task_id/clarify` | Submit operator answer to a pending oracle clarification. |
-| `GET` | `/tasks/:task_id/approval` | Current `ApprovalRecord` for tasks in `AwaitingApproval` phase; 404 otherwise. |
-| `GET` | `/tasks/:task_id/recover` | Trigger snapshot+replay recovery for a task. |
+| `POST` | `/:tenant_id/tasks` | Submit a task manifest. |
+| `GET` | `/:tenant_id/tasks/:task_id/events` | SSE stream of `H2AIEvent` for a task. |
+| `GET` | `/:tenant_id/tasks/:task_id` | Current task status snapshot. |
+| `POST` | `/:tenant_id/tasks/:task_id/merge` | Resolve a Merge Authority decision. |
+| `POST` | `/:tenant_id/tasks/:task_id/approve` | Submit HITL approval decision (`approved`, `reviewer_note`, `operator_id`). |
+| `POST` | `/:tenant_id/tasks/:task_id/clarify` | Submit operator answer to a pending oracle clarification. |
+| `GET` | `/:tenant_id/tasks/:task_id/approval` | Current `ApprovalRecord` for tasks in `AwaitingApproval` phase; 404 otherwise. |
+| `GET` | `/:tenant_id/tasks/:task_id/recover` | Trigger snapshot+replay recovery for a task. |
 | `POST` | `/calibrate` | Start a calibration run. |
 | `GET` | `/calibrate/:cal_id/events` | SSE stream for an in-progress calibration. |
 | `GET` | `/calibrate/current` | Last completed calibration. |
@@ -27,7 +29,7 @@ The Axum router is wired in `crates/h2ai-api/src/routes/mod.rs`. Authentication 
 | `GET` | `/ready` | Readiness probe (depends on NATS connectivity and current calibration). |
 | `GET` | `/metrics` | Prometheus exposition. |
 
-### POST /tasks
+### POST /:tenant_id/tasks
 
 Submits a task manifest. Returns immediately with `task_id`. Progress is observed via the SSE stream.
 
@@ -55,16 +57,16 @@ Submits a task manifest. Returns immediately with `task_id`. Progress is observe
 
 `pareto_weights.{diversity, containment, throughput}` must sum to 1.0. `topology.kind` is `"auto"`, `"ensemble"`, or `"hierarchical_tree"`. When `explorers.roles[]` is non-empty the system always selects `TeamSwarmHybrid`. `explorers.count` is requested — the system reduces to `N_max` if the request exceeds the calibrated ceiling.
 
-`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5). `tenant_id` is optional; when omitted it defaults to `"default"`. It scopes all `TaskReasoningCheckpoint` and `TaskMetaState` writes to a per-tenant NATS KV bucket (see §10).
+`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5). `tenant_id` is taken from the URL path and is always required. It scopes all estimators, approval records, and NATS KV keys to an isolated per-tenant namespace. The request body `tenant_id` field, if present, is overridden by the path value.
 
-**Response:** `202 Accepted` with `{"task_id": "...", "events_url": "/tasks/.../events"}`.
+**Response:** `202 Accepted` with `{"task_id": "...", "events_url": "/{tenant_id}/tasks/.../events"}`.
 
 **Submission failures:**
 
 - `400` — malformed manifest, weights not summing to 1.0, or invalid role spec.
 - `503 CalibrationRequiredError` — no current calibration in `H2AI_CALIBRATION` KV.
 
-### GET /tasks/:task_id/events
+### GET /:tenant_id/tasks/:task_id/events
 
 Server-Sent Events stream of `H2AIEvent` envelopes. Each event:
 
@@ -77,7 +79,7 @@ data: {"event_type": "...", "payload": {...}}
 
 Reconnect with `Last-Event-ID: <sequence>` to resume from the last seen offset.
 
-### POST /tasks/:task_id/clarify
+### POST /:tenant_id/tasks/:task_id/clarify
 
 Resumes an engine suspended by a `PendingClarificationEvent`. The engine waits up to `oracle_gate.timeout_secs` for an answer before timing out with `on_timeout` behavior.
 
@@ -288,7 +290,7 @@ struct PendingApprovalEvent {
 
 #### ApprovalResolvedEvent
 
-Emitted by `POST /tasks/{id}/approve` after the CAS delete succeeds.
+Emitted by `POST /{tenant_id}/tasks/{id}/approve` after the CAS delete succeeds.
 
 ```rust
 struct ApprovalResolvedEvent {
@@ -388,7 +390,7 @@ struct OracleGateResultEvent {
 
 #### PendingClarificationEvent
 
-Emitted (Phase 4.5) when the oracle gate fails with low confidence and a matching `ClarificationTemplate` fires. The engine suspends via `clarification_waiters`; `POST /tasks/{id}/clarify` resumes it.
+Emitted (Phase 4.5) when the oracle gate fails with low confidence and a matching `ClarificationTemplate` fires. The engine suspends via `clarification_waiters`; `POST /{tenant_id}/tasks/{id}/clarify` resumes it.
 
 ```rust
 struct PendingClarificationEvent {
@@ -949,6 +951,43 @@ prior_weight = 5            # virtual task count for bootstrap Bayesian prior
 | `constraint_wiki.enabled` | `false` | When `true`, corpus access routes through `NatsWikiConstraintSource` (NATS KV + Object Store). When `false`, falls back to `FsConstraintSource` (flat directory). |
 | `constraint_wiki.corpus_path` | `"/constraints"` | Filesystem path for `FsConstraintSource` (used when `enabled = false`). Ignored when wiki is enabled. |
 | `constraint_wiki.resolve_k` | `50` | Reserved: max constraints returned per `resolve_context` call (future Qdrant semantic search limit). |
+
+### Knowledge Provider
+
+The `[knowledge]` section is optional. When absent, `PassthroughProvider` is used (delegates directly to `ConstraintResolver` — zero behaviour change from pre-knowledge operation). When present with `provider = "Bm25Wiki"`, `Bm25WikiProvider` is built at startup: BM25+ indexed over constraint leaf nodes and optional `wiki/` topic nodes, with Personalized PageRank for multi-hop expansion.
+
+```toml
+[knowledge]
+provider = "Bm25Wiki"
+
+[knowledge.source]
+YamlDir = { path = "tests/e2e/constraints" }
+```
+
+The `[knowledge.source]` table is **externally-tagged**: the key (`YamlDir`) is the variant name and its value is the struct body. Currently only `YamlDir` is supported. The path is resolved relative to the process working directory at startup.
+
+**Corpus layout under `YamlDir.path`:**
+- `*.yaml` — constraint leaf files (standard `ConstraintDoc` schema, `id`, `domains`, `related`, etc.)
+- `wiki/` — optional topic node files (see below); absence is graceful — a synthetic global node is built from constraint summaries
+- `wiki/_overview.yaml` — optional global overview node (`id`, `depth: global`, `synthesis`, `domains`)
+- `wiki/<topic>.yaml` — topic cluster node (`id`, `depth: topic`, `synthesis`, `domains`, `entry_points: [C-004, ...]`, `invariants`, `failure_modes`)
+
+**ScoringConfig defaults** (all fields are optional in `[knowledge.scoring]`):
+
+| Field | Default | Purpose |
+|---|---|---|
+| `knowledge.scoring.leaf_score_multiplier` | `0.7` | Multiplier on raw BM25+ score for direct leaf hits before boost application |
+| `knowledge.scoring.id_in_query_boost` | `0.15` | Boost added when a constraint ID (e.g. `C-004`) appears literally in query text |
+| `knowledge.scoring.entry_point_boost` | `0.10` | Boost for leaf nodes listed as `entry_points` in a matched topic cluster |
+| `knowledge.scoring.ppr_score_multiplier` | `0.3` | Multiplier on raw PPR probability mass for PPR-expanded (multi-hop) nodes |
+| `knowledge.scoring.ppr_alpha` | `0.15` | PPR teleportation probability (restart probability); standard value 0.15 |
+| `knowledge.scoring.ppr_max_iter` | `20` | PPR power-iteration steps; 20 converges for graphs up to ~1k nodes |
+| `knowledge.scoring.topic_cluster_top_k` | `3` | Max topic clusters matched per query in TreeTraversal mode |
+| `knowledge.scoring.global_synthesis_max_chars` | `600` | Max characters retained in the synthesized global overview node |
+
+**Relationship to `constraint_wiki`:** Both systems can be active simultaneously. `constraint_wiki` handles mandatory tag-based injection (always runs, enforces hard-gate predicates). `knowledge` handles semantic retrieval into `GlobalKnowledge`/`TopicKnowledge` context assembler sections (optional, runs when `[knowledge]` is configured). If a constraint ID appears in both paths, the context assembler deduplicates it with the higher-importance entry winning.
+
+**Context assembler integration:** When the knowledge provider returns results, `NodeDepth::Global` nodes are injected as `SectionTag::GlobalKnowledge` (importance=1.0, preserve=true — survives all compression passes); `NodeDepth::Topic` nodes as `SectionTag::TopicKnowledge` (importance=0.8, preserve=false). The wiring from `AppState.knowledge_provider` into the generation pipeline is a future sprint (as of 2026-05-18 the provider is built at startup but not yet called in `generation.rs`).
 
 ### Scheduler
 

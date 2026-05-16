@@ -1,10 +1,12 @@
 use h2ai_types::approval::{ApprovalDecision, ApprovalRecord};
 use h2ai_types::events::{ApprovalRiskLevel, ApprovalTrigger};
+use h2ai_types::identity::TenantId;
 
 #[test]
 fn approval_record_serializes_roundtrip() {
     let record = ApprovalRecord {
         task_id: "task-123".into(),
+        tenant_id: TenantId::default_tenant(),
         proposed_output: "the answer".into(),
         q_confidence: 0.42,
         triggered_by: ApprovalTrigger::LowConfidence,
