@@ -29,11 +29,11 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-A1 Self-MoA vs. multi-family routing** | 🟡 PARTIAL | **Critical** | H2-P vs. B3 experiment runnable today |
 | **GAP-A2 USL N_max vs. quality curve** | 🔴 OPEN | **Critical** | Replace USL with N_IT as primary sizer; USL → cost cap only |
 | **GAP-A6 Self-MoA as direct empirical competitor** | 🔴 OPEN | **Critical** | Structured experiment with constraint compliance as primary metric |
-| **GAP-A7 Preference leakage in LlmJudge** *(new)* | 🔴 OPEN | **High** | Cross-family judge rotation via existing adapter factory |
+| **GAP-A7 Preference leakage in LlmJudge** | ✅ CLOSED 2026-05-16 | **High** | Cross-family panel + persona-diverse fallback; `ConstraintAmbiguityEvent` corpus quality signal |
 | **GAP-B1 β_eff functional form** | 🔴 OPEN | Medium | First-principles derivation now available — unify with context-aware formula |
 | GAP-B3 Attribution self-referential | 🟡 PARTIAL | Medium | Conformal prediction once oracle data exists |
 | **GAP-B5 p_mean / rho_mean no derivation** *(new)* | 🔴 OPEN | **High** | Derivation now possible from CJT + Hamming geometry |
-| **GAP-D1 Calibration measures API latency, not coordination cost** | 🔴 OPEN | **Critical** | Conflict-count β signal from existing verifier output |
+| **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🔴 OPEN | **High** | Multi-family committee enforcement on ModeCollapse retry; structural pre-generation family diversity gate |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
@@ -94,7 +94,7 @@ grounded data if the math inputs are correct.
 
 ### INNOVATION-2 — Conflict-Count β₀ (replaces API-latency β)
 
-**Closes:** GAP-D1.  
+**Closed:** GAP-D1 (2026-05-15). See `docs/architecture/reference.md → Conflict-Rate β (GAP-D1)`.  
 **Cost:** 1 week to extend calibration harness.  
 **Why now:** The constraint verifier already runs on every proposal in Phase B calibration. Counting
 constraint violations per proposal pair is free — the data already flows through.
@@ -350,7 +350,6 @@ Loops  :
 | GAP-A6: Self-MoA as competitor | Core diversity premise is empirically untested |
 | GAP-E1: no oracle | Epistemic closure — internally coherent but ungrounded |
 | GAP-B3: attribution without oracle | Cannot distinguish confident-and-correct from confident-and-wrong |
-| GAP-D1: calibration measures wrong signal | β₀ captures API speed, not coordination cost |
 | GAP-B5: rho_mean derivation | Convention `rho_mean = 1 − CG_mean` lacks derivation; empirical ρ EMA now live |
 
 ### Stopping criteria
@@ -359,7 +358,7 @@ Loops  :
 |---|---|---|---|
 | TAO inner | `agent_max_tool_iterations` (budget) | No productive hypothesis extensions remain | Budget is proxy for epistemic exhaustion |
 | MAPE-K retry | Proposals satisfy threshold OR retries exhausted; ZeroSurvival + is_closed() gate | Coherent closure: no active constraint violated, no domain uncovered | Quality threshold is rubric-coherent, not oracle-grounded |
-| Calibration | Startup-automatic + POST /calibrate | Confidence intervals narrow enough for decision quality required | GAP-D1: calibration measures latency, not epistemic conflict cost |
+| Calibration | Startup-automatic + POST /calibrate | Confidence intervals narrow enough for decision quality required | — |
 | Oracle grounding | Phase 4.5 gate wired (NATS request/reply, `OracleGateConfig`); thinking loop Stage 2 inline oracle; `PendingClarificationEvent` suspension via `clarification_waiters` | All load-bearing beliefs grounded in at least one oracle test | GAP-E1: domain-specific automated test suites remaining |
 
 ---
@@ -532,7 +531,7 @@ position but requires rewritten documentation.
 
 ---
 
-### GAP-A7: Preference Leakage in LlmJudge 🔴 OPEN — **High**
+### GAP-A7: Preference Leakage in LlmJudge ✅ CLOSED 2026-05-16 — **High**
 
 **Gap statement.**
 When the constraint evaluation adapter (LlmJudge in Phase 3.5 and Phase 4) belongs to the same
@@ -552,39 +551,19 @@ that LLM judge self-preferencing bias is irreducible. Debiasing tools reduce but
 it. Pairwise evaluation (arXiv 2504.14716) is less biased than pointwise but introduces
 Condorcet cycles at scale.
 
-**Current state.**
-`VerifierExplorerFamilyConflict` is a hard gate that prevents the explorer pool and the
-*verification adapter* from sharing a family when `family_constraint = "require_diverse"`. This partially
-addresses the issue for Phase 3.5. However:
+**Implementation (closed 2026-05-16).**
 
-1. The Phase 4 shadow auditor's family is enforced separately (env var family guard in main.rs).
-2. There is no check on whether the Phase 4 PRIMARY auditor shares a family with the explorer pool.
-3. The `Disabled` variant of `family_constraint` disables all family conflict detection.
+Phase 3.5 now uses `JudgePanel` (h2ai-orchestrator) built from the verification adapter plus cross-family explorer adapters:
 
-**Innovative solution — Cross-family judge rotation.**
+- **`CrossFamily` panel** (≥2 distinct families): one variant per family, cap 3, `Literal` persona, `temperature_override: None`. Supermajority vote: `quorum = ceil(N × quorum_fraction)`. Pass / Fail / Uncertain.
+- **`PersonaOnly` fallback** (single family): 3 variants — Literal (0.0), Contextual (0.2), Skeptical (0.4) — requiring unanimous agreement; any dissent → Uncertain.
+- **Uncertain handling**: proposals with only uncertain constraint failures pass with `score × uncertainty_weight` (default 0.7). Hard non-uncertain failures still prune.
+- **`ConstraintAmbiguityEvent`**: fire-and-forget tracing log when ≥`ambiguity_threshold` proposals in a wave produce uncertain votes on the same constraint — corpus quality signal.
+- **Key insight from Prosa (2605.01630)**: binary rubric decomposition (each constraint evaluated independently) removes judge-model bias sensitivity more than cross-family diversity alone. The constraint corpus as an analytic rubric is the primary mitigation; panel diversity is second-order.
 
-The adapter factory already supports multiple families. Add a `constraint_judge` config section:
+**Research backing:** PoLL (2404.18796) cross-family panel 7× cheaper than large single judge; CARE (2603.00039) same-family panels amplify correlated bias → unanimous rule for PersonaOnly; Prosa (2605.01630) binary rubric removes bias sensitivity; Logarithmic Scores (2604.00477) 3 judges captures ~90% quality gain; TCVA (2604.08595) generalized aggregation; Autorubric (2603.00077) few-shot calibration.
 
-```toml
-[constraint_judge]
-# "auto" = select adapter from non-majority explorer family; falls back to any available
-# "explicit" = use named provider (overrides auto)
-family_strategy = "auto"
-```
-
-Implementation in `engine.rs`, at Phase 3.5 adapter selection:
-1. Count explorer adapter families in the current wave.
-2. Select the verifier adapter from the factory excluding the majority family.
-3. If only one family is available (single-model deployment), document the limitation in the
-   `VerifierExplorerFamilyConflict` warning rather than silently proceeding.
-
-This re-uses existing infrastructure (adapter factory, family guards) and requires no new
-concepts.
-
-**Falsification condition.**
-Compare verification scores between (a) same-family judge and (b) cross-family judge on a labeled
-task set where oracle pass rate is known. If cross-family judge Spearman correlation with oracle is
-significantly higher (p < 0.05) than same-family, the preference leakage is measurable.
+**Remaining open surface:** `uncertainty_weight = 0.7` is not calibrated per constraint severity. Future work: `constraint_severity: Strict | Standard` corpus metadata field mapping to per-constraint uncertainty weights. Empirical validation of cross-family vs. single-family panel Spearman correlation with oracle is pending.
 
 ---
 
@@ -592,10 +571,10 @@ significantly higher (p < 0.05) than same-family, the preference leakage is meas
 
 ---
 
-### GAP-B1: β_eff Functional Form Has No Derivation 🔴 OPEN — Medium
+### GAP-B1: β_eff Functional Form Empirically Unvalidated 🔴 OPEN — Medium
 
 **Gap statement.**
-`β_eff = β₀ × (1 − CG_mean)` is stated as a design choice. The linear form is unvalidated.
+`β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation under the assumption that conflict resolution cost is linear in conflict count (see math.md §2). However, the **linear-cost assumption is empirically unvalidated**. If conflict resolution is super-linear (e.g. due to "Lost in the Middle" attention degradation in long synthesis contexts), the formula needs a higher-order term.
 
 **Literature grounding.**
 arXiv 0808.1431 (Gunther, 2008) — USL β is defined as the per-pair coherency synchronisation
@@ -708,79 +687,69 @@ for rho_formula, label in [(cg, "rho=CG"), (1-cg, "rho=1-CG")]:
 
 ---
 
-## Brainstorm Group D — Infrastructure and Operational Gaps
+## Brainstorm Group C — Correlated Failure Modes
+
+GAP-C1 through GAP-C4 are implemented (documented in research-state.md §3.3). GAP-C5 is new.
 
 ---
 
-### GAP-D1: Calibration Measures API Round-Trip Latency, Not Coordination Cost 🔴 OPEN — **Critical**
+### GAP-C5: Krum Selection Fails Under Majority Correlated Hallucination 🔴 OPEN — **High**
 
 **Gap statement.**
-Phase A and Phase B of the calibration harness measure wall-clock time to fit α and β₀. USL's β
-is a coherency cost — serialisation overhead of N(N-1) pairwise coherency checks. H2AI's β₀ is
-computed from elapsed time divided by T₁: this measures API round-trip latency, not constraint
-conflict resolution cost. The measurement is systematically inverted:
 
-- Fast local LLM (50ms) → small T₁ → small β₀ → large N_max → too permissive for single-model
-- Slow cloud LLM (3s) → large T₁ → large β₀ → small N_max → too conservative for diverse pool
+`OutlierResistant{f}` (Krum-style multi-Krum) selects the proposal with minimum sum of distances to its `N−f` nearest neighbours — the most central proposal in embedding space. This guarantees Byzantine fault tolerance when faults are *independent* outliers: Byzantine proposals cluster far from each other and from the correct answer, so the distance criterion excludes them.
 
-**Literature grounding.**
-arXiv 0808.1431 (Gunther, 2008) — β in USL is defined as the coherency synchronisation cost
-fraction per adapter pair, not total wall-clock time. The fit formula requires latency at N=2 and
-N=M relative to a reference — but the reference must be the *serialisation cost*, not the
-generation cost. In H2AI, generation cost (API time) dominates; serialisation cost (CG computation
-+ merge context build) is negligible in comparison.
+The guarantee inverts when the majority of agents share a correlated hallucination. LLMs across different providers are pre-trained on the same internet corpus (Common Crawl, Wikipedia, a small set of code repositories). On tasks that activate a shared misconception — a plausible but false historical claim, a misremembered API signature, a canonical-but-wrong example — five adapters from five different providers can produce the same confident wrong answer. In this case:
 
-**Innovative solution — INNOVATION-2: Conflict-count β₀.**
+- The hallucinated proposals are semantically clustered (low pairwise embedding distance).
+- The correct proposal (if any agent produced it) is the outlier in distance space.
+- Krum selects the cluster centroid — the hallucination — as the "safe" output.
 
-See INNOVATION-2 above for full derivation and simulation. Implementation:
+This is not a corner case. Bradley (2024) — arXiv 2411.01539 — demonstrates that LLM errors are *systematically* correlated across architecturally similar models on shared-corpus content. Krum was designed for adversarial Byzantine nodes (federated learning, distributed state machines) — its Byzantine fraction proof assumes independent failures. That assumption does not hold for stochastically correlated LLM outputs.
 
-During Phase B calibration, after all M adapters respond, run the constraint verifier on each
-proposal and record:
+**Current mitigations and their limits.**
 
-```rust
-struct CalibrationConflictSample {
-    n_adapters: u32,
-    pairwise_conflict_rate: f64,   // mean |violated_by_i XOR violated_by_j| / |corpus| over pairs
-}
+| Mitigation | What it does | Why it is insufficient |
+|---|---|---|
+| GAP-C1: Token-Jaccard CV detector | Fires `CorrelatedEnsembleWarning` when `CV(distances) < 0.30` AND `mean_jaccard < 0.50`; triggers MAPE-K retry | Reactive — fires after generation, after Krum has already run. Retry reuses the same adapter pool; if the hallucination is cross-provider, grounded regeneration still produces correlated wrong answers. |
+| GAP-C2: Shadow auditor | Concurrent auditor from a different family; promotes to AND-vote on high disagreement | Addresses audit bias, not generation diversity. Shadow auditor cannot vote a correlated hallucination into being correct. |
+| GAP-A7: Cross-family judge rotation | Verifier adapter from non-majority family | Addresses verifier bias after Krum selection, not the Krum input distribution. |
+| `family_constraint = "require_diverse"` | Warns / blocks monoculture explorer pools | Prevents single-provider monoculture. Does not prevent cross-provider shared training overlap on specific misconception domains. |
+
+The gap: no mechanism prevents the correlated hallucination from *entering* the Krum input in the first place when the correlation source is shared training data rather than provider identity.
+
+**Connection to other gaps.**
+
+- **GAP-A6** (empirical ρ) — the only way to know whether a specific task domain activates majority correlated hallucination is to measure it with an oracle. Without GAP-A6 data, GAP-C5 cannot be quantified.
+- **GAP-A7** (judge preference leakage) — the auditor phase may itself prefer the correlated output if judge and explorers share a family, compounding the error after Krum selection.
+
+**Innovative solution — structural pre-generation family diversity + family rotation on ModeCollapse.**
+
+Two levers, both incremental on existing infrastructure:
+
+**1. Family-diversity gate at provisioning.** Require ≥ 2 distinct provider families in every explorer committee when `N ≥ 3`. The adapter factory already tracks family metadata; add a family-diversity check in `h2ai-provisioner` at slot assignment.
+
+```toml
+[provisioner]
+min_explorer_families = 2   # proposed: enforce structural family diversity at provisioning
 ```
 
-Fit `beta_quality`:
+**2. Family rotation on ModeCollapse retry.** When the MAPE-K controller emits `ModeCollapse`, the current `adapter_rotation_offset` rotates within the configured pool. If the pool is all-same-family (or cross-provider same-corpus), rotation has no effect. Add: on `ModeCollapse`, rotate to the *least-used provider family* in the adapter factory pool.
 
-```rust
-beta_quality = (conflict_rate_M - conflict_rate_2) / ((M - 1) * (M - 2)) as f64
+```toml
+[mape_k]
+mode_collapse_family_rotation = true   # proposed: rotate provider family, not just offset
 ```
 
-Add to `CalibrationCompletedEvent`:
-```rust
-pub beta_latency: f64,   // existing timing β (latency estimation only)
-pub beta_quality: f64,   // new conflict-count β (quality N_max driver)
-```
+Both are wired to existing infrastructure: the adapter factory knows families, `MapeKController` already handles `ModeCollapse` as a named `ExitReason`.
 
-The planning logic uses `beta_quality` for N_max; the operator sees both values. Document:
-"beta_latency estimates synthesis wall-clock time; beta_quality estimates constraint coordination
-overhead and drives ensemble sizing."
+**Falsification condition.**
 
-**Online β update via CFI EMA:**
+Construct a task set activating a known common internet misconception (verifiable by external oracle). Run N=5 with (a) same-provider pool vs. (b) ≥3-family pool. Measure how often the Krum-selected output is oracle-correct in each condition. If family-diverse condition is significantly more accurate (p < 0.05), structural family diversity at provisioning is the mitigation. This can be run as an extension of the GAP-A6 benchmark — the task set already needs oracle-correct labels.
 
-SRANI's CFI is an online proxy for inter-proposal correlated fabrication. High CFI implies high
-coordination cost (proposals share fabricated entities → synthesis must reconcile them).
+---
 
-```rust
-// In tasks.rs, after each task completes:
-if let Some(cfi) = output.srani_cfi {
-    calibration.update_beta_from_cfi(cfi, alpha = 0.05);
-}
-
-// In EnsembleCalibration:
-fn update_beta_from_cfi(&mut self, cfi: f64, alpha: f64) {
-    // CFI is a normalised conflict signal [0,1]
-    // β_quality should be proportional to expected conflict rate
-    let cfi_beta_proxy = self.beta_quality_prior * (1.0 + cfi);
-    self.beta_quality_ema = (1.0 - alpha) * self.beta_quality_ema + alpha * cfi_beta_proxy;
-}
-```
-
-This provides an online conflict-signal update between explicit calibration runs.
+## Brainstorm Group D — Infrastructure and Operational Gaps
 
 ---
 
@@ -888,13 +857,13 @@ representative task distribution.
 | **INNOVATION-2 Conflict-count β₀** | Critical | 1 week | Calibration runs | **Week 1** |
 | **INNOVATION-5 H2-P vs B3 experiment** | Critical | 1 week | None (single-model) | **Week 1** |
 | **INNOVATION-4 N_IT as primary sizer** | High | 1 week | None | **Week 2** |
-| **GAP-A7 Preference leakage** | High | 1 week | None | **Week 2** |
+| **GAP-A7 Preference leakage** | High | ~~1 week~~ | — | ✅ Closed 2026-05-16 |
 | **GAP-B5 rho_mean documentation** | Medium | 2 days | None | **Week 2** |
 | GAP-E1 Domain-specific oracles | Blocking for A/B | 1–3 weeks | Domain test suites | Session 1 |
 | GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
 | GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
 | GAP-A2 USL quality curve experiment | High | 2 weeks | Shared task set | Session 2 |
-| GAP-D1 Calibration harness extension | Critical | 2 weeks | Calibration runs | Session 3 |
+| ~~GAP-D1 Calibration harness extension~~ | — | — | — | **Closed 2026-05-15** |
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
 | GAP-B1 β_eff functional form fit | Medium | 2 weeks | Controlled calibration | Session 5 |
 | ~~GAP-D3 Bootstrap calibration~~ | — | — | — | **Closed 2026-05-14** |

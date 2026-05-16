@@ -1,4 +1,5 @@
 use crate::engine::EngineInput;
+use crate::judge_panel::JudgePanel;
 use crate::phases::StepResult;
 use crate::verification::{EvalCache, VerificationInput, VerificationPhase};
 use chrono::Utc;
@@ -32,6 +33,8 @@ pub struct Output {
     pub turn1_proposals_for_scoring: Vec<ProposalEvent>,
     /// Comparison events (populated only when `record_adversarial_comparison` is set).
     pub all_comparison_events: Vec<VerifierComparisonEvent>,
+    /// Mean pairwise constraint-conflict rate computed from raw proposal texts.
+    pub conflict_rate: Option<f64>,
 }
 
 /// Run Phase 3.5: Verification Loop (LLM-as-Judge).
@@ -45,19 +48,77 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
     let task_id = input.task_id;
     let provisioned = input.provisioned;
 
+    // ── Conflict rate: computed before proposals are consumed by VerificationPhase ─
+    let conflict_rate = {
+        let texts: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
+        h2ai_autonomic::calibration::compute_conflict_rate(
+            &texts,
+            &engine_input.constraint_corpus,
+        )
+    };
+
     // ── Phase 3.5: Verification Loop (LLM-as-Judge) ──────────────────
     let mut pruned: Vec<BranchPrunedEvent> = Vec::new();
     let mut iteration_verification_events: Vec<VerificationScoredEvent> = Vec::new();
-    let ver_out = VerificationPhase::run(VerificationInput {
+
+    // Build the judge panel: primary = verification adapter; add cross-family explorer adapters.
+    let panel_cfg = &engine_input.cfg.judge_panel;
+    let primary_family = engine_input.verification_adapter.kind().family();
+    let mut seen_panel_families = std::collections::HashSet::new();
+    seen_panel_families.insert(primary_family);
+    let additional: Vec<_> = engine_input
+        .explorer_adapters
+        .iter()
+        .filter_map(|a| {
+            let fam = a.kind().family();
+            if seen_panel_families.insert(fam) {
+                Some((*a as &dyn h2ai_types::adapter::IComputeAdapter, a.kind()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let panel = JudgePanel::build(
+        engine_input.verification_adapter,
+        &additional,
+        panel_cfg,
+    );
+
+    let ver_input = VerificationInput {
         proposals,
         constraint_corpus: &engine_input.constraint_corpus,
         evaluator: engine_input.verification_adapter,
         config: input.verification_config.clone(),
         eval_cache: std::sync::Arc::clone(&input.task_eval_cache),
         consensus_passes: engine_input.cfg.verifier_consensus_passes,
-    })
-    .await;
+    };
+    let (ver_out, uncertain_map) =
+        VerificationPhase::run_with_panel(ver_input, &panel, panel_cfg).await;
     let all_comparison_events: Vec<VerifierComparisonEvent> = ver_out.comparison_events.clone();
+
+    // Log ConstraintAmbiguityEvent when a constraint's uncertain vote count reaches threshold.
+    {
+        let mut uncertain_counts: HashMap<String, usize> = HashMap::new();
+        for ids in uncertain_map.values() {
+            for id in ids {
+                *uncertain_counts.entry(id.clone()).or_insert(0) += 1;
+            }
+        }
+        let ambiguous: Vec<String> = uncertain_counts
+            .iter()
+            .filter(|(_, &count)| count >= panel_cfg.ambiguity_threshold)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if !ambiguous.is_empty() {
+            tracing::info!(
+                target: "h2ai.engine",
+                task_id = %task_id,
+                ambiguous_constraints = ?ambiguous,
+                uncertain_counts = ?uncertain_counts,
+                "ConstraintAmbiguityEvent: constraints with uncertain judge panel votes"
+            );
+        }
+    }
 
     // Diversity gate: post-verification — check constraint-satisfaction profile entropy.
     // Collapsed fingerprints signal collective hallucination; trigger MAPE-K retry.
@@ -159,5 +220,6 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         iteration_verification_events,
         turn1_proposals_for_scoring,
         all_comparison_events,
+        conflict_rate,
     })
 }

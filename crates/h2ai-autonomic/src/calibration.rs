@@ -286,6 +286,18 @@ impl CalibrationHarness {
             CoordinationThreshold::from_calibration(&cc, input.cfg.coordination_threshold_max);
         let (n_max_lo, n_max_hi) = cc.n_max_ci();
 
+        // Compute beta_quality from pairwise constraint conflict rate (Phase B outputs).
+        // Uses first prompt output per adapter; calibration typically uses one prompt.
+        let beta_quality = if adapter_outputs.len() >= 2 && !input.constraint_corpus.is_empty() {
+            let first_outputs: Vec<&str> = adapter_outputs
+                .iter()
+                .filter_map(|outputs| outputs.first().map(|s| s.as_str()))
+                .collect();
+            compute_conflict_rate(&first_outputs, input.constraint_corpus)
+        } else {
+            None
+        };
+
         Ok(CalibrationCompletedEvent {
             calibration_id: input.calibration_id,
             coefficients: cc,
@@ -295,14 +307,37 @@ impl CalibrationHarness {
             timestamp: Utc::now(),
             pairwise_beta,
             cg_mode,
-            adapter_families: Vec::new(),
-            explorer_verification_family_match: false,
-            single_family_warning: false,
+            adapter_families: {
+                input
+                    .adapters
+                    .iter()
+                    .map(|a| a.kind().family().to_string())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect()
+            },
+            explorer_verification_family_match: {
+                let families: std::collections::HashSet<_> = input
+                    .adapters
+                    .iter()
+                    .map(|a| a.kind().family())
+                    .collect();
+                families.len() > 1
+            },
+            single_family_warning: {
+                let families: std::collections::HashSet<_> = input
+                    .adapters
+                    .iter()
+                    .map(|a| a.kind().family())
+                    .collect();
+                families.len() == 1
+            },
             n_max_lo,
             n_max_hi,
             n_eff_cosine_prior,
             calibration_quality: Default::default(),
             calibration_source,
+            beta_quality,
         })
     }
 
@@ -451,6 +486,34 @@ impl CalibrationHarness {
         }
         Ok((per_adapter, t_wall))
     }
+}
+
+/// Compute the mean pairwise Hamming distance over M constraint fingerprints.
+///
+/// Each fingerprint is a boolean vector where `true` = proposal passed the hard gate
+/// for that constraint. Returns `None` when fewer than 2 outputs are given or the
+/// corpus is empty. Result is clamped to `[1e-6, 1.0]`.
+pub fn compute_conflict_rate(outputs: &[&str], corpus: &[ConstraintDoc]) -> Option<f64> {
+    let m = outputs.len();
+    if m < 2 || corpus.is_empty() {
+        return None;
+    }
+    let fingerprints: Vec<Vec<bool>> = outputs
+        .iter()
+        .map(|o| constraint_fingerprint(o, corpus))
+        .collect();
+    let mut total = 0.0f64;
+    let mut count = 0usize;
+    for i in 0..m {
+        for j in (i + 1)..m {
+            total += hamming_distance(&fingerprints[i], &fingerprints[j]);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    Some((total / count as f64).clamp(1e-6, 1.0))
 }
 
 fn constraint_fingerprint(output: &str, corpus: &[ConstraintDoc]) -> Vec<bool> {
@@ -772,6 +835,98 @@ mod tests {
         // n_effective must be in (0, N]
         assert!(result.n_effective > 0.0);
         assert!(result.n_effective <= n as f64 + 1e-9);
+    }
+
+    // ── compute_conflict_rate tests ──────────────────────────────────────────
+
+    fn hard_length_range(id: &str, min: Option<usize>, max: Option<usize>) -> ConstraintDoc {
+        ConstraintDoc {
+            id: id.to_owned(),
+            source_file: format!("{id}.yaml"),
+            description: String::new(),
+            severity: ConstraintSeverity::Hard { threshold: 0.5 },
+            predicate: h2ai_constraints::types::ConstraintPredicate::LengthRange {
+                min_chars: min,
+                max_chars: max,
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        }
+    }
+
+    #[test]
+    fn conflict_rate_fewer_than_2_proposals_returns_none() {
+        assert!(compute_conflict_rate(&["hello"], &[]).is_none());
+        assert!(compute_conflict_rate(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn conflict_rate_empty_corpus_returns_none() {
+        assert!(compute_conflict_rate(&["hello", "world"], &[]).is_none());
+    }
+
+    #[test]
+    fn conflict_rate_identical_proposals_clamped_to_min() {
+        // Two identical proposals → same fingerprint → Hamming = 0 → clamped to 1e-6
+        // Constraint: min 3 chars; both "abc" pass → both fingerprints [true] → distance = 0
+        let corpus = vec![hard_length_range("c1", Some(3), None)];
+        let result = compute_conflict_rate(&["abc", "abc"], &corpus).unwrap();
+        assert!(
+            (result - 1e-6).abs() < 1e-10,
+            "identical proposals must clamp to 1e-6, got {result}"
+        );
+    }
+
+    #[test]
+    fn conflict_rate_perfect_disagreement_is_one() {
+        // Proposal A (long, ≥10 chars) passes length constraint; B (short, <10 chars) fails.
+        // With a single constraint: fingerprints are [true] vs [false] → Hamming = 1.0
+        let corpus = vec![hard_length_range("c1", Some(10), None)];
+        let long_output = "hello world!!"; // 13 chars → passes
+        let short_output = "hi"; // 2 chars → fails
+        let result = compute_conflict_rate(&[long_output, short_output], &corpus).unwrap();
+        assert!(
+            (result - 1.0).abs() < 1e-9,
+            "perfect disagreement must be 1.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn conflict_rate_unanimous_fail_is_clamped_to_min() {
+        // All proposals fail all constraints → identical fingerprints (all true) → Hamming = 0 → 1e-6
+        // Both "x" (1 char) fail the min-10-chars constraint → fingerprints [true] and [true]
+        let corpus = vec![hard_length_range("c1", Some(10), None)];
+        let result = compute_conflict_rate(&["x", "y"], &corpus).unwrap();
+        assert!(
+            (result - 1e-6).abs() < 1e-10,
+            "unanimous failure must clamp to 1e-6, got {result}"
+        );
+    }
+
+    #[test]
+    fn conflict_rate_partial_disagreement() {
+        // 4 constraints, proposals A and B disagree on exactly 2 of them → Hamming = 0.5
+        // Constraint layout:
+        //   c1: min 5 chars  → A("hello world", 11 chars) passes, B("hi", 2 chars) fails → disagree
+        //   c2: max 20 chars → both pass (11 ≤ 20, 2 ≤ 20) → agree
+        //   c3: min 1 char   → both pass → agree
+        //   c4: max 3 chars  → A fails (11 > 3), B passes (2 ≤ 3) → disagree
+        // Total disagreements: 2 / 4 = 0.5
+        let corpus = vec![
+            hard_length_range("c1", Some(5), None),
+            hard_length_range("c2", None, Some(20)),
+            hard_length_range("c3", Some(1), None),
+            hard_length_range("c4", None, Some(3)),
+        ];
+        let a = "hello world"; // 11 chars
+        let b = "hi"; // 2 chars
+        let result = compute_conflict_rate(&[a, b], &corpus).unwrap();
+        assert!(
+            (result - 0.5).abs() < 1e-9,
+            "partial disagreement (2/4) must be 0.5, got {result}"
+        );
     }
 
     #[tokio::test]

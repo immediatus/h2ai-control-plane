@@ -40,7 +40,7 @@ pub struct AttributionInput {
 /// is correct. Oracle-grounded correctness requires external measurement (see GAP-B3, GAP-E1).
 ///
 /// Ground truth for ρ_actual requires `baseline_eval.py` ICC measurement (see S5/S8).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HarnessAttribution {
     /// Single-agent expected accuracy: p_mean.
     pub baseline_quality: f64,

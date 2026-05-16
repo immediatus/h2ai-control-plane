@@ -77,6 +77,9 @@ pub struct WaveEvents {
     /// Accumulated by `observe()` into `all_pruned` so `RetryPolicy::decide` can
     /// collect `remediation_hint` strings for `RetryWithHints`.
     pub pruned_events: Vec<h2ai_types::events::BranchPrunedEvent>,
+    /// Mean pairwise constraint-conflict rate across all proposals in this wave.
+    /// `None` when fewer than 2 proposals were generated or corpus is empty.
+    pub conflict_rate: Option<f64>,
 }
 
 impl Default for WaveEvents {
@@ -100,6 +103,7 @@ impl Default for WaveEvents {
             srani_retry_context: None,
             filter_ratio: 1.0,
             pruned_events: Vec::new(),
+            conflict_rate: None,
         }
     }
 }
@@ -197,6 +201,10 @@ pub struct MapeKController {
     pub(crate) all_srani_events: Vec<CorrelatedFabricationEvent>,
     pub(crate) all_researcher_grounding_events: Vec<ResearcherGroundingEvent>,
     pub(crate) all_pruned: Vec<h2ai_types::events::BranchPrunedEvent>,
+    /// Pruned events from the most recent wave only — used for tombstone synthesis
+    /// so the LLM receives violations from the immediately preceding wave rather
+    /// than the full historical accumulator (which causes attention dilution).
+    pub(crate) last_wave_pruned: Vec<h2ai_types::events::BranchPrunedEvent>,
     pub(crate) topology_retry_events: Vec<TopologyProvisionedEvent>,
 
     // Immutable fields
@@ -294,6 +302,7 @@ impl MapeKController {
             all_srani_events: Vec::new(),
             all_researcher_grounding_events: Vec::new(),
             all_pruned: Vec::new(),
+            last_wave_pruned: Vec::new(),
             topology_retry_events: Vec::new(),
             task_id,
             assessed_quadrant,
@@ -362,6 +371,8 @@ impl MapeKController {
         if let Some(ref rc) = e.srani_retry_context {
             self.retry_context = Some(rc.clone());
         }
+        // Snapshot current wave's pruned events before extending the cross-wave accumulator.
+        self.last_wave_pruned = e.pruned_events.clone();
         // Accumulate pruned events so RetryPolicy::decide can extract remediation hints.
         self.all_pruned.extend(e.pruned_events.iter().cloned());
     }
@@ -488,13 +499,16 @@ impl MapeKController {
                         self.pending_tombstone = None;
                     }
                     Some(h2ai_types::events::FailureMode::ConstrainedExploration) => {
-                        let all_violations: Vec<h2ai_types::events::ConstraintViolation> = self
-                            .all_pruned
+                        // Use only the immediately preceding wave's violations — not the
+                        // full cross-wave accumulator — to avoid feeding the LLM constraint
+                        // errors from multiple waves ago that it has already corrected.
+                        let wave_violations: Vec<h2ai_types::events::ConstraintViolation> = self
+                            .last_wave_pruned
                             .iter()
                             .flat_map(|p| p.violated_constraints.iter().cloned())
                             .collect();
                         self.pending_tombstone =
-                            h2ai_autonomic::epistemic::synthesize_tombstone(&all_violations);
+                            h2ai_autonomic::epistemic::synthesize_tombstone(&wave_violations);
                     }
                     Some(h2ai_types::events::FailureMode::CorrelatedHallucination { .. }) => {
                         // Handled by HallucinationDetected before Phase 3.5.
@@ -754,6 +768,7 @@ impl MapeKController {
             all_srani_events: Vec::new(),
             all_researcher_grounding_events: Vec::new(),
             all_pruned: Vec::new(),
+            last_wave_pruned: Vec::new(),
             topology_retry_events: Vec::new(),
             task_id,
             assessed_quadrant: TaskQuadrant::Precision,
@@ -861,6 +876,12 @@ mod tests {
         });
 
         assert_eq!(ctrl.verification_event_count(), 2);
+    }
+
+    #[test]
+    fn wave_events_default_has_none_conflict_rate() {
+        let events = WaveEvents::default();
+        assert!(events.conflict_rate.is_none());
     }
 
     #[test]

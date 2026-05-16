@@ -3,6 +3,7 @@ use async_nats::Client;
 use h2ai_config::StateConfig;
 use h2ai_types::checkpoint::TaskCheckpoint;
 use h2ai_types::checkpoint_delta::{CheckpointKind, TaskCheckpointEntry};
+use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
@@ -1757,6 +1758,69 @@ impl NatsClient {
         }
         result
     }
+
+    // ── per-tenant conflict-rate accumulator ────────────────────────────────
+
+    const CONFLICT_ACCUMULATOR_KEY: &str = "accumulator";
+
+    /// Create the per-tenant conflict-rate bucket if it does not already exist.
+    pub async fn ensure_tenant_conflict_bucket(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let bucket = tenant_bucket_name(bucket_prefix, tenant_id);
+        self.ensure_kv_bucket(kv::Config {
+            bucket,
+            description: format!("Conflict-rate accumulator for tenant {tenant_id}"),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Load the `ConflictRateAccumulator` for a tenant. Returns `None` when no record exists yet.
+    pub async fn get_conflict_accumulator(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<Option<ConflictRateAccumulator>, NatsError> {
+        let bucket = tenant_bucket_name(bucket_prefix, tenant_id);
+        let kv = self
+            .jetstream
+            .get_key_value(&bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(Self::CONFLICT_ACCUMULATOR_KEY).await {
+            Ok(Some(bytes)) => {
+                let acc = serde_json::from_slice::<ConflictRateAccumulator>(&bytes)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(acc))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Write (or overwrite) a `ConflictRateAccumulator` to the tenant-scoped bucket.
+    pub async fn put_conflict_accumulator(
+        &self,
+        acc: &ConflictRateAccumulator,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let bucket = tenant_bucket_name(bucket_prefix, &acc.tenant_id);
+        let json = serde_json::to_vec(acc).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value(&bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put(Self::CONFLICT_ACCUMULATOR_KEY, json.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ── tenant-scoped bucket helpers ────────────────────────────────────────────
@@ -2139,5 +2203,11 @@ mod reasoning_checkpoint_tests {
         let t = TenantId::from("acme-corp");
         let name = tenant_bucket_name("H2AI_META", &t);
         assert_eq!(name, "H2AI_META_acme_corp");
+    }
+
+    #[test]
+    fn tenant_bucket_name_conflict_default() {
+        let name = tenant_bucket_name("H2AI_CONFLICT", &TenantId::default_tenant());
+        assert_eq!(name, "H2AI_CONFLICT_default");
     }
 }

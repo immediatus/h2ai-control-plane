@@ -92,6 +92,7 @@ fn calibration_completed_event_serde_round_trip() {
         n_eff_cosine_prior: 0.0,
         calibration_quality: Default::default(),
         calibration_source: Default::default(),
+        beta_quality: None,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: CalibrationCompletedEvent = serde_json::from_str(&json).unwrap();
@@ -271,6 +272,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             n_eff_cosine_prior: 0.0,
             calibration_quality: Default::default(),
             calibration_source: Default::default(),
+            beta_quality: None,
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: task_id(),
@@ -711,6 +713,38 @@ mod manifest_oracle_tests {
         let spec = back.oracle.unwrap();
         assert_eq!(spec.language, "python");
         assert!(matches!(spec.oracle_type, OracleType::TestSuite));
+    }
+}
+
+#[test]
+fn constraint_ambiguity_event_roundtrips_serde() {
+    use h2ai_types::events::{ConstraintAmbiguityEvent, H2AIEvent};
+    use std::collections::HashMap;
+
+    let mut counts = HashMap::new();
+    counts.insert("constraint-1".to_string(), 3usize);
+    counts.insert("constraint-2".to_string(), 2usize);
+
+    let event = ConstraintAmbiguityEvent {
+        task_id: h2ai_types::identity::TaskId::new(),
+        wave: 2,
+        ambiguous_constraints: vec!["constraint-1".to_string(), "constraint-2".to_string()],
+        uncertain_counts: counts,
+        timestamp: chrono::Utc::now(),
+    };
+
+    let wrapped = H2AIEvent::ConstraintAmbiguity(event.clone());
+    let json = serde_json::to_string(&wrapped).unwrap();
+    assert!(json.contains("\"event_type\":\"ConstraintAmbiguity\""));
+    assert!(json.contains("constraint-1"));
+
+    let back: H2AIEvent = serde_json::from_str(&json).unwrap();
+    if let H2AIEvent::ConstraintAmbiguity(e) = back {
+        assert_eq!(e.wave, 2);
+        assert_eq!(e.ambiguous_constraints.len(), 2);
+        assert_eq!(*e.uncertain_counts.get("constraint-1").unwrap(), 3usize);
+    } else {
+        panic!("wrong variant");
     }
 }
 

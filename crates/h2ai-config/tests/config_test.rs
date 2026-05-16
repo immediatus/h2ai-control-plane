@@ -1,4 +1,4 @@
-use h2ai_config::{ConfigLoadError, FamilyConstraint, H2AIConfig, SafetyProfile, SchedulerPolicy};
+use h2ai_config::{ConfigLoadError, FamilyConstraint, H2AIConfig, JudgePanelConfig, SafetyProfile, SchedulerPolicy};
 use std::io::Write;
 
 // ── defaults ─────────────────────────────────────────────────────────────────
@@ -718,4 +718,22 @@ fn startup_report_development_is_warn() {
     // for [safety] and [task_complexity] are exercised; [srani] and [hitl] take INFO paths.
     let cfg = H2AIConfig::default();
     h2ai_config::log_startup_config_report(&cfg);
+}
+
+#[test]
+fn judge_panel_config_defaults_are_sane() {
+    let cfg = JudgePanelConfig::default();
+    assert!((cfg.quorum_fraction - 0.67).abs() < 1e-9);
+    assert!((cfg.uncertainty_weight - 0.7).abs() < 1e-9);
+    assert_eq!(cfg.persona_temperatures.len(), 3);
+    assert!(cfg.persona_temperatures[0] < cfg.persona_temperatures[1]);
+    assert!(cfg.persona_temperatures[1] < cfg.persona_temperatures[2]);
+    assert!(cfg.persona_temperatures[2] <= 0.5);
+    assert_eq!(cfg.ambiguity_threshold, 2);
+}
+
+#[test]
+fn h2ai_config_default_includes_judge_panel() {
+    let cfg = H2AIConfig::default();
+    assert!((cfg.judge_panel.quorum_fraction - 0.67).abs() < 1e-9);
 }

@@ -557,3 +557,82 @@ fn record_adversarial_comparison_defaults_false() {
     let cfg = VerificationConfig::default();
     assert!(!cfg.record_adversarial_comparison);
 }
+
+#[tokio::test]
+async fn panel_single_variant_matches_run_outcome() {
+    use h2ai_config::JudgePanelConfig;
+    use h2ai_orchestrator::judge_panel::JudgePanel;
+
+    // Use MockAdapter returning score 0.85 — same setup as verification_passes_high_score.
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "My proposal text");
+
+    let input = VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    };
+
+    // Build a 1-variant panel (no additional adapters → PersonaOnly 3 variants, but
+    // we construct manually to get exactly 1 variant for the shortcut path).
+    let panel = JudgePanel {
+        variants: vec![h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+            adapter: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+            persona: h2ai_types::judge::JudgePersona::Literal,
+            temperature_override: None,
+        }],
+        diversity_kind: h2ai_types::judge::PanelDiversityKind::PersonaOnly,
+    };
+
+    let panel_cfg = JudgePanelConfig::default();
+    let (out, uncertain_map) = VerificationPhase::run_with_panel(input, &panel, &panel_cfg).await;
+
+    // Single-variant path delegates to run() — same pass/fail outcome as run().
+    assert_eq!(out.passed.len(), 1, "expected 1 passed proposal");
+    assert_eq!(out.failed.len(), 0, "expected 0 failed proposals");
+    // Single-variant → no panel disagreement possible.
+    assert!(uncertain_map.is_empty(), "single-variant panel must not produce uncertain constraints");
+}
+
+#[tokio::test]
+async fn panel_all_pass_uncertain_map_is_empty() {
+    use h2ai_config::JudgePanelConfig;
+    use h2ai_orchestrator::judge_panel::JudgePanel;
+
+    // Score 0.85 → all constraints pass → no uncertain constraints in map.
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let task_id = TaskId::new();
+    let proposals = vec![
+        make_proposal(task_id.clone(), "First proposal text"),
+        make_proposal(task_id.clone(), "Second proposal text"),
+    ];
+
+    let input = VerificationInput {
+        proposals,
+        constraint_corpus: &[],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    };
+
+    // Single-variant panel: all pass → uncertain_map must be empty.
+    let panel = JudgePanel {
+        variants: vec![h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+            adapter: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+            persona: h2ai_types::judge::JudgePersona::Literal,
+            temperature_override: None,
+        }],
+        diversity_kind: h2ai_types::judge::PanelDiversityKind::PersonaOnly,
+    };
+
+    let panel_cfg = JudgePanelConfig::default();
+    let (out, uncertain_map) = VerificationPhase::run_with_panel(input, &panel, &panel_cfg).await;
+
+    assert_eq!(out.passed.len(), 2, "both proposals should pass");
+    assert_eq!(out.failed.len(), 0);
+    assert!(uncertain_map.is_empty(), "all-pass verdicts must not populate uncertain_map");
+}

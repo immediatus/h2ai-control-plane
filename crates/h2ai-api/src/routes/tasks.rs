@@ -17,7 +17,7 @@ use h2ai_types::events::{
     CoherenceIncompleteEvent, H2AIEvent, MergeResolvedEvent, TaskAttributionEvent, TaskFailedEvent,
     ThinkingLoopCompletedEvent,
 };
-use h2ai_types::identity::{TaskId, TenantId};
+use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::{MergeRequest, TaskAccepted, TaskManifest};
 use h2ai_types::prompts::ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT;
 use h2ai_types::sizing::TaskQuadrant;
@@ -415,7 +415,7 @@ pub async fn submit_task(
             srani_count,
             srani_grounding_chain: state_clone.srani_grounding_chain.clone(),
             nats_raw: None,
-            tenant_id: TenantId::default_tenant(),
+            tenant_id: manifest_clone.tenant_id.clone(),
             nats: None,
         };
 

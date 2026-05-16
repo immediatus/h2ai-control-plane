@@ -74,6 +74,12 @@ pub struct TaskReasoningCheckpoint {
     pub retry_context_that_resolved: Option<String>,
     pub tried_topologies: Vec<TopologyKind>,
     pub tau_values_that_converged: Option<Vec<f64>>,
+    /// `HarnessAttribution` serialized as JSON. Stored at resolution so that
+    /// `run_from_checkpoint` can hydrate a full `EngineOutput` without re-running
+    /// inference, preventing zeroed attribution from corrupting downstream analytics.
+    pub resolved_attribution_json: Option<String>,
+    /// `EngineOutput::waste_ratio` captured at resolution for the same reason.
+    pub resolved_waste_ratio: Option<f64>,
 }
 
 impl TaskReasoningCheckpoint {
@@ -108,6 +114,8 @@ impl TaskReasoningCheckpoint {
             retry_context_that_resolved: None,
             tried_topologies: Vec::new(),
             tau_values_that_converged: None,
+            resolved_attribution_json: None,
+            resolved_waste_ratio: None,
         }
     }
 

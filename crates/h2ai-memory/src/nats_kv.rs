@@ -93,15 +93,20 @@ impl MemoryProvider for NatsKvStore {
                         }
                     }
                 }
-                // First write: no revision yet; `put` is the only option.
-                // Concurrent first-writers: second put overwrites first — acceptable
-                // because sessions are owned by a single pipeline instance at creation.
+                // First write: use `create` (atomic, fails if the key already
+                // exists). This closes the blind-overwrite window in distributed
+                // deployments where two pods may both attempt to create the same
+                // session key simultaneously (network partition, pod eviction).
+                // On collision, re-read and fall through to the `update` path.
                 None => {
-                    self.kv
-                        .put(&key, bytes)
-                        .await
-                        .map_err(|e| MemoryError::Storage(e.to_string()))?;
-                    return Ok(());
+                    match self.kv.create(&key, bytes).await {
+                        Ok(_) => return Ok(()),
+                        Err(_) => {
+                            // Another writer created the key first — re-read and
+                            // retry with the winning revision.
+                            continue;
+                        }
+                    }
                 }
             }
         }

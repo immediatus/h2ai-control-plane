@@ -62,7 +62,7 @@ The runtime uses an effective β driven by Hamming CG:
 β_eff = β₀ × (1 − CG_mean)        bounded at β₀ when CG_mean = 0
 ```
 
-> **Note (GAP-B1, derived form):** `β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation
+> **Note (conditional derivation):** `β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation
 > under one key assumption: constraint conflict resolution cost is linear in conflict count. If
 > the expected conflict rate between any two adapters is `(1 − CG_mean)` (fraction of constraints
 > where they disagree), and resolution cost per conflict is proportional to β₀, then:
@@ -70,12 +70,15 @@ The runtime uses an effective β driven by Hamming CG:
 >
 > The derivation breaks if conflict resolution is super-linear (e.g. due to "Lost in the Middle"
 > attention degradation in long synthesis contexts). The context-aware formula `β_ctx(N)` in §2.3
-> handles this case. Whether super-linearity is significant is an open empirical question (GAP-B1).
+> handles this case. Whether super-linearity is significant is an open empirical question.
 >
-> **GAP-D1 critical note:** the current calibration measures `β₀` from API round-trip latency,
+> **Calibration note:** the current calibration measures `β₀` from API round-trip latency,
 > not constraint conflict count. A fast local LLM produces small β₀ and large N_max — the opposite
-> of the correct direction for a single-model deployment. See gaps.md INNOVATION-2 for the
-> conflict-count β signal that corrects this.
+> of the correct direction for a single-model deployment. The correct signal is `beta_quality` — a
+> conflict-count β measured from constraint-satisfaction Hamming distances across adapters during
+> calibration, stored per-tenant in `ConflictRateAccumulator` (`H2AI_CONFLICT_{tenant_id}` KV
+> bucket). When ≥`min_samples_for_override` production tasks have accumulated, `beta_quality`
+> overrides the latency-based proxy in N_max computation.
 
 Setting `dX/dN = 0` gives the ensemble cost ceiling:
 
@@ -86,7 +89,6 @@ N_max = round(√((1 − α) / β_eff))
 > **N_max is a cost ceiling, not a quality target.** USL was derived for CPU/network throughput;
 > no published work validates USL N_max as a quality ceiling for LLM ensembles. The quality
 > target is `n_it_optimal` (§5.1). The planning logic uses `min(n_it_optimal, N_max)`.
-> See gaps.md GAP-A2 and INNOVATION-4.
 
 A one-σ confidence interval `(n_max_lo, n_max_hi)` is propagated from the **sample** CG variance
 (`cg_std_dev` uses Bessel-corrected variance `/ (n−1)`): `n_at_cg(CG_mean ± cg_std_dev)`.
@@ -169,6 +171,13 @@ Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Four 
 
 The first three are checked at Phase 2.5 by `MultiplicationChecker::check`. The fourth is checked at Phase 2.6 by the engine directly when `cfg.diversity_threshold > 0`.
 
+> **`diversity_threshold` is used in two independent gates with different semantics.** Do not tune them as if they were the same gate:
+>
+> - **Phase 2.6 floor gate (pre-wave, blocking):** `n_eff_cosine_prior < 1.0 + diversity_threshold` — pool must have at least this much semantic headroom before the task starts. Logic: additive floor on N_eff.
+> - **MAPE-K ratio gate (post-ZeroSurvival, classifier):** `n_eff_cosine_actual > diversity_threshold × n_requested` — classifies whether a zero-survival wave was caused by correlated collapse or constrained exploration. Logic: multiplicative ratio of N_eff to requested count.
+>
+> The same config field is intentional — the intuition "how semantically distinct should my pool be?" governs both. But the numeric effect differs: raising `diversity_threshold` tightens both the pre-wave pool requirement and the MAPE-K sensitivity to mode collapse.
+
 ---
 
 ## 5. Condorcet Jury Theorem — quality with correlation
@@ -191,16 +200,16 @@ p_mean   = 0.5 + CG_mean / 2
 rho_mean = 1 − CG_mean
 ```
 
-> **Proxy status (GAP-B2, GAP-B5):** Both formulas are operational conventions without derivation.
+> **Proxy status (unvalidated conventions):** Both formulas are operational conventions without derivation.
 >
 > `p_mean = 0.5 + CG_mean / 2` assumes CG_mean is a linear proxy for individual agent accuracy
 > (CG=0 → p=0.5, CG=1 → p=1.0). The oracle accumulator already measures the empirical p
 > (oracle pass rate). When `oracle_calibration_basis >= 1` (≥10 observations), `from_measured_p`
-> is the correct path and should be called automatically. See gaps.md INNOVATION-1.
+> is the correct path and should be called automatically — this promotion is not yet implemented.
 >
 > `rho_mean = 1 − CG_mean` assumes low constraint agreement implies high error correlation. The
-> direction is contested (see gaps.md GAP-B5). It is replaced by the online ρ_EMA from
-> verification score Pearson correlation once 30 task observations exist (INNOVATION-3).
+> direction is contested. It is replaced by the online ρ_EMA from verification score Pearson
+> correlation once 30 task observations exist — this replacement is not yet implemented.
 
 `EnsembleCalibration::from_measured_p` accepts a directly measured baseline accuracy (from the
 oracle accumulator or from `compare.py`) and switches `prediction_basis` from `Heuristic` to
@@ -224,7 +233,7 @@ is where this drops below H(X)/2, after which adding agents yields diminishing r
 of cost. This derivation is self-contained and does not require the USL domain-transfer assumption.
 
 Matches `condorcet_n_optimal` within ±1 for ρ ∈ [0.3, 0.95]. **This is the primary quality
-target; N_max_USL is the cost ceiling.** Planning logic: `min(N_IT, N_max_USL)`. See INNOVATION-4.
+target; N_max_USL is the cost ceiling.** Planning logic: `min(N_IT, N_max_USL)`.
 
 ### 5.2 Physical enforcement of the independence requirement
 
@@ -232,7 +241,10 @@ The CJT independence requirement is not just a mathematical axiom — it is a ph
 
 **Shared state isolation.** `WasmExecutor` runs scripts in a `wasmtime` sandbox with no WASI imports: no filesystem, no network, no host mutation. An agent cannot contaminate another agent's state space via code execution. `McpExecutor` enforces read-only access (`read_file`, `list_directory` only) at the executor layer regardless of backend capability. Agents that read the same resource get the same content and diverge only through their own reasoning — the intended source of independent diversity.
 
-**Affinity bias elimination.** `VerifierExplorerFamilyConflict` is a hard gate in `h2ai-orchestrator/src/engine.rs` that fires before the MAPE-K loop. When the explorer pool and the verification adapter share a provider family and `cfg.safety.family_constraint = RequireDiverse` (production/strict default), the task fails immediately with `MultiplicationConditionFailure::VerifierExplorerFamilyConflict`. This is not retryable — no MAPE-K retry can fix a deployment topology where the judge and the defendant share the same pre-training biases. The constraint is architectural.
+**Affinity bias elimination — two layers:**
+
+- *Hard gate:* `VerifierExplorerFamilyConflict` fires before the MAPE-K loop when the explorer pool and the verification adapter share a provider family and `cfg.safety.family_constraint = RequireDiverse`. Not retryable — a topology problem, not a task problem.
+- *Multi-variant judge panel:* Phase 3.5 runs `JudgePanel` with all available adapter families in parallel per constraint. Aggregation uses two rules depending on panel composition: `CrossFamily` → supermajority vote (`votes_pass ≥ ⌈N × quorum_fraction⌉` → Pass; `votes_fail ≥ quorum` → Fail; otherwise → Uncertain); `PersonaOnly` → unanimous (any split → Uncertain). The Uncertain path applies a score penalty (`uncertainty_weight`) rather than pruning — the constraint corpus binary-rubric decomposition is the primary debiasing layer per Prosa (2605.01630). CARE (2603.00039) shows that majority vote amplifies correlated error when judges share latent confounders; the PersonaOnly unanimous rule is derived from this finding.
 
 **Serial fraction protection.** The TaoAgent TAO loop runs entirely inside the edge agent binary. No tool call crosses the NATS boundary during generation. α captures only the genuinely serial phases: constraint compilation, topology provisioning, and merge. The tool-call loop itself is fully parallel across N agents and contributes zero to α. This directly protects N_max from being driven toward 1 by accumulated NATS round-trip latency.
 

@@ -39,6 +39,7 @@ pub mod domain_coverage;
 pub mod engine;
 pub mod error;
 pub mod error_class;
+pub mod judge_panel;
 pub mod mape_k;
 pub mod nats_dispatch_adapter;
 pub mod oracle;

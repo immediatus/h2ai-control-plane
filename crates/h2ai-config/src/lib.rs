@@ -490,6 +490,11 @@ pub struct ReasoningMemoryConfig {
     /// Maximum archetype confidence penalty from avoid_for_tags. Default: 0.20.
     #[serde(default = "default_max_archetype_penalty")]
     pub max_archetype_penalty: f64,
+    /// When `true`, reasoning checkpoint write failures abort the task with a hard error
+    /// instead of logging a warning and continuing. Enable for compliance workloads where
+    /// an un-auditable task execution is worse than a failed one. Default: `false`.
+    #[serde(default)]
+    pub strict_audit_checkpoint: bool,
 }
 
 fn default_induction_batch_size() -> usize {
@@ -521,6 +526,77 @@ impl Default for ReasoningMemoryConfig {
             tag_gate_threshold: default_tag_gate_threshold(),
             max_archetype_boost: default_max_archetype_boost(),
             max_archetype_penalty: default_max_archetype_penalty(),
+            strict_audit_checkpoint: false,
+        }
+    }
+}
+
+/// Configuration for the conflict-rate β signal (GAP-D1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConflictBetaConfig {
+    #[serde(default = "default_conflict_beta_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_conflict_beta_max_samples")]
+    pub max_samples: usize,
+    #[serde(default = "default_conflict_beta_halflife_secs")]
+    pub halflife_secs: u64,
+    #[serde(default = "default_conflict_beta_min_samples_for_override")]
+    pub min_samples_for_override: usize,
+}
+
+fn default_conflict_beta_enabled() -> bool {
+    true
+}
+fn default_conflict_beta_max_samples() -> usize {
+    100
+}
+fn default_conflict_beta_halflife_secs() -> u64 {
+    604_800
+}
+fn default_conflict_beta_min_samples_for_override() -> usize {
+    5
+}
+
+impl Default for ConflictBetaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_conflict_beta_enabled(),
+            max_samples: default_conflict_beta_max_samples(),
+            halflife_secs: default_conflict_beta_halflife_secs(),
+            min_samples_for_override: default_conflict_beta_min_samples_for_override(),
+        }
+    }
+}
+
+/// Configuration for the multi-variant judge panel (GAP-A7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JudgePanelConfig {
+    /// Supermajority fraction required for a confident CrossFamily verdict. Default: 0.67.
+    #[serde(default = "default_judge_panel_quorum_fraction")]
+    pub quorum_fraction: f64,
+    /// Compliance score multiplier applied to uncertain-constraint contributions. Default: 0.7.
+    #[serde(default = "default_judge_panel_uncertainty_weight")]
+    pub uncertainty_weight: f64,
+    /// Per-persona temperatures for PersonaOnly panels: [Literal, Contextual, Skeptical]. Default: [0.0, 0.2, 0.4].
+    #[serde(default = "default_judge_panel_persona_temperatures")]
+    pub persona_temperatures: [f32; 3],
+    /// Minimum uncertain-vote count on one constraint per wave before emitting ConstraintAmbiguityEvent. Default: 2.
+    #[serde(default = "default_judge_panel_ambiguity_threshold")]
+    pub ambiguity_threshold: usize,
+}
+
+fn default_judge_panel_quorum_fraction() -> f64 { 0.67 }
+fn default_judge_panel_uncertainty_weight() -> f64 { 0.7 }
+fn default_judge_panel_persona_temperatures() -> [f32; 3] { [0.0, 0.2, 0.4] }
+fn default_judge_panel_ambiguity_threshold() -> usize { 2 }
+
+impl Default for JudgePanelConfig {
+    fn default() -> Self {
+        Self {
+            quorum_fraction: default_judge_panel_quorum_fraction(),
+            uncertainty_weight: default_judge_panel_uncertainty_weight(),
+            persona_temperatures: default_judge_panel_persona_temperatures(),
+            ambiguity_threshold: default_judge_panel_ambiguity_threshold(),
         }
     }
 }
@@ -678,6 +754,14 @@ pub struct StateConfig {
     /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_META".
     #[serde(default = "default_task_meta_state_bucket_prefix")]
     pub task_meta_state_bucket_prefix: String,
+    /// NATS KV bucket name prefix for per-tenant distilled memory store (Phase 2).
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_MEMORY".
+    #[serde(default = "default_tenant_memory_bucket_prefix")]
+    pub tenant_memory_bucket_prefix: String,
+    /// NATS KV bucket name prefix for per-tenant conflict-rate accumulators (GAP-D1).
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_CONFLICT".
+    #[serde(default = "default_conflict_beta_bucket_prefix")]
+    pub conflict_beta_bucket_prefix: String,
     // JetStream stream names
     #[serde(default = "default_tasks_stream")]
     pub tasks_stream: String,
@@ -734,6 +818,12 @@ fn default_reasoning_checkpoint_bucket_prefix() -> String {
 fn default_task_meta_state_bucket_prefix() -> String {
     "H2AI_META".to_string()
 }
+fn default_tenant_memory_bucket_prefix() -> String {
+    "H2AI_MEMORY".to_string()
+}
+fn default_conflict_beta_bucket_prefix() -> String {
+    "H2AI_CONFLICT".to_string()
+}
 fn default_tasks_stream() -> String {
     "H2AI_TASKS".to_string()
 }
@@ -762,6 +852,8 @@ impl Default for StateConfig {
             approvals_bucket: default_approvals_bucket(),
             reasoning_checkpoint_bucket_prefix: default_reasoning_checkpoint_bucket_prefix(),
             task_meta_state_bucket_prefix: default_task_meta_state_bucket_prefix(),
+            tenant_memory_bucket_prefix: default_tenant_memory_bucket_prefix(),
+            conflict_beta_bucket_prefix: default_conflict_beta_bucket_prefix(),
             tasks_stream: default_tasks_stream(),
             telemetry_stream: default_telemetry_stream(),
             results_stream: default_results_stream(),
@@ -1035,6 +1127,12 @@ pub struct H2AIConfig {
     /// Persistent Reasoning Memory configuration — checkpoint writes, induction cycles, retrieval.
     #[serde(default)]
     pub reasoning_memory: ReasoningMemoryConfig,
+    /// Conflict-rate β accumulator configuration (GAP-D1).
+    #[serde(default)]
+    pub conflict_beta: ConflictBetaConfig,
+    /// Judge panel configuration for Phase 3.5 multi-variant evaluation (GAP-A7).
+    #[serde(default)]
+    pub judge_panel: JudgePanelConfig,
 }
 
 fn default_correlated_hallucination_cv_threshold() -> f64 {

@@ -63,7 +63,7 @@ C4Context
 The control plane orchestrates a single task as a 6-phase pipeline. Each phase is event-sourced to NATS JetStream — every state transition is replayable, and every retry decision is auditable. Two independent diversity signals govern execution:
 
 - **Hamming Common Ground (CG)**: pairwise constraint-satisfaction agreement across the adapter pool, measured during calibration. Drives `β_eff = β₀ × (1 − CG_mean)` and the USL ceiling `N_max = round(√((1 − α) / β_eff))`.
-- **Cosine N_eff**: participation-ratio diversity from the eigendecomposition of the embedding cosine kernel. A pool-level `n_eff_cosine_prior` is the Bayesian prior at calibration; a task-level `n_eff_cosine_actual` is computed at every MAPE-K decision point.
+- **Cosine N_eff**: participation-ratio diversity from the eigendecomposition of the embedding cosine kernel. A pool-level `n_eff_cosine_prior` is the Bayesian prior at calibration; a task-level `n_eff_cosine_actual` is computed from the wave's raw proposal outputs at every MAPE-K decision point (see math.md §3 for the `from_cosine_matrix` formula).
 
 The two signals are not redundant. Hamming CG measures *behavioural* agreement on the constraint corpus. Cosine N_eff measures *semantic* independence at generation time. Both flow through the planner, the multiplication-condition gate, and the MAPE-K retry loop.
 
@@ -119,7 +119,7 @@ Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motiv
 
 **Operator context (additive):** If the manifest carries `slot_configs`, they are appended to the Path C result after the LLM response is parsed, then the combined set is re-pruned by orthogonality. They do not bypass decomposition.
 
-**Orthogonality pruning:** If the produced N exceeds the USL budget ceiling `N_max`, `prune_by_orthogonality()` drops the slot with the highest mean cosine similarity to all retained peers — the least independent perspective — until `len ≤ N_max`. Never pads to fill the budget.
+**Orthogonality pruning:** If the produced N exceeds the USL cost ceiling `N_max`, `prune_by_orthogonality()` drops the slot with the highest mean cosine similarity to all retained peers — the least independent perspective — until `len ≤ N_max`. Never pads to fill the budget. `N_max` is the **cost ceiling** (from USL calibration), not the quality target — see math.md §2 and §5.1. The quality target is `n_it_optimal`; A planned improvement would change the pruning bound to `min(n_it_optimal, N_max)` — applying both the quality-optimal ceiling (`n_it_optimal`, where marginal information gain drops below half per-adapter entropy) and the cost ceiling (`N_max`) simultaneously. That change is not yet implemented: the current code targets `N_max` only.
 
 **Context injection:** The engine prepends `[MANDATE]: {focus_mandate}` and `[FIND]: {rejection_criteria}` before each agent's system context when those fields are non-empty.
 
@@ -129,7 +129,7 @@ Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motiv
 
 ### Phase 1 — Bootstrap
 
-The orchestrator compiles the task description and the active constraint corpus into an immutable `system_context`. The `J_eff` gate enforces a minimum context-fill fraction; tasks below the threshold are rejected with `ContextUnderflow` rather than run with insufficient grounding. Emits `TaskBootstrapped`.
+The orchestrator compiles the task description and the active constraint corpus into an immutable `system_context`. The `J_eff` gate enforces a minimum context-fill fraction; tasks below the threshold are rejected with `ContextUnderflow` rather than run with insufficient grounding. Emits `TaskBootstrapped`. For the constraint corpus markdown format, predicate kinds, severity levels, and ConstraintSource abstraction, see reference.md §7.
 
 ### Phase 2 — Topology Provisioning
 
@@ -168,7 +168,7 @@ Failure produces `MultiplicationConditionFailed` with one of `InsufficientCompet
 
 A separate gate, evaluated only when `cfg.diversity_threshold > 0`. Compares the calibration's `n_eff_cosine_prior` against `1.0 + diversity_threshold`. When the pool's effective independent-adapter count is below the floor, the engine emits a synthetic `ZeroSurvival` with `failure_mode = ModeCollapse` and routes through `RetryPolicy`. This is the fourth multiplication condition: `InsufficientPoolDiversity`. It exists because Hamming CG can mark constraint-profile agreement as "high coordination" while the pool remains semantically near-degenerate (correlated hallucination risk).
 
-**Loud degradation (GAP-C3, 2026-05-11):** When `embedding_model` is `None` (fastembed unconfigured) and `diversity_threshold > 0`, `DiversityGuardDegradedEvent` is emitted to NATS rather than silently falling back to the closed-form `n_eff_cosine_prior`. A startup warning fires when this configuration is detected. When `cfg.require_bivariate_cg = true`, the task fails with `InsufficientPoolDiversity` rather than proceeding in degraded mode.
+**Loud degradation:** When `embedding_model` is `None` (fastembed unconfigured) and `diversity_threshold > 0`, `DiversityGuardDegradedEvent` is emitted to NATS rather than silently falling back to the closed-form `n_eff_cosine_prior`. A startup warning fires when this configuration is detected. When `cfg.require_bivariate_cg = true`, the task fails with `InsufficientPoolDiversity` rather than proceeding in degraded mode.
 
 **Domain coverage guard (C3 pre-loop):** Before the MAPE-K wave loop starts, the engine checks whether the union of `constraint_domains` across all `ExplorerSlotConfig`s covers the corpus domain tag set. Coverage fraction = `|covered| / |corpus_domains|`. Below `cfg.domain_coverage_threshold` (default 0.40), `DiversityGuardDegradedEvent` is emitted. With `require_bivariate_cg = true`, the task fails immediately.
 
@@ -213,7 +213,11 @@ Emits `CorrelatedFabricationEvent { cfi, injection_pressure, shared_ungrounded_e
 
 ### Phase 3.5 — Verification
 
-A dedicated verification adapter (LLM-as-Judge) scores every proposal against the constraint corpus. Each scoring emits `VerificationScored {score, reason, passed}`. Proposals that fail verification become `BranchPruned` with their `violated_constraints` recorded.
+> **Phase numbering:** Fractional phase numbers (2.5, 2.6, 3.5, 4.5) denote sub-phases introduced after the initial integer numbering was fixed. They fit between the surrounding integer phases in execution order and are used consistently in the event vocabulary (see reference.md §2 variant index).
+
+A multi-variant **judge panel** (`JudgePanel`) scores every proposal against the constraint corpus. Each scoring emits `VerificationScored {score, reason, passed}`. Proposals that fail verification become `BranchPruned` with their `violated_constraints` recorded.
+
+**Panel construction:** The panel is built from the verification adapter plus any explorer adapters from distinct families. If ≥2 distinct adapter families are available the panel uses `PanelDiversityKind::CrossFamily` (one variant per family, cap 3) with supermajority vote (`quorum_fraction` default 0.67) per constraint → `ConstraintVerdict::Pass / Fail / Uncertain`. If only one family is available, `PanelDiversityKind::PersonaOnly` runs 3 variants (Literal, Contextual, Skeptical personas) requiring unanimous agreement — any dissent produces `Uncertain`. Proposals with uncertain-only constraint failures pass with a score penalty (`uncertainty_weight` default 0.7); hard `Fail` verdicts prune. When ≥`ambiguity_threshold` proposals in a wave produce uncertain votes on the same constraint, `ConstraintAmbiguityEvent` is logged as a corpus quality signal. For the full `[judge_panel]` configuration table (`quorum_fraction`, `uncertainty_weight`, `persona_temperatures`, `ambiguity_threshold`), see reference.md §4.
 
 **Rubric independence:** The explorer's `system_context` is compiled with `include_rubric=false` (the production default in `compiler::compile`). `LlmJudge` constraint rubrics and their IDs are **withheld** from the explorer — the verifier retains them via `ConstraintPredicate::LlmJudge` and uses them for scoring, but the explorer must reason from the task description and domain expertise alone. This prevents the verifier from simply confirming that the explorer followed instructions it was already given.
 
@@ -237,7 +241,7 @@ When `oracle_gate.enabled = true`, a NATS `request()` call is made to `cfg.oracl
 
 When `opro.enabled = true`, the control plane tracks a per-adapter j_eff EMA across tasks. When `j_eff_ema < opro.trigger_j_eff_threshold` and `n_tasks_total ≥ opro.min_tasks_before_trigger`, an OPRO (Optimization by PROmpting, arXiv 2309.03409) cycle is triggered: the auditor LLM is asked to rewrite the current prompt template to improve output quality, the candidate is validated (all template variables must survive), and stored as a new `PromptVariant` in `H2AI_PROMPT_VARIANTS`. A Thompson-sampling bandit (`alpha`, `beta` per variant) selects the active variant each task. After `graduation_tasks` total tasks, the variant with the highest mean reward (by `promotion_margin`) is promoted as the new default and a `PromptVariantPromotedEvent` is emitted.
 
-Bootstrap priors are seeded at startup from `AdapterProfile.tier`: Capable=0.78, Standard=0.62, Fast=0.45 j_eff median priors. This closes GAP-D3 (bootstrap calibration) by providing principled Bayesian priors before any tasks have run.
+Bootstrap priors are seeded at startup from `AdapterProfile.tier`: Capable=0.78, Standard=0.62, Fast=0.45 j_eff median priors. This eliminates the cold-start problem by providing principled Bayesian priors before any tasks have run — no empirical data required.
 
 ### Phase 5 — Merge
 
@@ -315,15 +319,17 @@ Phases split into two groups with different retry semantics:
 |-------|--------|-------------|-------------------|
 | 1 | `bootstrap` | Compiles system context (with and without rubric) via `compiler::compile`, applies compaction, checks family conflict gate (`RequireDiverse` / `SingleFamilyOk`) | `Err(EngineError)` — task fails immediately |
 | 2 | `complexity` | Calls `assess_task_complexity()`, assigns `TaskQuadrant`, guards against `Degenerate` in non-shadow mode, derives `cg_mean` and `n_max_ceiling` from calibration | `Err(EngineError)` — task fails immediately |
-| 3 | `domain_coverage` | Computes corpus domain tag coverage across slot configs; emits `DiversityGuardDegradedEvent`; hard-fails when `require_bivariate_cg = true` and coverage is below threshold | `Err(EngineError)` — task fails immediately |
+| 3 | `domain_coverage` | Computes corpus domain tag coverage across slot configs; emits `DiversityGuardDegradedEvent` (non-blocking unless `require_bivariate_cg = true`) | `Err(EngineError)` — task fails immediately |
+
+> **Two distinct diversity events.** `DiversityGuardDegradedEvent` (pre-loop module 3, Phase 2.6 domain coverage) and `MultiplicationConditionFailed { InsufficientPoolDiversity }` (per-wave module 3, Phase 2.6 semantic pool guard) are different events. The first fires when the task's constraint domain tags do not cover the corpus — it is a corpus alignment warning. The second fires when the cosine N_eff of the adapter pool is below floor — it is a pool composition block. A task can trigger both independently.
 
 **Per-wave (run inside the retry loop — `pipeline.rs`, `ExecutionPipeline::run()`):**
 
 | Order | Module | What it does | `EarlyExit` reason |
 |-------|--------|-------------|-------------------|
 | 1 | `topology` | `TopologyPlanner::provision()`: selects topology, assigns explorer roles with τ-spread/reduction from `PipelineParams`, checks OutlierResistant quorum (`n ≥ 2f+3`) | `Fatal(InsufficientQuorum)` |
-| 2 | `multiply` | `MultiplicationChecker::check()` against `p_mean`, `ρ_mean`, CG threshold from calibration | `MultiplicationFailed { tau_values }` |
-| 3 | `diversity` | `n_eff_cosine_prior < 1.0 + diversity_threshold` check | `DiversityFailed { n_eff, tau_values }` |
+| 2 | `multiply` | `MultiplicationChecker::check()` against `p_mean`, `ρ_mean`, CG threshold from calibration (Phase 2.5) | `MultiplicationFailed { tau_values }` |
+| 3 | `diversity` | `n_eff_cosine_prior < 1.0 + diversity_threshold` check (Phase 2.6) | `MultiplicationConditionFailed { InsufficientPoolDiversity { n_eff, threshold } }` |
 | 4 | `generation` | Parallel TAO agent dispatch — one `TaoAgent::run()` per explorer; collects `ProposalEvent`s | — (never `EarlyExit`) |
 | 5 | `hallucination` | CV + Jaccard correlated hallucination detection; triggers SRANI grounding when both thresholds fire | `HallucinationDetected { retry_context_hint }` |
 | 6 | `srani` | SRANI escalating grounding chain: `SpecAnchorGrounder` → `LlmResearcherGrounder` → `WebSearchGrounder`; updates SRANI EMA-CFI | — |
@@ -345,7 +351,7 @@ flowchart TD
     SR --> Fatal["Fatal(EngineError) — unrecoverable, task fails immediately"]
 
     EarlyExit --> MF["MultiplicationFailed\n(p_mean × ρ_mean × CG threshold)"]
-    EarlyExit --> DF["DiversityFailed\n(n_eff_cosine_prior below floor)"]
+    EarlyExit --> IPD["MultiplicationConditionFailed\n{ InsufficientPoolDiversity }\n(n_eff_cosine_prior below floor)"]
     EarlyExit --> ZS["ZeroSurvival\n(no auditor survivors, or merge failure)"]
     EarlyExit --> HD["HallucinationDetected\n(CV + Jaccard thresholds both fire)"]
     EarlyExit --> OB["OracleBlocked\n(oracle gate returned false)"]

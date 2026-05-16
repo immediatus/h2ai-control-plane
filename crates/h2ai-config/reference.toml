@@ -599,6 +599,25 @@ tag_gate_threshold          = 0.2
 max_archetype_boost         = 0.15
 max_archetype_penalty       = 0.20
 
+# ── Conflict-Rate β (GAP-D1) ────────────────────────────────────────────────
+[conflict_beta]
+enabled                  = true
+max_samples              = 100
+halflife_secs            = 604800   # 7 days — same halflife as CG samples
+min_samples_for_override = 5        # production tasks needed before rolling overrides floor
+
+# ── Judge Panel (GAP-A7) ─────────────────────────────────────────────────────
+[judge_panel]
+# Supermajority fraction required for a confident CrossFamily verdict.
+quorum_fraction = 0.67
+# Compliance score multiplier applied to uncertain-constraint contributions.
+uncertainty_weight = 0.7
+# Per-persona temperatures for PersonaOnly panels: [Literal, Contextual, Skeptical].
+# Capped at 0.4 — higher temperatures add noise rather than useful interpretive diversity.
+persona_temperatures = [0.0, 0.2, 0.4]
+# Min uncertain-vote count on one constraint per wave to emit ConstraintAmbiguityEvent.
+ambiguity_threshold = 2
+
 # ── Calibration Bootstrap ───────────────────────────────────────────────────
 # Configuration for synthetic prior weight in calibration initialization.
 [calibration_bootstrap]
@@ -621,6 +640,8 @@ constraint_payloads_bucket = "H2AI_CONSTRAINT_PAYLOADS"
 approvals_bucket                    = "H2AI_APPROVALS"
 reasoning_checkpoint_bucket_prefix  = "H2AI_CHECKPOINT"
 task_meta_state_bucket_prefix       = "H2AI_META"
+tenant_memory_bucket_prefix         = "H2AI_MEMORY"
+conflict_beta_bucket_prefix         = "H2AI_CONFLICT"
 tasks_stream               = "H2AI_TASKS"
 telemetry_stream           = "H2AI_TELEMETRY"
 results_stream             = "H2AI_RESULTS"

@@ -450,6 +450,7 @@ mod tests {
             n_eff_cosine_prior: 0.0,
             calibration_quality: CalibrationQuality::Domain,
             calibration_source: Default::default(),
+            beta_quality: None,
         }
     }
 

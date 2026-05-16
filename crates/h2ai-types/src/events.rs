@@ -142,6 +142,10 @@ pub struct CalibrationCompletedEvent {
     /// Defaults to `Measured` so existing serialised events deserialise correctly.
     #[serde(default)]
     pub calibration_source: CalibrationSource,
+    /// Conflict-rate-based β computed from Phase B pairwise violation matrix.
+    /// `None` when fewer than 2 proposals were generated or corpus is empty.
+    #[serde(default)]
+    pub beta_quality: Option<f64>,
 }
 
 /// Point-in-time snapshot of a task's in-memory state for crash-recovery replay optimization.
@@ -736,6 +740,23 @@ pub struct ConstraintFrontierEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when judge panel disagreement is persistent across proposals in a wave.
+///
+/// Fire-and-forget corpus quality signal for GAP-A7. Indicates that a constraint's
+/// ambiguity caused persistent uncertainty across the judge panel, suggesting the
+/// constraint wording or scope needs refinement in the corpus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintAmbiguityEvent {
+    pub task_id: TaskId,
+    /// MAPE-K wave index in which the ambiguity was detected.
+    pub wave: u32,
+    /// Constraint IDs whose uncertain-vote count reached the configured threshold.
+    pub ambiguous_constraints: Vec<String>,
+    /// Per-constraint uncertain vote counts for this wave.
+    pub uncertain_counts: std::collections::HashMap<String, usize>,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Emitted when the oracle gate finishes evaluating proposed solutions before merge.
 ///
 /// The gate runs synchronously before `MergeResolvedEvent` is emitted. When
@@ -1032,6 +1053,8 @@ pub enum H2AIEvent {
     OproTriggered(OproTriggeredEvent),
     /// Prompt variant promoted: OPRO selected a winning variant.
     PromptVariantPromoted(PromptVariantPromotedEvent),
+    /// Corpus quality signal: judge panel disagreement persistent across proposals in a wave.
+    ConstraintAmbiguity(ConstraintAmbiguityEvent),
 }
 
 impl H2AIEvent {

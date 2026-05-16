@@ -1486,6 +1486,7 @@ dependencies = [
 name = "h2ai-autonomic"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "futures",
  "h2ai-adapters",

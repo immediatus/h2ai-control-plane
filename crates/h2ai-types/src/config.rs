@@ -94,6 +94,39 @@ pub enum TopologyKind {
     TeamSwarmHybrid,
 }
 
+/// Coarse model-family grouping for judge-panel bias-diversity detection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AdapterFamily {
+    Anthropic,
+    OpenAI,
+    /// LocalLlamaCpp and Ollama — locally-served models.
+    Local,
+    /// CloudGeneric and A2a — endpoint-based adapters without vendor-specific family.
+    Cloud,
+}
+
+impl AdapterFamily {
+    pub fn from_kind(kind: &AdapterKind) -> Self {
+        match kind {
+            AdapterKind::Anthropic { .. } => AdapterFamily::Anthropic,
+            AdapterKind::OpenAI { .. } => AdapterFamily::OpenAI,
+            AdapterKind::LocalLlamaCpp { .. } | AdapterKind::Ollama { .. } => AdapterFamily::Local,
+            AdapterKind::CloudGeneric { .. } | AdapterKind::A2a { .. } => AdapterFamily::Cloud,
+        }
+    }
+}
+
+impl std::fmt::Display for AdapterFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdapterFamily::Anthropic => write!(f, "anthropic"),
+            AdapterFamily::OpenAI => write!(f, "openai"),
+            AdapterFamily::Local => write!(f, "local"),
+            AdapterFamily::Cloud => write!(f, "cloud"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdapterKind {
     LocalLlamaCpp {
@@ -127,6 +160,12 @@ pub enum AdapterKind {
         max_poll_interval_ms: u64,
         agent_card_cache_ttl_s: u64,
     },
+}
+
+impl AdapterKind {
+    pub fn family(&self) -> AdapterFamily {
+        AdapterFamily::from_kind(self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -63,6 +63,11 @@ pub struct CoherencyCoefficients {
     /// β_eff = β₀ × (1 − CG_mean); bounded at β₀ when CG_mean = 0.
     #[serde(alias = "kappa_base")]
     pub beta_base: f64,
+    /// Conflict-rate-based β, derived from pairwise constraint disagreement.
+    /// When present, replaces the `beta_base × (1 − CG_mean)` proxy in `beta_eff()`.
+    /// `None` until conflict accumulator data is available for this tenant.
+    #[serde(default)]
+    pub beta_quality: Option<f64>,
     pub cg_samples: Vec<f64>,
     /// Unix timestamps (seconds) for each entry in `cg_samples`.
     ///
@@ -128,19 +133,28 @@ impl CoherencyCoefficients {
         Ok(Self {
             alpha,
             beta_base,
+            beta_quality: None,
             cg_samples,
             sample_timestamps,
         })
     }
 
-    /// Effective coordination cost per agent pair: `β_eff = β₀ × (1 − CG_mean)`.
+    /// Effective coordination cost per agent pair.
+    ///
+    /// When `beta_quality` is `Some`, returns it directly (no CG adjustment).
+    /// Otherwise, uses the proxy: `β_eff = β₀ × (1 − CG_mean)`.
     ///
     /// - At CG_mean = 0 (no overlap): β_eff = β₀ (maximum cost, bounded).
     /// - At CG_mean = 1 (full overlap): β_eff ≈ 0 (coordination-free).
     /// - Previous formula β₀/CG_mean diverged at CG→0; this form is bounded everywhere.
     pub fn beta_eff(&self) -> f64 {
-        let cg = self.cg_mean().clamp(0.0, 1.0);
-        (self.beta_base * (1.0 - cg)).max(1e-6)
+        match self.beta_quality {
+            Some(bq) => bq.max(1e-6),
+            None => {
+                let cg = self.cg_mean().clamp(0.0, 1.0);
+                (self.beta_base * (1.0 - cg)).max(1e-6)
+            }
+        }
     }
 
     /// Maximum useful ensemble size from USL Proposition 1: round(√((1−α)/β_eff)).
@@ -1214,6 +1228,35 @@ mod condorcet_tests {
             (result - fresh_only_beta).abs() < 0.005,
             "recent low-CG sample must dominate: expected ≈{fresh_only_beta:.4}, got {result:.4}"
         );
+    }
+
+    #[test]
+    fn beta_eff_uses_beta_quality_when_present_no_cg_adjustment() {
+        let mut cc = CoherencyCoefficients::new(0.1, 0.05, vec![0.7]).unwrap();
+        cc.beta_quality = Some(0.3);
+        // With beta_quality present, beta_eff = 0.3 directly (no CG adjustment)
+        let eff = cc.beta_eff();
+        assert!((eff - 0.3).abs() < 1e-9, "expected 0.3, got {eff}");
+    }
+
+    #[test]
+    fn beta_eff_falls_back_to_proxy_when_beta_quality_none() {
+        let cc = CoherencyCoefficients::new(0.1, 0.05, vec![0.6]).unwrap();
+        assert!(cc.beta_quality.is_none());
+        // Falls back to beta_base * (1 - CG_mean) = 0.05 * (1 - 0.6) = 0.02
+        let eff = cc.beta_eff();
+        assert!((eff - 0.02).abs() < 1e-9, "expected 0.02, got {eff}");
+    }
+
+    #[test]
+    fn n_max_increases_with_lower_beta_quality() {
+        let mut cc_high = CoherencyCoefficients::new(0.1, 0.05, vec![0.5]).unwrap();
+        cc_high.beta_quality = Some(0.4); // high conflict rate → small N_max
+
+        let mut cc_low = CoherencyCoefficients::new(0.1, 0.05, vec![0.5]).unwrap();
+        cc_low.beta_quality = Some(0.05); // low conflict rate → large N_max
+
+        assert!(cc_low.n_max() > cc_high.n_max());
     }
 }
 

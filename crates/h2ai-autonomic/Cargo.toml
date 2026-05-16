@@ -22,5 +22,6 @@ tokio         = { workspace = true }
 [dev-dependencies]
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-config   = { path = "../h2ai-config" }
+async-trait   = { workspace = true }
 serde_json    = { workspace = true }
 tokio         = { workspace = true }

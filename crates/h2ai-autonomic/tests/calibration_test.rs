@@ -1,7 +1,68 @@
+use async_trait::async_trait;
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{beta_from_merge_spans, CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
+use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::TaskId;
+
+/// A minimal test adapter that returns a fixed output and reports a configurable AdapterKind.
+/// Used to exercise multi-family scenarios without spinning up real network adapters.
+#[derive(Debug)]
+struct KindedMockAdapter {
+    output: String,
+    kind: AdapterKind,
+}
+
+impl KindedMockAdapter {
+    fn anthropic(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            kind: AdapterKind::Anthropic {
+                api_key_env: "MOCK_KEY".into(),
+                model: "claude-test".into(),
+            },
+        }
+    }
+
+    fn local(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            kind: AdapterKind::Ollama {
+                endpoint: "http://localhost:11434".into(),
+                model: "llama3".into(),
+            },
+        }
+    }
+
+    fn cloud(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://localhost".into(),
+                api_key_env: "MOCK".into(),
+                model: None,
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl IComputeAdapter for KindedMockAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        Ok(ComputeResponse {
+            output: self.output.clone(),
+            token_cost: 0,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    }
+
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
 
 fn mock_adapter() -> MockAdapter {
     MockAdapter::new("The proposed solution uses stateless JWT auth.".into())
@@ -433,4 +494,149 @@ async fn calibration_source_is_partial_fit_with_two_adapters() {
     };
     let result = CalibrationHarness::run(input).await.unwrap();
     assert_eq!(result.calibration_source, CalibrationSource::PartialFit);
+}
+
+// ── adapter_families / explorer_verification_family_match / single_family_warning ─────────
+
+/// Single adapter → adapter_families has exactly one entry, single_family_warning is true,
+/// explorer_verification_family_match is false (only one distinct family present).
+#[tokio::test]
+async fn adapter_families_single_adapter_populates_one_family() {
+    let cfg = H2AIConfig::default();
+    let a = KindedMockAdapter::cloud("answer");
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["prompt".into()],
+        adapters: vec![&a as &dyn IComputeAdapter],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: None,
+    };
+    let event = CalibrationHarness::run(input).await.unwrap();
+
+    assert_eq!(
+        event.adapter_families.len(),
+        1,
+        "single adapter must produce exactly one family entry, got: {:?}",
+        event.adapter_families
+    );
+    assert!(
+        event.single_family_warning,
+        "single distinct family must set single_family_warning=true"
+    );
+    assert!(
+        !event.explorer_verification_family_match,
+        "single family → explorer_verification_family_match must be false"
+    );
+}
+
+/// Two adapters from the same family (both Cloud) → single_family_warning true,
+/// explorer_verification_family_match false.
+#[tokio::test]
+async fn adapter_families_same_family_sets_single_family_warning() {
+    let cfg = H2AIConfig::default();
+    let a = KindedMockAdapter::cloud("answer A");
+    let b = KindedMockAdapter::cloud("answer B");
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["prompt one".into()],
+        adapters: vec![
+            &a as &dyn IComputeAdapter,
+            &b as &dyn IComputeAdapter,
+        ],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: None,
+    };
+    let event = CalibrationHarness::run(input).await.unwrap();
+
+    // Both are Cloud → only one distinct family
+    assert_eq!(
+        event.adapter_families.len(),
+        1,
+        "two adapters of the same family must yield 1 distinct family, got: {:?}",
+        event.adapter_families
+    );
+    assert!(
+        event.single_family_warning,
+        "same-family pair must set single_family_warning=true"
+    );
+    assert!(
+        !event.explorer_verification_family_match,
+        "same-family pair must leave explorer_verification_family_match=false"
+    );
+}
+
+/// Two adapters from different families (Anthropic + Local) → adapter_families has two entries,
+/// explorer_verification_family_match true, single_family_warning false.
+#[tokio::test]
+async fn adapter_families_cross_family_sets_verification_match() {
+    let cfg = H2AIConfig::default();
+    let a = KindedMockAdapter::anthropic("anthropic response");
+    let b = KindedMockAdapter::local("local llm response");
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["prompt".into()],
+        adapters: vec![
+            &a as &dyn IComputeAdapter,
+            &b as &dyn IComputeAdapter,
+        ],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: None,
+    };
+    let event = CalibrationHarness::run(input).await.unwrap();
+
+    assert_eq!(
+        event.adapter_families.len(),
+        2,
+        "two distinct families must produce 2 family entries, got: {:?}",
+        event.adapter_families
+    );
+    assert!(
+        event.explorer_verification_family_match,
+        "cross-family adapters must set explorer_verification_family_match=true"
+    );
+    assert!(
+        !event.single_family_warning,
+        "cross-family adapters must leave single_family_warning=false"
+    );
+}
+
+/// Three adapters spanning three distinct families → adapter_families has 3 entries,
+/// explorer_verification_family_match true, single_family_warning false.
+#[tokio::test]
+async fn adapter_families_three_distinct_families() {
+    let cfg = H2AIConfig::default();
+    let a = KindedMockAdapter::anthropic("anthropic");
+    let b = KindedMockAdapter::local("local");
+    let c = KindedMockAdapter::cloud("cloud");
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["prompt A".into(), "prompt B".into()],
+        adapters: vec![
+            &a as &dyn IComputeAdapter,
+            &b as &dyn IComputeAdapter,
+            &c as &dyn IComputeAdapter,
+        ],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: None,
+    };
+    let event = CalibrationHarness::run(input).await.unwrap();
+
+    assert_eq!(
+        event.adapter_families.len(),
+        3,
+        "three distinct families must produce 3 entries, got: {:?}",
+        event.adapter_families
+    );
+    assert!(
+        event.explorer_verification_family_match,
+        "three-family ensemble must set explorer_verification_family_match=true"
+    );
+    assert!(
+        !event.single_family_warning,
+        "three-family ensemble must leave single_family_warning=false"
+    );
 }

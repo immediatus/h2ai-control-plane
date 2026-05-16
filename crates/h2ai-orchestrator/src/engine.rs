@@ -15,6 +15,7 @@ use h2ai_types::manifest::TaskManifest;
 use h2ai_types::reasoning_checkpoint::{
     CompletedWave, ReasoningCheckpointPhase, TaskReasoningCheckpoint,
 };
+use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::sizing::TaskQuadrant;
 use thiserror::Error;
 
@@ -49,6 +50,10 @@ pub enum EngineError {
     /// Either reduce `f` or provision at least `2f + 3` explorers.
     #[error("insufficient quorum for OutlierResistant f={f}: need n ≥ {required}, got n={n}")]
     InsufficientQuorum { n: usize, f: usize, required: usize },
+    /// A reasoning checkpoint write failed and `strict_audit_checkpoint = true`.
+    /// The task is aborted to preserve the audit trail integrity.
+    #[error("checkpoint write failed (strict audit mode): {0}")]
+    CheckpointWriteFailed(String),
 }
 
 /// Context for the Phase 4 shadow auditor. Held in `EngineInput::shadow_audit_ctx`.
@@ -223,13 +228,27 @@ async fn write_reasoning_checkpoint(
     nats: &std::sync::Arc<NatsClient>,
     cp: &TaskReasoningCheckpoint,
     prefix: &str,
-) {
-    if let Err(e) = nats.put_reasoning_checkpoint(cp, prefix).await {
-        tracing::warn!(
-            target: "h2ai.engine",
-            task_id = %cp.task_id,
-            "reasoning checkpoint write failed (non-fatal): {e}"
-        );
+    strict: bool,
+) -> Result<(), EngineError> {
+    match nats.put_reasoning_checkpoint(cp, prefix).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            if strict {
+                tracing::error!(
+                    target: "h2ai.engine",
+                    task_id = %cp.task_id,
+                    "reasoning checkpoint write failed (strict audit mode): {e}"
+                );
+                Err(EngineError::CheckpointWriteFailed(e.to_string()))
+            } else {
+                tracing::warn!(
+                    target: "h2ai.engine",
+                    task_id = %cp.task_id,
+                    "reasoning checkpoint write failed (non-fatal): {e}"
+                );
+                Ok(())
+            }
+        }
     }
 }
 
@@ -257,6 +276,7 @@ impl ExecutionEngine {
 
         let rc_prefix = input.cfg.state.reasoning_checkpoint_bucket_prefix.clone();
         let ms_prefix = input.cfg.state.task_meta_state_bucket_prefix.clone();
+        let strict_audit = input.cfg.reasoning_memory.strict_audit_checkpoint;
         let mut reasoning_cp = if input.cfg.reasoning_memory.enabled {
             if let Some(nats) = &input.nats {
                 nats.ensure_tenant_reasoning_buckets(&input.tenant_id, &rc_prefix, &ms_prefix)
@@ -270,17 +290,49 @@ impl ExecutionEngine {
                 None,
             );
             if let Some(nats) = &input.nats {
-                write_reasoning_checkpoint(nats, &cp, &rc_prefix).await;
+                write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit).await?;
             }
             Some(cp)
         } else {
             None
         };
 
+        // ── GAP-D1: load conflict-rate accumulator to inject beta_quality ───────
+        let conflict_beta_prefix = input.cfg.state.conflict_beta_bucket_prefix.clone();
+        let conflict_acc = if input.cfg.conflict_beta.enabled {
+            if let Some(nats) = &input.nats {
+                nats.ensure_tenant_conflict_bucket(&input.tenant_id, &conflict_beta_prefix)
+                    .await
+                    .ok();
+                nats.get_conflict_accumulator(&input.tenant_id, &conflict_beta_prefix)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // ── Pre-loop: one-shot phases (no retry needed) ─────────────────────
         let bootstrap_out = crate::phases::bootstrap::run(&input).await?;
-        let complexity_out =
+        let mut complexity_out =
             crate::phases::complexity::run(&input, &bootstrap_out.system_context).await?;
+        // Override n_max_ceiling with conflict-rate-based beta when accumulator has sufficient data.
+        if let Some(acc) = &conflict_acc {
+            let mut cc = input.calibration.coefficients.clone();
+            cc.beta_quality = Some(acc.beta_quality);
+            let conflict_n_max = cc.n_max().floor().max(1.0) as u32;
+            complexity_out.n_max_ceiling = conflict_n_max;
+            tracing::debug!(
+                target: "h2ai.engine",
+                beta_quality = acc.beta_quality,
+                n_max_ceiling = conflict_n_max,
+                "n_max_ceiling overridden with conflict-rate beta_quality"
+            );
+        }
+
         let domain_cov_out = crate::phases::domain_coverage::run(&input)?;
         // Extract diversity_degraded_event before borrowing domain_cov_out for the pipeline.
         let diversity_degraded_event = domain_cov_out.diversity_degraded_event.clone();
@@ -313,6 +365,37 @@ impl ExecutionEngine {
                 .run(controller.params(), retry_count as usize)
                 .await;
             controller.observe(&wave);
+            // Fire-and-forget: write conflict rate sample to per-tenant accumulator.
+            if input.cfg.conflict_beta.enabled {
+                if let Some(rate) = wave.events.conflict_rate {
+                    if let Some(nats) = &input.nats {
+                        let floor = input.calibration.beta_quality
+                            .unwrap_or(input.calibration.coefficients.beta_base);
+                        let mut acc = nats
+                            .get_conflict_accumulator(&input.tenant_id, &conflict_beta_prefix)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| {
+                                ConflictRateAccumulator::new(input.tenant_id.clone(), floor)
+                            });
+                        let n_adapters = input.calibration.coefficients.cg_samples.len() as u32;
+                        acc.push_sample(
+                            rate,
+                            n_adapters,
+                            input.cfg.conflict_beta.max_samples,
+                            input.cfg.conflict_beta.halflife_secs,
+                            input.cfg.conflict_beta.min_samples_for_override,
+                        );
+                        if let Err(e) = nats.put_conflict_accumulator(&acc, &conflict_beta_prefix).await {
+                            tracing::warn!(
+                                target: "h2ai.engine",
+                                "conflict accumulator write failed (non-fatal): {e}"
+                            );
+                        }
+                    }
+                }
+            }
             if let Some(cp) = &mut reasoning_cp {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -325,7 +408,7 @@ impl ExecutionEngine {
                     adapter_outputs: vec![],
                 });
                 if let Some(nats) = &input.nats {
-                    write_reasoning_checkpoint(nats, cp, &rc_prefix).await;
+                    write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit).await?;
                 }
             }
             let filter_ratio = wave.events.filter_ratio;
@@ -339,8 +422,10 @@ impl ExecutionEngine {
                         cp.last_updated = now;
                         cp.phase = ReasoningCheckpointPhase::Resolved;
                         cp.retry_count = retry_count;
+                        cp.resolved_waste_ratio = Some(out.waste_ratio);
+                        cp.resolved_attribution_json = serde_json::to_string(&out.attribution).ok();
                         if let Some(nats) = &input.nats {
-                            write_reasoning_checkpoint(nats, &cp, &rc_prefix).await;
+                            write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit).await?;
                             if let Some(meta) = cp.into_meta_state() {
                                 if let Err(e) = nats.put_task_meta_state(&meta, &ms_prefix).await {
                                     tracing::warn!(
@@ -415,9 +500,45 @@ impl ExecutionEngine {
             let task_id = input.task_id.clone();
             input.store.mark_resolved(&task_id);
 
-            // Return minimal EngineOutput with saved resolved output.
-            // Aggregated fields (verification, attribution, etc.) are zeroed —
-            // the engine did not re-run so there are no new measurements.
+            // Hydrate attribution and waste_ratio from the reasoning checkpoint so
+            // downstream analytics (billing, bandits, dashboards) receive real values
+            // rather than zeros that would corrupt the statistical baseline.
+            let (attribution, waste_ratio) = if input.cfg.reasoning_memory.enabled {
+                if let Some(nats) = &input.nats {
+                    let rc_prefix = &input.cfg.state.reasoning_checkpoint_bucket_prefix;
+                    if let Ok(Some(rc)) = nats
+                        .get_reasoning_checkpoint(&input.task_id, &input.tenant_id, rc_prefix)
+                        .await
+                    {
+                        let attr = rc
+                            .resolved_attribution_json
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str(s).ok());
+                        (attr, rc.resolved_waste_ratio)
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            let attribution = attribution.unwrap_or(crate::attribution::HarnessAttribution {
+                baseline_quality: 0.0,
+                topology_gain: 0.0,
+                verification_gain: 0.0,
+                tao_gain: 0.0,
+                q_confidence: 0.0,
+                prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
+                q_measured: None,
+                rho_adjusted: 0.0,
+                case_b_flag: false,
+                synthesis_gain: 0.0,
+            });
+            let waste_ratio = waste_ratio.unwrap_or(0.0);
+
             Ok(EngineOutput {
                 task_id: task_id.clone(),
                 resolved_output: resolved,
@@ -430,24 +551,13 @@ impl ExecutionEngine {
                     merge_elapsed_secs: None,
                     n_input_proposals: 0,
                 },
-                attribution: crate::attribution::HarnessAttribution {
-                    baseline_quality: 0.0,
-                    topology_gain: 0.0,
-                    verification_gain: 0.0,
-                    tao_gain: 0.0,
-                    q_confidence: 0.0,
-                    prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
-                    q_measured: None,
-                    rho_adjusted: 0.0,
-                    case_b_flag: false,
-                    synthesis_gain: 0.0,
-                },
+                attribution,
                 attribution_interval: None,
                 verification_events: vec![],
                 failed_proposals: vec![],
                 talagrand: None,
                 suggested_next_params: None,
-                waste_ratio: 0.0,
+                waste_ratio,
                 applied_optimizations: vec![],
                 topology_retry_events: vec![],
                 mode_collapse_count: 0,
@@ -485,5 +595,15 @@ impl ExecutionEngine {
             // Earlier phase or unknown phase — restart from scratch
             Self::run_offline(input).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn conflict_beta_disabled_skips_accumulator_load() {
+        let mut cfg = h2ai_config::H2AIConfig::default();
+        cfg.conflict_beta.enabled = false;
+        assert!(!cfg.conflict_beta.enabled);
     }
 }

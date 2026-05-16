@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use futures::future::join_all;
 use h2ai_config::prompts::VERIFICATION_TASK;
+use h2ai_config::JudgePanelConfig;
 use h2ai_constraints::eval::eval_sync;
 use h2ai_constraints::types::{
     aggregate_compliance_score, ComplianceResult, CompositeOp, ConstraintDoc, ConstraintPredicate,
@@ -9,11 +10,14 @@ use h2ai_constraints::types::{
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{ConstraintViolation, ProposalEvent};
+use h2ai_types::identity::ExplorerId;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::judge_panel::{aggregate_votes, ConstraintVerdict, JudgePanel};
 
 /// Per-task evaluation cache: maps constraint_id → Vec<(proposal_text, score)>.
 /// Shared across concurrent explorer evaluations via DashMap (no blocking mutex).
@@ -221,6 +225,170 @@ impl VerificationPhase {
             failed: output.failed,
             comparison_events,
         }
+    }
+
+    /// Multi-variant panel evaluation. Fires all panel variants in parallel per constraint,
+    /// aggregates votes into `ConstraintVerdict`. Returns standard `VerificationOutput`
+    /// plus a map of `ExplorerId → Vec<ConstraintId>` for uncertain constraints.
+    pub async fn run_with_panel(
+        input: VerificationInput<'_>,
+        panel: &JudgePanel<'_>,
+        cfg: &JudgePanelConfig,
+    ) -> (
+        VerificationOutput,
+        std::collections::HashMap<ExplorerId, Vec<String>>,
+    ) {
+        // Single-variant shortcut: delegate to run() with empty uncertain map.
+        if panel.variants.len() == 1 {
+            let out = Self::run(input).await;
+            return (out, std::collections::HashMap::new());
+        }
+
+        // --- Multi-variant path ---
+        let corpus = input.constraint_corpus;
+        let threshold = input.config.threshold;
+        let rubric = input.config.rubric.clone();
+        let base_sp = input.config.evaluator_system_prompt.clone();
+        let tau = input.config.evaluator_tau;
+        let max_tokens = input.config.evaluator_max_tokens;
+        let consensus_passes = input.consensus_passes;
+        let uncertainty_weight = cfg.uncertainty_weight;
+
+        let mut passed = Vec::new();
+        let mut failed = Vec::new();
+        let mut uncertain_map: std::collections::HashMap<ExplorerId, Vec<String>> =
+            std::collections::HashMap::new();
+
+        // Evaluate each proposal independently.
+        for proposal in input.proposals {
+            // Pre-compute per-variant system prompts and caches.
+            let variant_contexts: Vec<(String, EvalCache)> = panel.variants.iter().map(|variant| {
+                let persona_prefix = variant.persona.system_prompt_prefix();
+                let sp = if persona_prefix.is_empty() {
+                    base_sp.clone()
+                } else {
+                    format!("{persona_prefix}\n\n{base_sp}")
+                };
+                (sp, new_eval_cache())
+            }).collect();
+
+            // Fire all variants in parallel per proposal.
+            let variant_results: Vec<Vec<ComplianceResult>> = join_all(
+                panel.variants.iter().zip(variant_contexts.iter()).map(|(variant, (sp, cache))| {
+                    Self::eval_all(
+                        corpus,
+                        &proposal.raw_output,
+                        variant.adapter,
+                        &rubric,
+                        sp,
+                        tau,
+                        max_tokens,
+                        cache,
+                        consensus_passes,
+                    )
+                }),
+            )
+            .await
+            .into_iter()
+            .map(|(results, _)| results)
+            .collect();
+
+            // For each constraint index, aggregate votes across variants.
+            let n_constraints = variant_results.first().map(|r| r.len()).unwrap_or(0);
+            let mut final_results: Vec<ComplianceResult> = Vec::with_capacity(n_constraints);
+            let mut uncertain_ids: Vec<String> = Vec::new();
+            let mut hard_fail = false;
+
+            for ci in 0..n_constraints {
+                // Compute per-variant pass/fail vote using hard_passes() for Hard constraints.
+                let mut votes_pass = 0usize;
+                let mut votes_fail = 0usize;
+                let mut score_sum = 0.0f64;
+
+                for vr in &variant_results {
+                    let r = &vr[ci];
+                    score_sum += r.score;
+                    if r.hard_passes() {
+                        votes_pass += 1;
+                    } else {
+                        votes_fail += 1;
+                    }
+                }
+
+                let avg_score = score_sum / variant_results.len() as f64;
+
+                // Use severity + remediation_hint from the first variant (consistent across all).
+                let ref_result = &variant_results[0][ci];
+                let verdict = aggregate_votes(
+                    votes_pass,
+                    votes_fail,
+                    &panel.diversity_kind,
+                    cfg.quorum_fraction,
+                );
+
+                let final_score = match &verdict {
+                    ConstraintVerdict::Pass => avg_score,
+                    ConstraintVerdict::Fail => {
+                        // Hard Fail: score set below Hard threshold to guarantee hard_passes() = false.
+                        match &ref_result.severity {
+                            ConstraintSeverity::Hard { threshold: ht } => (ht - 0.01).max(0.0),
+                            _ => 0.0,
+                        }
+                    }
+                    ConstraintVerdict::Uncertain { .. } => {
+                        // Apply uncertainty weight; track as uncertain.
+                        uncertain_ids.push(ref_result.constraint_id.clone());
+                        avg_score * uncertainty_weight
+                    }
+                };
+
+                // Track whether this constraint is a hard non-uncertain fail.
+                let is_hard_fail = matches!(verdict, ConstraintVerdict::Fail)
+                    && matches!(ref_result.severity, ConstraintSeverity::Hard { .. });
+                if is_hard_fail {
+                    hard_fail = true;
+                }
+
+                final_results.push(ComplianceResult {
+                    constraint_id: ref_result.constraint_id.clone(),
+                    score: final_score,
+                    severity: ref_result.severity.clone(),
+                    remediation_hint: ref_result.remediation_hint.clone(),
+                });
+            }
+
+            if !uncertain_ids.is_empty() {
+                uncertain_map.insert(proposal.explorer_id.clone(), uncertain_ids);
+            }
+
+            // Route proposal: hard non-uncertain Fail → failed; otherwise apply threshold check.
+            let soft_score = aggregate_compliance_score(&final_results);
+            let hard_gate = !hard_fail && final_results.iter().all(|r| r.hard_passes());
+            let overall = if hard_gate { soft_score } else { 0.0 };
+
+            if overall >= threshold {
+                passed.push((proposal, final_results, false));
+            } else {
+                let violations: Vec<ConstraintViolation> = final_results
+                    .iter()
+                    .filter(|r| !r.hard_passes() || r.score < threshold)
+                    .map(|r| ConstraintViolation {
+                        constraint_id: r.constraint_id.clone(),
+                        score: r.score,
+                        severity_label: severity_label(&r.severity),
+                        remediation_hint: r.remediation_hint.clone(),
+                    })
+                    .collect();
+                failed.push((proposal, final_results, violations, false));
+            }
+        }
+
+        let output = VerificationOutput {
+            passed,
+            failed,
+            comparison_events: vec![],
+        };
+        (output, uncertain_map)
     }
 
     /// Score proposals numerically without pass/fail gating.

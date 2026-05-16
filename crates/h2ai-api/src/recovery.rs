@@ -4,7 +4,7 @@ use h2ai_orchestrator::task_store::{TaskPhase, TaskState};
 use h2ai_types::checkpoint::TaskCheckpoint;
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
 use h2ai_types::events::{H2AIEvent, MergeResolvedEvent};
-use h2ai_types::identity::{TaskId, TenantId};
+use h2ai_types::identity::TaskId;
 use h2ai_types::manifest::TaskManifest;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -165,6 +165,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
         let auditor = state.auditor_adapter.clone();
         let registry = state.registry();
         let cfg = state.cfg.clone();
+        let tenant_id = manifest.tenant_id.clone();
 
         let input = EngineInput {
             task_id: task_id.clone(),
@@ -195,7 +196,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             srani_count: 0,
             srani_grounding_chain: None,
             nats_raw: None,
-            tenant_id: TenantId::default_tenant(),
+            tenant_id,
             nats: None,
         };
 

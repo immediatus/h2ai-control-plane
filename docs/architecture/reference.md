@@ -116,7 +116,7 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `Proposal` | `ProposalEvent` | 3 |
 | `ProposalFailed` | `ProposalFailedEvent` | 3 |
 | `GenerationPhaseCompleted` | `GenerationPhaseCompletedEvent` | 3 |
-| `TaoIteration` | `TaoIterationEvent` | 3 |
+| `TaoIteration` | `TaoIterationEvent` | 3 — `tool_calls` omitted when empty |
 | `Validation` | `ValidationEvent` | 3.5 |
 | `VerificationScored` | `VerificationScoredEvent` | 3.5 |
 | `BranchPruned` | `BranchPrunedEvent` | 3.5 / 4 |
@@ -145,6 +145,7 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `PendingClarification` | `PendingClarificationEvent` | 4.5 |
 | `OproTriggered` | `OproTriggeredEvent` | post-merge (async) |
 | `PromptVariantPromoted` | `PromptVariantPromotedEvent` | post-merge (async) |
+| `ConstraintAmbiguity` | `ConstraintAmbiguityEvent` | 3.5 (corpus quality signal) |
 
 ### Key payloads
 
@@ -160,9 +161,9 @@ struct CalibrationCompletedEvent {
     timestamp: DateTime<Utc>,
     pairwise_beta: Option<f64>,                     // β₀ from pairwise CG timing loop
     cg_mode: CgMode,                                // ConstraintProfile | EmbeddingCosine
-    adapter_families: Vec<String>,
-    explorer_verification_family_match: bool,       // judge bias warning
-    single_family_warning: bool,                    // BFT diversity warning
+    adapter_families: Vec<String>,                   // populated from actual adapter registry
+    explorer_verification_family_match: bool,        // true when cross-family panel is active
+    single_family_warning: bool,                     // true when all calibration adapters share one family
     n_max_lo: f64,                                  // n_max(CG_mean − cg_std_dev)
     n_max_hi: f64,                                  // n_max(CG_mean + cg_std_dev)
     n_eff_cosine_prior: f64,                        // pool diversity prior
@@ -399,6 +400,24 @@ struct PendingClarificationEvent {
 }
 ```
 
+#### ConstraintAmbiguityEvent
+
+Emitted (fire-and-forget, `tracing::info!` target `"h2ai.engine"`) when ≥ `ambiguity_threshold` proposals in a wave return uncertain judge panel votes for the same constraint. Signals a constraint that is semantically underdetermined — the panel cannot reach a confident verdict because the constraint text is ambiguous. This is a corpus quality signal, not a task failure.
+
+```rust
+struct ConstraintAmbiguityEvent {
+    task_id: TaskId,
+    wave: u32,
+    ambiguous_constraints: Vec<String>,          // constraint IDs above threshold
+    uncertain_counts: HashMap<String, usize>,    // per-constraint uncertain vote counts
+    timestamp: DateTime<Utc>,
+}
+```
+
+**Operational use:** when `ambiguous_constraints` is non-empty across multiple tasks for the same constraint ID, the constraint definition should be reviewed and tightened. The `uncertain_counts` field shows how many proposals in that wave triggered disagreement.
+
+---
+
 #### MergeResolvedEvent (updated field)
 
 `MergeResolvedEvent` now carries `oracle_gate_passed: Option<bool>`:
@@ -501,7 +520,7 @@ The TOML key is the lower-snake-case Rust field name. The env-var key is the upp
 | `synthesis_critique_max_tokens` | `1024` | Critique stage budget. |
 | `synthesis_max_tokens` | `2048` | Synthesis stage budget. |
 
-### Correlated Hallucination and SRANI (C1 / GAP-C1)
+### Correlated Hallucination and SRANI
 
 | Field | Default | Purpose |
 |---|---|---|
@@ -606,6 +625,8 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `H2AI_CONSTRAINT_PAYLOADS` | Object Store | `{id}@{version}` | — | Full predicate payloads for non-Static constraints (LlmJudge, Oracle). Fetched lazily at Phase 4. |
 | `H2AI_CHECKPOINT_{tenant_id}` | KV store | `task_id` string | 7 days | `TaskReasoningCheckpoint` (zstd-compressed). Per-tenant; bucket created on first task for each tenant. |
 | `H2AI_META_{tenant_id}` | KV store | `task_id` string | no TTL | `TaskMetaState` projections (uncompressed JSON). Per-tenant; consumed by InductionScheduler (Phase 2). |
+| `H2AI_MEMORY_{tenant_id}` | KV store | `"latest"` string | no TTL | `TenantMemoryStore` distilled from meta-state (Phase 2). Per-tenant; written by InductionScheduler. |
+| `H2AI_CONFLICT_{tenant_id}` | KV store | `"accumulator"` string | no TTL | `ConflictRateAccumulator` — rolling per-task conflict rates for `beta_quality` derivation. |
 
 `TaskCheckpoint` schema (written after each phase boundary):
 
@@ -638,21 +659,35 @@ struct ConstraintSnapshot {
 ```toml
 [state]
 # All NATS bucket and stream names — override to namespace multi-tenant deployments.
-calibration_bucket = "H2AI_CALIBRATION"
-snapshots_bucket = "H2AI_SNAPSHOTS"
-agent_memory_bucket = "H2AI_AGENT_MEMORY"
-estimator_bucket = "H2AI_ESTIMATOR"
-shadow_auditor_bucket = "H2AI_SHADOW_AUDITOR"
-approvals_bucket = "H2AI_APPROVALS"
-prompt_variants_bucket = "H2AI_PROMPT_VARIANTS"
-tasks_stream = "H2AI_TASKS"
+calibration_bucket             = "H2AI_CALIBRATION"
+snapshots_bucket               = "H2AI_SNAPSHOTS"
+task_checkpoints_bucket        = "H2AI_TASK_CHECKPOINTS"
+checkpoint_payloads_bucket     = "H2AI_CHECKPOINT_PAYLOADS"
+oracle_calibration_bucket      = "H2AI_ORACLE_CALIBRATION"
+estimator_bucket               = "H2AI_ESTIMATOR"
+sessions_bucket                = "H2AI_SESSIONS"
+audit_shadow_bucket            = "H2AI_AUDIT_SHADOW"
+approvals_bucket               = "H2AI_APPROVALS"
+prompt_variants_bucket         = "H2AI_PROMPT_VARIANTS"
+constraint_wiki_bucket         = "H2AI_CONSTRAINT_WIKI"
+constraint_meta_bucket         = "H2AI_CONSTRAINT_META"
+constraint_payloads_bucket     = "H2AI_CONSTRAINT_PAYLOADS"
+
+# Per-tenant bucket prefixes — actual bucket: {prefix}_{tenant_id}
+reasoning_checkpoint_bucket_prefix = "H2AI_CHECKPOINT"  # TaskReasoningCheckpoint (7d TTL)
+task_meta_state_bucket_prefix      = "H2AI_META"         # TaskMetaState projections
+tenant_memory_bucket_prefix        = "H2AI_MEMORY"       # TenantMemoryStore (Phase 2)
+conflict_beta_bucket_prefix        = "H2AI_CONFLICT"     # ConflictRateAccumulator
+
+# JetStream stream names
+tasks_stream     = "H2AI_TASKS"
 telemetry_stream = "H2AI_TELEMETRY"
-results_stream = "H2AI_RESULTS"
+results_stream   = "H2AI_RESULTS"
 
 [state.delta]
-enabled = true
-base_interval = 10          # store a full base every N checkpoints
-cache_ttl_secs = 60
+enabled           = true
+base_interval     = 10    # store a full base every N checkpoints
+cache_ttl_secs    = 60
 cache_max_entries = 200
 ```
 
@@ -670,6 +705,7 @@ cache_max_entries = 200
 ```toml
 [reasoning_memory]
 enabled                     = false   # all checkpoint writes skipped when false
+strict_audit_checkpoint     = false   # when true, a checkpoint write failure aborts the task
 induction_batch_size        = 10
 induction_max_interval_secs = 86400
 induction_max_tasks_per_run = 50
@@ -681,6 +717,7 @@ max_archetype_penalty       = 0.20
 | Field | Default | Purpose |
 |---|---|---|
 | `enabled` | `false` | Master switch. When `false`, all `TaskReasoningCheckpoint` and `TaskMetaState` writes are skipped; no NATS buckets are created. |
+| `strict_audit_checkpoint` | `false` | When `true`, a `put_reasoning_checkpoint` failure propagates as `EngineError::CheckpointWriteFailed` and aborts the task. When `false` (default), write failures emit a warning and the task continues. Use `true` for regulated deployments that require a complete audit trail. |
 | `induction_batch_size` | `10` | Number of `TaskMetaState` records consumed per `InductionScheduler` batch run (Phase 2). |
 | `induction_max_interval_secs` | `86400` | Maximum interval between scheduled induction runs (Phase 2). |
 | `induction_max_tasks_per_run` | `50` | Hard cap on tasks processed in a single induction run (Phase 2). |
@@ -692,8 +729,155 @@ Per-tenant NATS KV bucket name prefixes are configured under `[state]`:
 
 | Field | Default | Purpose |
 |---|---|---|
-| `state.reasoning_checkpoint_bucket_prefix` | `"H2AI_CHECKPOINT"` | Prefix for per-tenant reasoning checkpoint buckets (`{prefix}_{tenant_id}`). |
-| `state.task_meta_state_bucket_prefix` | `"H2AI_META"` | Prefix for per-tenant meta-state buckets (`{prefix}_{tenant_id}`). |
+| `state.reasoning_checkpoint_bucket_prefix` | `"H2AI_CHECKPOINT"` | Prefix for per-tenant reasoning checkpoint buckets (`{prefix}_{tenant_id}`). 7-day TTL. |
+| `state.task_meta_state_bucket_prefix` | `"H2AI_META"` | Prefix for per-tenant meta-state buckets (`{prefix}_{tenant_id}`). No TTL. |
+| `state.tenant_memory_bucket_prefix` | `"H2AI_MEMORY"` | Prefix for per-tenant distilled memory store (`{prefix}_{tenant_id}`). Phase 2. No TTL. |
+| `state.conflict_beta_bucket_prefix` | `"H2AI_CONFLICT"` | Prefix for per-tenant conflict-rate accumulators (`{prefix}_{tenant_id}`). No TTL. |
+
+**`TaskReasoningCheckpoint` schema and phase lifecycle:**
+
+The engine writes progressive checkpoints at each gate. All writes are fire-and-forget (non-fatal) unless `strict_audit_checkpoint = true`.
+
+```rust
+struct TaskReasoningCheckpoint {
+    task_id: TaskId,
+    tenant_id: TenantId,
+    created_at: u64,               // Unix seconds
+    last_updated: u64,             // Unix seconds; updated on every write
+    phase: ReasoningCheckpointPhase,
+
+    // Set at task start (phase = Created)
+    constraint_tags: Vec<String>,
+    domain: Option<String>,
+    task_quadrant: Option<TaskQuadrant>,
+    system_context_with_rubric_hash: u64,
+    constraint_corpus_fingerprint: u64,
+
+    // Populated after thinking loop (phase >= ThinkingDone)
+    shared_understanding: Option<String>,
+    tensions: Option<Vec<String>>,
+    archetype_selection: Option<Vec<ArchetypeSelection>>,  // name + confidence
+    thinking_iterations: Option<u32>,
+
+    // Appended after each adapter wave (phase = WaveCompleted(k), 0-based)
+    completed_waves: Vec<CompletedWave>,   // wave_index + per-adapter output_hash + survived
+
+    // Populated at resolution (phase = Resolved)
+    retry_count: u32,
+    retry_context_that_resolved: Option<String>,
+    tried_topologies: Vec<TopologyKind>,
+    tau_values_that_converged: Option<Vec<f64>>,
+    resolved_attribution_json: Option<String>,  // HarnessAttribution serialized as JSON
+    resolved_waste_ratio: Option<f64>,
+}
+```
+
+Phase transition sequence:
+
+| Phase | Written when | Key fields added |
+|---|---|---|
+| `Created` | Task accepted, before any LLM call | `constraint_tags`, `domain`, `task_quadrant`, hash fingerprints |
+| `ThinkingDone` | Thinking loop completes | `shared_understanding`, `tensions`, `archetype_selection`, `thinking_iterations` |
+| `WaveCompleted(k)` | Each adapter wave `k` finishes (0-based) | `completed_waves[k]` with per-adapter `output_hash` and `survived` flag |
+| `MergeDone` | Merge phase output written | (no new fields; phase marker only) |
+| `Resolved` | Task fully resolved, `TaskMetaState` projected | `retry_count`, `tried_topologies`, `resolved_attribution_json`, `resolved_waste_ratio` |
+
+`AdapterWaveOutput` stores only a xxHash64 of the output text — full text is not stored to keep checkpoint size small. `resolved_attribution_json` and `resolved_waste_ratio` are written at resolution so that `run_from_checkpoint` can hydrate a complete `EngineOutput` without re-running inference, preventing zeroed attribution from corrupting downstream analytics.
+
+**`TaskMetaState` projection:**
+
+At resolution, `TaskReasoningCheckpoint::into_meta_state()` projects the checkpoint into an immutable `TaskMetaState` (drops wave-level detail; keeps reasoning artifacts and retrieval index). Stored in `H2AI_META_{tenant_id}` with no TTL. Read by `InductionScheduler` for distillation cycles (Phase 2).
+
+**`run_from_checkpoint` recovery:**
+
+When the engine is invoked with a task that already has a `TaskReasoningCheckpoint` in NATS, it loads the checkpoint and skips phases already completed:
+
+- Phase ≥ `ThinkingDone` → skip thinking loop; restore `shared_understanding`, `tensions`, `archetype_selection`
+- Phase ≥ `WaveCompleted(k)` → skip adapter waves 0..=k; resume from wave k+1
+- Phase ≥ `MergeDone` → skip merge; go directly to resolution
+- Phase = `Resolved` → deserialize `resolved_attribution_json` and restore `resolved_waste_ratio`; return the cached `EngineOutput` without any LLM calls
+
+Phase ordering is enforced by `ReasoningCheckpointPhase::is_at_least()` using a total rank: `Created(0) < ThinkingDone(1) < WaveCompleted(k) = 2+k < MergeDone(MAX-1) < Resolved(MAX)`.
+
+### Multi-Variant Judge Panel
+
+Phase 3.5 verification now uses a `JudgePanel` instead of a single `LlmJudge` adapter.
+
+**Panel construction** (in `phases/verify.rs`):
+- If ≥2 distinct adapter families are present across `verification_adapter` + `explorer_adapters`: one cross-family variant per family, `PanelDiversityKind::CrossFamily`, cap 3 total.
+- If 1 family: 3 persona variants (Literal, Contextual, Skeptical) at temperatures [0.0, 0.2, 0.4], `PanelDiversityKind::PersonaOnly`.
+
+**Verdict aggregation** per constraint:
+- `CrossFamily`: supermajority (configurable `quorum_fraction`, default 0.67) → Pass / Fail / Uncertain.
+- `PersonaOnly`: unanimous agreement → Pass / Fail; any split → Uncertain.
+
+**Uncertain proposals**: pass with `score × uncertainty_weight` (default 0.7) on uncertain constraints. Not pruned. Hard-fail gate skips uncertain constraints.
+
+**`ConstraintAmbiguityEvent`**: emitted (fire-and-forget, tracing log) when ≥`ambiguity_threshold` (default 2) proposals in a wave show uncertain votes for the same constraint. Signals corpus quality issue.
+
+**Config**: `[judge_panel]` section in `reference.toml`.
+
+**Research**: PoLL (2404.18796), CARE (2603.00039), Prosa (2605.01630), Logarithmic Scores (2604.00477).
+
+---
+
+### Conflict-Rate β
+
+```toml
+[conflict_beta]
+enabled                  = true
+max_samples              = 100
+halflife_secs            = 604800   # 7 days — same halflife as CG samples
+min_samples_for_override = 5        # production tasks needed before rolling overrides floor
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `true` | Master switch. When `false`, no conflict rates are computed or stored; `beta_quality` remains `None` and `beta_eff` falls back to the latency-based proxy. |
+| `max_samples` | `100` | Maximum number of per-task conflict rate samples retained in the rolling window. Oldest samples are evicted when cap is reached. |
+| `halflife_secs` | `604800` | Exponential decay halflife (7 days). Samples older than 7 days contribute at 50% weight; 14-day-old samples at 25%. Matches `CG_HALFLIFE_SECS`. |
+| `min_samples_for_override` | `5` | Rolling window must contain at least this many production task samples before it overrides the calibration floor. Prevents noisy early samples from corrupting N_max. |
+
+Per-tenant accumulator bucket prefix is configured under `[state]`:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `state.conflict_beta_bucket_prefix` | `"H2AI_CONFLICT"` | Prefix for per-tenant conflict-rate accumulator buckets (`{prefix}_{tenant_id}`). No TTL — long-lived tenant record. |
+
+**`ConflictRateAccumulator` schema:**
+
+```rust
+struct ConflictRateAccumulator {
+    tenant_id: TenantId,
+    calibration_floor: f64,           // from Phase B — never overwritten
+    samples: Vec<ConflictRateSample>, // capped at max_samples
+    beta_quality: f64,                // cached temporal-decay weighted mean
+    total_tasks_seen: u64,
+    last_updated: u64,                // Unix seconds
+}
+
+struct ConflictRateSample {
+    conflict_rate: f64,   // mean pairwise Hamming(v_i, v_j)/K ∈ [1e-6, 1.0]
+    n_adapters: u32,
+    timestamp: u64,       // Unix seconds — required for halflife decay
+}
+```
+
+**Data flow:**
+
+1. Phase B calibration → `compute_conflict_rate(adapter_outputs, corpus)` → `CalibrationCompletedEvent.beta_quality` → written as `calibration_floor` to `H2AI_CONFLICT_{tenant}`
+2. Production task verify phase → conflict rate from raw proposal texts → `WaveEvents.conflict_rate`
+3. Engine after each wave → `ConflictRateAccumulator.push_sample()` → write to NATS (fire-and-forget)
+4. Engine task start → load accumulator → if `total_tasks_seen >= min_samples_for_override`: override `complexity_out.n_max_ceiling` using `beta_quality`
+
+**`beta_eff()` dispatch:**
+
+```
+if CoherencyCoefficients.beta_quality.is_some():
+    beta_eff = beta_quality          # direct measurement — no CG adjustment
+else:
+    beta_eff = beta_base × (1−CG)   # latency-based proxy (legacy fallback)
+```
 
 ### Oracle Gate
 

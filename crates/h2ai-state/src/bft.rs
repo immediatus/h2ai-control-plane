@@ -23,7 +23,7 @@
 //! When `adapter` is `Some(...)`, uses semantic Jaccard (synonyms score as close).
 //! When `adapter` is `None`, falls back to token Jaccard (deterministic, no I/O).
 
-use h2ai_context::embedding::semantic_jaccard;
+use h2ai_context::embedding::cosine_similarity;
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::events::ProposalEvent;
 use std::cmp::Ordering;
@@ -84,19 +84,38 @@ impl ConsensusMedian {
         let n = proposals.len();
         let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
 
-        // Compute all unique pairwise similarities concurrently.
-        // At n ≤ 9 this is at most 36 calls; join_all parallelises them.
+        // Pre-embed every proposal once (O(N) calls) then compute pair similarities
+        // from cached vectors (pure dot products). The naive pair loop would call
+        // embed 2×N(N-1)/2 times — for N=9 that is 72 redundant ONNX passes.
+        // EmbeddingModel::embed takes &self so it cannot be moved into spawn_blocking;
+        // at N≤9 (max 9 ONNX passes) the bounded sync section is acceptable.
         let pairs: Vec<(usize, usize)> = (0..n)
             .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
             .collect();
 
-        let pair_sims: Vec<f64> = pairs
-            .iter()
-            .map(|&(i, j)| match embedding_model {
-                Some(m) => semantic_jaccard(outputs[i], outputs[j], Some(m)),
-                None => token_jaccard(outputs[i], outputs[j]),
-            })
-            .collect();
+        let pair_sims: Vec<f64> = match embedding_model {
+            Some(m) => {
+                let embeddings: Vec<Vec<f32>> = outputs.iter().map(|s| m.embed(s)).collect();
+                pairs
+                    .iter()
+                    .map(|&(i, j)| {
+                        if embeddings[i].is_empty() || embeddings[j].is_empty() {
+                            if outputs[i] == outputs[j] {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            cosine_similarity(&embeddings[i], &embeddings[j]).max(0.0)
+                        }
+                    })
+                    .collect()
+            }
+            None => pairs
+                .iter()
+                .map(|&(i, j)| token_jaccard(outputs[i], outputs[j]))
+                .collect(),
+        };
 
         // Populate symmetric similarity matrix.
         let mut sims = vec![vec![1.0f64; n]; n]; // diagonal = 1.0 (self-similarity)

@@ -57,6 +57,7 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | Problem | Standard Approach | H2AI Approach |
 |---|---|---|
 | Hallucination amplification | Hope the model self-corrects | Auditor node (τ→0) mathematically blocks propagation |
+| Judge self-preference bias | Same model judges itself | `JudgePanel` — cross-family verification panel; supermajority aggregation (≥2 families) or unanimous persona-diversity rule (single family); `ConstraintAmbiguityEvent` fires when corpus rubric is ambiguous |
 | State lives in the model | LLM context window (lossy) | Orchestrator owns state; models are stateless `f(ctx, τ) → text`. CRDTs track **constraint-satisfaction fingerprints** (metadata), never LLM text. Text is reconciled by the synthesis LLM. |
 | Safety is probabilistic | "Don't do X" in the prompt | Topological interlocks — invalid output cannot reach the human by graph construction |
 | More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
@@ -290,7 +291,8 @@ OproTriggeredEvent                 → OPRO cycle started: j_eff_ema fell below 
 PromptVariantPromotedEvent         → Thompson bandit promoted best variant as new prompt default
 TaskFailedEvent                    → retries exhausted, full diagnostic payload
 TaoIterationEvent                  → TAO loop turn result: tool_calls[] (tool, input_json, output, iteration) + total_token_cost
-VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5)
+VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5); panel diversity_kind + quorum recorded
+ConstraintAmbiguityEvent           → ≥ambiguity_threshold proposals produced uncertain votes on the same constraint; corpus quality signal
 TaskAttributionEvent               → q_confidence decomposition: baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain
 PendingApprovalEvent               → HITL gate fired; proposed_output held for review; risk_level (Medium|High); timeout_at_ms
 ApprovalResolvedEvent              → operator submitted POST /tasks/{id}/approve; approved bool + operator_id recorded
@@ -318,14 +320,14 @@ AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable 
 
 | Crate | Responsibility |
 |---|---|
-| `h2ai-types` | Pure types — all events, manifests, USL physics structs, `IComputeAdapter` trait; zero I/O deps |
+| `h2ai-types` | Pure types — all events, manifests, USL physics structs, `IComputeAdapter` trait, `AdapterFamily`, `JudgePersona`, `PanelDiversityKind`; zero I/O deps |
 | `h2ai-config` | `H2AIConfig` — physics thresholds, role defaults, all tunable parameters |
 | `h2ai-constraints` | `ConstraintDoc` / `ConstraintPredicate` type system; Hard/Soft/Advisory severity; `compliance = hard_gate × soft_score` |
 | `h2ai-nats` | NATS subject constants + scoped NKey provisioning per `task_id` |
 | `h2ai-state` | CRDT semilattice, NATS JetStream I/O, checkpoint delta encoding (JSON Patch RFC 6902), per-tenant KV buckets |
 | `h2ai-context` | Dark Knowledge Compiler — assembles immutable `system_context` from constraint corpus + task manifest |
 | `h2ai-autonomic` | Calibration harness, USL solver (α/β/CG → N_max), eigenvalue computation (spawn_blocking) |
-| `h2ai-orchestrator` | MAPE-K engine (`engine.rs` + `ExecutionPipeline` + `MapeKController`), all 16 phase modules, compound + scheduling engines |
+| `h2ai-orchestrator` | MAPE-K engine (`engine.rs` + `ExecutionPipeline` + `MapeKController`), all 16 phase modules, compound + scheduling engines, `JudgePanel` cross-family verification aggregation |
 | `h2ai-provisioner` | `AgentProvider` — container pool management, capability filter, cost-tier ceiling, least-loaded scheduling |
 | `h2ai-planner` | `PlanningEngine::decompose` + `PlanReviewer::evaluate` — LLM-driven task decomposition with structural cycle/empty checks |
 | `h2ai-memory` | `MemoryProvider` — context history assembly; all context lives in the control plane, edge agents are stateless |

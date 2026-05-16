@@ -458,6 +458,7 @@ impl<'a> ExecutionPipeline<'a> {
         );
 
         let turn1_proposals_for_scoring = verify_out.turn1_proposals_for_scoring.clone();
+        let conflict_rate_this_wave = verify_out.conflict_rate;
 
         // ── Phase 4: Auditor Gate ────────────────────────────────────────────────
         let audit_out = phase!(
@@ -554,6 +555,7 @@ impl<'a> ExecutionPipeline<'a> {
         // Accumulate pruned into wave events for coherence tracking by the controller.
         // (MapeKController.observe() appends these to all_pruned.)
         events.pruned_events.extend(pruned.iter().cloned());
+        events.conflict_rate = conflict_rate_this_wave;
 
         // ── Phase 5a: Synthesis (optional) ──────────────────────────────────────
         let synthesis_out = phase!(

@@ -346,6 +346,7 @@ mod innovation1_tests {
             n_eff_cosine_prior: 0.0,
             calibration_quality: Default::default(),
             calibration_source: CalibrationSource::Measured,
+            beta_quality: None,
         }
     }
 
