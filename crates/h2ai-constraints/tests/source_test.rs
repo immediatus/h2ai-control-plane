@@ -15,8 +15,8 @@ fn simple_yaml(id: &str, pass: &str) -> String {
     )
 }
 
-fn make_resolver(dir: &TempDir) -> ConstraintResolver {
-    let (index, store) = FsConstraintStore::load(dir.path()).unwrap();
+async fn make_resolver(dir: &TempDir) -> ConstraintResolver {
+    let (index, store) = FsConstraintStore::load(dir.path()).await.unwrap();
     ConstraintResolver::new(Arc::new(index), Arc::new(store))
 }
 
@@ -29,7 +29,7 @@ async fn fs_source_resolve_by_explicit_id() {
         &simple_yaml("ADR-001", "Cites a source reference"),
     );
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&["ADR-001".to_string()], &[], "").await;
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "ADR-001");
@@ -44,7 +44,7 @@ async fn fs_source_resolve_by_tag() {
         "id: GDPR-001\ntitle: Data Minimization\nseverity: hard\ndomains:\n  - eu_data\ncriteria:\n  pass: Minimizes personal data\n  fail: Over-collects\n",
     );
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&[], &["eu_data".to_string()], "").await;
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "GDPR-001");
@@ -56,7 +56,7 @@ async fn fs_source_empty_filters_returns_empty() {
     write_yaml(&dir, "ADR-001", &simple_yaml("ADR-001", "Rule one"));
     write_yaml(&dir, "ADR-002", &simple_yaml("ADR-002", "Rule two"));
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&[], &[], "").await;
     assert!(
         docs.is_empty(),
@@ -69,7 +69,7 @@ async fn fs_source_unknown_tag_returns_empty() {
     let dir = TempDir::new().unwrap();
     write_yaml(&dir, "ADR-001", &simple_yaml("ADR-001", "Rule one"));
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&[], &["eu_data".to_string()], "").await;
     assert!(
         docs.is_empty(),
@@ -92,7 +92,7 @@ async fn fs_source_tags_and_bm25_union() {
     )
     .unwrap();
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver
         .resolve(
             &[],
@@ -120,7 +120,7 @@ async fn fs_source_load_payload_llm_judge() {
         "id: ADR-002\ntitle: Auth Token\nseverity: hard\ncriteria:\n  pass: Uses JWT authentication token\n  fail: Uses sessions\n",
     );
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&["ADR-002".to_string()], &[], "").await;
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "ADR-002");
@@ -133,7 +133,7 @@ async fn fs_source_load_payload_llm_judge() {
 #[tokio::test]
 async fn fs_source_unknown_id_returns_empty() {
     let dir = TempDir::new().unwrap();
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver
         .resolve(&["NONEXISTENT".to_string()], &[], "")
         .await;
@@ -149,7 +149,7 @@ async fn fs_source_checks_embedded_in_rubric() {
     )
     .unwrap();
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&["C-CHECKS".to_string()], &[], "").await;
     assert_eq!(docs.len(), 1);
     let rubric = match &docs[0].predicate {
@@ -180,7 +180,7 @@ async fn fs_source_no_checks_rubric_unaffected() {
         &simple_yaml("C-PLAIN", "Must be stateless"),
     );
 
-    let resolver = make_resolver(&dir);
+    let resolver = make_resolver(&dir).await;
     let docs = resolver.resolve(&["C-PLAIN".to_string()], &[], "").await;
     assert_eq!(docs.len(), 1);
     let rubric = match &docs[0].predicate {

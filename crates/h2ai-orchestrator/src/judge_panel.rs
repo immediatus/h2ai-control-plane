@@ -89,7 +89,10 @@ impl<'a> JudgePanel<'a> {
 pub enum ConstraintVerdict {
     Pass,
     Fail,
-    Uncertain { votes_pass: usize, votes_fail: usize },
+    Uncertain {
+        votes_pass: usize,
+        votes_fail: usize,
+    },
 }
 
 /// Aggregate per-constraint votes into a `ConstraintVerdict`.

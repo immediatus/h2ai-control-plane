@@ -97,8 +97,8 @@ impl FsConstraintStore {
     }
 
     /// Load a corpus directory and build both index and store.
-    pub fn load(dir: impl AsRef<Path>) -> Result<(FsConstraintIndex, Self), std::io::Error> {
-        let docs = load_corpus(dir)?;
+    pub async fn load(dir: impl AsRef<Path>) -> Result<(FsConstraintIndex, Self), std::io::Error> {
+        let docs = load_corpus(dir).await?;
         let index = FsConstraintIndex::from_docs(&docs);
         let store = Self::from_docs(docs);
         Ok((index, store))

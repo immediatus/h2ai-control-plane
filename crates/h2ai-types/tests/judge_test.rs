@@ -1,5 +1,5 @@
-use h2ai_types::judge::{JudgePersona, PanelDiversityKind};
 use h2ai_types::config::{AdapterFamily, AdapterKind};
+use h2ai_types::judge::{JudgePersona, PanelDiversityKind};
 use std::path::PathBuf;
 
 #[test]

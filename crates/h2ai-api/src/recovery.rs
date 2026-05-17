@@ -134,7 +134,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
         };
 
         // --- Load constraint corpus ---
-        let resolver = state.constraint_resolver();
+        let resolver = state.constraint_resolver().await;
         let task_tags = manifest.constraint_tags.clone();
         let explicit_ids = manifest.constraints.clone();
         let corpus = resolver

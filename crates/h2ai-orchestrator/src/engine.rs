@@ -6,6 +6,7 @@ use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::NatsClient;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
+use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{
     CalibrationCompletedEvent, ProposalFailedEvent, SelectionResolvedEvent,
     TaskComplexityAssessedEvent, VerificationScoredEvent,
@@ -15,7 +16,6 @@ use h2ai_types::manifest::TaskManifest;
 use h2ai_types::reasoning_checkpoint::{
     CompletedWave, ReasoningCheckpointPhase, TaskReasoningCheckpoint,
 };
-use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::sizing::TaskQuadrant;
 use thiserror::Error;
 
@@ -369,7 +369,9 @@ impl ExecutionEngine {
             if input.cfg.conflict_beta.enabled {
                 if let Some(rate) = wave.events.conflict_rate {
                     if let Some(nats) = &input.nats {
-                        let floor = input.calibration.beta_quality
+                        let floor = input
+                            .calibration
+                            .beta_quality
                             .unwrap_or(input.calibration.coefficients.beta_base);
                         let mut acc = nats
                             .get_conflict_accumulator(&input.tenant_id, &conflict_beta_prefix)
@@ -387,7 +389,10 @@ impl ExecutionEngine {
                             input.cfg.conflict_beta.halflife_secs,
                             input.cfg.conflict_beta.min_samples_for_override,
                         );
-                        if let Err(e) = nats.put_conflict_accumulator(&acc, &conflict_beta_prefix).await {
+                        if let Err(e) = nats
+                            .put_conflict_accumulator(&acc, &conflict_beta_prefix)
+                            .await
+                        {
                             tracing::warn!(
                                 target: "h2ai.engine",
                                 "conflict accumulator write failed (non-fatal): {e}"

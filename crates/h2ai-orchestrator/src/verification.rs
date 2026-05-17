@@ -262,36 +262,41 @@ impl VerificationPhase {
         // Evaluate each proposal independently.
         for proposal in input.proposals {
             // Pre-compute per-variant system prompts and caches.
-            let variant_contexts: Vec<(String, EvalCache)> = panel.variants.iter().map(|variant| {
-                let persona_prefix = variant.persona.system_prompt_prefix();
-                let sp = if persona_prefix.is_empty() {
-                    base_sp.clone()
-                } else {
-                    format!("{persona_prefix}\n\n{base_sp}")
-                };
-                (sp, new_eval_cache())
-            }).collect();
+            let variant_contexts: Vec<(String, EvalCache)> = panel
+                .variants
+                .iter()
+                .map(|variant| {
+                    let persona_prefix = variant.persona.system_prompt_prefix();
+                    let sp = if persona_prefix.is_empty() {
+                        base_sp.clone()
+                    } else {
+                        format!("{persona_prefix}\n\n{base_sp}")
+                    };
+                    (sp, new_eval_cache())
+                })
+                .collect();
 
             // Fire all variants in parallel per proposal.
-            let variant_results: Vec<Vec<ComplianceResult>> = join_all(
-                panel.variants.iter().zip(variant_contexts.iter()).map(|(variant, (sp, cache))| {
-                    Self::eval_all(
-                        corpus,
-                        &proposal.raw_output,
-                        variant.adapter,
-                        &rubric,
-                        sp,
-                        tau,
-                        max_tokens,
-                        cache,
-                        consensus_passes,
-                    )
-                }),
-            )
-            .await
-            .into_iter()
-            .map(|(results, _)| results)
-            .collect();
+            let variant_results: Vec<Vec<ComplianceResult>> =
+                join_all(panel.variants.iter().zip(variant_contexts.iter()).map(
+                    |(variant, (sp, cache))| {
+                        Self::eval_all(
+                            corpus,
+                            &proposal.raw_output,
+                            variant.adapter,
+                            &rubric,
+                            sp,
+                            tau,
+                            max_tokens,
+                            cache,
+                            consensus_passes,
+                        )
+                    },
+                ))
+                .await
+                .into_iter()
+                .map(|(results, _)| results)
+                .collect();
 
             // For each constraint index, aggregate votes across variants.
             let n_constraints = variant_results.first().map(|r| r.len()).unwrap_or(0);

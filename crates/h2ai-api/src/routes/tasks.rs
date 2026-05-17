@@ -93,7 +93,7 @@ pub async fn submit_task(
         cal.clone().ok_or(ApiError::CalibrationRequired)?
     };
 
-    let resolver = state.constraint_resolver();
+    let resolver = state.constraint_resolver().await;
     let task_tags = manifest.constraint_tags.clone();
     let explicit_ids = manifest.constraints.clone();
     let corpus = resolver

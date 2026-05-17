@@ -16,23 +16,27 @@ fn corpus_dir() -> PathBuf {
         .expect("ads-platform constraints directory must exist")
 }
 
-fn load_corpus() -> (FsConstraintStore, WikiCache) {
-    let (index, store) = FsConstraintStore::load(corpus_dir()).expect("corpus must load");
+async fn load_corpus() -> (FsConstraintStore, WikiCache) {
+    let (index, store) = FsConstraintStore::load(corpus_dir())
+        .await
+        .expect("corpus must load");
     let cache = WikiCache::from_docs(&store.all_docs_sorted());
     let _ = index; // index used via resolver in resolver tests
     (store, cache)
 }
 
-fn make_resolver() -> ConstraintResolver {
-    let (index, store) = FsConstraintStore::load(corpus_dir()).expect("corpus must load");
+async fn make_resolver() -> ConstraintResolver {
+    let (index, store) = FsConstraintStore::load(corpus_dir())
+        .await
+        .expect("corpus must load");
     ConstraintResolver::new(Arc::new(index), Arc::new(store))
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────────
 
-#[test]
-fn corpus_loads_all_yaml_constraints() {
-    let (store, _) = load_corpus();
+#[tokio::test]
+async fn corpus_loads_all_yaml_constraints() {
+    let (store, _) = load_corpus().await;
     let docs = store.all_docs_sorted();
     // 7 original ads-platform constraints + 4 CACHE constraints added for agent-comparison experiment
     assert_eq!(
@@ -44,10 +48,10 @@ fn corpus_loads_all_yaml_constraints() {
     );
 }
 
-#[test]
-fn corpus_all_constraints_have_llm_judge_predicate() {
+#[tokio::test]
+async fn corpus_all_constraints_have_llm_judge_predicate() {
     use h2ai_constraints::types::CompositeOp;
-    let (store, _) = load_corpus();
+    let (store, _) = load_corpus().await;
     for doc in store.all_docs_sorted() {
         let has_llm_judge = match &doc.predicate {
             ConstraintPredicate::LlmJudge { .. } => true,
@@ -69,9 +73,9 @@ fn corpus_all_constraints_have_llm_judge_predicate() {
     }
 }
 
-#[test]
-fn corpus_rubrics_include_domain_context() {
-    let (store, _) = load_corpus();
+#[tokio::test]
+async fn corpus_rubrics_include_domain_context() {
+    let (store, _) = load_corpus().await;
     for doc in store.all_docs_sorted() {
         if let ConstraintPredicate::LlmJudge { rubric } = &doc.predicate {
             assert!(
@@ -84,9 +88,9 @@ fn corpus_rubrics_include_domain_context() {
     }
 }
 
-#[test]
-fn corpus_rubrics_include_remediation_hint() {
-    let (store, _) = load_corpus();
+#[tokio::test]
+async fn corpus_rubrics_include_remediation_hint() {
+    let (store, _) = load_corpus().await;
     for doc in store.all_docs_sorted() {
         if let ConstraintPredicate::LlmJudge { rubric } = &doc.predicate {
             assert!(
@@ -99,9 +103,9 @@ fn corpus_rubrics_include_remediation_hint() {
     }
 }
 
-#[test]
-fn corpus_all_expected_ids_present() {
-    let (store, _) = load_corpus();
+#[tokio::test]
+async fn corpus_all_expected_ids_present() {
+    let (store, _) = load_corpus().await;
     let ids: std::collections::HashSet<String> =
         store.all_docs_sorted().into_iter().map(|d| d.id).collect();
     for expected in [
@@ -178,9 +182,9 @@ criteria:
 
 // ── Domain navigation ────────────────────────────────────────────────────────
 
-#[test]
-fn navigate_by_domain_billing_returns_constraints_004_005_007() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn navigate_by_domain_billing_returns_constraints_004_005_007() {
+    let (_, cache) = load_corpus().await;
     let billing = cache.navigate_by_domain("billing");
     let ids: std::collections::HashSet<&str> = billing.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -197,9 +201,9 @@ fn navigate_by_domain_billing_returns_constraints_004_005_007() {
     );
 }
 
-#[test]
-fn navigate_by_domain_latency_returns_constraints_002_003_006() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn navigate_by_domain_latency_returns_constraints_002_003_006() {
+    let (_, cache) = load_corpus().await;
     let latency = cache.navigate_by_domain("latency");
     let ids: std::collections::HashSet<&str> = latency.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -218,9 +222,9 @@ fn navigate_by_domain_latency_returns_constraints_002_003_006() {
 
 // ── Relation graph navigation ─────────────────────────────────────────────────
 
-#[test]
-fn navigate_related_004_reaches_005_and_007() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn navigate_related_004_reaches_005_and_007() {
+    let (_, cache) = load_corpus().await;
     let related = cache.navigate_related("CONSTRAINT-004");
     let ids: std::collections::HashSet<&str> = related.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -233,9 +237,9 @@ fn navigate_related_004_reaches_005_and_007() {
     );
 }
 
-#[test]
-fn navigate_related_003_reaches_006() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn navigate_related_003_reaches_006() {
+    let (_, cache) = load_corpus().await;
     let related = cache.navigate_related("CONSTRAINT-003");
     let ids: std::collections::HashSet<&str> = related.iter().map(|m| m.id.as_str()).collect();
     assert!(
@@ -246,9 +250,9 @@ fn navigate_related_003_reaches_006() {
 
 // ── BM25 semantic retrieval ───────────────────────────────────────────────────
 
-#[test]
-fn bm25_query_budget_idempotency_ranks_004_first() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn bm25_query_budget_idempotency_ranks_004_first() {
+    let (_, cache) = load_corpus().await;
     let hits = cache.search("budget idempotency atomic redis debit duplicate", 3);
     assert!(
         !hits.is_empty(),
@@ -261,9 +265,9 @@ fn bm25_query_budget_idempotency_ranks_004_first() {
     );
 }
 
-#[test]
-fn bm25_query_grpc_protobuf_ranks_002_first() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn bm25_query_grpc_protobuf_ranks_002_first() {
+    let (_, cache) = load_corpus().await;
     let hits = cache.search("grpc protobuf internal service communication binary", 3);
     assert!(!hits.is_empty(), "BM25 must return results for gRPC query");
     assert_eq!(
@@ -273,9 +277,9 @@ fn bm25_query_grpc_protobuf_ranks_002_first() {
     );
 }
 
-#[test]
-fn bm25_query_kafka_audit_log_ranks_005_first() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn bm25_query_kafka_audit_log_ranks_005_first() {
+    let (_, cache) = load_corpus().await;
     let hits = cache.search("kafka clickhouse immutable audit log financial billing", 3);
     assert!(
         !hits.is_empty(),
@@ -288,9 +292,9 @@ fn bm25_query_kafka_audit_log_ranks_005_first() {
     );
 }
 
-#[test]
-fn bm25_query_zgc_virtual_threads_ranks_006_first() {
-    let (_, cache) = load_corpus();
+#[tokio::test]
+async fn bm25_query_zgc_virtual_threads_ranks_006_first() {
+    let (_, cache) = load_corpus().await;
     let hits = cache.search("zgc virtual threads garbage collection heap pause java", 3);
     assert!(!hits.is_empty(), "BM25 must return results for ZGC query");
     assert_eq!(
@@ -304,7 +308,7 @@ fn bm25_query_zgc_virtual_threads_ranks_006_first() {
 
 #[tokio::test]
 async fn source_resolve_by_billing_tag_returns_billing_constraints() {
-    let resolver = make_resolver();
+    let resolver = make_resolver().await;
     let docs = resolver.resolve(&[], &["billing".to_string()], "").await;
     let ids: std::collections::HashSet<&str> = docs.iter().map(|d| d.id.as_str()).collect();
     assert!(
@@ -323,7 +327,7 @@ async fn source_resolve_by_billing_tag_returns_billing_constraints() {
 
 #[tokio::test]
 async fn source_resolve_semantic_union_merges_tag_and_bm25() {
-    let resolver = make_resolver();
+    let resolver = make_resolver().await;
     let docs = resolver
         .resolve(
             &[],
@@ -344,7 +348,7 @@ async fn source_resolve_semantic_union_merges_tag_and_bm25() {
 
 #[tokio::test]
 async fn source_load_payload_returns_llm_judge_with_remediation() {
-    let resolver = make_resolver();
+    let resolver = make_resolver().await;
     let docs = resolver
         .resolve(&["CONSTRAINT-004".to_string()], &[], "")
         .await;

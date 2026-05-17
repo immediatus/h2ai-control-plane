@@ -1,4 +1,6 @@
-use h2ai_config::{ConfigLoadError, FamilyConstraint, H2AIConfig, JudgePanelConfig, SafetyProfile, SchedulerPolicy};
+use h2ai_config::{
+    ConfigLoadError, FamilyConstraint, H2AIConfig, JudgePanelConfig, SafetyProfile, SchedulerPolicy,
+};
 use std::io::Write;
 
 // ── defaults ─────────────────────────────────────────────────────────────────

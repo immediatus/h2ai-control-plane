@@ -2,15 +2,15 @@ use h2ai_constraints::loader::load_corpus;
 use h2ai_constraints::types::ConstraintPredicate;
 use std::fs;
 
-#[test]
-fn load_corpus_missing_dir_returns_empty() {
-    let result = load_corpus("/tmp/h2ai-test-nonexistent-dir-xyz");
+#[tokio::test]
+async fn load_corpus_missing_dir_returns_empty() {
+    let result = load_corpus("/tmp/h2ai-test-nonexistent-dir-xyz").await;
     assert!(result.is_ok());
     assert!(result.unwrap().is_empty());
 }
 
-#[test]
-fn load_corpus_loads_yaml_files() {
+#[tokio::test]
+async fn load_corpus_loads_yaml_files() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("ADR-001.yaml"),
@@ -23,14 +23,14 @@ fn load_corpus_loads_yaml_files() {
     )
     .unwrap();
 
-    let corpus = load_corpus(dir.path()).unwrap();
+    let corpus = load_corpus(dir.path()).await.unwrap();
     assert_eq!(corpus.len(), 2);
     let ids: Vec<_> = corpus.iter().map(|d| d.id.as_str()).collect();
     assert!(ids.contains(&"ADR-001") && ids.contains(&"ADR-002"));
 }
 
-#[test]
-fn load_corpus_ignores_non_yaml_files() {
+#[tokio::test]
+async fn load_corpus_ignores_non_yaml_files() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("ADR-001.yaml"),
@@ -40,13 +40,13 @@ fn load_corpus_ignores_non_yaml_files() {
     fs::write(dir.path().join("README.md"), "# docs").unwrap();
     fs::write(dir.path().join("notes.txt"), "notes").unwrap();
 
-    let corpus = load_corpus(dir.path()).unwrap();
+    let corpus = load_corpus(dir.path()).await.unwrap();
     assert_eq!(corpus.len(), 1, "only YAML files must be loaded");
     assert_eq!(corpus[0].id, "ADR-001");
 }
 
-#[test]
-fn load_corpus_yaml_produces_llm_judge_predicate() {
+#[tokio::test]
+async fn load_corpus_yaml_produces_llm_judge_predicate() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("C-001.yaml"),
@@ -54,7 +54,7 @@ fn load_corpus_yaml_produces_llm_judge_predicate() {
     )
     .unwrap();
 
-    let corpus = load_corpus(dir.path()).unwrap();
+    let corpus = load_corpus(dir.path()).await.unwrap();
     assert_eq!(corpus.len(), 1);
     assert!(
         matches!(corpus[0].predicate, ConstraintPredicate::LlmJudge { .. }),
@@ -62,8 +62,8 @@ fn load_corpus_yaml_produces_llm_judge_predicate() {
     );
 }
 
-#[test]
-fn load_corpus_preserves_domains_and_tags() {
+#[tokio::test]
+async fn load_corpus_preserves_domains_and_tags() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("GDPR-001.yaml"),
@@ -71,13 +71,13 @@ fn load_corpus_preserves_domains_and_tags() {
     )
     .unwrap();
 
-    let corpus = load_corpus(dir.path()).unwrap();
+    let corpus = load_corpus(dir.path()).await.unwrap();
     assert_eq!(corpus[0].domains, vec!["eu_data", "compliance"]);
     assert_eq!(corpus[0].mandatory_for_tags, vec!["audit"]);
 }
 
-#[test]
-fn load_corpus_deduplicates_same_id() {
+#[tokio::test]
+async fn load_corpus_deduplicates_same_id() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("A-C-001.yaml"),
@@ -90,6 +90,6 @@ fn load_corpus_deduplicates_same_id() {
     )
     .unwrap();
 
-    let corpus = load_corpus(dir.path()).unwrap();
+    let corpus = load_corpus(dir.path()).await.unwrap();
     assert_eq!(corpus.len(), 1, "duplicate IDs must be deduplicated");
 }

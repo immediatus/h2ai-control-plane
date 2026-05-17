@@ -585,10 +585,18 @@ pub struct JudgePanelConfig {
     pub ambiguity_threshold: usize,
 }
 
-fn default_judge_panel_quorum_fraction() -> f64 { 0.67 }
-fn default_judge_panel_uncertainty_weight() -> f64 { 0.7 }
-fn default_judge_panel_persona_temperatures() -> [f32; 3] { [0.0, 0.2, 0.4] }
-fn default_judge_panel_ambiguity_threshold() -> usize { 2 }
+fn default_judge_panel_quorum_fraction() -> f64 {
+    0.67
+}
+fn default_judge_panel_uncertainty_weight() -> f64 {
+    0.7
+}
+fn default_judge_panel_persona_temperatures() -> [f32; 3] {
+    [0.0, 0.2, 0.4]
+}
+fn default_judge_panel_ambiguity_threshold() -> usize {
+    2
+}
 
 impl Default for JudgePanelConfig {
     fn default() -> Self {

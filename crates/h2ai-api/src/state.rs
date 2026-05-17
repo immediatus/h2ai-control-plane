@@ -341,7 +341,7 @@ impl AppState {
     ///
     /// When `constraint_wiki.enabled = true`: NATS-backed lazy resolver (never bulk-loads).
     /// When `constraint_wiki.enabled = false`: FS-backed resolver loaded from `corpus_path`.
-    pub fn constraint_resolver(&self) -> ConstraintResolver {
+    pub async fn constraint_resolver(&self) -> ConstraintResolver {
         if self.cfg.constraint_wiki.enabled {
             ConstraintResolver::new(
                 Arc::new(NatsConstraintIndex::new(self.nats.clone())),
@@ -354,15 +354,17 @@ impl AppState {
                 .corpus_path
                 .clone()
                 .unwrap_or_else(|| "/constraints".to_string());
-            let (index, store) = FsConstraintStore::load(&corpus_path).unwrap_or_else(|e| {
-                tracing::warn!(
-                    error = %e,
-                    "constraint corpus load failed at path {corpus_path}; using empty corpus"
-                );
-                let store = FsConstraintStore::from_docs(vec![]);
-                let index = FsConstraintIndex::from_docs(&[]);
-                (index, store)
-            });
+            let (index, store) = FsConstraintStore::load(&corpus_path)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        "constraint corpus load failed at path {corpus_path}; using empty corpus"
+                    );
+                    let store = FsConstraintStore::from_docs(vec![]);
+                    let index = FsConstraintIndex::from_docs(&[]);
+                    (index, store)
+                });
             ConstraintResolver::new(Arc::new(index), Arc::new(store))
         }
     }

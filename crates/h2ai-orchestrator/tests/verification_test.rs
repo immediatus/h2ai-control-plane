@@ -594,7 +594,10 @@ async fn panel_single_variant_matches_run_outcome() {
     assert_eq!(out.passed.len(), 1, "expected 1 passed proposal");
     assert_eq!(out.failed.len(), 0, "expected 0 failed proposals");
     // Single-variant → no panel disagreement possible.
-    assert!(uncertain_map.is_empty(), "single-variant panel must not produce uncertain constraints");
+    assert!(
+        uncertain_map.is_empty(),
+        "single-variant panel must not produce uncertain constraints"
+    );
 }
 
 #[tokio::test]
@@ -634,5 +637,8 @@ async fn panel_all_pass_uncertain_map_is_empty() {
 
     assert_eq!(out.passed.len(), 2, "both proposals should pass");
     assert_eq!(out.failed.len(), 0);
-    assert!(uncertain_map.is_empty(), "all-pass verdicts must not populate uncertain_map");
+    assert!(
+        uncertain_map.is_empty(),
+        "all-pass verdicts must not populate uncertain_map"
+    );
 }

@@ -45,7 +45,7 @@ async fn fs_constraint_resolver_loads_and_resolves_by_id() {
     )
     .unwrap();
 
-    let (index, store) = FsConstraintStore::load(dir.path()).unwrap();
+    let (index, store) = FsConstraintStore::load(dir.path()).await.unwrap();
     let resolver = ConstraintResolver::new(Arc::new(index), Arc::new(store));
     let docs = resolver.resolve(&["ADR-001".to_string()], &[], "").await;
 
