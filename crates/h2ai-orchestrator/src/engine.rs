@@ -570,6 +570,30 @@ impl ExecutionEngine {
                             }
                         }
 
+                        // Refresh the signal stream right before entering select!.
+                        // A durable pull consumer's messages() stream can terminate
+                        // (return None) when its internal fetch requests expire with
+                        // no messages — which happens routinely during the pipeline
+                        // phases before reaching this gate.  Recreating the stream
+                        // here gives select! a live consumer every time.
+                        if let Some(ref nats) = input.nats {
+                            match nats
+                                .subscribe_signals(&input.task_id, &input.tenant_id)
+                                .await
+                            {
+                                Ok(fresh) => {
+                                    signal_sub = Some(fresh);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "h2ai.engine",
+                                        task_id = %input.task_id,
+                                        "signal stream refresh failed (non-fatal): {e}"
+                                    );
+                                }
+                            }
+                        }
+
                         // Wait for Finalize signal or timeout.
                         let (signal_approved, signal_operator_id, signal_reviewer_note, timed_out) =
                             if let Some(ref mut sub) = signal_sub {

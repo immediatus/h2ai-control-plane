@@ -10,7 +10,7 @@ verifier_consensus_passes = 1
 profile = "development"
 
 [constraint_wiki]
-enabled     = true
+mode = "fs"
 corpus_path = "tests/e2e/constraints"
 
 [[adapter_profiles]]

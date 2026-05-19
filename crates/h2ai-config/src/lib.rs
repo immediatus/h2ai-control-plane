@@ -747,12 +747,6 @@ pub struct StateConfig {
     pub audit_shadow_bucket: String,
     #[serde(default = "default_prompt_variants_bucket")]
     pub prompt_variants_bucket: String,
-    #[serde(default = "default_constraint_wiki_bucket")]
-    pub constraint_wiki_bucket: String,
-    #[serde(default = "default_constraint_meta_bucket")]
-    pub constraint_meta_bucket: String,
-    #[serde(default = "default_constraint_payloads_bucket")]
-    pub constraint_payloads_bucket: String,
     #[serde(default = "default_approvals_bucket")]
     pub approvals_bucket: String,
     /// NATS KV bucket name prefix for per-tenant reasoning checkpoints.
@@ -780,6 +774,10 @@ pub struct StateConfig {
     pub results_stream: String,
     #[serde(default = "default_signals_stream")]
     pub signals_stream: String,
+    /// NATS subject prefix for the signals stream. Default: "h2ai.signals".
+    /// Override in tests to isolate from a concurrently-running server.
+    #[serde(default = "default_signals_subject_prefix")]
+    pub signals_subject_prefix: String,
     #[serde(default)]
     pub delta: StateDeltaConfig,
 }
@@ -811,15 +809,6 @@ fn default_audit_shadow_bucket() -> String {
 fn default_prompt_variants_bucket() -> String {
     "H2AI_PROMPT_VARIANTS".to_string()
 }
-fn default_constraint_wiki_bucket() -> String {
-    "H2AI_CONSTRAINT_WIKI".to_string()
-}
-fn default_constraint_meta_bucket() -> String {
-    "H2AI_CONSTRAINT_META".to_string()
-}
-fn default_constraint_payloads_bucket() -> String {
-    "H2AI_CONSTRAINT_PAYLOADS".to_string()
-}
 fn default_approvals_bucket() -> String {
     "H2AI_APPROVALS".to_string()
 }
@@ -847,6 +836,9 @@ fn default_results_stream() -> String {
 fn default_signals_stream() -> String {
     "H2AI_SIGNALS".to_string()
 }
+fn default_signals_subject_prefix() -> String {
+    "h2ai.signals".to_string()
+}
 
 impl Default for StateConfig {
     fn default() -> Self {
@@ -860,9 +852,6 @@ impl Default for StateConfig {
             sessions_bucket: default_sessions_bucket(),
             audit_shadow_bucket: default_audit_shadow_bucket(),
             prompt_variants_bucket: default_prompt_variants_bucket(),
-            constraint_wiki_bucket: default_constraint_wiki_bucket(),
-            constraint_meta_bucket: default_constraint_meta_bucket(),
-            constraint_payloads_bucket: default_constraint_payloads_bucket(),
             approvals_bucket: default_approvals_bucket(),
             reasoning_checkpoint_bucket_prefix: default_reasoning_checkpoint_bucket_prefix(),
             task_meta_state_bucket_prefix: default_task_meta_state_bucket_prefix(),
@@ -872,6 +861,7 @@ impl Default for StateConfig {
             telemetry_stream: default_telemetry_stream(),
             results_stream: default_results_stream(),
             signals_stream: default_signals_stream(),
+            signals_subject_prefix: default_signals_subject_prefix(),
             delta: StateDeltaConfig::default(),
         }
     }
@@ -1099,7 +1089,8 @@ pub struct H2AIConfig {
     pub task_complexity: TaskComplexityConfig,
     /// Human-in-the-loop approval gate configuration.
     pub hitl: HitlConfig,
-    /// Constraint wiki configuration — tag routing, NATS KV storage.
+    /// Constraint resolution backend (fs / disabled).
+    #[serde(default)]
     pub constraint_wiki: ConstraintWikiConfig,
     /// Token budget for per-slot context assembly. `None` disables compression.
     /// When set, rule-based dedup + importance trimming run on every wave.
@@ -1293,20 +1284,24 @@ pub struct HitlConfig {
     pub timeout_floor_ms: u64,
 }
 
-/// Configuration for the Constraint Wiki — tag-routed, NATS-backed constraint resolution.
-///
-/// When `enabled = false` (default), the system falls back to `corpus_path` flat-directory
-/// behavior — identical to pre-wiki operation. No migration required.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConstraintWikiConfig {
-    /// When true, use NATS KV wiki index for tag-based constraint resolution.
-    /// When false, fall back to `corpus_path` flat-directory load (backward compat).
-    pub enabled: bool,
-    /// Filesystem path for flat-directory fallback.
-    pub corpus_path: Option<String>,
-    /// Maximum number of constraints resolved per task via tag lookup.
-    /// Explicit manifest.constraints IDs are always included regardless of this limit.
-    pub resolve_k: usize,
+fn default_resolve_k() -> usize {
+    50
+}
+
+/// Constraint resolution backend. Exactly one variant is active — the
+/// previously-possible `enabled=true + corpus_path` ambiguity cannot be expressed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ConstraintWikiConfig {
+    /// No constraint resolution (default).
+    #[default]
+    Disabled,
+    /// FS-backed: load from local YAML constraint files at `corpus_path`.
+    Fs {
+        corpus_path: String,
+        #[serde(default = "default_resolve_k")]
+        resolve_k: usize,
+    },
 }
 
 #[cfg(test)]

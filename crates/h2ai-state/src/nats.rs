@@ -196,39 +196,6 @@ impl NatsClient {
         })
         .await?;
 
-        // KV bucket: compact tag→[constraint_id] index (small, cacheable with TTL)
-        self.ensure_kv_bucket(kv::Config {
-            bucket: self.state_cfg.constraint_wiki_bucket.clone(),
-            description: "Compact constraint tag index — tag→[id] map, lazy-loaded per request"
-                .to_owned(),
-            history: 5,
-            storage: stream::StorageType::File,
-            ..Default::default()
-        })
-        .await?;
-
-        // KV bucket: individual constraint metas — one entry per constraint, fetched on demand
-        self.ensure_kv_bucket(kv::Config {
-            bucket: self.state_cfg.constraint_meta_bucket.clone(),
-            description: "Per-constraint metadata — fetched lazily by ID, never bulk-loaded"
-                .to_owned(),
-            history: 3,
-            storage: stream::StorageType::File,
-            ..Default::default()
-        })
-        .await?;
-
-        // Object Store: full constraint predicate payloads (LlmJudge rubrics, Oracle configs)
-        self.ensure_object_store(async_nats::jetstream::object_store::Config {
-            bucket: self.state_cfg.constraint_payloads_bucket.clone(),
-            description: Some(
-                "Constraint predicate payloads — lazy-fetched during Phase 4 evaluation".to_owned(),
-            ),
-            storage: stream::StorageType::File,
-            ..Default::default()
-        })
-        .await?;
-
         // KV bucket: OPRO prompt variants and per-adapter bandit/OPRO state
         self.ensure_kv_bucket(kv::Config {
             bucket: self.state_cfg.prompt_variants_bucket.clone(),
@@ -1041,7 +1008,7 @@ impl NatsClient {
     pub async fn provision_signals_stream(&self) -> Result<(), NatsError> {
         let cfg = stream::Config {
             name: self.state_cfg.signals_stream.clone(),
-            subjects: vec!["h2ai.signals.>".to_string()],
+            subjects: vec![format!("{}.>", self.state_cfg.signals_subject_prefix)],
             retention: stream::RetentionPolicy::Limits,
             max_age: std::time::Duration::from_secs(86_400),
             storage: stream::StorageType::File,
@@ -1063,7 +1030,8 @@ impl NatsClient {
         signal: &h2ai_types::signal::ResumeSignal,
     ) -> Result<(), NatsError> {
         let subject = format!(
-            "h2ai.signals.{}.{}",
+            "{}.{}.{}",
+            self.state_cfg.signals_subject_prefix,
             signal.tenant_id.bucket_safe(),
             signal.task_id,
         );
@@ -1078,7 +1046,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Create a push consumer for the given task and return a stream of `ResumeSignal` items.
+    /// Create a pull consumer for the given task and return a stream of `ResumeSignal` items.
     ///
     /// The consumer is durable (`SIGNAL-{task_id_no_dashes}`) and filters to the exact task subject.
     /// Call `delete_signal_consumer` when done to clean up.
@@ -1095,12 +1063,17 @@ impl NatsClient {
         >,
         NatsError,
     > {
-        use async_nats::jetstream::consumer::push;
+        use async_nats::jetstream::consumer::pull;
+        use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
         use futures::StreamExt;
 
         let consumer_name = format!("SIGNAL-{}", task_id.to_string().replace('-', ""));
-        let filter = format!("h2ai.signals.{}.{}", tenant_id.bucket_safe(), task_id);
-        let deliver_subject = format!("_INBOX.sig.{}", task_id.to_string().replace('-', ""));
+        let filter = format!(
+            "{}.{}.{}",
+            self.state_cfg.signals_subject_prefix,
+            tenant_id.bucket_safe(),
+            task_id
+        );
 
         let stream = self
             .jetstream
@@ -1108,16 +1081,30 @@ impl NatsClient {
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
 
-        let consumer = stream
-            .create_consumer(push::Config {
-                name: Some(consumer_name.clone()),
-                durable_name: Some(consumer_name),
-                filter_subject: filter,
-                deliver_subject,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        // Use a pull consumer: the client fetches messages on demand rather than
+        // relying on server-side push delivery to a _INBOX subject.  Durable push
+        // consumers with _INBOX deliver_subjects become stale across server restarts
+        // and reconnects, causing the engine's select! to never receive signals.
+        let pull_cfg = pull::Config {
+            name: Some(consumer_name.clone()),
+            durable_name: Some(consumer_name.clone()),
+            filter_subject: filter,
+            deliver_policy: DeliverPolicy::All,
+            ack_policy: AckPolicy::Explicit,
+            ..Default::default()
+        };
+        let consumer = match stream.create_consumer(pull_cfg.clone()).await {
+            Ok(c) => c,
+            Err(_) => {
+                // A stale push consumer with the same durable name may exist from a
+                // previous run.  Delete it and retry once.
+                let _ = stream.delete_consumer(&consumer_name).await;
+                stream
+                    .create_consumer(pull_cfg)
+                    .await
+                    .map_err(|e| NatsError::KvError(e.to_string()))?
+            }
+        };
 
         let messages = consumer
             .messages()
@@ -1137,7 +1124,7 @@ impl NatsClient {
         Ok(Box::pin(mapped))
     }
 
-    /// Delete the push consumer created by `subscribe_signals` for a given task.
+    /// Delete the pull consumer created by `subscribe_signals` for a given task.
     pub async fn delete_signal_consumer(
         &self,
         task_id: &h2ai_types::identity::TaskId,
@@ -1153,227 +1140,6 @@ impl NatsClient {
             .await
             .map(|_| ())
             .map_err(|e| NatsError::KvError(e.to_string()))
-    }
-
-    /// Write the compiled WikiCache to NATS KV.
-    ///
-    /// Pass `expected_revision = Some(rev)` for optimistic CAS (prevents concurrent overwrites).
-    /// Pass `None` for an unconditional put (first write or forced refresh).
-    pub async fn put_wiki_cache(
-        &self,
-        cache: &h2ai_constraints::wiki::WikiCache,
-        expected_revision: Option<u64>,
-    ) -> Result<u64, NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let bytes = serde_json::to_vec(cache).map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let revision = match expected_revision {
-            Some(rev) => kv
-                .update("index", bytes.into(), rev)
-                .await
-                .map_err(|e| NatsError::KvError(e.to_string()))?,
-            None => kv
-                .put("index", bytes.into())
-                .await
-                .map_err(|e| NatsError::KvError(e.to_string()))?,
-        };
-        Ok(revision)
-    }
-
-    /// Read the compiled WikiCache from NATS KV.
-    ///
-    /// Returns `None` if the wiki has not been bootstrapped yet.
-    pub async fn get_wiki_cache(
-        &self,
-    ) -> Result<Option<(h2ai_constraints::wiki::WikiCache, u64)>, NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv
-            .entry("index")
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?
-        {
-            Some(entry) => {
-                let revision = entry.revision;
-                let mut cache: h2ai_constraints::wiki::WikiCache =
-                    serde_json::from_slice(&entry.value)
-                        .map_err(|e| NatsError::Serialize(e.to_string()))?;
-                cache.revision = revision;
-                Ok(Some((cache, revision)))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Store the compact tag→[constraint_id] index in NATS KV.
-    ///
-    /// Key: "tag_index". Much smaller than the full WikiCache blob.
-    pub async fn put_tag_index(
-        &self,
-        index: &std::collections::HashMap<String, Vec<String>>,
-    ) -> Result<(), NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let bytes = serde_json::to_vec(index).map_err(|e| NatsError::Serialize(e.to_string()))?;
-        kv.put("tag_index", bytes.into())
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Fetch the compact tag→[constraint_id] index from NATS KV.
-    pub async fn get_tag_index(
-        &self,
-    ) -> Result<Option<std::collections::HashMap<String, Vec<String>>>, NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_wiki_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv
-            .entry("tag_index")
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?
-        {
-            Some(entry) => {
-                let index = serde_json::from_slice(&entry.value)
-                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
-                Ok(Some(index))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Store a single ConstraintMeta by ID. Key = constraint ID.
-    pub async fn put_constraint_meta(
-        &self,
-        meta: &h2ai_constraints::types::ConstraintMeta,
-    ) -> Result<(), NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_meta_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let bytes = serde_json::to_vec(meta).map_err(|e| NatsError::Serialize(e.to_string()))?;
-        kv.put(&meta.id, bytes.into())
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Fetch a single ConstraintMeta by ID. Returns `None` if not found.
-    pub async fn get_constraint_meta(
-        &self,
-        id: &str,
-    ) -> Result<Option<h2ai_constraints::types::ConstraintMeta>, NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_meta_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        match kv
-            .entry(id)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?
-        {
-            Some(entry) => {
-                let meta = serde_json::from_slice(&entry.value)
-                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
-                Ok(Some(meta))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Fetch multiple ConstraintMeta by ID in parallel. Missing IDs are silently skipped.
-    pub async fn get_constraint_metas(
-        &self,
-        ids: &[String],
-    ) -> Result<Vec<h2ai_constraints::types::ConstraintMeta>, NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.constraint_meta_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let kv = std::sync::Arc::new(kv);
-        let futures: Vec<_> = ids
-            .iter()
-            .map(|id| {
-                let kv = kv.clone();
-                let id = id.clone();
-                async move {
-                    match kv.entry(&id).await {
-                        Ok(Some(entry)) => serde_json::from_slice::<
-                            h2ai_constraints::types::ConstraintMeta,
-                        >(&entry.value)
-                        .ok(),
-                        _ => None,
-                    }
-                }
-            })
-            .collect();
-        let results = futures::future::join_all(futures).await;
-        Ok(results.into_iter().flatten().collect())
-    }
-
-    /// Store a ConstraintPayload in the Object Store.
-    ///
-    /// Key format: `{id}@{version}` — e.g., `GDPR-DPA-001@v2`.
-    pub async fn put_constraint_payload(
-        &self,
-        payload: &h2ai_constraints::types::ConstraintPayload,
-    ) -> Result<(), NatsError> {
-        let os = self
-            .jetstream
-            .get_object_store(&self.state_cfg.constraint_payloads_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}@{}", payload.id, payload.version);
-        let bytes = serde_json::to_vec(payload).map_err(|e| NatsError::Serialize(e.to_string()))?;
-        os.put(key.as_str(), &mut bytes.as_slice())
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Fetch a ConstraintPayload from the Object Store by (id, version).
-    ///
-    /// Returns `None` if the payload does not exist.
-    pub async fn get_constraint_payload(
-        &self,
-        id: &str,
-        version: &str,
-    ) -> Result<Option<h2ai_constraints::types::ConstraintPayload>, NatsError> {
-        let os = self
-            .jetstream
-            .get_object_store(&self.state_cfg.constraint_payloads_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{id}@{version}");
-        match os.get(&key).await {
-            Ok(mut obj) => {
-                use tokio::io::AsyncReadExt;
-                let mut buf = Vec::new();
-                obj.read_to_end(&mut buf)
-                    .await
-                    .map_err(|e| NatsError::KvError(e.to_string()))?;
-                let payload: h2ai_constraints::types::ConstraintPayload =
-                    serde_json::from_slice(&buf)
-                        .map_err(|e| NatsError::Serialize(e.to_string()))?;
-                Ok(Some(payload))
-            }
-            Err(e) if e.to_string().contains("not found") => Ok(None),
-            Err(e) => Err(NatsError::KvError(e.to_string())),
-        }
     }
 
     // ── delta checkpoint write/read path ─────────────────────────────────────

@@ -682,8 +682,6 @@ impl<'a> ExecutionPipeline<'a> {
                 bandit.update(n_used, None, tier3_score);
             }
 
-            self.input.store.mark_resolved(task_id);
-
             let merge_out = crate::mape_k::MergeOutput {
                 task_id: task_id.clone(),
                 resolved_output: synthesis_text,
@@ -783,7 +781,6 @@ impl<'a> ExecutionPipeline<'a> {
                     params: params.optimizer.clone(),
                     q_confidence: merge_out.attribution.q_confidence,
                 });
-                self.input.store.mark_resolved(task_id);
                 if let Some(ref bandit_arc) = self.input.bandit_state {
                     let n_used = params.optimizer.n_agents;
                     let tier3_score = Some(merge_out.attribution.q_confidence.clamp(0.0, 1.0));

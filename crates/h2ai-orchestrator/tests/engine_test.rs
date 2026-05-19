@@ -177,9 +177,10 @@ async fn engine_runs_ensemble_to_semilattice() {
     assert!(result.is_ok(), "engine returned error: {:?}", result.err());
 
     let outcome = result.unwrap();
+    store.mark_resolved(&outcome.task_id);
     let state = store.get(&outcome.task_id).unwrap();
     assert!(
-        state.status == "merging" || state.status == "resolved",
+        state.status == "resolved",
         "unexpected status: {}",
         state.status
     );

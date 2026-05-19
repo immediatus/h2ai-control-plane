@@ -1,5 +1,4 @@
 mod bootstrap;
-mod constraint_source;
 mod debug_record;
 mod error;
 mod metrics;
@@ -194,7 +193,14 @@ async fn main() {
     };
 
     let auditor_kind = adapter_kind_for_role("AUDITOR", profiles);
-    let auditor_adapter = build_adapter(&auditor_kind, thinking);
+    // Reuse the pool Arc when the auditor kind matches every explorer's kind so that
+    // the pointer-based skip_audit check in phases/audit.rs fires correctly.
+    let auditor_adapter: Arc<dyn IComputeAdapter> =
+        if adapter_pool.iter().all(|a| *a.kind() == auditor_kind) {
+            adapter_pool[0].clone()
+        } else {
+            build_adapter(&auditor_kind, thinking)
+        };
 
     let scoring_kind_opt = {
         let provider = env::var("H2AI_SCORING_PROVIDER")
@@ -311,8 +317,9 @@ async fn main() {
                     target: "h2ai.startup",
                     "knowledge provider: passthrough (no [knowledge] config)"
                 );
-                let resolver = app_state.constraint_resolver();
-                std::sync::Arc::new(PassthroughProvider::new(resolver))
+                Arc::new(PassthroughProvider::new(
+                    (*app_state.constraint_resolver).clone(),
+                ))
             }
         }
     };

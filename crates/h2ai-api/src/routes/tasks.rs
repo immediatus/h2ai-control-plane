@@ -103,10 +103,10 @@ pub async fn submit_task(
         cal.clone().ok_or(ApiError::CalibrationRequired)?
     };
 
-    let resolver = state.constraint_resolver();
     let task_tags = manifest.constraint_tags.clone();
     let explicit_ids = manifest.constraints.clone();
-    let corpus = resolver
+    let corpus = state
+        .constraint_resolver
         .resolve(&explicit_ids, &task_tags, &manifest.description)
         .await;
     let wiki_revision = 0u64;

@@ -18,7 +18,7 @@ leader_diagnosis_tau = 0.3
 profile = "development"
 
 [constraint_wiki]
-enabled = false
+mode = "disabled"
 
 [[adapter_profiles]]
 name = "local"

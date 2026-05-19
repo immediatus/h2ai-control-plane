@@ -14,6 +14,7 @@ use std::sync::Arc;
 /// - Tags + query: UNION of tag matches and BM25 semantic results (broader coverage).
 /// - Tags only: tag matches, no semantic fallback.
 /// - Query only: BM25 semantic search.
+#[derive(Clone)]
 pub struct ConstraintResolver {
     pub index: Arc<dyn ConstraintIndex>,
     pub store: Arc<dyn ConstraintStore>,

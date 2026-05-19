@@ -201,11 +201,10 @@ fn family_constraint_default_is_single_family_ok() {
 #[test]
 fn constraint_wiki_config_defaults_are_sane() {
     let cfg = H2AIConfig::load_layered(None).expect("load defaults");
-    assert!(!cfg.constraint_wiki.enabled, "wiki disabled by default");
-    assert_eq!(cfg.constraint_wiki.resolve_k, 50);
     assert_eq!(
-        cfg.constraint_wiki.corpus_path.as_deref(),
-        Some("/constraints")
+        cfg.constraint_wiki,
+        h2ai_config::ConstraintWikiConfig::Disabled,
+        "wiki disabled by default"
     );
 }
 

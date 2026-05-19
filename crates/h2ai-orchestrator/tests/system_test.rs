@@ -218,6 +218,7 @@ async fn system_solves_well_formed_problem() {
     assert!(result.is_ok(), "engine returned error: {:?}", result.err());
 
     let out = result.unwrap();
+    store.mark_resolved(&out.task_id);
     let state = store.get(&out.task_id).unwrap();
 
     assert!(
@@ -375,6 +376,7 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
     assert!(result.is_ok(), "engine returned error: {:?}", result.err());
 
     let out = result.unwrap();
+    store.mark_resolved(&out.task_id);
     let state = store.get(&out.task_id).unwrap();
 
     assert_eq!(state.explorers_completed, 3);

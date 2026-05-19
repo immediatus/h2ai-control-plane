@@ -1,0 +1,45 @@
+id: topic:redis-atomicity
+depth: topic
+domains:
+  - billing
+  - consistency
+synthesis: >
+  C-004 (Budget Pacing — Idempotency Protection): Use a single Redis Lua EVAL script that
+  atomically checks the idempotency key AND debits the budget counter in one round-trip.
+  Never use separate GET then DECRBY — the race window between them causes double-debits
+  at 50k TPS. The Lua script must: (1) check if idem:{campaign_id}:{request_id} exists,
+  (2) if yes, return cached result without debiting, (3) if no, DECRBY budget and SETEX
+  the idempotency key in the same script. TTL on idempotency key must match the retry window
+  (≤30 seconds) to prevent Redis OOM. Both operations in one EVAL — Redis serializes Lua
+  scripts so no concurrent script can interleave. MULTI/EXEC is an acceptable alternative
+  but Lua EVAL is preferred for its atomicity guarantees under Redis Cluster.
+invariants:
+  - "Check idempotency key before any debit"
+  - "SETEX idempotency key and DECRBY in same Lua EVAL"
+  - "TTL on idempotency keys ≤30s"
+  - "No separate GET then DECRBY (race window)"
+failure_modes_covered:
+  - FM-004-1
+  - FM-004-2
+  - FM-004-3
+tensions:
+  - domain: distributed-systems
+    reason: >
+      Redis Cluster shards by key. Lua scripts cannot span multiple shards. Use hash tags
+      {campaign_id} to co-locate budget counter and idempotency key on same shard.
+entry_points:
+  - CONSTRAINT-004
+constraints:
+  - CONSTRAINT-004
+  - CONSTRAINT-007
+cross_references:
+  - id: CONSTRAINT-005
+    domain: audit
+    reason: "Debit and audit record must be co-committed atomically"
+  - id: CONSTRAINT-008
+    domain: billing
+    reason: "Idempotency replaces the need for distributed locks on charge path"
+related:
+  - CONSTRAINT-004
+  - CONSTRAINT-005
+  - CONSTRAINT-008

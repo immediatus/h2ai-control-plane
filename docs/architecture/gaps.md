@@ -44,6 +44,9 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-F1 Knowledge provider wired into generation pipeline** | ✅ CLOSED 2026-05-18 | — | Role-stratified retrieval via `KnowledgeProfile`/`profile_for_role` (Coordinator → CollapsedTree/top_k=3; Executor/Evaluator → TreeTraversal+PPR; Synthesizer → CollapsedTree+1 PPR hop); parallel per-slot queries in `generation.rs` Phase B1; `InductionStore` records high-hit-rate node IDs on `MergeResolved` and injects as `explicit_ids` on subsequent tasks; wired into `EngineInput.induction_store`; **partial**: `tasks.rs` and `recovery.rs` pass `induction_store: None` (follow-up: wire through AppState); graceful degradation when `[knowledge]` absent |
 | **GAP-F2 ResumeSignal — JetStream HITL** | ✅ CLOSED 2026-05-19 | — | Replaces polling-based KV approval entirely. `H2AI_APPROVALS` KV + `approval_reaper.rs` deleted; `H2AI_SIGNALS` JetStream stream + durable per-task push consumers replace them. Engine parks at Merging phase with `tokio::select!` on signal or adaptive timeout; `POST /signal` (202 fire-and-forget) is the new operator endpoint; `POST /approve` → 301 redirect to `/signal`. Two signal types: `Approve` (HITL gate resolution) and `WaveContinue` (grounding injection at wave boundaries when `signal_wave_window_ms > 0`). Adaptive timeout decay: `effective_ms = timeout_ms × decay^hitl_timeouts_fired`, floored at `timeout_floor_ms`. |
 | **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
+| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🔴 OPEN | **High** | BM25 retrieval is wired but there is no measurement of whether it helps; solve with contrastive task pairs (with/without knowledge augmentation) isolating knowledge network contribution |
+| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🔴 OPEN | Medium | Violation signals reach `conflict_beta` bandit but never update knowledge graph edge weights; closed-loop propagation (Solvita-style) would make the retrieval layer learn from failures |
+| **GAP-D7 Retry loop uses full regeneration, not patch-based repair** | 🔴 OPEN | Medium | MAPE-K retry discards all proposals and regenerates from scratch; Solvita shows patch-based SEARCH/REPLACE repair outperforms full regeneration (82.4% vs 75.8%) by preserving invariants on already-passing constraints |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
@@ -1023,6 +1026,130 @@ representative task distribution.
 
 ---
 
+## Solvita-Derived Findings (2026-05-20)
+
+**Source:** *"Solvita: Enhancing Large Language Models for Competitive Programming via Agentic Evolution"* (arXiv 2605.15301).
+
+Solvita is a four-agent closed loop (Planner → Solver → Oracle → Hacker) where each agent maintains a trainable knowledge graph updated via REINFORCE from task outcomes — without modifying the frozen LLM backbone. On CodeContests it lifts single-pass accuracy from 40.0% → 82.4%; on APPS from 37.9% → 67.7%. Ablations attribute the largest single gain to the **Solver knowledge network**, with Oracle and Hacker providing complementary but smaller additive gains. All three Solvita variants reached Legendary Grandmaster (≥3000) on Codeforces within 12 rounds.
+
+The architecture maps closely to H2AI:
+
+| Solvita | H2AI equivalent | Gap |
+|---|---|---|
+| Planner (strategy retrieval) | Context assembler + knowledge provider | GAP-F1, GAP-F4 |
+| Solver (patch-based repair) | Explorer adapters + MAPE-K retry | GAP-D7 |
+| Oracle (certified test generation) | Verifier + oracle gate | GAP-E1 |
+| Hacker (adversarial attack) | Auditor / constraint eval | GAP-B6, GAP-C5 |
+| Trainable edge weights (REINFORCE) | Bandit state / `conflict_beta` | GAP-F4, GAP-F5 |
+
+The defining difference: **H2AI's agents don't learn across tasks**. Solvita's knowledge networks accumulate outcome signals and reshape retrieval for every subsequent problem. H2AI's pipeline is effectively stateless between tasks except for the calibration snapshot and shallow bandit state.
+
+---
+
+### GAP-F4: Knowledge Provider Has No Contrastive Evaluation 🔴 OPEN — **High**
+
+**Gap statement.**
+The BM25 knowledge provider is wired into the generation pipeline (GAP-F1 closed), but there is no mechanism to measure whether it actually improves output quality. The knowledge provider could be degrading results (irrelevant retrievals inflating context, diluting focused problem-solving) and the system would not detect it. The passthrough (no-knowledge) path produces exactly the same downstream metrics as the retrieval path, making the two indistinguishable from the bandit's perspective.
+
+**Solvita evidence.**
+Solvita's contrastive REINFORCE addresses exactly this problem. The Solver generates a candidate twice — once with the knowledge network augmenting the prompt, once without — and computes the gradient signal from the difference in test outcomes. The counterfactual isolates the knowledge network's marginal contribution with no need for a held-out oracle set. H2AI cannot do this comparison today because the knowledge provider path and the passthrough path run in the same pipeline call without tracking which slots received knowledge-augmented context.
+
+**Recommended approach.**
+
+Three-phase implementation:
+
+**Phase 1 — Contrastive logging (no architecture change).**
+Tag each slot's generation call with whether knowledge context was injected (`knowledge_injected: bool`). After the verifier runs, log `(slot_id, knowledge_injected, verification_score)` to a NATS telemetry subject. After 50+ tasks, compute mean score delta across the two conditions per tenant. This is a one-day instrumentation change that answers the question without changing any logic.
+
+**Phase 2 — Per-slot knowledge routing bandit.**
+Promote the contrastive signal into the Thompson Sampling bandit. Maintain two arms per task domain: `(domain_tag, knowledge_on)` vs `(domain_tag, knowledge_off)`. The bandit explores knowledge injection per domain independently. After sufficient observations, domains where knowledge injection hurts are automatically routed to the passthrough path. This mirrors Solvita's REINFORCE update at a coarser granularity (no graph update, just arm selection).
+
+**Phase 3 — Graph edge weight updates (Solvita parity).**
+When `InductionStore` records a high-hit-rate node on `MergeResolved`, also record the verification score delta attributed to that node retrieval. Update the node's edge weight proportional to the delta. This requires threading the contrastive delta from Phase 1 back into `InductionStore::record`. The effect: BM25 node weights become calibrated to actual impact, not just retrieval frequency.
+
+**Cold-start economics (Solvita finding).**
+Solvita requires ~5,000 training problems before knowledge network costs amortize. H2AI's per-tenant task volumes are far smaller. This means Phase 3 (graph weight updates) may be net-negative for tenants with fewer than ~200 tasks — retrieval weights would be too noisy to improve over BM25 baseline. Phase 1 contrastive logging should track cumulative task count per tenant and gate Phase 2 arm splitting on reaching a minimum observation threshold (suggested: 50 tasks per domain tag before enabling per-domain knowledge routing).
+
+**Falsification condition.**
+After Phase 1 logging is live: if the mean verification score delta (`knowledge_on` − `knowledge_off`) is ≤ 0 across 100 tasks for any tenant, knowledge retrieval is net-neutral or harmful for that tenant and the passthrough should become the default for that domain. If delta > 0 and p < 0.05, retrieval is helping and Phase 2 should be enabled.
+
+**Effort estimate.** Phase 1: 1 day. Phase 2: 1 week. Phase 3: 2 weeks (blocked on InductionStore instrumentation and sufficient task volume).
+
+---
+
+### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing 🔴 OPEN — Medium
+
+**Gap statement.**
+When the MAPE-K loop detects `ZeroSurvival` or `HallucinationDetected`, the failure signal reaches `conflict_beta` and the bandit, but it never reaches the knowledge retrieval layer. The retrieval graph (BM25 index, InductionStore node weights) is unchanged by the failure. The next task with identical constraint tags will retrieve the same context that contributed to the failure — the system does not learn that a particular retrieval pattern led to a bad outcome.
+
+**Solvita evidence.**
+Solvita's closed-loop failure propagation is its most structurally distinctive feature: when the Hacker agent discovers a vulnerability (adversarial test failure), the failure event updates **all four** knowledge networks simultaneously. The Planner network learns to avoid that strategy class; the Solver network deprioritizes the skill pattern; the Oracle network adjusts its test routing weights; the Hacker network reinforces the attack pattern that succeeded. H2AI has the equivalent of the Hacker (auditor) and Oracle (verifier), but constraint violation signals reach neither the retrieval layer nor the planning context for future tasks.
+
+**Recommended approach.**
+
+**Step 1 — Violation tagging on InductionStore entries.**
+When `MergeResolved` fires and the task had MAPE-K retries before resolution (i.e., `autonomic_retries > 0`), record the constraint IDs that were violated during those retries alongside the resolved node IDs in `InductionStore`. This annotates which retrievals co-occurred with constraint failures.
+
+**Step 2 — Negative-weight retrieval filter.**
+Before injecting knowledge context for a new task, check whether the candidate BM25 nodes have a violation co-occurrence rate above a threshold for the current task's constraint tags. Nodes with high co-occurrence with violation events are downweighted or excluded. This is the retrieval analogue of Solvita's Planner network learning to avoid strategy classes that led to Hacker-detected failures.
+
+**Step 3 — Retroactive induction trigger.**
+When `ZeroSurvival` fires on a domain that has seen ≥ 10 prior tasks, trigger an induction cycle immediately (don't wait for the batch threshold) to incorporate the failure signal into the archetype and tension pattern stores. This makes the `TenantMemoryStore` responsive to acute failure clusters, not just periodic batch updates.
+
+**Why not implement the full REINFORCE loop (Solvita Phase 3).**
+Solvita's graph-weight REINFORCE works because it has access to binary test pass/fail signals (competitive programming judges). H2AI's verification scores are LLM-judged (soft, not binary) and are subject to judge bias (GAP-B6). Computing REINFORCE gradients on soft, biased rewards would amplify judge bias into the retrieval weights. The correct sequence: close GAP-B6 (calibrated judge) first, then implement graph-weight REINFORCE.
+
+**Effort estimate.** Step 1: 2 days (InductionStore schema extension). Step 2: 1 week (retrieval filter). Step 3: 3 days (induction trigger on ZeroSurvival). Total: ~2 weeks.
+
+---
+
+### GAP-D7: Retry Loop Uses Full Regeneration, Not Patch-Based Repair 🔴 OPEN — Medium
+
+**Gap statement.**
+When the MAPE-K controller fires a retry (ZeroSurvival, HallucinationDetected, or ConstraintViolation), the current implementation discards all N proposals and regenerates from scratch with a new retry context injected into the system prompt. This is full regeneration. Any constraints already satisfied by the original proposals are not preserved — the retry must re-satisfy them along with fixing the violated ones.
+
+**Solvita evidence.**
+Solvita's Solver uses patch-based repair exclusively: SEARCH/REPLACE edits targeting the failing section of the code, not full rewrites. The ablation result is decisive: patch repair achieves 82.4% on CodeContests; full regeneration achieves 75.76%. The mechanism is clear — full regeneration introduces regressions on previously passing tests by changing unrelated code regions. Patch repair preserves invariants by construction.
+
+The analogy to H2AI: when retry context says "constraint X violated, regenerate respecting all constraints," the LLM re-explores the entire solution space and may violate constraints Y and Z that were satisfied in the original proposal. Patch-mode retry would instead inject: "keep sections A and B; revise section C to satisfy constraint X" — preserving Y and Z satisfaction while targeting X.
+
+**Recommended approach.**
+
+**Targeted constraint-repair prompting (minimal change).**
+Rather than a full new system prompt on retry, structure the retry context as an explicit constraint repair instruction:
+
+```
+The following proposal satisfied constraints: {passing_constraint_ids}
+The following constraints were violated: {violated_constraint_ids}
+Repair ONLY the sections relevant to the violated constraints.
+Do not modify sections already satisfying the passing constraints.
+```
+
+This does not require architecture changes — it is a retry context template change in `MapeKController`. The preservation instructions can be derived from the existing `VerificationScoredEvent` which already records per-constraint pass/fail per proposal.
+
+**Structured SEARCH/REPLACE mode (full Solvita parity).**
+For code generation tasks: ask the retry adapter to emit SEARCH/REPLACE diffs rather than full proposals. H2AI's merger would apply the diffs to the best-scoring surviving proposal from the previous wave. This requires a new `MergeStrategy::PatchApply` variant and a diff format convention in the generation prompts. Only applicable when the constraint corpus identifies the task as a code generation task (`task_quadrant == Code`).
+
+**Effort estimate.** Targeted constraint-repair prompting: 3 days (retry context template refactor). Full patch mode: 2 weeks (MergeStrategy extension, diff format, quadrant gating).
+
+**Constraint for early adoption.**
+Patch repair is most valuable on Tier 3 tasks (6+ constraints) where regression risk is highest. For Tier 1 tasks (1–2 constraints), full regeneration is equivalent and simpler. Gate patch-repair prompting on `n_violated < n_satisfied` — only if more constraints are passing than failing is patch mode conservative enough to be safe.
+
+---
+
+### Solvita Cross-Cutting Insights for Existing Gaps
+
+**GAP-C5 (Krum under correlated hallucination) — Hacker-Oracle complementarity.**
+Solvita's Oracle and Hacker decompose the problem space with opposite optimization targets: Oracle is conservative (high precision — only certifies tests it is confident about), while Hacker is aggressive (high sensitivity — deliberately probes edge cases and failure modes). Combined, they achieve 90%+ wrong-solution detection and 95%+ correct-solution preservation. H2AI's verifier (Oracle analogue) and auditor (Hacker analogue) currently use similar prompting strategies — both score proposals on compliance. Differentiating their roles — verifier as conservative filter, auditor as aggressive adversarial probe — would improve combined coverage without increasing the false-positive rate. Practically: the auditor prompt should be explicitly framed as "find any way this output could fail the constraints" rather than "score this output on the constraints."
+
+**GAP-B6 (LLM-as-Judge validity) — Adversarial critique as debiasing.**
+Solvita's Hacker generates adversarial test cases that attack surviving proposals. The H2AI equivalent is adversarial critique generation: for each proposal that passes verification, generate a dedicated "attack" prompt asking the judge to find a constraint the proposal violates or a scenario where it fails. Proposals that survive adversarial critique are more reliable than those that only survive the forward verification pass. This addresses the verbosity bias and sycophancy cascade identified in GAP-B6 by forcing a contrarian evaluation path independent of the forward judgment.
+
+**GAP-A6 (Self-MoA as empirical competitor) — Routing over retrieval, not prompting.**
+Solvita's most actionable finding for H2AI's positioning debate: freezing LLM weights while training only the retrieval routing layer (knowledge graph edge weights) matches or exceeds performance from architectures that invest in prompt engineering. The implication is that H2AI's comparative advantage over Self-MoA will be more defensible if it is grounded in structured retrieval routing (what context is assembled for each role, GAP-F1/F4) than in prompt-level diversity (temperature spread, GAP-A1). The INNOVATION-5 experiment should specifically test whether the knowledge provider, when calibrated contrastively, adds measurable advantage over Self-MoA — not just whether MAPE-K enforcement does.
+
+---
+
 ## Gap Priority Matrix
 
 | Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
@@ -1042,6 +1169,9 @@ representative task distribution.
 | ~~GAP-D3 Bootstrap calibration~~ | — | — | — | **Closed 2026-05-14** |
 | ~~GAP-D4 Verification parallelism~~ | — | — | — | **Closed 2026-05-18** |
 | GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
+| **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
+| **GAP-D7 Patch-based constraint repair** | Medium | 3 days (targeted prompting) | None | Week 2 |
+| **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
 
 ---

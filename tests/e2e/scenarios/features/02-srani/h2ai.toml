@@ -19,7 +19,7 @@ max_autonomic_retries = 2
 profile = "development"
 
 [constraint_wiki]
-enabled = false
+mode = "disabled"
 
 [[adapter_profiles]]
 name = "local"

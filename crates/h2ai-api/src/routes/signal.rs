@@ -62,9 +62,18 @@ pub async fn submit_signal(
         .map_err(|_| ApiError::InvalidRequest(format!("invalid task_id: {task_id}")))?;
     let tenant = TenantId::from(tenant_id.as_str());
 
-    // Verify task is in-flight
-    if !state.store.is_active(&tid) {
-        return Err(ApiError::TaskNotFound(task_id.clone()));
+    // Verify task is known.  If it's already resolved/failed, return 202
+    // immediately — the signal arrived after the engine finished (race on timeout
+    // or late delivery), which is not an error worth surfacing to the caller.
+    match state.store.get(&tid) {
+        None => return Err(ApiError::TaskNotFound(task_id.clone())),
+        Some(_) if !state.store.is_active(&tid) => {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({"status": "already_resolved"})),
+            ));
+        }
+        Some(_) => {}
     }
 
     let now_ms = std::time::SystemTime::now()

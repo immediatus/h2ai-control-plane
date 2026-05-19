@@ -23,7 +23,17 @@ async fn build_test_app() -> axum::Router {
     use std::sync::Arc;
 
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
-    let nats = NatsClient::connect(&nats_url).await.expect("NATS connect");
+    // Use a unique stream name and subject prefix per test invocation so concurrent
+    // test processes don't race on get_or_create_stream with the live server's H2AI_SIGNALS.
+    let test_id = &uuid::Uuid::new_v4().to_string()[..8];
+    let test_state_cfg = h2ai_config::StateConfig {
+        signals_stream: format!("H2AI_SIGNALS_TEST_{test_id}"),
+        signals_subject_prefix: format!("h2ai.test.signals.{test_id}"),
+        ..Default::default()
+    };
+    let nats = NatsClient::connect_with_cfg(&nats_url, test_state_cfg)
+        .await
+        .expect("NATS connect");
     nats.provision_signals_stream()
         .await
         .expect("provision signals stream");

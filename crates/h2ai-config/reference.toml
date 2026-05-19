@@ -493,13 +493,11 @@ timeout_decay        = 0.5    # halve per consecutive non-response
 timeout_floor_ms     = 300000 # 5 min minimum
 
 # ── Constraint Wiki ───────────────────────────────────────────────────────────
-# When disabled (default), loads all .md files from corpus_path — identical to
-# pre-wiki behavior. Set enabled = true after bootstrapping H2AI_CONSTRAINT_WIKI.
+# mode = "disabled"  — no constraint resolution (default)
+# mode = "fs"        — load from local YAML corpus at corpus_path
 
 [constraint_wiki]
-enabled      = false
-corpus_path  = "/constraints"
-resolve_k    = 50
+mode = "disabled"
 
 # ── GAP-C1: Correlated Hallucination ─────────────────────────────────────────
 # CV threshold for clustering detection. 0.0 disables C1.
@@ -678,9 +676,6 @@ calibration_bucket         = "H2AI_CALIBRATION"
 sessions_bucket            = "H2AI_SESSIONS"
 audit_shadow_bucket        = "H2AI_AUDIT_SHADOW"
 prompt_variants_bucket     = "H2AI_PROMPT_VARIANTS"
-constraint_wiki_bucket     = "H2AI_CONSTRAINT_WIKI"
-constraint_meta_bucket     = "H2AI_CONSTRAINT_META"
-constraint_payloads_bucket = "H2AI_CONSTRAINT_PAYLOADS"
 approvals_bucket                    = "H2AI_APPROVALS"
 reasoning_checkpoint_bucket_prefix  = "H2AI_CHECKPOINT"
 task_meta_state_bucket_prefix       = "H2AI_META"

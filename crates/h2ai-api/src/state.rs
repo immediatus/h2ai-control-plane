@@ -1,4 +1,3 @@
-use crate::constraint_source::{NatsConstraintIndex, NatsConstraintStore};
 use crate::tenant_registry::{TenantRegistry, TenantState};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::resolver::ConstraintResolver;
@@ -84,9 +83,12 @@ pub struct AppState {
     /// Maps task_id → (Notify to wake the waiting engine, slot for the answer text).
     /// Populated by the engine when it suspends for clarification; resolved by POST /tasks/{id}/clarify.
     pub clarification_waiters: Arc<Mutex<HashMap<String, ClarificationEntry>>>,
+    /// FS-backed constraint resolver built once at startup from `constraint_wiki` config.
+    /// Used to load `Vec<ConstraintDoc>` for the engine's `constraint_corpus`.
+    pub constraint_resolver: Arc<ConstraintResolver>,
     /// Knowledge provider for hierarchical constraint retrieval.
     /// Uses Bm25WikiProvider when [knowledge] config is present;
-    /// PassthroughProvider (delegates to ConstraintResolver) otherwise.
+    /// PassthroughProvider otherwise.
     pub knowledge_provider: Arc<dyn KnowledgeProvider>,
 }
 
@@ -109,6 +111,29 @@ impl AppState {
         let journal =
             Arc::new(SessionJournal::new(nats.clone()).with_snapshot_interval(snapshot_interval));
         let max_tasks = cfg.max_concurrent_tasks;
+        let constraint_resolver = {
+            use h2ai_config::ConstraintWikiConfig;
+            Arc::new(match &cfg.constraint_wiki {
+                ConstraintWikiConfig::Fs { corpus_path, .. } => {
+                    let (index, store) = FsConstraintStore::load(corpus_path).unwrap_or_else(|e| {
+                        tracing::warn!(
+                            error = %e,
+                            corpus_path = %corpus_path,
+                            "constraint corpus load failed; using empty corpus"
+                        );
+                        (
+                            FsConstraintIndex::from_docs(&[]),
+                            FsConstraintStore::from_docs(vec![]),
+                        )
+                    });
+                    ConstraintResolver::new(Arc::new(index), Arc::new(store))
+                }
+                ConstraintWikiConfig::Disabled => ConstraintResolver::new(
+                    Arc::new(FsConstraintIndex::from_docs(&[])),
+                    Arc::new(FsConstraintStore::from_docs(vec![])),
+                ),
+            })
+        };
         Self {
             nats,
             cfg: Arc::new(cfg),
@@ -134,6 +159,7 @@ impl AppState {
             researcher_adapter: None,
             srani_grounding_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
+            constraint_resolver,
             knowledge_provider: {
                 use h2ai_knowledge::provider::PassthroughProvider;
                 // Default passthrough backed by empty corpus; overridden in main.rs
@@ -326,36 +352,6 @@ impl AppState {
             Err(e) => {
                 tracing::warn!(target: "h2ai.calibration", error = %e, "calibration load from NATS failed")
             }
-        }
-    }
-
-    /// Build a per-request [`ConstraintResolver`] for the current config.
-    ///
-    /// When `constraint_wiki.enabled = true`: NATS-backed lazy resolver (never bulk-loads).
-    /// When `constraint_wiki.enabled = false`: FS-backed resolver loaded from `corpus_path`.
-    pub fn constraint_resolver(&self) -> ConstraintResolver {
-        if self.cfg.constraint_wiki.enabled {
-            ConstraintResolver::new(
-                Arc::new(NatsConstraintIndex::new(self.nats.clone())),
-                Arc::new(NatsConstraintStore::new(self.nats.clone())),
-            )
-        } else {
-            let corpus_path = self
-                .cfg
-                .constraint_wiki
-                .corpus_path
-                .clone()
-                .unwrap_or_else(|| "/constraints".to_string());
-            let (index, store) = FsConstraintStore::load(&corpus_path).unwrap_or_else(|e| {
-                tracing::warn!(
-                    error = %e,
-                    "constraint corpus load failed at path {corpus_path}; using empty corpus"
-                );
-                let store = FsConstraintStore::from_docs(vec![]);
-                let index = FsConstraintIndex::from_docs(&[]);
-                (index, store)
-            });
-            ConstraintResolver::new(Arc::new(index), Arc::new(store))
         }
     }
 }

@@ -17,7 +17,7 @@ provider = "Bm25Wiki"
 YamlDir = { path = "tests/e2e/constraints" }
 
 [constraint_wiki]
-enabled     = true
+mode = "fs"
 corpus_path = "tests/e2e/constraints"
 
 [[adapter_profiles]]
