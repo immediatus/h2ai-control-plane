@@ -131,7 +131,12 @@ Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motiv
 
 The orchestrator compiles the task description and the active constraint corpus into an immutable `system_context`. The `J_eff` gate enforces a minimum context-fill fraction; tasks below the threshold are rejected with `ContextUnderflow` rather than run with insufficient grounding. Emits `TaskBootstrapped`. For the constraint corpus markdown format, predicate kinds, severity levels, and ConstraintSource abstraction, see reference.md §7.
 
-**Knowledge Provider (optional enrichment):** When `[knowledge]` is configured in `H2AIConfig`, `AppState.knowledge_provider` holds a `Bm25WikiProvider` that was built at startup by indexing the constraint YAML corpus plus any `wiki/` topic nodes. During context assembly, the provider is queried for the task description and returns hierarchical nodes: `NodeDepth::Global` nodes are injected as `SectionTag::GlobalKnowledge` (importance=1.0, preserve=true — survives all compression); `NodeDepth::Topic` nodes as `SectionTag::TopicKnowledge` (importance=0.8, preserve=false). When `[knowledge]` is absent, a `PassthroughProvider` is used instead, which delegates to `ConstraintResolver` with no behaviour change. The wiring from the knowledge provider into `generation.rs` is pending (as of 2026-05-18); the provider is built and stored in `AppState` but not yet called during generation phases.
+**Knowledge Provider — role-stratified enrichment (GAP-F1, 2026-05-18):** When `[knowledge]` is configured in `H2AIConfig`, `AppState.knowledge_provider` holds a `Bm25WikiProvider` built at startup from the constraint YAML corpus plus any `wiki/` topic nodes. During generation Phase B1, each explorer slot issues a parallel `provider.query()` call. The slot's `ExplorerSlotConfig.agent_role` (Coordinator / Executor / Evaluator / Synthesizer — defaults to `Executor`) maps via `profile_for_role()` (in `h2ai-types::knowledge`) to a `KnowledgeProfile` that selects:
+- **RAPTOR mode** — `CollapsedTree` (holistic, all levels simultaneously) for Coordinator and Synthesizer; `TreeTraversal` (cluster-then-leaf, procedural depth) for Executor and Evaluator
+- **PPR hops** — `expand_hops=2` for Executor (multi-hop constraint traversal, HippoRAG arXiv 2405.14831), `expand_hops=1` for Synthesizer (cross-domain tension surfacing), `expand_hops=0` for Coordinator and Evaluator
+- **domain_tag_boost** — Executor and Evaluator get `topic_knowledge` filtered to domain-matching nodes; Coordinator and Synthesizer get the global view only
+
+Results populate `ContextAssemblerInput.{global_knowledge, topic_knowledge, constraint_tensions}`. Synthesizer slots additionally receive cross-domain `SurfacedTension` entries as `SectionTag::ConstraintTension` (importance=0.85, preserve=false) — GAP-F2. The optional `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`) records `KnowledgeNodePattern` after accepted merges and boosts `explicit_ids` on subsequent matching tasks (cold start = pure BM25+). Any failure (provider error, store unavailable) degrades silently to `(None, None, None)` — task execution never blocks on knowledge enrichment. When `[knowledge]` is absent, a `PassthroughProvider` delegates to `ConstraintResolver` with no behaviour change.
 
 ### Phase 2 — Topology Provisioning
 
@@ -1292,6 +1297,48 @@ for (approval_record, revision) in scanned_records {
 ```
 
 `auto_reject` follows the same rejection path as a human denial (publishes `TaskFailed`, calls `delete_task_checkpoint`). The `operator_id = "system:timeout"` field in `TaskAttributionEvent` distinguishes automatic expiry from explicit operator rejection.
+
+#### ResumeSignal — JetStream HITL (live 2026-05-19)
+
+The KV-polling design above has been replaced by a typed, JetStream-delivered signal protocol. The old `H2AI_APPROVALS` KV bucket and `approval_reaper.rs` background reaper are removed.
+
+**Signal delivery topology**
+
+- A single `H2AI_SIGNALS` JetStream stream covers subject pattern `h2ai.signals.>`.
+- Subject per task: `h2ai.signals.{tenant_bucket_safe}.{task_id}`.
+- A durable push consumer `SIGNAL-{task_id_no_dashes}` is created before the phase loop starts and deleted at task resolution or failure.
+
+**Engine behaviour at the HITL gate (Merging phase)**
+
+1. Engine emits `PendingApproval` event.
+2. Engine parks in a `tokio::select!` branch waiting for either a JetStream signal delivery or timeout expiry.
+3. **On signal received** (`Approve`): publishes `ApprovalResolved` (before `MergeResolved`), resets `hitl_timeouts_fired` to 0, proceeds to `MergeResolved` and task close.
+4. **On timeout**: auto-promotes with `operator_id = "system:timeout"`, increments `hitl_timeouts_fired` in `TaskReasoningCheckpoint`, proceeds to `MergeResolved`.
+
+**Signal types** (adjacently-tagged `SignalPayload`):
+
+| Kind | Purpose |
+|---|---|
+| `Approve` | Resolves the HITL gate. Fields: `approved: bool`, `operator_id: String`, `reviewer_note: Option<String>`. |
+| `WaveContinue` | Injects grounding text or mandate override at a `WaveCompleted` boundary. Only processed when `signal_wave_window_ms > 0`. |
+| `Unknown` | Catch-all for forward-compatible deserialization; ignored by the engine without error. |
+
+**Adaptive timeout decay**
+
+Consecutive non-responses shrink the review window exponentially:
+
+```
+effective_ms = timeout_ms × decay ^ hitl_timeouts_fired
+effective_ms = max(effective_ms, timeout_floor_ms)
+```
+
+`hitl_timeouts_fired` is persisted in `TaskReasoningCheckpoint` and survives crash-recovery. Config fields: `timeout_decay` (default 0.5), `timeout_floor_ms` (default 300 000 ms).
+
+**Endpoints**
+
+- `POST /{tenant_id}/tasks/{task_id}/signal` — 202 accepted immediately; payload published to JetStream.
+- `POST /{tenant_id}/tasks/{task_id}/approve` — **deprecated**, returns 301 redirect to `/signal` (one-release shim).
+- `GET /{tenant_id}/tasks/{task_id}/approval` — **removed**, returns 410 Gone.
 
 ---
 

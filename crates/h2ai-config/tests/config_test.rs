@@ -838,3 +838,19 @@ enabled = false
     assert_eq!(k.provider, ProviderKind::Bm25Wiki);
     assert!(matches!(k.source, SourceKind::YamlDir { .. }));
 }
+
+#[test]
+fn hitl_config_has_decay_fields() {
+    let cfg = h2ai_config::H2AIConfig::load_layered(None).unwrap();
+    // decay must be in (0.0, 1.0); floor must be > 0
+    assert!(cfg.hitl.timeout_decay > 0.0 && cfg.hitl.timeout_decay < 1.0);
+    assert!(cfg.hitl.timeout_floor_ms > 0);
+}
+
+#[test]
+fn signal_config_defaults_exist() {
+    let cfg = h2ai_config::H2AIConfig::load_layered(None).unwrap();
+    assert_eq!(cfg.signal_wave_window_ms, 0);
+    assert!(cfg.signal_min_timeout_ms > 0);
+    assert!(cfg.signal_max_timeout_ms > cfg.signal_min_timeout_ms);
+}

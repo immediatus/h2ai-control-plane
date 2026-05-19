@@ -1035,127 +1035,124 @@ impl NatsClient {
         Ok(())
     }
 
-    // ── approval records ────────────────────────────────────────────────────────────
+    // ── JetStream signal delivery ────────────────────────────────────────────────
 
-    /// Store an approval record pending human review.
-    pub async fn put_approval_record(
-        &self,
-        tenant_id: &TenantId,
-        record: &h2ai_types::approval::ApprovalRecord,
-    ) -> Result<u64, NatsError> {
-        let payload =
-            serde_json::to_vec(record).map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.approvals_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/{}", tenant_id.bucket_safe(), record.task_id);
-        let rev = kv
-            .put(&key, payload.into())
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        Ok(rev)
-    }
-
-    /// Load an approval record AND its current KV revision.
-    /// The revision is required for the CAS delete in the reaper.
-    pub async fn get_approval_record_with_revision(
-        &self,
-        tenant_id: &TenantId,
-        task_id: &str,
-    ) -> Result<Option<(h2ai_types::approval::ApprovalRecord, u64)>, NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.approvals_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/{}", tenant_id.bucket_safe(), task_id);
-        match kv.entry(&key).await {
-            Ok(Some(entry)) => {
-                // Deleted/purged entries still return Some — treat them as not found.
-                if entry.operation != async_nats::jetstream::kv::Operation::Put {
-                    return Ok(None);
-                }
-                let revision = entry.revision;
-                let record =
-                    serde_json::from_slice::<h2ai_types::approval::ApprovalRecord>(&entry.value)
-                        .map_err(|e| NatsError::Serialize(e.to_string()))?;
-                Ok(Some((record, revision)))
-            }
-            Ok(None) => Ok(None),
-            Err(e) => Err(NatsError::KvError(e.to_string())),
-        }
-    }
-
-    /// List all approval records with their revisions and KV keys.
-    /// Returns `(record, revision, kv_key)` where `kv_key` is `"{tenant_safe}/{task_id}"`.
-    /// The reaper passes `kv_key` directly to `delete_approval_record_if_revision`.
-    pub async fn list_approval_records_with_revision(
-        &self,
-    ) -> Vec<(h2ai_types::approval::ApprovalRecord, u64, String)> {
-        use futures::TryStreamExt;
-        let kv = match self
-            .jetstream
-            .get_key_value(&self.state_cfg.approvals_bucket)
-            .await
-        {
-            Ok(kv) => kv,
-            Err(e) => {
-                tracing::warn!("list_approval_records: KV open failed: {e}");
-                return vec![];
-            }
+    /// Provision the H2AI_SIGNALS JetStream stream (idempotent).
+    pub async fn provision_signals_stream(&self) -> Result<(), NatsError> {
+        let cfg = stream::Config {
+            name: self.state_cfg.signals_stream.clone(),
+            subjects: vec!["h2ai.signals.>".to_string()],
+            retention: stream::RetentionPolicy::Limits,
+            max_age: std::time::Duration::from_secs(86_400),
+            storage: stream::StorageType::File,
+            num_replicas: 1,
+            ..Default::default()
         };
-        let keys: Vec<String> = match kv.keys().await {
-            Ok(stream) => stream.try_collect().await.unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!("list_approval_records: keys() failed: {e}");
-                return vec![];
-            }
-        };
-        let mut result = Vec::with_capacity(keys.len());
-        for key in &keys {
-            if let Ok(Some(entry)) = kv.entry(key.as_str()).await {
-                if entry.operation != async_nats::jetstream::kv::Operation::Put {
-                    continue;
-                }
-                match serde_json::from_slice::<h2ai_types::approval::ApprovalRecord>(&entry.value) {
-                    Ok(record) => result.push((record, entry.revision, key.clone())),
-                    Err(e) => {
-                        tracing::warn!("list_approval_records: deserialize failed for {key}: {e}")
-                    }
-                }
-            }
-        }
-        result
+        self.jetstream
+            .get_or_create_stream(cfg)
+            .await
+            .map(|_| ())
+            .map_err(|e| NatsError::KvError(e.to_string()))
     }
 
-    /// Atomically delete the approval record only if the revision matches.
+    /// Publish a `ResumeSignal` to the signals stream.
     ///
-    /// Returns `Ok(())` only if this node won the CAS race.
-    /// Returns `Err` if another node already deleted or updated the record.
-    /// `kv_key` is the full KV key: `"{tenant_safe}/{task_id}"`.
-    pub async fn delete_approval_record_if_revision(
+    /// Subject: `h2ai.signals.{tenant_bucket_safe}.{task_id}`
+    pub async fn publish_signal(
         &self,
-        kv_key: &str,
-        expected_revision: u64,
+        signal: &h2ai_types::signal::ResumeSignal,
     ) -> Result<(), NatsError> {
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.approvals_bucket)
+        let subject = format!(
+            "h2ai.signals.{}.{}",
+            signal.tenant_id.bucket_safe(),
+            signal.task_id,
+        );
+        let payload =
+            serde_json::to_vec(signal).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        self.jetstream
+            .publish(subject, payload.into())
             .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        // Use update with empty bytes as the atomic claim — only succeeds if revision matches.
-        kv.update(kv_key, vec![].into(), expected_revision)
-            .await
-            .map_err(|e| {
-                NatsError::KvError(format!("CAS delete failed (revision mismatch): {e}"))
-            })?;
-        // Clean up the tombstone entry
-        kv.delete(kv_key)
+            .map_err(|e| NatsError::KvError(e.to_string()))?
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
         Ok(())
+    }
+
+    /// Create a push consumer for the given task and return a stream of `ResumeSignal` items.
+    ///
+    /// The consumer is durable (`SIGNAL-{task_id_no_dashes}`) and filters to the exact task subject.
+    /// Call `delete_signal_consumer` when done to clean up.
+    pub async fn subscribe_signals(
+        &self,
+        task_id: &h2ai_types::identity::TaskId,
+        tenant_id: &h2ai_types::identity::TenantId,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = Result<h2ai_types::signal::ResumeSignal, NatsError>>
+                    + Send,
+            >,
+        >,
+        NatsError,
+    > {
+        use async_nats::jetstream::consumer::push;
+        use futures::StreamExt;
+
+        let consumer_name = format!("SIGNAL-{}", task_id.to_string().replace('-', ""));
+        let filter = format!("h2ai.signals.{}.{}", tenant_id.bucket_safe(), task_id);
+        let deliver_subject = format!("_INBOX.sig.{}", task_id.to_string().replace('-', ""));
+
+        let stream = self
+            .jetstream
+            .get_stream(&self.state_cfg.signals_stream)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+
+        let consumer = stream
+            .create_consumer(push::Config {
+                name: Some(consumer_name.clone()),
+                durable_name: Some(consumer_name),
+                filter_subject: filter,
+                deliver_subject,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+
+        let messages = consumer
+            .messages()
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+
+        let mapped = messages.then(|msg_res| async move {
+            let msg = msg_res.map_err(|e| NatsError::KvError(e.to_string()))?;
+            let signal = serde_json::from_slice::<h2ai_types::signal::ResumeSignal>(&msg.payload)
+                .map_err(|e| NatsError::Serialize(e.to_string()))?;
+            msg.ack()
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?;
+            Ok(signal)
+        });
+
+        Ok(Box::pin(mapped))
+    }
+
+    /// Delete the push consumer created by `subscribe_signals` for a given task.
+    pub async fn delete_signal_consumer(
+        &self,
+        task_id: &h2ai_types::identity::TaskId,
+    ) -> Result<(), NatsError> {
+        let consumer_name = format!("SIGNAL-{}", task_id.to_string().replace('-', ""));
+        let stream = self
+            .jetstream
+            .get_stream(&self.state_cfg.signals_stream)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        stream
+            .delete_consumer(&consumer_name)
+            .await
+            .map(|_| ())
+            .map_err(|e| NatsError::KvError(e.to_string()))
     }
 
     /// Write the compiled WikiCache to NATS KV.

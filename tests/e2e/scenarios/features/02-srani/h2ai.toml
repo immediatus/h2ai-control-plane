@@ -1,17 +1,25 @@
 # Feature isolation: SRANI ON
-# All other features minimal to isolate contribution
+# All other features minimal to isolate SRANI contribution.
+# verify_threshold=0.0 passes all proposals regardless of rubric score so SRANI
+# always receives the full proposal set for CFI computation. The CoT rubric with
+# an empty corpus returns volatile 0/1 binary scores on local LLMs; threshold=0.0
+# prevents those scores from starving SRANI of proposals.
+# max_autonomic_retries=2 gives SRANI waves to inject remediation hints.
+# constraint_wiki disabled: irrelevant corpus constraints (RTB, audit log, Java GC)
+# would reject all rate-limiter proposals — wiki is not needed for SRANI isolation.
 
 calibration_max_tokens = 512
 calibration_adapter_count = 1
 nats_url = "nats://localhost:4222"
 verifier_consensus_passes = 1
+verify_threshold = 0.0
+max_autonomic_retries = 2
 
 [safety]
 profile = "development"
 
 [constraint_wiki]
-enabled     = true
-corpus_path = "tests/e2e/constraints"
+enabled = false
 
 [[adapter_profiles]]
 name = "local"
@@ -22,7 +30,7 @@ api_key_env = ""
 [srani]
 enabled        = true
 adaptive       = true
-gate_threshold = 0.50
+gate_threshold = 0.30
 
 [hitl]
 enabled = false

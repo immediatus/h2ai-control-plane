@@ -169,6 +169,8 @@ async fn engine_runs_ensemble_to_semilattice() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -264,6 +266,8 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -354,6 +358,8 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -444,6 +450,8 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -529,6 +537,8 @@ async fn engine_output_contains_talagrand_diagnostic() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -645,6 +655,8 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -727,6 +739,8 @@ async fn engine_output_contains_suggested_next_params() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -890,6 +904,8 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1007,6 +1023,8 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1194,6 +1212,8 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let err = ExecutionEngine::run_offline(input).await.unwrap_err();
@@ -1292,6 +1312,8 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
@@ -1474,6 +1496,8 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1605,6 +1629,8 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1669,6 +1695,8 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1738,6 +1766,8 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1815,6 +1845,8 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -1899,6 +1931,8 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1998,6 +2032,8 @@ async fn c3_no_event_when_corpus_empty() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2113,6 +2149,8 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2227,6 +2265,8 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -2361,6 +2401,8 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     let calls = researcher_calls.lock().unwrap();
@@ -2473,6 +2515,8 @@ async fn c1_no_warning_for_diverse_proposals() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2608,6 +2652,8 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let result = ExecutionEngine::run_offline(input).await;
     match result {
@@ -2728,6 +2774,8 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2859,6 +2907,8 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2979,6 +3029,8 @@ async fn srani_adaptive_fires_and_updates_ema() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3116,6 +3168,8 @@ async fn srani_cold_start_uses_config_midpoint() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3230,6 +3284,8 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3342,6 +3398,8 @@ async fn srani_ema_formula_verified_numerically() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3471,6 +3529,8 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -3526,6 +3586,8 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3592,6 +3654,8 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3656,6 +3720,8 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;

@@ -778,6 +778,8 @@ pub struct StateConfig {
     pub telemetry_stream: String,
     #[serde(default = "default_results_stream")]
     pub results_stream: String,
+    #[serde(default = "default_signals_stream")]
+    pub signals_stream: String,
     #[serde(default)]
     pub delta: StateDeltaConfig,
 }
@@ -842,6 +844,9 @@ fn default_telemetry_stream() -> String {
 fn default_results_stream() -> String {
     "H2AI_RESULTS".to_string()
 }
+fn default_signals_stream() -> String {
+    "H2AI_SIGNALS".to_string()
+}
 
 impl Default for StateConfig {
     fn default() -> Self {
@@ -866,6 +871,7 @@ impl Default for StateConfig {
             tasks_stream: default_tasks_stream(),
             telemetry_stream: default_telemetry_stream(),
             results_stream: default_results_stream(),
+            signals_stream: default_signals_stream(),
             delta: StateDeltaConfig::default(),
         }
     }
@@ -1178,6 +1184,15 @@ pub struct H2AIConfig {
     /// (delegates to existing ConstraintResolver — zero behaviour change).
     #[serde(default)]
     pub knowledge: Option<KnowledgeConfig>,
+    /// ms to wait at each WaveCompleted boundary for a WaveContinue signal. 0 = disabled.
+    #[serde(default)]
+    pub signal_wave_window_ms: u64,
+    /// Minimum timeout_ms a caller may request via POST /signal.
+    #[serde(default = "default_signal_min_timeout_ms")]
+    pub signal_min_timeout_ms: u64,
+    /// Maximum timeout_ms a caller may request via POST /signal.
+    #[serde(default = "default_signal_max_timeout_ms")]
+    pub signal_max_timeout_ms: u64,
 }
 
 fn default_correlated_hallucination_cv_threshold() -> f64 {
@@ -1215,6 +1230,12 @@ fn default_oracle_pass_rate_floor() -> f64 {
 }
 fn default_verifier_consensus_passes() -> u8 {
     1
+}
+fn default_signal_min_timeout_ms() -> u64 {
+    60_000
+}
+fn default_signal_max_timeout_ms() -> u64 {
+    86_400_000
 }
 
 /// Configuration for the WebSearch executor (Google Custom Search API).
@@ -1265,6 +1286,11 @@ pub struct HitlConfig {
     pub confidence_threshold: f64,
     /// Maximum milliseconds a task may wait for human approval before auto-rejection.
     pub timeout_ms: u64,
+    /// Multiplier applied per consecutive non-response: effective = base × decay^n.
+    /// Must be in (0.0, 1.0). Default: 0.5 (halve per miss).
+    pub timeout_decay: f64,
+    /// Minimum effective timeout in ms regardless of decay. Default: 300_000 (5 min).
+    pub timeout_floor_ms: u64,
 }
 
 /// Configuration for the Constraint Wiki — tag-routed, NATS-backed constraint resolution.

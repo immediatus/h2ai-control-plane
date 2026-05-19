@@ -12,6 +12,7 @@ testing = []
 
 [dependencies]
 h2ai-types       = { path = "../h2ai-types" }
+h2ai-knowledge   = { workspace = true }
 h2ai-state       = { path = "../h2ai-state" }
 h2ai-autonomic   = { path = "../h2ai-autonomic" }
 h2ai-context     = { path = "../h2ai-context" }
@@ -41,6 +42,7 @@ rand            = { workspace = true }
 rand_distr      = { workspace = true }
 sha2            = { workspace = true }
 hex             = { workspace = true }
+bytes           = { workspace = true }
 
 [dev-dependencies]
 h2ai-adapters    = { path = "../h2ai-adapters" }
@@ -51,6 +53,7 @@ h2ai-autonomic   = { path = "../h2ai-autonomic" }
 h2ai-context     = { path = "../h2ai-context" }
 h2ai-constraints = { path = "../h2ai-constraints" }
 h2ai-provisioner = { path = "../h2ai-provisioner", features = ["testing"] }
+h2ai-knowledge   = { workspace = true }
 tokio            = { workspace = true }
 chrono           = { workspace = true }
 async-nats       = { workspace = true }

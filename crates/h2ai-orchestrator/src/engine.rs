@@ -8,8 +8,9 @@ use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
 use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{
-    CalibrationCompletedEvent, ProposalFailedEvent, SelectionResolvedEvent,
-    TaskComplexityAssessedEvent, VerificationScoredEvent,
+    ApprovalResolvedEvent, CalibrationCompletedEvent, H2AIEvent, PendingApprovalEvent,
+    ProposalFailedEvent, SelectionResolvedEvent, TaskComplexityAssessedEvent,
+    VerificationScoredEvent,
 };
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::TaskManifest;
@@ -54,6 +55,13 @@ pub enum EngineError {
     /// The task is aborted to preserve the audit trail integrity.
     #[error("checkpoint write failed (strict audit mode): {0}")]
     CheckpointWriteFailed(String),
+    /// A human reviewer rejected the task output via the HITL approval gate.
+    /// `operator_id` identifies who rejected; `reviewer_note` carries the reason.
+    #[error("HITL gate rejected by operator {operator_id}")]
+    HitlRejected {
+        operator_id: String,
+        reviewer_note: Option<String>,
+    },
 }
 
 /// Context for the Phase 4 shadow auditor. Held in `EngineInput::shadow_audit_ctx`.
@@ -149,6 +157,13 @@ pub struct EngineInput<'a> {
     /// Cross-task stable context cache shared across tasks for the same tenant.
     pub stable_cache:
         Option<std::sync::Arc<crate::context_assembler::stable_cache::StableContextCache>>,
+    /// Optional BM25 knowledge provider. When Some, generation queries it per slot.
+    /// When None, global_knowledge and topic_knowledge remain None (existing behavior).
+    pub knowledge_provider:
+        Option<std::sync::Arc<dyn h2ai_knowledge::provider::KnowledgeProvider + Send + Sync>>,
+    /// Optional induction store for cross-task knowledge boosting.
+    /// When None, induction is skipped and pure BM25 is used.
+    pub induction_store: Option<std::sync::Arc<crate::induction_store::InductionStore>>,
 }
 
 /// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
@@ -310,6 +325,32 @@ impl ExecutionEngine {
             None
         };
 
+        // ── Signal subscription: created once, shared across the whole run ──────
+        // Subscribe before the pre-loop phases so the consumer is ready before any
+        // HITL gate or wave-boundary window opens.
+        let mut signal_sub = if let Some(ref nats) = input.nats {
+            if input.cfg.hitl.enabled || input.cfg.signal_wave_window_ms > 0 {
+                match nats
+                    .subscribe_signals(&input.task_id, &input.tenant_id)
+                    .await
+                {
+                    Ok(sub) => Some(sub),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "h2ai.engine",
+                            task_id = %input.task_id,
+                            "signal subscription failed (non-fatal): {e}"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // ── GAP-D1: load conflict-rate accumulator to inject beta_quality ───────
         let conflict_beta_prefix = input.cfg.state.conflict_beta_bucket_prefix.clone();
         let conflict_acc = if input.cfg.conflict_beta.enabled {
@@ -451,9 +492,176 @@ impl ExecutionEngine {
                     write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit).await?;
                 }
             }
+            // TODO: wire WaveContinue injection when multi-wave loop is added.
+            // When signal_wave_window_ms > 0, open a brief tokio::select! window here
+            // to receive a ContinueToNextWave signal and thread grounding/mandate_override
+            // into the next ContextAssemblerInput before starting the next wave.
+
             let filter_ratio = wave.events.filter_ratio;
             match controller.decide(wave.outcome, retry_count, filter_ratio) {
                 crate::mape_k::MapeKDecision::Return(out) => {
+                    // Record knowledge patterns for cross-task induction (best-effort).
+                    if let Some(ref store) = input.induction_store {
+                        let domain_tags = input.manifest.constraint_tags.clone();
+                        if !domain_tags.is_empty() {
+                            let store_clone = store.clone();
+                            tokio::spawn(async move {
+                                let _ = store_clone
+                                    .record(
+                                        &domain_tags,
+                                        &h2ai_types::config::AgentRole::Executor,
+                                        &domain_tags,
+                                    )
+                                    .await;
+                            });
+                        }
+                    }
+
+                    // ── HITL approval gate ────────────────────────────────────
+                    // When HITL is enabled, the engine waits for a Finalize signal
+                    // before returning. On reject, publishes ApprovalResolved and
+                    // returns HitlRejected. On approve (or timeout), falls through.
+                    if input.cfg.hitl.enabled {
+                        use futures::StreamExt as _;
+
+                        let now_ms = || {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64
+                        };
+
+                        // Compute adaptive timeout from hitl_timeouts_fired in checkpoint.
+                        let n_fired = reasoning_cp.as_ref().map_or(0, |cp| cp.hitl_timeouts_fired);
+                        let effective_ms = (input.cfg.hitl.timeout_ms as f64
+                            * input.cfg.hitl.timeout_decay.powi(n_fired as i32))
+                        .max(input.cfg.hitl.timeout_floor_ms as f64)
+                            as u64;
+
+                        let timeout_at_ms = now_ms() + effective_ms;
+
+                        // Publish PendingApproval so harness/UI knows we're waiting.
+                        if let Some(ref nats) = input.nats {
+                            let q = out.attribution.q_confidence;
+                            let n_used = out.selection_resolved.n_input_proposals as u32;
+                            let triggered_by = h2ai_types::events::ApprovalTrigger::LowConfidence;
+                            let risk_level =
+                                h2ai_types::approval::compute_risk_level(&triggered_by, q);
+                            let pending_ev = H2AIEvent::PendingApproval(PendingApprovalEvent {
+                                task_id: input.task_id.clone(),
+                                proposed_output: out.resolved_output.clone(),
+                                q_confidence: q,
+                                prediction_basis: match out.attribution.prediction_basis {
+                                    h2ai_types::sizing::PredictionBasis::Heuristic => 0u8,
+                                    h2ai_types::sizing::PredictionBasis::Empirical => 2u8,
+                                },
+                                n_used,
+                                risk_level,
+                                triggered_by,
+                                timeout_at_ms,
+                                timestamp_ms: now_ms(),
+                            });
+                            if let Err(e) = nats.publish_event(&input.task_id, &pending_ev).await {
+                                tracing::warn!(
+                                    target: "h2ai.engine",
+                                    task_id = %input.task_id,
+                                    "failed to publish PendingApproval: {e}"
+                                );
+                            }
+                        }
+
+                        // Wait for Finalize signal or timeout.
+                        let (signal_approved, signal_operator_id, signal_reviewer_note, timed_out) =
+                            if let Some(ref mut sub) = signal_sub {
+                                tokio::select! {
+                                    Some(Ok(sig)) = sub.next() => {
+                                        let expired = now_ms() > sig.timeout_at_ms;
+                                        if expired {
+                                            (true, "system:late-signal".to_string(), None, false)
+                                        } else {
+                                            match crate::signal_dispatch::resolve_action(sig.payload) {
+                                                crate::signal_dispatch::ResumeAction::Finalize {
+                                                    approved,
+                                                    reviewer_note,
+                                                    operator_id,
+                                                } => (approved, operator_id, reviewer_note, false),
+                                                _ => (true, "system:non-approve-signal".to_string(), None, false),
+                                            }
+                                        }
+                                    }
+                                    _ = tokio::time::sleep(std::time::Duration::from_millis(effective_ms)) => {
+                                        (
+                                            true,
+                                            "system:timeout".to_string(),
+                                            Some("Auto-approved: review timeout exceeded".to_string()),
+                                            true,
+                                        )
+                                    }
+                                }
+                            } else {
+                                // HITL enabled but no signal subscriber — auto-approve.
+                                (true, "system:no-sub".to_string(), None, false)
+                            };
+
+                        // Update hitl_timeouts_fired in checkpoint.
+                        if let Some(ref mut cp) = reasoning_cp {
+                            if timed_out {
+                                cp.hitl_timeouts_fired += 1;
+                            } else {
+                                cp.hitl_timeouts_fired = 0;
+                            }
+                            if let Some(ref nats) = input.nats {
+                                let _ =
+                                    write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit)
+                                        .await;
+                            }
+                        }
+
+                        // Publish ApprovalResolved BEFORE MergeResolved.
+                        let decided_at_ms = now_ms();
+                        if let Some(ref nats) = input.nats {
+                            let approval_resolved_ev =
+                                H2AIEvent::ApprovalResolved(ApprovalResolvedEvent {
+                                    task_id: input.task_id.clone(),
+                                    approved: signal_approved,
+                                    operator_id: signal_operator_id.clone(),
+                                    reviewer_note: signal_reviewer_note.clone(),
+                                    decided_at_ms,
+                                });
+                            if let Err(e) = nats
+                                .publish_event(&input.task_id, &approval_resolved_ev)
+                                .await
+                            {
+                                tracing::warn!(
+                                    target: "h2ai.engine",
+                                    task_id = %input.task_id,
+                                    "failed to publish ApprovalResolved: {e}"
+                                );
+                            }
+                        }
+
+                        // On reject: mark failed, clean up consumer, return error.
+                        if !signal_approved {
+                            input.store.mark_failed(&task_id);
+                            // Clean up signal consumer.
+                            if let Some(ref nats) = input.nats {
+                                if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
+                                    tracing::warn!(
+                                        target: "h2ai.engine",
+                                        task_id = %input.task_id,
+                                        "failed to delete signal consumer on reject: {e}"
+                                    );
+                                }
+                            }
+                            return Err(EngineError::HitlRejected {
+                                operator_id: signal_operator_id,
+                                reviewer_note: signal_reviewer_note,
+                            });
+                        }
+                        // Approved: fall through to normal resolve path below.
+                    }
+                    // ── End HITL gate ─────────────────────────────────────────
+
                     if let Some(mut cp) = reasoning_cp.take() {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -477,17 +685,55 @@ impl ExecutionEngine {
                             }
                         }
                     }
+
+                    // Clean up signal consumer on successful resolve.
+                    if let Some(ref nats) = input.nats {
+                        if signal_sub.is_some() {
+                            if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
+                                tracing::warn!(
+                                    target: "h2ai.engine",
+                                    task_id = %input.task_id,
+                                    "failed to delete signal consumer on resolve: {e}"
+                                );
+                            }
+                        }
+                    }
+
                     return Ok(*out);
                 }
                 crate::mape_k::MapeKDecision::Retry => continue,
                 crate::mape_k::MapeKDecision::Fail(e) => {
                     input.store.mark_failed(&task_id);
+                    // Clean up signal consumer on engine failure.
+                    if let Some(ref nats) = input.nats {
+                        if signal_sub.is_some() {
+                            if let Err(ce) = nats.delete_signal_consumer(&input.task_id).await {
+                                tracing::warn!(
+                                    target: "h2ai.engine",
+                                    task_id = %input.task_id,
+                                    "failed to delete signal consumer on fail: {ce}"
+                                );
+                            }
+                        }
+                    }
                     return Err(e);
                 }
             }
         }
 
         input.store.mark_failed(&task_id);
+        // Clean up signal consumer on retry exhaustion.
+        if let Some(ref nats) = input.nats {
+            if signal_sub.is_some() {
+                if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
+                    tracing::warn!(
+                        target: "h2ai.engine",
+                        task_id = %input.task_id,
+                        "failed to delete signal consumer on exhaustion: {e}"
+                    );
+                }
+            }
+        }
         tracing::warn!(
             target: "h2ai.engine",
             task_id = %task_id,
@@ -578,6 +824,25 @@ impl ExecutionEngine {
                 synthesis_gain: 0.0,
             });
             let waste_ratio = waste_ratio.unwrap_or(0.0);
+
+            // Record knowledge patterns for cross-task induction (best-effort, fire-and-forget).
+            // Phase 1 approximation: domain_tags used as proxy node_ids until full node_id
+            // threading through EngineOutput is plumbed.
+            if let Some(ref store) = input.induction_store {
+                let domain_tags = input.manifest.constraint_tags.clone();
+                if !domain_tags.is_empty() {
+                    let store_clone = store.clone();
+                    tokio::spawn(async move {
+                        let _ = store_clone
+                            .record(
+                                &domain_tags,
+                                &h2ai_types::config::AgentRole::Executor,
+                                &domain_tags,
+                            )
+                            .await;
+                    });
+                }
+            }
 
             Ok(EngineOutput {
                 task_id: task_id.clone(),

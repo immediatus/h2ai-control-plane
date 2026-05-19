@@ -376,6 +376,17 @@ agent_max_tool_iterations = 5
 # Larger observations are truncated. Set to 0 to disable. Default: 8192.
 agent_max_observation_chars = 8192
 
+# ── ResumeSignal configuration ────────────────────────────────────────────────
+
+# ms to wait at each WaveCompleted boundary for a WaveContinue signal. 0 = disabled.
+signal_wave_window_ms = 0
+
+# Minimum timeout_ms a caller may request via POST /signal.
+signal_min_timeout_ms = 60_000
+
+# Maximum timeout_ms a caller may request via POST /signal.
+signal_max_timeout_ms = 86_400_000
+
 # ── Enterprise executor capabilities ─────────────────────────────────────────
 # Uncomment and configure any section to enable the corresponding tool.
 # Absent sections = executor silently omitted from registry.
@@ -478,6 +489,8 @@ neff_probe_warning_fraction = 0.35
 enabled              = true
 confidence_threshold = 0.50   # q_confidence below this triggers human review
 timeout_ms           = 1800000 # 30 minutes — auto-rejected after this
+timeout_decay        = 0.5    # halve per consecutive non-response
+timeout_floor_ms     = 300000 # 5 min minimum
 
 # ── Constraint Wiki ───────────────────────────────────────────────────────────
 # When disabled (default), loads all .md files from corpus_path — identical to
@@ -676,6 +689,7 @@ conflict_beta_bucket_prefix         = "H2AI_CONFLICT"
 tasks_stream               = "H2AI_TASKS"
 telemetry_stream           = "H2AI_TELEMETRY"
 results_stream             = "H2AI_RESULTS"
+signals_stream             = "H2AI_SIGNALS"
 
 [state.delta]
 enabled           = true

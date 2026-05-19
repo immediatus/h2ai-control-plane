@@ -106,6 +106,8 @@ async fn system_chain_absent_task_completes_without_panic() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -160,6 +162,8 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -521,6 +525,8 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

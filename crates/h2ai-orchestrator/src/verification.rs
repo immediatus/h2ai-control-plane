@@ -100,6 +100,7 @@ impl VerificationPhase {
                     max_tokens,
                     &cache,
                     consensus_passes,
+                    threshold,
                 )
                 .await;
                 (proposal, results, any_cache_hit)
@@ -290,6 +291,7 @@ impl VerificationPhase {
                             max_tokens,
                             cache,
                             consensus_passes,
+                            threshold,
                         )
                     },
                 ))
@@ -409,6 +411,7 @@ impl VerificationPhase {
         let sp = config.evaluator_system_prompt.clone();
         let tau = config.evaluator_tau;
         let max_tokens = config.evaluator_max_tokens;
+        let threshold = config.threshold;
 
         let scoring_cache = new_eval_cache();
         let futures = proposals.into_iter().map(|proposal| {
@@ -426,6 +429,7 @@ impl VerificationPhase {
                     max_tokens,
                     &cache,
                     1, // score_proposals uses single-pass scoring (used for TAO estimator)
+                    threshold,
                 )
                 .await;
                 let score = aggregate_compliance_score(&results);
@@ -446,6 +450,9 @@ impl VerificationPhase {
         max_tokens: u64,
         cache: &EvalCache,
         consensus_passes: u8,
+        // Used as the hard pass threshold for the rubric fallback (empty corpus).
+        // Respects the caller's verify_threshold rather than a hardcoded constant.
+        rubric_threshold: f64,
     ) -> (Vec<ComplianceResult>, bool) {
         // If corpus is empty, fall back to the CoT rubric (G-Eval, arxiv 2303.16634).
         // The default rubric (h2ai_config::prompts::COT_RUBRIC) is criteria-first to reduce
@@ -463,7 +470,9 @@ impl VerificationPhase {
                 vec![ComplianceResult {
                     constraint_id: "__rubric__".into(),
                     score,
-                    severity: ConstraintSeverity::Hard { threshold: 0.45 },
+                    severity: ConstraintSeverity::Hard {
+                        threshold: rubric_threshold,
+                    },
                     remediation_hint: None,
                 }],
                 false,

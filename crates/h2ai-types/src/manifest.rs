@@ -1,4 +1,4 @@
-use crate::config::{ParetoWeights, ReviewGate, RoleSpec};
+use crate::config::{AgentRole, ParetoWeights, ReviewGate, RoleSpec};
 use crate::identity::TenantId;
 use crate::sizing::OracleSpec;
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,10 @@ pub struct ExplorerSlotConfig {
     /// current external knowledge (library versions, security advisories, regulations).
     #[serde(default)]
     pub search_enabled: bool,
+    /// Knowledge profile role for this slot. Determines RAPTOR retrieval mode,
+    /// PPR hops, and domain-tag filtering. Defaults to Executor when unset.
+    #[serde(default)]
+    pub agent_role: AgentRole,
 }
 
 /// POST /tasks request body

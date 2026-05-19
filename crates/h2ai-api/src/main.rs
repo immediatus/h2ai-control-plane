@@ -1,4 +1,3 @@
-mod approval_reaper;
 mod bootstrap;
 mod constraint_source;
 mod debug_record;
@@ -150,6 +149,10 @@ async fn main() {
     nats.ensure_infrastructure()
         .await
         .expect("NATS infrastructure setup");
+
+    nats.provision_signals_stream()
+        .await
+        .expect("failed to provision H2AI_SIGNALS JetStream stream");
 
     // Seed Bayesian bootstrap priors for all adapter profiles so Thompson sampling
     // doesn't start cold. Idempotent — skips adapters that already have OPRO state.
@@ -446,12 +449,6 @@ async fn main() {
         let acc = crate::shadow_auditor::ShadowAuditorAccumulator::new(shadow_state);
         app_state.shadow_accumulator = Some(Arc::new(tokio::sync::Mutex::new(acc)));
         tracing::info!(target: "h2ai.startup", "shadow auditor accumulator wired");
-    }
-
-    // Spawn HITL approval reaper — scans for timed-out approvals every 60s
-    {
-        let reaper_state = Arc::new(app_state.clone());
-        tokio::spawn(crate::approval_reaper::run_approval_reaper(reaper_state));
     }
 
     // Route versions are permanent API contracts — hardcoded, not runtime config.

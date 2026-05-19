@@ -231,7 +231,116 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
         })
         .collect();
 
-    // ── Phase B: async context assembly ──────────────────────────────────────
+    // ── Phase B1: knowledge queries (parallel, non-fatal) ───────────────────────
+    use h2ai_knowledge::types::{KnowledgeQuery, NodeDepth};
+    use h2ai_types::knowledge::profile_for_role;
+
+    let knowledge_results: Vec<(Option<String>, Option<String>, Option<String>)> = {
+        let futs: Vec<_> = (0..slot_data.len())
+            .map(|idx| {
+                let provider = engine_input.knowledge_provider.clone();
+                let store = engine_input.induction_store.clone();
+                let domain_tags = engine_input.manifest.constraint_tags.clone();
+                let description = engine_input.manifest.description.clone();
+                let agent_role = if effective_slot_configs.is_empty() {
+                    h2ai_types::config::AgentRole::Executor
+                } else {
+                    effective_slot_configs[idx % effective_slot_configs.len()]
+                        .agent_role
+                        .clone()
+                };
+                async move {
+                    let mut profile = profile_for_role(&agent_role);
+                    if let Some(ref store) = store {
+                        match store.load_patterns(&domain_tags, &agent_role).await {
+                            Ok(patterns) if !patterns.is_empty() => {
+                                profile.explicit_ids =
+                                    patterns.into_iter().map(|p| p.node_id).collect();
+                            }
+                            _ => {}
+                        }
+                    }
+                    let (global, topic, tension) = if let Some(ref provider) = provider {
+                        let mode = match profile.mode {
+                            h2ai_types::knowledge::RetrievalMode::TreeTraversal => {
+                                h2ai_knowledge::types::RetrievalMode::TreeTraversal
+                            }
+                            h2ai_types::knowledge::RetrievalMode::CollapsedTree => {
+                                h2ai_knowledge::types::RetrievalMode::CollapsedTree
+                            }
+                        };
+                        // Global depth omitted: the synthesized global node spans the entire
+                        // corpus and can be very large. Coordinator gets holistic orientation
+                        // from CollapsedTree over Topic+Leaf which is sufficient at top_k=3.
+                        static TOPIC_LEAF: &[NodeDepth] = &[NodeDepth::Topic, NodeDepth::Leaf];
+                        let query = KnowledgeQuery {
+                            text: &description,
+                            tags: &domain_tags,
+                            explicit_ids: &profile.explicit_ids,
+                            top_k: profile.top_k,
+                            depths: TOPIC_LEAF,
+                            mode,
+                            scope: h2ai_knowledge::types::SearchScope::Auto,
+                            expand_hops: profile.expand_hops,
+                        };
+                        let result = provider.query(&query).await;
+                        let global = if result.nodes.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                result
+                                    .nodes
+                                    .iter()
+                                    .map(|(n, _)| n.synthesis.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n"),
+                            )
+                        };
+                        let topic = if profile.domain_tag_boost {
+                            let filtered: Vec<_> = result
+                                .nodes
+                                .iter()
+                                .filter(|(n, _)| n.domains.iter().any(|d| domain_tags.contains(d)))
+                                .map(|(n, _)| n.synthesis.as_str())
+                                .collect();
+                            if filtered.is_empty() {
+                                None
+                            } else {
+                                Some(filtered.join("\n\n"))
+                            }
+                        } else {
+                            None
+                        };
+                        // Synthesizer has domain_tag_boost=false so topic=None, but tensions
+                        // can still be Some when cross-domain Topic nodes surfaced tensions.
+                        let tension = if !result.surfaced_tensions.is_empty()
+                            && matches!(agent_role, h2ai_types::config::AgentRole::Synthesizer)
+                        {
+                            Some(
+                                result
+                                    .surfaced_tensions
+                                    .iter()
+                                    .map(|t| {
+                                        format!("- {} ↔ {}: {}", t.domain_a, t.domain_b, t.reason)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            )
+                        } else {
+                            None
+                        };
+                        (global, topic, tension)
+                    } else {
+                        (None, None, None)
+                    };
+                    (global, topic, tension)
+                }
+            })
+            .collect();
+        join_all(futs).await
+    };
+
+    // ── Phase B2: async context assembly ─────────────────────────────────────────
     use crate::context_assembler::{ContextAssembler, ContextAssemblerInput};
 
     let assembled_ctx_futs: Vec<_> = slot_data
@@ -255,8 +364,9 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
                 quality_guard_ratio: engine_input.cfg.context_quality_guard_ratio,
                 compression_adapter: input.compression_adapter.as_deref(),
                 stable_cache: input.stable_cache.as_deref(),
-                global_knowledge: None,
-                topic_knowledge: None,
+                global_knowledge: knowledge_results[idx].0.as_deref(),
+                topic_knowledge: knowledge_results[idx].1.as_deref(),
+                constraint_tensions: knowledge_results[idx].2.as_deref(),
             };
             ContextAssembler::build(assembler_input)
         })

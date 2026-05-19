@@ -194,6 +194,17 @@ impl TaskStore {
             entry.status = TaskPhase::AwaitingApproval.status_str().into();
         }
     }
+
+    /// Returns `true` when the task exists and has not yet reached a terminal phase
+    /// (`Resolved` or `Failed`).  Returns `false` for unknown tasks.
+    pub fn is_active(&self, id: &TaskId) -> bool {
+        match self.0.get(&id.to_string()) {
+            Some(entry) => {
+                entry.phase != TaskPhase::Resolved as u8 && entry.phase != TaskPhase::Failed as u8
+            }
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]

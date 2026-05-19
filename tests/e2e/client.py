@@ -58,6 +58,32 @@ def stream_events(task_id: str, tenant_id: str = DEFAULT_TENANT, timeout_s: int 
                     yield ev
 
 
+def submit_signal(
+    task_id: str,
+    payload: dict,
+    tenant_id: str = DEFAULT_TENANT,
+    timeout_ms: int | None = None,
+) -> dict:
+    """POST /signal — returns parsed response body.
+
+    payload must be a SignalPayload dict, e.g.:
+      {"kind": "Approve", "data": {"approved": True, "reviewer_note": "...", "operator_id": "..."}}
+      {"kind": "WaveContinue", "data": {"grounding": "...", "mandate_override": None}}
+    """
+    body: dict = {"payload": payload}
+    if timeout_ms is not None:
+        body["timeout_ms"] = timeout_ms
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        _task_url(tenant_id, task_id, "signal"),
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
 def wait_for_health(timeout_s: int = 120) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:

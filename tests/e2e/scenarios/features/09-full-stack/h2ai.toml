@@ -1,0 +1,54 @@
+# Full-stack: ALL features enabled simultaneously.
+# This is the definitive H2AI benchmark config — measures cumulative uplift
+# from thinking loop + SRANI + verifier consensus + constraint wiki + leader election
+# + Bm25Wiki knowledge provider (role-stratified RAPTOR retrieval, induction store).
+# Compare against baseline.toml (bare H2AI pipeline, no features) and
+# --context-augmented (LLM with constraints injected, no orchestration).
+
+calibration_max_tokens = 512
+calibration_adapter_count = 1
+nats_url = "nats://localhost:4222"
+verifier_consensus_passes = 2
+verify_threshold = 0.3
+max_autonomic_retries = 3
+leader_enabled = true
+leader_stagnation_threshold = 0.02
+leader_stagnation_waves = 2
+leader_eig_candidates = 2
+leader_diagnosis_max_tokens = 128
+leader_diagnosis_tau = 0.3
+
+[safety]
+profile = "development"
+
+[knowledge]
+provider = "Bm25Wiki"
+
+[knowledge.source]
+YamlDir = { path = "tests/e2e/constraints" }
+
+[constraint_wiki]
+enabled     = true
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[srani]
+enabled        = true
+adaptive       = true
+gate_threshold = 0.50
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 2
+max_archetypes     = 4
+coverage_threshold = 0.60
+
+debug_log_path = "/tmp/h2ai-debug-09-full-stack.ndjson"

@@ -178,7 +178,6 @@ pub async fn submit_task(
         let bandit = std::sync::Arc::clone(&ts.bandit_state);
         let task_id_for_failure = task_id_clone.clone();
         let oracle_spec_clone = manifest_clone.oracle.clone();
-        let require_approval_clone = manifest_clone.require_approval;
         // Pre-serialize manifest for checkpoint (manifest_clone is moved into input below).
         let manifest_json_for_checkpoint =
             serde_json::to_string(&manifest_clone).unwrap_or_default();
@@ -439,10 +438,12 @@ pub async fn submit_task(
             srani_grounding_chain: state_clone.srani_grounding_chain.clone(),
             nats_raw: None,
             tenant_id: manifest_clone.tenant_id.clone(),
-            nats: None,
+            nats: Some(state_clone.nats.clone()),
             prev_assembled_contexts: Vec::new(),
             compression_adapter: None,
             stable_cache: None,
+            knowledge_provider: Some(state_clone.knowledge_provider.clone()),
+            induction_store: None,
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -491,80 +492,6 @@ pub async fn submit_task(
                         .await
                     {
                         tracing::warn!(task_id = %output.task_id, "checkpoint write failed (best-effort): {e}");
-                    }
-                }
-                // HITL approval gate: check conditions before publishing any events
-                let needs_approval = state_clone.cfg.hitl.enabled
-                    && oracle_spec_clone.is_none()  // oracle tasks always auto-proceed
-                    && (require_approval_clone
-                        || output.attribution.q_confidence < state_clone.cfg.hitl.confidence_threshold);
-
-                if needs_approval {
-                    use h2ai_types::approval::{compute_risk_level, ApprovalRecord};
-                    use h2ai_types::events::{ApprovalTrigger, PendingApprovalEvent};
-
-                    let triggered_by = if require_approval_clone {
-                        ApprovalTrigger::ManifestFlag
-                    } else {
-                        ApprovalTrigger::LowConfidence
-                    };
-                    let risk_level =
-                        compute_risk_level(&triggered_by, output.attribution.q_confidence);
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let timeout_at_ms = now_ms + state_clone.cfg.hitl.timeout_ms;
-
-                    // 1. Write approval record to KV
-                    let record = ApprovalRecord {
-                        task_id: output.task_id.to_string(),
-                        tenant_id: task_tenant_id.clone(),
-                        proposed_output: output.resolved_output.clone(),
-                        q_confidence: output.attribution.q_confidence,
-                        triggered_by: triggered_by.clone(),
-                        created_at_ms: now_ms,
-                        timeout_at_ms,
-                    };
-                    if let Err(e) = state_clone
-                        .nats
-                        .put_approval_record(&task_tenant_id, &record)
-                        .await
-                    {
-                        tracing::warn!(task_id = %output.task_id, "failed to write approval record: {e}");
-                        // Fall through to normal resolution if KV write fails
-                    } else {
-                        // 2. Publish PendingApproval event
-                        let n_used = output.selection_resolved.n_input_proposals as u32;
-                        let prediction_basis_u8 = match output.attribution.prediction_basis {
-                            h2ai_types::sizing::PredictionBasis::Heuristic => 0u8,
-                            h2ai_types::sizing::PredictionBasis::Empirical => 2u8,
-                        };
-                        let pending_ev =
-                            h2ai_types::events::H2AIEvent::PendingApproval(PendingApprovalEvent {
-                                task_id: output.task_id.clone(),
-                                proposed_output: output.resolved_output.clone(),
-                                q_confidence: output.attribution.q_confidence,
-                                prediction_basis: prediction_basis_u8,
-                                n_used,
-                                risk_level,
-                                triggered_by,
-                                timeout_at_ms,
-                                timestamp_ms: now_ms,
-                            });
-                        if let Err(e) = state_clone
-                            .nats
-                            .publish_event(&output.task_id, &pending_ev)
-                            .await
-                        {
-                            tracing::warn!(task_id = %output.task_id, "failed to publish PendingApproval: {e}");
-                        }
-
-                        // 3. Update task store phase
-                        state_clone.store.set_awaiting_approval(&output.task_id);
-
-                        // 4. Thread is free — checkpoint already written above
-                        return;
                     }
                 }
                 // Debug NDJSON log: append one JSON line when debug_log_path is set.

@@ -14,6 +14,7 @@ Usage:
   python3 tests/e2e/replay.py --config baseline.toml benchmark   # run with alternate config
   python3 tests/e2e/replay.py --trials 3 benchmark               # run k times, report pass^k
   python3 tests/e2e/replay.py --compare benchmark                # h2ai vs baseline delta table
+  python3 tests/e2e/replay.py --triple features/09-full-stack    # 3-way: LLM vs LLM+RAG vs H2AI
 
 Output per run:
   tests/e2e/results/<scenario>/<timestamp>/
@@ -35,7 +36,7 @@ import tomllib
 import traceback
 import urllib.request
 
-from client import submit_task, stream_events, wait_for_health, DEFAULT_TENANT
+from client import submit_task, stream_events, submit_signal, wait_for_health, DEFAULT_TENANT
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 SCENARIOS_DIR = pathlib.Path(__file__).parent / "scenarios"
@@ -149,6 +150,8 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     oracle_calibration_patched: dict | None = None
 
     hitl_gate_fired = False
+    approval_signal_context: dict | None = None
+    approval_resolved_event: dict | None = None
     leader_elected = False
     leader_elected_events: list[dict] = []
 
@@ -158,24 +161,59 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         suffix = ""
 
         if kind == "PendingApproval":
-            approve_url = f"http://localhost:8080/v1/{tenant_id}/tasks/{task_id}/approve"
-            approve_body = json.dumps({
-                "approved": True,
-                "reviewer_note": "auto-approved by e2e harness",
-                "operator_id": "e2e-harness",
-            }).encode()
-            req = urllib.request.Request(
-                approve_url,
-                data=approve_body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
+            # Verify the event is for the task and tenant we submitted
+            event_task_id = str(event.get("task_id", ""))
+            if event_task_id != task_id:
+                raise AssertionError(
+                    f"PendingApproval task_id mismatch: got {event_task_id!r}, expected {task_id!r}"
+                )
+
+            operator_id = "e2e-harness"
+            reviewer_note = "auto-approved by e2e harness"
+            approval_signal_context = {
+                "task_id": task_id,
+                "tenant_id": tenant_id,
+                "operator_id": operator_id,
+                "reviewer_note": reviewer_note,
+            }
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    suffix = f"  → auto-approved (HTTP {resp.status})"
+                resp = submit_signal(
+                    task_id=task_id,
+                    tenant_id=tenant_id,
+                    payload={
+                        "kind": "Approve",
+                        "data": {
+                            "approved": True,
+                            "reviewer_note": reviewer_note,
+                            "operator_id": operator_id,
+                        },
+                    },
+                )
+                suffix = f"  → signal queued (status={resp.get('status')})"
             except Exception as exc:
-                suffix = f"  → approval failed: {exc}"
+                suffix = f"  → signal failed: {exc}"
             hitl_gate_fired = True
+
+        elif kind == "ApprovalResolved":
+            # Verify the resolved event echoes back what we sent
+            approval_resolved_event = event
+            ev_task_id = str(event.get("task_id", ""))
+            ev_op = event.get("operator_id", "")
+            ev_note = event.get("reviewer_note")
+            ev_approved = event.get("approved")
+            ctx = approval_signal_context or {}
+            errors = []
+            if ev_task_id != task_id:
+                errors.append(f"task_id {ev_task_id!r} != {task_id!r}")
+            if ctx and ev_op != ctx.get("operator_id"):
+                errors.append(f"operator_id {ev_op!r} != {ctx.get('operator_id')!r}")
+            if ctx and ev_note != ctx.get("reviewer_note"):
+                errors.append(f"reviewer_note {ev_note!r} != {ctx.get('reviewer_note')!r}")
+            if not ev_approved:
+                errors.append(f"approved={ev_approved!r}, expected True")
+            if errors:
+                raise AssertionError("ApprovalResolved context mismatch: " + "; ".join(errors))
+            suffix = f"  approved={ev_approved}  operator={ev_op!r}"
 
         elif kind == "VerificationScored":
             score = event.get("score", 0.0)
@@ -257,6 +295,8 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         "prediction_basis_final": prediction_basis_final,
         "oracle_calibration_patched": oracle_calibration_patched,
         "hitl_gate_fired": hitl_gate_fired,
+        "approval_signal_context": approval_signal_context,
+        "approval_resolved_event": approval_resolved_event,
         "leader_elected": leader_elected,
         "leader_elected_events": leader_elected_events,
     }
@@ -340,7 +380,7 @@ def check_assertions(result: dict, expected: dict, task_json: dict) -> dict[str,
         # Tests that SRANI was evaluated on at least one proposal (emitted any event).
         # Use srani_active instead of srani_cfi_check to avoid dependency on fabrication firing.
         exp = expected["srani_active"]
-        actual = result.get("srani_events_count", 0) > 0 or result.get("srani_cfi") is not None
+        actual = len(result.get("srani_events", [])) > 0
         out["srani_active"] = {"expected": exp, "actual": actual, "pass": actual == exp}
 
     if "srani_cfi_check" in expected:
@@ -705,6 +745,77 @@ def _run_h2ai_trials(
     }
 
 
+def _baseline_summary(result: dict) -> dict:
+    """Wrap run_baseline() result in the same shape as _run_h2ai_trials() metrics."""
+    return {
+        "trials": 1,
+        "passing": 1 if result["pass"] else 0,
+        "pass_k": 1.0 if result["pass"] else 0.0,
+        "j_eff": None,
+        "avg_verification_score": result.get("checks_present", 0) / max(result.get("checks_total", 1), 1),
+        "valid_proposals": 0,
+        "thinking_loop_iters": None,
+        "hitl_fired": False,
+        "leader_elected": None,
+        "leader_election_count": 0,
+        "srani_events": 0,
+        "checks_pass_rate": (
+            result["checks_present"] / result["checks_total"]
+            if result.get("checks_total", 0) > 0 else None
+        ),
+    }
+
+
+def _print_triple_table(
+    h2ai_metrics: dict,
+    llm_metrics: dict,
+    rag_metrics: dict,
+) -> None:
+    def fmt(v):
+        if v is None:
+            return "—"
+        if isinstance(v, float):
+            return f"{v:.3f}"
+        if isinstance(v, bool):
+            return "yes" if v else "no"
+        return str(v)
+
+    def delta(a, b):
+        if a is None or b is None:
+            return "—"
+        if isinstance(a, float) and isinstance(b, float):
+            d = a - b
+            return f"{'+' if d >= 0 else ''}{d:.3f}"
+        if isinstance(a, bool) and isinstance(b, bool):
+            return "✓" if a and not b else ("✗" if not a and b else "=")
+        if isinstance(a, int) and isinstance(b, int):
+            d = a - b
+            return f"{'+' if d >= 0 else ''}{d}"
+        return "—"
+
+    rows = [
+        ("pass^k",          llm_metrics["pass_k"],                rag_metrics["pass_k"],                h2ai_metrics["pass_k"]),
+        ("constraint_pass", llm_metrics.get("checks_pass_rate"),  rag_metrics.get("checks_pass_rate"),  h2ai_metrics.get("checks_pass_rate")),
+        ("avg_verif_score", llm_metrics["avg_verification_score"],rag_metrics["avg_verification_score"],h2ai_metrics["avg_verification_score"]),
+        ("j_eff",           llm_metrics["j_eff"],                 rag_metrics["j_eff"],                 h2ai_metrics["j_eff"]),
+        ("thinking_iters",  llm_metrics["thinking_loop_iters"],   rag_metrics["thinking_loop_iters"],   h2ai_metrics["thinking_loop_iters"]),
+        ("srani_events",    llm_metrics["srani_events"],          rag_metrics["srani_events"],          h2ai_metrics["srani_events"]),
+        ("leader_elected",  llm_metrics.get("leader_elected"),    rag_metrics.get("leader_elected"),    h2ai_metrics.get("leader_elected")),
+        ("hitl_fired",      llm_metrics["hitl_fired"],            rag_metrics["hitl_fired"],            h2ai_metrics["hitl_fired"]),
+    ]
+    col_w = 14
+    sep = "─" * (col_w * 4 + 14)
+    print(f"\n{sep}")
+    print(f"  {'Metric':<{col_w}}  {'bare LLM':>{col_w}}  {'LLM+RAG':>{col_w}}  {'H2AI':>{col_w}}  {'Δ(H2AI-RAG)':>{col_w}}")
+    print(sep)
+    for name, llm_v, rag_v, h2ai_v in rows:
+        print(
+            f"  {name:<{col_w}}  {fmt(llm_v):>{col_w}}  {fmt(rag_v):>{col_w}}"
+            f"  {fmt(h2ai_v):>{col_w}}  {delta(h2ai_v, rag_v):>{col_w}}"
+        )
+    print(f"{sep}\n")
+
+
 def _print_delta_table(h2ai_metrics: dict, baseline_metrics: dict) -> None:
     def fmt(v):
         if v is None:
@@ -763,6 +874,8 @@ def main() -> None:
                         help="run each scenario K times and report pass^k (default: 1)")
     parser.add_argument("--compare", action="store_true",
                         help="run h2ai.toml then baseline.toml and print delta table")
+    parser.add_argument("--triple", action="store_true",
+                        help="3-way comparison: bare LLM vs LLM+constraints (RAG) vs H2AI full")
     args = parser.parse_args()
 
     if args.list:
@@ -811,6 +924,39 @@ def main() -> None:
                     verdict = "PASS" if h2ai_m["pass_k"] > 0 and h2ai_m["pass_k"] >= base_m["pass_k"] else "FAIL/WORSE"
                 else:
                     verdict = "PASS" if h2ai_m["pass_k"] > base_m["pass_k"] else "SAME/WORSE"
+                overall[scenario_name] = verdict
+            except Exception as e:
+                overall[scenario_name] = f"ERROR: {e}"
+                print(f"  → ERROR: {e}")
+                traceback.print_exc()
+            print()
+
+    elif args.triple:
+        for scenario_name, scenario_dir, task in scenarios:
+            print(f"{'='*60}")
+            print(f"TRIPLE: {scenario_name}")
+            print(f"  bare LLM  →  LLM+RAG (constraints injected)  →  H2AI full")
+            print(f"{'='*60}")
+            try:
+                print(f"\n[1/3 — bare LLM]")
+                llm_result = run_baseline(scenario_name, task, constraint_context="")
+                llm_m = _baseline_summary(llm_result)
+
+                print(f"\n[2/3 — LLM+RAG (constraints injected into system prompt)]")
+                constraint_ctx = _load_constraint_context(scenario_dir, task)
+                rag_result = run_baseline(scenario_name, task, constraint_context=constraint_ctx)
+                rag_m = _baseline_summary(rag_result)
+
+                print(f"\n[3/3 — H2AI full (h2ai.toml)]")
+                h2ai_m = _run_h2ai_trials(scenario_name, scenario_dir, task, "h2ai.toml", args.trials)
+
+                _print_triple_table(h2ai_m, llm_m, rag_m)
+
+                compare_semantics = task.get("_compare_semantics", "strict")
+                if compare_semantics == "no_regression":
+                    verdict = "PASS" if h2ai_m["pass_k"] > 0 and h2ai_m["pass_k"] >= rag_m["pass_k"] else "FAIL/WORSE"
+                else:
+                    verdict = "PASS" if h2ai_m["pass_k"] > rag_m["pass_k"] else "SAME/WORSE-THAN-RAG"
                 overall[scenario_name] = verdict
             except Exception as e:
                 overall[scenario_name] = f"ERROR: {e}"

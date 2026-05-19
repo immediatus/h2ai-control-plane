@@ -43,4 +43,7 @@ pub mod judge;
 pub use judge::{JudgePersona, PanelDiversityKind};
 pub mod sizing;
 pub use conflict::{ConflictRateAccumulator, ConflictRateSample};
+pub mod knowledge;
 pub mod thinking;
+pub use knowledge::{profile_for_role, KnowledgeNodePattern, KnowledgeProfile, RetrievalMode};
+pub mod signal;

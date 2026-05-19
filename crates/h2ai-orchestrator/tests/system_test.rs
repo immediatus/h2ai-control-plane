@@ -210,6 +210,8 @@ async fn system_solves_well_formed_problem() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -292,6 +294,8 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -363,6 +367,8 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -471,6 +477,8 @@ async fn system_resolves_conflict_via_bft_consensus() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -596,6 +604,8 @@ async fn system_shadow_mode_agreement_resolves_task() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -664,6 +674,8 @@ async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -738,6 +750,8 @@ async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -839,6 +853,8 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -922,6 +938,8 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -1001,6 +1019,8 @@ async fn system_c3_degraded_event_when_domains_uncovered() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();

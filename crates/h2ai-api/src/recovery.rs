@@ -199,10 +199,12 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             srani_grounding_chain: None,
             nats_raw: None,
             tenant_id,
-            nats: None,
+            nats: Some(state.nats.clone()),
             prev_assembled_contexts: Vec::new(),
             compression_adapter: None,
             stable_cache: None,
+            knowledge_provider: Some(state.knowledge_provider.clone()),
+            induction_store: None,
         };
 
         match ExecutionEngine::run_from_checkpoint(input, checkpoint.clone()).await {

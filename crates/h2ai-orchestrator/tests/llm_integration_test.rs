@@ -228,6 +228,8 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let max_allowed_proposals = n_max_floor * (cfg.max_autonomic_retries + 1);
@@ -407,6 +409,8 @@ async fn engine_full_pipeline_debug_trace() {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     };
 
     let output = match ExecutionEngine::run_offline(input).await {

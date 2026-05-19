@@ -1,7 +1,6 @@
-# Feature isolation: new knowledge provider (Bm25Wiki) ON
-# Verifies server starts with [knowledge] config and processes tasks without crashing.
-# The knowledge provider is built at startup but not yet injected into generation context
-# (pipeline wiring is a future step); this test confirms no startup regression.
+# Feature isolation: Bm25Wiki knowledge provider wired into generation pipeline.
+# Verifies domain-grounded knowledge reaches explorer context (global_knowledge + topic_knowledge)
+# and constraint checks improve with role-stratified RAPTOR retrieval.
 
 calibration_max_tokens = 512
 calibration_adapter_count = 1

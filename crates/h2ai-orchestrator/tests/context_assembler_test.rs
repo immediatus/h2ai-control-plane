@@ -175,6 +175,7 @@ fn make_input_with_leader(lp: &str) -> ContextAssemblerInput<'_> {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: None,
+        constraint_tensions: None,
     }
 }
 
@@ -195,6 +196,7 @@ fn make_input_with_retry(rc: &str) -> ContextAssemblerInput<'_> {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: None,
+        constraint_tensions: None,
     }
 }
 
@@ -215,6 +217,7 @@ fn make_empty_input<'a>() -> ContextAssemblerInput<'a> {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: None,
+        constraint_tensions: None,
     }
 }
 
@@ -308,6 +311,7 @@ async fn build_no_budget_returns_compression_none() {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: None,
+        constraint_tensions: None,
     };
     let result = ContextAssembler::build(input).await;
     assert_eq!(result.compression, CompressionKind::None);
@@ -334,6 +338,7 @@ async fn build_with_budget_runs_rule_pass() {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: None,
+        constraint_tensions: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -390,6 +395,7 @@ async fn build_with_prev_wave_sets_delta_flag() {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: None,
+        constraint_tensions: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -416,6 +422,7 @@ async fn global_knowledge_section_preserved_under_tight_budget() {
         stable_cache: None,
         global_knowledge: Some("Global overview: financial systems require atomicity."),
         topic_knowledge: None,
+        constraint_tensions: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -444,6 +451,7 @@ async fn topic_knowledge_section_included_when_provided() {
         stable_cache: None,
         global_knowledge: None,
         topic_knowledge: Some("Topic: idempotency patterns for distributed payments."),
+        constraint_tensions: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(

@@ -36,9 +36,10 @@ impl ParetoWeights {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub enum AgentRole {
     Coordinator,
+    #[default]
     Executor,
     Evaluator,
     Synthesizer,

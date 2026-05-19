@@ -80,6 +80,11 @@ pub struct TaskReasoningCheckpoint {
     pub resolved_attribution_json: Option<String>,
     /// `EngineOutput::waste_ratio` captured at resolution for the same reason.
     pub resolved_waste_ratio: Option<f64>,
+
+    /// Number of consecutive HITL gates where the timeout fired without a human response.
+    /// Drives the adaptive timeout decay formula. Reset to 0 when any signal is received.
+    #[serde(default)]
+    pub hitl_timeouts_fired: u32,
 }
 
 impl TaskReasoningCheckpoint {
@@ -116,6 +121,7 @@ impl TaskReasoningCheckpoint {
             tau_values_that_converged: None,
             resolved_attribution_json: None,
             resolved_waste_ratio: None,
+            hitl_timeouts_fired: 0,
         }
     }
 

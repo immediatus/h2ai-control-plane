@@ -18,9 +18,10 @@ All task routes include `:tenant_id` as a URL path segment. The path value is au
 | `GET` | `/:tenant_id/tasks/:task_id/events` | SSE stream of `H2AIEvent` for a task. |
 | `GET` | `/:tenant_id/tasks/:task_id` | Current task status snapshot. |
 | `POST` | `/:tenant_id/tasks/:task_id/merge` | Resolve a Merge Authority decision. |
-| `POST` | `/:tenant_id/tasks/:task_id/approve` | Submit HITL approval decision (`approved`, `reviewer_note`, `operator_id`). |
+| `POST` | `/:tenant_id/tasks/:task_id/signal` | Inject a typed `SignalPayload` (`Approve` or `WaveContinue`) into a running task. Returns 202 immediately; engine consumes from JetStream. |
+| `POST` | `/:tenant_id/tasks/:task_id/approve` | **Deprecated** — returns 301 redirect to `/signal`. Kept for one release. |
 | `POST` | `/:tenant_id/tasks/:task_id/clarify` | Submit operator answer to a pending oracle clarification. |
-| `GET` | `/:tenant_id/tasks/:task_id/approval` | Current `ApprovalRecord` for tasks in `AwaitingApproval` phase; 404 otherwise. |
+| `GET` | `/:tenant_id/tasks/:task_id/approval` | **Deprecated** — returns 410 Gone; approval records removed. |
 | `GET` | `/:tenant_id/tasks/:task_id/recover` | Trigger snapshot+replay recovery for a task. |
 | `POST` | `/calibrate` | Start a calibration run. |
 | `GET` | `/calibrate/:cal_id/events` | SSE stream for an in-progress calibration. |
@@ -78,6 +79,37 @@ data: {"event_type": "...", "payload": {...}}
 ```
 
 Reconnect with `Last-Event-ID: <sequence>` to resume from the last seen offset.
+
+### POST /:tenant_id/tasks/:task_id/signal
+
+Injects a typed `SignalPayload` into a running task. Returns `202 Accepted` immediately; the engine consumes the message from JetStream asynchronously.
+
+**Request body:**
+
+```json
+{
+  "payload": {
+    "kind": "Approve",
+    "data": {
+      "approved": true,
+      "operator_id": "alice@acme.com",
+      "reviewer_note": "optional"
+    }
+  },
+  "timeout_ms": 3600000
+}
+```
+
+`timeout_ms` is optional. When supplied it overrides the engine's default review window for this task, clamped to `[signal_min_timeout_ms, signal_max_timeout_ms]`. Omit to use `hitl.timeout_ms`.
+
+**Signal kinds:**
+
+| `kind` | Purpose |
+|---|---|
+| `Approve` | Resolves the HITL gate. `approved: true` → task completes; `approved: false` → `TaskFailed`. |
+| `WaveContinue` | Injects `grounding` text or `mandate_override` at a `WaveCompleted` pause. Only processed when `signal_wave_window_ms > 0`. |
+
+**Response:** `202 Accepted`; `404` when task not found; `503` when task is not in a signalable state.
 
 ### POST /:tenant_id/tasks/:task_id/clarify
 
@@ -881,6 +913,37 @@ else:
     beta_eff = beta_base × (1−CG)   # latency-based proxy (legacy fallback)
 ```
 
+### Empirical ρ EMA (`rho_ema`)
+
+`RhoEmaState` accumulates pairwise error-correlation estimates from production task waves.
+Once sufficient observations exist, it replaces the `rho_mean = 1 − CG_mean` proxy in
+ensemble sizing and Q(N,p,ρ) Condorcet calculations.
+
+**Parameters (hardcoded in `rho_ema.rs` — not yet in reference.toml):**
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| EMA alpha | `0.10` | Smoothing factor per update. Effective window ≈ 10 tasks. |
+| Cold-start prior | `0.45` | Per-pair ρ prior before first observation (conservative mid-range). |
+| Steady-state threshold | `30` observations | After 30 pairwise observations, `rho_mean()` is used in place of the CG proxy. |
+
+**How it works:**
+After each task wave, the engine computes pairwise centered score products for all
+`(adapter_i, adapter_j)` pairs: `product = (score_i − p_mean) × (score_j − p_mean) / variance`,
+clamped to `[−1, 1]`. Each pair's EMA is updated as:
+`ema_new = (1 − α) × ema_old + α × product`.
+
+`rho_mean()` returns the mean over all pair EMAs, clamped to `[0.0, 0.99]`.
+Before any updates (empty map), returns `0.45`.
+
+**State storage:** In-memory per `TenantState` in the API process (`Arc<RwLock<RhoEmaState>>`).
+Not persisted to NATS KV — resets on server restart (steady-state reached within ~30 tasks
+of production traffic).
+
+**Transition to config:** When `rho_ema` steady state replaces the CG proxy, the transition
+is logged via `n_observations` on `CalibrationCompletedEvent`. Future work: persist EMA
+snapshot to `H2AI_CALIBRATION` KV alongside α and β so it survives restarts.
+
 ### Oracle Gate
 
 ```toml
@@ -938,11 +1001,24 @@ prior_weight = 5            # virtual task count for bootstrap Bayesian prior
 
 ### HITL
 
+Signal delivery uses JetStream durable push consumers (live since 2026-05-19). The old `H2AI_APPROVALS` KV bucket and `approval_reaper` background task are removed.
+
 | Field | Default | Purpose |
 |---|---|---|
 | `hitl.enabled` | `true` | Master switch; set `false` to bypass gate in dev/test. |
 | `hitl.confidence_threshold` | `0.50` | `q_confidence` below this triggers human review. |
-| `hitl.timeout_ms` | `1_800_000` | Review window length (30 minutes). After expiry the reaper auto-rejects. |
+| `hitl.timeout_ms` | `14_400_000` | Base review window (4 hours). Decays exponentially on consecutive non-responses (see `timeout_decay`). |
+| `hitl.timeout_decay` | `0.5` | Multiplier applied per consecutive timeout miss: `effective_ms = timeout_ms × decay^hitl_timeouts_fired`. Must be in (0.0, 1.0). |
+| `hitl.timeout_floor_ms` | `300_000` | Minimum effective window regardless of decay (5 minutes). |
+| `signal_wave_window_ms` | `0` | ms to pause at each `WaveCompleted` boundary waiting for a `WaveContinue` signal. `0` = disabled. |
+| `signal_min_timeout_ms` | `60_000` | Lower bound for caller-supplied `timeout_ms` in `POST /signal` body; values below this are clamped up. |
+| `signal_max_timeout_ms` | `86_400_000` | Upper bound for caller-supplied `timeout_ms` in `POST /signal` body; values above this are clamped down. |
+
+**JetStream stream:** `H2AI_SIGNALS` (subject `h2ai.signals.>`). Per-task consumer: `SIGNAL-{task_id_no_dashes}` (durable push, created before the phase loop, deleted on task close).
+
+**Signal subject:** `h2ai.signals.{tenant_bucket_safe}.{task_id}`.
+
+**`hitl_timeouts_fired`** is stored in `TaskReasoningCheckpoint` with `#[serde(default)]` so old checkpoints deserialize cleanly. Resets to 0 on successful operator response.
 
 ### Constraint Wiki
 
@@ -987,7 +1063,14 @@ The `[knowledge.source]` table is **externally-tagged**: the key (`YamlDir`) is 
 
 **Relationship to `constraint_wiki`:** Both systems can be active simultaneously. `constraint_wiki` handles mandatory tag-based injection (always runs, enforces hard-gate predicates). `knowledge` handles semantic retrieval into `GlobalKnowledge`/`TopicKnowledge` context assembler sections (optional, runs when `[knowledge]` is configured). If a constraint ID appears in both paths, the context assembler deduplicates it with the higher-importance entry winning.
 
-**Context assembler integration:** When the knowledge provider returns results, `NodeDepth::Global` nodes are injected as `SectionTag::GlobalKnowledge` (importance=1.0, preserve=true — survives all compression passes); `NodeDepth::Topic` nodes as `SectionTag::TopicKnowledge` (importance=0.8, preserve=false). The wiring from `AppState.knowledge_provider` into the generation pipeline is a future sprint (as of 2026-05-18 the provider is built at startup but not yet called in `generation.rs`).
+**Context assembler integration (GAP-F1 + GAP-F2, live 2026-05-18):** The knowledge provider is invoked per explorer slot in `generation.rs` Phase B1. Each slot's `agent_role` maps via `profile_for_role()` to a `KnowledgeProfile` that selects RAPTOR mode (TreeTraversal / CollapsedTree), PPR `expand_hops` (0–2), `top_k`, and `domain_tag_boost`. Query results populate `ContextAssemblerInput`:
+- `global_knowledge` → `SectionTag::GlobalKnowledge` (importance=1.0, preserve=true — survives all compression passes)
+- `topic_knowledge` → `SectionTag::TopicKnowledge` (importance=0.8, preserve=false); only present when `domain_tag_boost=true` and matching domain nodes exist
+- `constraint_tensions` → `SectionTag::ConstraintTension` (importance=0.85, preserve=false); only present for Synthesizer slots when `SurfacedTension` entries are non-empty
+
+The `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`, key format `knowledge.{node_id}.{role}`) records `KnowledgeNodePattern{node_id, role, domain_tags, hit_rate}` after each accepted merge. On subsequent tasks with matching `domain_tags`, high-hit_rate `node_ids` are prepended as `explicit_ids` in the query — bypassing BM25+ scoring for known-good nodes. Phase 1 approximation: `record()` uses `domain_tags` as proxy node IDs until full node_id threading through `EngineOutput` is plumbed. Failures at any layer degrade silently to `None` — task execution never blocks on knowledge.
+
+**Partial wiring note (2026-05-18):** `InductionStore` is wired into `EngineInput.induction_store` in `engine.rs`. However, `tasks.rs` and `recovery.rs` currently pass `induction_store: None` when constructing `EngineInput` — induction boost is therefore only active for tasks that go through the engine's internal retry path, not for initial submissions or recoveries from checkpoint. Follow-up work: wire `AppState.induction_store` into both handlers.
 
 ### Scheduler
 

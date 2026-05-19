@@ -80,3 +80,33 @@ fn task_checkpoint_j_eff_defaults_none_on_old_payload() {
         "j_eff must default to None for old payloads"
     );
 }
+
+#[test]
+fn reasoning_checkpoint_hitl_timeouts_fired_defaults_to_zero() {
+    // Simulate a checkpoint written before this field existed (no hitl_timeouts_fired key)
+    let raw = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "tenant_id": "t",
+        "created_at": 0,
+        "last_updated": 0,
+        "phase": "Created",
+        "constraint_tags": [],
+        "domain": null,
+        "task_quadrant": null,
+        "system_context_with_rubric_hash": 0,
+        "constraint_corpus_fingerprint": 0,
+        "shared_understanding": null,
+        "tensions": null,
+        "archetype_selection": null,
+        "thinking_iterations": null,
+        "completed_waves": [],
+        "retry_count": 0,
+        "retry_context_that_resolved": null,
+        "tried_topologies": [],
+        "tau_values_that_converged": null,
+        "resolved_attribution_json": null,
+        "resolved_waste_ratio": null
+    }"#;
+    let rc: h2ai_types::TaskReasoningCheckpoint = serde_json::from_str(raw).unwrap();
+    assert_eq!(rc.hitl_timeouts_fired, 0);
+}

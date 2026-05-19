@@ -2,6 +2,7 @@ pub mod approval;
 pub mod calibrate;
 pub mod health;
 pub mod recovery;
+pub mod signal;
 pub mod tasks;
 
 use crate::state::AppState;
@@ -29,6 +30,10 @@ pub fn task_router() -> Router<AppState> {
         .route(
             "/:tenant_id/tasks/:task_id/clarify",
             post(tasks::clarify_task),
+        )
+        .route(
+            "/:tenant_id/tasks/:task_id/signal",
+            post(signal::submit_signal),
         )
 }
 

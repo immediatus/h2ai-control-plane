@@ -112,8 +112,8 @@ POST   /:tenant_id/tasks
 GET    /:tenant_id/tasks/:task_id/events
 GET    /:tenant_id/tasks/:task_id
 POST   /:tenant_id/tasks/:task_id/merge
-POST   /:tenant_id/tasks/:task_id/approve
-GET    /:tenant_id/tasks/:task_id/approval
+POST   /:tenant_id/tasks/:task_id/signal
+POST   /:tenant_id/tasks/:task_id/approve   (deprecated — 301 redirect to /signal)
 POST   /:tenant_id/tasks/:task_id/clarify
 GET    /:tenant_id/tasks/:task_id/recover
 ```
@@ -127,7 +127,7 @@ Single-tenant deployments use `default` as the tenant ID. The `tenant_id` field 
 | Layer | Mechanism |
 |---|---|
 | Estimators | `TenantRegistry` — `DashMap<TenantId, Arc<TenantState>>`, lazily created per tenant |
-| NATS KV keys | Per-tenant prefix: `{tenant_id}/tao`, `{tenant_id}/bandit`, `{tenant_id}/srani`, `{tenant_id}/{task_id}` (approvals) |
+| NATS KV keys | Per-tenant prefix: `{tenant_id}/tao`, `{tenant_id}/bandit`, `{tenant_id}/srani` |
 | Task ownership | `TaskStore::get_for_tenant()` returns `None` for cross-tenant access |
 | Approval records | `ApprovalRecord.tenant_id` stored in the record; reaper uses the embedded tenant, never the URL |
 | Calibration | Shared (global) — calibration runs measure the adapter pool, not tenant workloads. New tenants inherit the default tenant's calibration on first task submission |
@@ -345,7 +345,78 @@ These are the system's hard limits. They are not bugs; they are physical or desi
 
 ---
 
-## 9. Knowledge Provider
+## 9. HITL Signal Operations
+
+The HITL gate uses JetStream push delivery (live since 2026-05-19). The old KV polling and `approval_reaper` are removed.
+
+### Sending an approval signal
+
+```bash
+curl -X POST http://localhost:8080/v1/acme/tasks/{task_id}/signal \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": {
+      "kind": "Approve",
+      "data": {
+        "approved": true,
+        "operator_id": "alice@acme.com",
+        "reviewer_note": "LGTM"
+      }
+    }
+  }'
+# 202 Accepted immediately; engine consumes from JetStream
+```
+
+`approved: false` rejects the task (publishes `TaskFailed`). `reviewer_note` is optional.
+
+**Optional caller-supplied timeout override** — include `"timeout_ms": 1800000` at the top level of the request body. The engine clamps the value to `[signal_min_timeout_ms, signal_max_timeout_ms]` (defaults: 60 000 – 86 400 000 ms). Omit to use the default `hitl.timeout_ms`.
+
+### Sending a WaveContinue signal
+
+`WaveContinue` injects grounding or a mandate override at a `WaveCompleted` boundary. Only processed when `signal_wave_window_ms > 0` (default 0, disabled):
+
+```bash
+curl -X POST http://localhost:8080/v1/acme/tasks/{task_id}/signal \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": {
+      "kind": "WaveContinue",
+      "data": {
+        "grounding": "Additional context: the API changed in v2.3 ...",
+        "mandate_override": null
+      }
+    }
+  }'
+```
+
+### Adaptive timeout decay
+
+If the HITL gate times out (no signal received before `effective_ms` expires), the engine auto-promotes with `operator_id = "system:timeout"` and increments `hitl_timeouts_fired`. Each subsequent timeout reduces the effective window:
+
+```
+effective_ms = timeout_ms × timeout_decay ^ hitl_timeouts_fired
+effective_ms = max(effective_ms, timeout_floor_ms)
+```
+
+Example with defaults (`timeout_ms=14_400_000`, `timeout_decay=0.5`, `timeout_floor_ms=300_000`):
+
+| Consecutive misses | Effective window |
+|---|---|
+| 0 | 4 h |
+| 1 | 2 h |
+| 2 | 1 h |
+| 3 | 30 min |
+| 4+ | 5 min (floor) |
+
+`hitl_timeouts_fired` resets to 0 on the next successful operator response.
+
+### Deprecated endpoint
+
+`POST /:tenant_id/tasks/:task_id/approve` returns **301 Moved Permanently** to `/signal`. Clients should migrate; the shim will be removed in the next release. `GET /:tenant_id/tasks/:task_id/approval` returns **410 Gone** — approval records no longer exist.
+
+---
+
+## 10. Knowledge Provider
 
 The `[knowledge]` section is optional. When absent, `PassthroughProvider` wraps the existing `ConstraintResolver` — behaviour is identical to pre-knowledge operation. Add `[knowledge]` to opt into hierarchical BM25+/PPR retrieval via `Bm25WikiProvider`.
 
@@ -402,10 +473,21 @@ All fields are optional; omitting `[knowledge.scoring]` applies the defaults sho
 - **`ppr_alpha`** — higher alpha (0.25+) reduces graph diffusion and keeps results closer to direct BM25 hits; lower alpha (0.10) allows more multi-hop expansion
 - **`leaf_score_multiplier`** — raise toward 1.0 if you want direct BM25 hits to dominate PPR-expanded results
 
+### How it reaches generation (GAP-F1, live 2026-05-18)
+
+Once enabled, the provider is queried automatically during every task's Phase B1 generation. Each explorer slot's `agent_role` (Coordinator / Executor / Evaluator / Synthesizer — defaults to `Executor`) selects a different RAPTOR retrieval mode and PPR-hop depth. Results flow into the slot's context as `[KNOWLEDGE]` (global, all roles), `[DOMAIN KNOWLEDGE]` (domain-filtered, Executor/Evaluator only), and `[CONSTRAINT TENSIONS]` (cross-domain tensions, Synthesizer only).
+
+The `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`) automatically records which constraint node patterns appeared in accepted proposals and boosts retrieval on subsequent matching tasks — no configuration required. To reset induction history for a tenant, delete the bucket: `nats kv purge H2AI_INDUCTION_{tenant}`.
+
+`ExplorerSlotConfig.agent_role` (in `h2ai.toml` manifest `explorers.slot_configs[*].agent_role`) controls per-slot retrieval strategy. Valid values: `"Coordinator"`, `"Executor"`, `"Evaluator"`, `"Synthesizer"`. Defaults to `"Executor"` when absent.
+
 ### Signals to watch
 
 | Signal | Meaning |
 |---|---|
 | Server log `building knowledge provider (Bm25Wiki)` | Provider built successfully at startup |
 | Server log `knowledge provider: passthrough` | No `[knowledge]` configured; using passthrough |
+| Debug log `global_knowledge Some(...)` per slot | Knowledge injection is live |
+| `induction_store put` warn log | NATS KV write failed for pattern recording (non-fatal) |
+| `InductionStore: corrupt pattern at key …` warn log | Deserialization failure in KV bucket (non-fatal, hit_rate treated as 0) |
 | `checks_present` below threshold in e2e results | Content checks may target knowledge that BM25 retrieval misses — try raising `topic_cluster_top_k` or adding `wiki/` topic nodes for the relevant domain |

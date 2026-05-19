@@ -59,6 +59,9 @@ pub enum SectionTag {
     GlobalKnowledge,
     /// Domain cluster synthesis. preserve=false, importance=0.8.
     TopicKnowledge,
+    /// Cross-domain constraint tensions surfaced by Synthesizer knowledge query.
+    /// preserve=false, importance=0.85. Only injected for Synthesizer slots.
+    ConstraintTension,
 }
 
 /// Input to ContextAssembler::build().
@@ -85,6 +88,8 @@ pub struct ContextAssemblerInput<'a> {
     pub global_knowledge: Option<&'a str>,
     /// Topic cluster synthesis text. preserve=false, importance=0.8. None = omit.
     pub topic_knowledge: Option<&'a str>,
+    /// Constraint tension text for Synthesizer slots. None = omit. preserve=false, importance=0.85.
+    pub constraint_tensions: Option<&'a str>,
 }
 
 pub struct ContextAssembler;
@@ -233,7 +238,7 @@ pub(crate) fn sections_to_text(sections: &[Section]) -> String {
 }
 
 /// Concatenate input pieces into a raw context string (no compression).
-pub(crate) fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
+pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(lp) = input.leader_prefix {
         if !lp.is_empty() {
@@ -272,6 +277,21 @@ pub(crate) fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
     if let Some(t) = input.tombstone {
         if !t.is_empty() {
             parts.push(t.to_string());
+        }
+    }
+    if let Some(gk) = input.global_knowledge {
+        if !gk.is_empty() {
+            parts.push(format!("[KNOWLEDGE]:\n{}", gk));
+        }
+    }
+    if let Some(tk) = input.topic_knowledge {
+        if !tk.is_empty() {
+            parts.push(format!("[DOMAIN KNOWLEDGE]:\n{}", tk));
+        }
+    }
+    if let Some(ct) = input.constraint_tensions {
+        if !ct.is_empty() {
+            parts.push(format!("[CONSTRAINT TENSIONS]:\n{}", ct));
         }
     }
     parts.join("\n\n")
@@ -395,6 +415,16 @@ pub fn build_sections(input: &ContextAssemblerInput<'_>) -> Vec<Section> {
                 tag: SectionTag::TopicKnowledge,
                 text: tk.to_string(),
                 importance: 0.8,
+                preserve: false,
+            });
+        }
+    }
+    if let Some(ct) = input.constraint_tensions {
+        if !ct.is_empty() {
+            sections.push(Section {
+                tag: SectionTag::ConstraintTension,
+                text: ct.to_string(),
+                importance: 0.85,
                 preserve: false,
             });
         }

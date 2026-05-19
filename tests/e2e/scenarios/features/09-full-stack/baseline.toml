@@ -1,12 +1,12 @@
-# Compare baseline: SRANI OFF
-# Same task, same verifier threshold — isolates SRANI contribution.
+# Full-stack baseline: all features OFF, single-pass verifier, single adapter.
+# Represents a plain LLM orchestration pipeline with no H2AI intelligence layers.
+# Used with --compare to measure cumulative feature uplift.
 
 calibration_max_tokens = 512
 calibration_adapter_count = 1
 nats_url = "nats://localhost:4222"
 verifier_consensus_passes = 1
-verify_threshold = 0.0
-max_autonomic_retries = 2
+verify_threshold = 0.3
 
 [safety]
 profile = "development"
@@ -29,4 +29,4 @@ enabled = false
 [thinking_loop]
 enabled = false
 
-debug_log_path = "/tmp/h2ai-debug-02-srani-baseline.ndjson"
+debug_log_path = "/tmp/h2ai-debug-09-full-stack-baseline.ndjson"

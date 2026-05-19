@@ -1,6 +1,6 @@
 {
   "_tenant_id": "platform-team",
-  "description": "Design a distributed session store for a multi-region web application. The system must support: (1) session lookup by user ID in under 5ms P99, (2) listing all active sessions for a given user (for concurrent login detection), (3) session expiry after 30 minutes of inactivity, (4) 50,000 active sessions at peak. The team uses Redis as the session backend.",
+  "description": "Design a distributed API rate limiter for a multi-instance gateway. Each gateway instance must enforce per-user rate limits of 100 req/minute. The system runs 8 gateway pods, each handling requests independently. When a user sends a request, the gateway must check the current request count for that user and reject the request if it exceeds 100, otherwise increment the counter and allow the request.",
   "pareto_weights": {
     "diversity": 0.6,
     "containment": 0.3,
@@ -11,37 +11,38 @@
     "tau_min": 0.2,
     "tau_max": 0.75
   },
-  "context": "The concurrent login detection requirement (listing all sessions for a user) is the tricky part. A naive implementation uses Redis KEYS or SCAN to find all session:{user_id}:* keys — but KEYS is O(N) and blocks Redis, while SCAN is O(N) amortized and requires multiple round trips. The correct pattern is to maintain a secondary index: a Redis Set at sessions:user:{user_id} that holds all session IDs for that user. Session creation adds to the set; expiry removes from it. Listing is then O(1) per session via SMEMBERS. Note: KEYS is explicitly prohibited by the platform's Redis usage policy at 50K+ active sessions.",
+  "context": "The system uses Redis 7 as the shared rate limit store. Each gateway pod can reach Redis directly. The rate limit window is a rolling 60-second window. Counter keys expire after 60 seconds.",
   "_timeout_s": 2400,
   "_compare_semantics": "no_regression",
   "_expected": {
+    "srani_active": true,
+    "checks_pass_threshold": 0,
     "checks": [
       {
         "id": "SR/1",
-        "text": "Does the proposal avoid Redis KEYS command for listing sessions (KEYS is O(N) and blocks the Redis event loop at scale)?"
+        "text": "Does the proposal use a single atomic Redis operation (INCR, or a Lua script, or MULTI/EXEC) to check-and-increment the counter — not a separate GET followed by a conditional SET or INCR?"
       },
       {
         "id": "SR/2",
-        "text": "Does the proposal use a secondary index (e.g., a Redis Set per user) to enable O(1) session listing without scanning all keys?"
+        "text": "Does the proposal correctly handle the distributed case where multiple gateway pods access the same Redis counter concurrently — ensuring the rate limit is enforced globally, not per-pod?"
       },
       {
         "id": "SR/3",
-        "text": "Does the proposal correctly handle session expiry in the secondary index — removing the session ID from the user's set when the session expires?"
+        "text": "Does the proposal set an expiry (EXPIRE or EXPIREAT) on the counter key so that the rate limit window resets after 60 seconds?"
       }
     ],
-    "checks_pass_threshold": 2,
     "should_prune": [
       {
-        "description": "Proposal that uses Redis KEYS 'session:{user_id}:*' to list sessions for a user",
-        "violates": "SR/1 — KEYS is O(N) blocking, prohibited at 50K+ sessions"
+        "description": "Proposal that reads counter with GET, checks if < 100, then increments with INCR or SET as two separate commands",
+        "violates": "SR/1 — TOCTOU race: two pods can both read count=99 and both allow the request, causing overage"
       },
       {
-        "description": "Proposal that uses Redis SCAN to list sessions without a secondary index",
-        "violates": "SR/2 — SCAN is O(N) amortized and requires multiple round trips; secondary index is required"
+        "description": "Proposal that maintains per-pod counters and aggregates them periodically",
+        "violates": "SR/2 — eventual consistency allows bursts exceeding the global limit between sync intervals"
       }
     ],
     "should_pass": [
-      "Proposal using two Redis structures per session: HSET session:{session_id} with user_id, created_at, last_active and EXPIRE; SADD sessions:user:{user_id} {session_id} for the secondary index. Listing sessions: SMEMBERS sessions:user:{user_id}. Expiry cleanup: use keyspace notifications or a cleanup job that calls SREM sessions:user:{user_id} {session_id} when session key expires."
+      "Proposal using atomic Redis INCR: (1) INCR user:{user_id}:rate_limit — atomically increments and returns new value; (2) if new value == 1: EXPIRE user:{user_id}:rate_limit 60 — sets TTL on first increment; (3) if new value > 100: reject request (optionally DECR to roll back). This is atomic because INCR returns the value after increment in a single operation. No GET is needed."
     ]
   }
 }

@@ -105,6 +105,8 @@ async fn make_engine_input<'a>(
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
     }
 }
 

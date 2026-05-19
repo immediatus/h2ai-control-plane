@@ -5,6 +5,7 @@ use h2ai_config::prompts::{
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate};
 use h2ai_context::embedding::{cosine_similarity, EmbeddingModel};
 use h2ai_types::adapter::{AdapterError, ComputeRequest, IComputeAdapter};
+use h2ai_types::config::AgentRole;
 use h2ai_types::config::ParetoWeights;
 use h2ai_types::manifest::{CotStyle, ExplorerSlotConfig};
 use h2ai_types::sizing::TauValue;
@@ -64,6 +65,8 @@ struct RawSlot {
     constraint_domains: Vec<String>,
     #[serde(default)]
     search_enabled: bool,
+    #[serde(default)]
+    agent_role: AgentRole,
 }
 
 fn raw_to_cot(s: &str) -> CotStyle {
@@ -115,6 +118,7 @@ pub fn parse_decomposition_response(
             rejection_criteria: s.rejection_criteria.unwrap_or_default(),
             constraint_domains: s.constraint_domains,
             search_enabled: s.search_enabled,
+            agent_role: s.agent_role,
         })
         .collect();
 
@@ -320,6 +324,7 @@ fn default_slot() -> ExplorerSlotConfig {
             .into(),
         constraint_domains: vec![],
         search_enabled: false,
+        agent_role: Default::default(),
     }
 }
 

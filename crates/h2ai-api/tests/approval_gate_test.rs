@@ -2,6 +2,112 @@ use h2ai_types::approval::{ApprovalDecision, ApprovalRecord};
 use h2ai_types::events::{ApprovalRiskLevel, ApprovalTrigger};
 use h2ai_types::identity::TenantId;
 
+// ── Integration helpers for /signal route tests ──────────────────────────────
+
+/// Fixed task UUID used by the /signal integration tests.
+/// Pre-inserted into the task store as an active (Bootstrap phase) task.
+const SIGNAL_TEST_TASK_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+/// Build a minimal Axum test app wired to local NATS.
+///
+/// Requires a running NATS server (default: nats://127.0.0.1:4222).
+/// The task `SIGNAL_TEST_TASK_ID` is pre-seeded into the store as active.
+#[cfg(test)]
+async fn build_test_app() -> axum::Router {
+    use h2ai_adapters::mock::MockAdapter;
+    use h2ai_api::{routes::task_router, state::AppState};
+    use h2ai_config::H2AIConfig;
+    use h2ai_orchestrator::task_store::TaskState;
+    use h2ai_state::nats::NatsClient;
+    use h2ai_types::identity::TaskId;
+    use std::sync::Arc;
+
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
+    let nats = NatsClient::connect(&nats_url).await.expect("NATS connect");
+    nats.provision_signals_stream()
+        .await
+        .expect("provision signals stream");
+
+    let cfg = H2AIConfig::load_layered(None).expect("load config");
+    let adapter = Arc::new(MockAdapter::new(
+        r#"{"approved":true,"score":0.9,"reason":"mock"}"#.into(),
+    ));
+    let state = AppState::new(
+        nats,
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter,
+    );
+
+    // Pre-seed an active task so the /signal handler finds it
+    let task_id =
+        TaskId::from_uuid(uuid::Uuid::parse_str(SIGNAL_TEST_TASK_ID).expect("parse fixed UUID"));
+    let tenant = TenantId::from("test-team");
+    state
+        .store
+        .insert(task_id.clone(), TaskState::new(task_id, tenant));
+
+    axum::Router::new().merge(task_router()).with_state(state)
+}
+
+#[tokio::test]
+async fn signal_approve_returns_202() {
+    use tower::ServiceExt;
+
+    let app = build_test_app().await;
+    let body = serde_json::json!({
+        "payload": {
+            "kind": "Approve",
+            "data": {
+                "approved": true,
+                "reviewer_note": null,
+                "operator_id": "test-operator"
+            }
+        }
+    });
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/test-team/tasks/{SIGNAL_TEST_TASK_ID}/signal"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn signal_approve_missing_operator_id_returns_400() {
+    use tower::ServiceExt;
+
+    let app = build_test_app().await;
+    let body = serde_json::json!({
+        "payload": {
+            "kind": "Approve",
+            "data": {
+                "approved": true,
+                "reviewer_note": null,
+                "operator_id": ""
+            }
+        }
+    });
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/test-team/tasks/{SIGNAL_TEST_TASK_ID}/signal"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+}
+
 #[test]
 fn approval_record_serializes_roundtrip() {
     let record = ApprovalRecord {
@@ -111,6 +217,40 @@ fn oracle_task_always_bypasses_gate() {
 
     let needs_approval = hitl_enabled && !oracle_task && (require_approval || q < threshold);
     assert!(!needs_approval, "oracle task must always bypass HITL gate");
+}
+
+#[tokio::test]
+async fn approve_endpoint_returns_301_to_signal() {
+    use tower::ServiceExt;
+
+    let app = build_test_app().await;
+    let body = serde_json::json!({
+        "approved": true,
+        "reviewer_note": null,
+        "operator_id": "ops@example.com"
+    });
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/test-team/tasks/00000000-0000-0000-0000-000000000001/approve")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::PERMANENT_REDIRECT
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(location.ends_with("/signal"));
 }
 
 #[test]

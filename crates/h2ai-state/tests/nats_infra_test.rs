@@ -169,3 +169,54 @@ async fn constraint_payload_object_store_roundtrip() {
         ConstraintPredicate::LlmJudge { .. }
     ));
 }
+
+#[tokio::test]
+#[ignore = "requires NATS"]
+async fn signal_round_trips_via_jetstream() {
+    let url = h2ai_config::H2AIConfig::default().nats_url;
+    let client = match NatsClient::connect(&url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {url} — skipping: {e}");
+            return;
+        }
+    };
+    client.provision_signals_stream().await.unwrap();
+
+    let task_id = h2ai_types::identity::TaskId::from_uuid(uuid::Uuid::new_v4());
+    let tenant_id = h2ai_types::identity::TenantId::from("test");
+
+    let signal = h2ai_types::signal::ResumeSignal {
+        task_id: task_id.clone(),
+        tenant_id: tenant_id.clone(),
+        payload: h2ai_types::signal::SignalPayload::Approve(h2ai_types::signal::ApproveSignal {
+            approved: true,
+            reviewer_note: None,
+            operator_id: "test-operator".into(),
+        }),
+        timeout_at_ms: u64::MAX,
+        issued_at_ms: 0,
+    };
+
+    client.publish_signal(&signal).await.unwrap();
+
+    let mut sub = client
+        .subscribe_signals(&task_id, &tenant_id)
+        .await
+        .unwrap();
+    let received = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures::StreamExt::next(&mut sub),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+
+    assert!(matches!(
+        received.payload,
+        h2ai_types::signal::SignalPayload::Approve(_)
+    ));
+
+    client.delete_signal_consumer(&task_id).await.unwrap();
+}

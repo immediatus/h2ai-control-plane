@@ -32,13 +32,17 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-A7 Preference leakage in LlmJudge** | ✅ CLOSED 2026-05-16 | **High** | Cross-family panel + persona-diverse fallback; `ConstraintAmbiguityEvent` corpus quality signal |
 | **GAP-B1 β_eff functional form** | 🔴 OPEN | Medium | First-principles derivation now available — unify with context-aware formula |
 | GAP-B3 Attribution self-referential | 🟡 PARTIAL | Medium | Conformal prediction once oracle data exists |
-| **GAP-B5 p_mean / rho_mean no derivation** *(new)* | 🔴 OPEN | **High** | Derivation now possible from CJT + Hamming geometry |
+| **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🔴 OPEN | **High** | Three interconnected heuristic proxies; online ρ_EMA mitigates rho after 30 obs |
+| **GAP-B6 LLM-as-Judge validity — Krum on biased scores** | 🔴 OPEN | **High** | Pairwise ranking + adversarial critique; oracle calibration (blocked on GAP-A6) |
 | **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🔴 OPEN | **High** | Multi-family committee enforcement on ModeCollapse retry; structural pre-generation family diversity gate |
+| **GAP-D4 Verification throughput** | ✅ CLOSED 2026-05-18 | — | Already parallel; rubric threshold bug fixed |
+| **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🔴 OPEN | Medium | Hierarchical tournament merge; bounded context |
+| **GAP-D6 State infrastructure complexity mismatch** | 🔴 OPEN | Low | BFT/CRDT overhead in single-region deployments |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
-| **GAP-F1 Knowledge provider not wired into generation pipeline** | 🟡 PARTIAL | High | `Bm25WikiProvider` built and stored in `AppState`; `GlobalKnowledge`/`TopicKnowledge` section tags added to context assembler; `generation.rs` does not yet call `knowledge_provider.query()` — retrieval does not reach explorer context |
-| **GAP-F2 SurfacedTension injection not implemented** | 🔴 OPEN | Medium | `KnowledgeResult.surfaced_tensions` computed but not injected into context as preserved `[CONSTRAINT CONFLICT: ...]` prefixes; requires new `SectionTag::ConstraintTension` |
+| **GAP-F1 Knowledge provider wired into generation pipeline** | ✅ CLOSED 2026-05-18 | — | Role-stratified retrieval via `KnowledgeProfile`/`profile_for_role` (Coordinator → CollapsedTree/top_k=3; Executor/Evaluator → TreeTraversal+PPR; Synthesizer → CollapsedTree+1 PPR hop); parallel per-slot queries in `generation.rs` Phase B1; `InductionStore` records high-hit-rate node IDs on `MergeResolved` and injects as `explicit_ids` on subsequent tasks; wired into `EngineInput.induction_store`; **partial**: `tasks.rs` and `recovery.rs` pass `induction_store: None` (follow-up: wire through AppState); graceful degradation when `[knowledge]` absent |
+| **GAP-F2 ResumeSignal — JetStream HITL** | ✅ CLOSED 2026-05-19 | — | Replaces polling-based KV approval entirely. `H2AI_APPROVALS` KV + `approval_reaper.rs` deleted; `H2AI_SIGNALS` JetStream stream + durable per-task push consumers replace them. Engine parks at Merging phase with `tokio::select!` on signal or adaptive timeout; `POST /signal` (202 fire-and-forget) is the new operator endpoint; `POST /approve` → 301 redirect to `/signal`. Two signal types: `Approve` (HITL gate resolution) and `WaveContinue` (grounding injection at wave boundaries when `signal_wave_window_ms > 0`). Adaptive timeout decay: `effective_ms = timeout_ms × decay^hitl_timeouts_fired`, floored at `timeout_floor_ms`. |
 | **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
@@ -353,7 +357,8 @@ Loops  :
 | GAP-A6: Self-MoA as competitor | Core diversity premise is empirically untested |
 | GAP-E1: no oracle | Epistemic closure — internally coherent but ungrounded |
 | GAP-B3: attribution without oracle | Cannot distinguish confident-and-correct from confident-and-wrong |
-| GAP-B5: rho_mean derivation | Convention `rho_mean = 1 − CG_mean` lacks derivation; empirical ρ EMA now live |
+| GAP-B5: proxy chain | Three proxies (rho_mean, p_mean, β_eff) all use CG_mean as input with no empirical validation; cold-start prior 0.45 unvalidated |
+| GAP-B6: judge validity | Krum and verifier consensus depend on LLM judge scores; judge bias (verbosity, self-preference) corrupts outlier rejection |
 
 ### Stopping criteria
 
@@ -629,9 +634,30 @@ Applicable to H2AI's Phase 3.5 verifier score intervals.
 
 ---
 
-### GAP-B5: rho_mean Has No Derivation 🔴 OPEN — **High**
+### GAP-B5: Proxy Chain — rho_mean, p_mean, β_eff All Unvalidated 🔴 OPEN — **High**
 
 **Gap statement.**
+Three interconnected proxies form a chain of unvalidated assumptions. Each propagates error into
+the Condorcet Q(N, p, ρ) model and the USL ceiling N_max. The chain is:
+
+1. `rho_mean = 1 − CG_mean` — correlation proxy
+2. `p_mean = 0.5 + CG_mean / 2` — accuracy proxy (`sizing.rs:526`)
+3. `β_eff = β₀ × (1 − CG_mean)` — conflict cost proxy
+
+**p_mean proxy analysis (`sizing.rs:526`).**
+`p_mean = 0.5 + CG_mean / 2` maps constraint agreement linearly to ground-truth accuracy.
+This is only valid if the constraint corpus perfectly covers the failure modes of interest.
+An ensemble that agrees on constraints but fails on unmodeled dimensions would have high CG_mean
+but low true accuracy — the proxy would overestimate p_mean and recommend too few agents.
+No empirical validation against held-out accuracy measurements exists.
+
+**β_eff linear assumption.**
+`β_eff = β₀ × (1 − CG_mean)` assumes conflict resolution cost scales linearly with conflict
+count. This breaks if the LLM synthesiser exhibits super-linear attention degradation on long
+contexts ("Lost in the Middle" effect). A context-aware `n_max_context_aware` correction exists
+in `sizing.rs` but the linear base assumption is still the default path.
+
+**rho_mean proxy analysis.**
 `rho_mean = 1 − CG_mean` is used as the correlation correction in `Q(N, p, ρ)`. No derivation.
 The formula implies CG_mean = 0 (zero constraint agreement) → ρ = 1.0 (fully correlated).
 This is backwards: low CG_mean means agents disagree on constraints, which should indicate *less*
@@ -667,6 +693,13 @@ the proxy once 30 task observations accumulate. Until that threshold is reached,
 > "Operational convention: low CG (diverse constraint profiles) is assumed to indicate lower error
 > correlation. This assumes error patterns track constraint specialisation. The assumption is
 > unvalidated and replaced by empirical ρ_EMA once 30 task observations exist."
+
+**Implementation cold-start detail (`rho_ema.rs`):**
+The EMA returns a hard-coded prior of `0.45` before 30 pairwise observations accumulate. This
+prior was chosen conservatively (mid-range correlation) but is unvalidated against any empirical
+distribution of LLM ensemble error correlations. The prior directly enters the Condorcet Q(N,p,ρ)
+model, meaning all ensemble sizing decisions for the first ~30 tasks of a tenant's lifetime rest
+on this assumption. External validation against a held-out benchmark dataset is the correct fix.
 
 **Simulation to reveal the assumption sensitivity:**
 
@@ -752,7 +785,144 @@ Construct a task set activating a known common internet misconception (verifiabl
 
 ---
 
+### GAP-B6: LLM-as-Judge Validity — Krum Operates on Potentially Biased Scores 🔴 OPEN — **High**
+
+**Gap statement.**
+The Krum-style epistemic leader election and verifier consensus phases both depend on
+`VerificationScoredEvent` scores produced by an LLM judge. If the judge is biased (self-
+preference, length bias, sycophancy), the Krum input distribution is corrupted and outlier
+rejection selects the *judge-preferred* proposal, not the *correct* one.
+
+**Why this matters for Byzantine robustness.**
+The Krum algorithm was designed for distributed ML under Byzantine worker attacks. Its guarantees
+hold when the scoring function is trustworthy. Substituting LLM-as-Judge introduces a new
+failure mode: a flawed judge that consistently prefers verbose, confident-sounding proposals
+will cause Krum to surface the most persuasive wrong answer, not the most accurate one.
+
+**Known LLM judge failure modes (from literature):**
+- **Self-preference / position bias**: judges rate outputs similar to their own training higher
+- **Verbosity bias**: longer responses receive higher scores independent of accuracy
+- **Sycophancy cascade**: if the judge has seen the proposal being judged (shared context), it
+  tends to rate it higher
+
+**Current mitigations.**
+| Mitigation | Coverage |
+|---|---|
+| GAP-A7 cross-family judge rotation | Reduces family-level preference leakage; doesn't fix verbosity or position bias |
+| Shadow auditor (concurrent independent verifier) | Second opinion but from same judge distribution |
+| `verifier_consensus_passes = N` majority vote | Reduces single-call variance; amplifies systematic bias |
+
+None of the mitigations address systematic bias in the judge itself.
+
+**Path to resolution.**
+1. **Calibrated judges**: measure judge accuracy on a held-out set with known-correct answers;
+   use the measured judge accuracy as a discount factor on verification scores
+2. **Comparative judging**: instead of absolute scores, ask judge to rank pairs of proposals;
+   pairwise ranking is less susceptible to absolute-score bias
+3. **Adversarial critique**: for each proposal, generate a dedicated critique (adversarial probe);
+   score = f(judge_score, critique_score); this forces the judge to surface the failure mode
+4. **Oracle bootstrap** (GAP-A6): only way to empirically measure judge calibration on the task
+   distribution
+
+**Effort estimate.** Pairwise ranking: 1 week. Adversarial critique integration: 2 weeks. Oracle calibration: blocked on GAP-A6.
+
+---
+
 ## Brainstorm Group D — Infrastructure and Operational Gaps
+
+---
+
+### GAP-D4: Verification Throughput ✅ Already Parallel — **Closed**
+
+**Status: closed on inspection (2026-05-18).**
+
+The external feedback correctly identified Phase 3.5 verification as a potential bottleneck.
+Code inspection (`verification.rs`) reveals both parallelism dimensions are already implemented:
+
+- **Proposal-level**: `join_all(futures)` at `verification.rs:109` — all N proposal evaluations
+  fire concurrently.
+- **Constraint-level**: `join_all(futs)` at `verification.rs:537` (inside `eval_all`) — all M
+  constraint evaluations fire concurrently per proposal.
+
+The true bottleneck is the LLM adapter's HTTP concurrency capacity (one GPU inference queue for
+local models), not missing parallelism in H2AI code. No action required on H2AI side.
+
+**Actual bug found and fixed (2026-05-18):** The rubric fallback path (empty corpus) in
+`eval_all` used a hardcoded `Hard { threshold: 0.45 }` severity, ignoring the caller's
+`verify_threshold` config. This caused proposals to collapse to score 0.0 when the constraint
+wiki was disabled — the hard gate fired at 0.45 regardless of `verify_threshold = 0.2`.
+Fixed by threading `rubric_threshold` through `eval_all` and using the outer verification
+threshold for the rubric constraint's hard gate.
+
+---
+
+### GAP-D5: Synthesis Merge Bottleneck — Single Sequential Synthesis Step 🔴 OPEN — Medium
+
+**Gap statement.**
+Phase 5a (synthesis/merge) is a single sequential LLM call that receives all N proposals
+concatenated into one context. For N=5 proposals of 1000 tokens each with a 500-token system
+prompt, the synthesis context is ~5500 tokens. This creates two problems:
+
+1. **Length-sensitivity bias** — the synthesis LLM is exposed to "Lost in the Middle" attention
+   degradation on long contexts. Proposals in the middle of the concatenated input receive less
+   attention. Merger output quality degrades as N increases.
+
+2. **No parallelism** — the synthesis call is inherently sequential (one call, one output). If the
+   synthesis LLM fails or timeouts, there is no fallback within the phase.
+
+**Literature grounding.**
+arXiv 2307.03172 (Liu et al., 2023) — *"Lost in the Middle: How Language Models Use Long
+Contexts"* — demonstrates that LLMs use context from the beginning and end most reliably; middle
+items in long lists are systematically under-weighted. For 5+ proposals concatenated in a merge
+context, the middle proposals are systematically disadvantaged.
+
+**Innovative solution — hierarchical tournament merge.**
+
+Instead of one N-way merge, use a bracket tournament:
+- Round 1: pair proposals (N/2 independent merge calls in parallel)
+- Round 2: merge the round-1 outputs (N/4 calls)
+- Finals: single merge of the 2 finalists
+
+Benefits:
+- Each merge call sees at most 2 proposals — context length is bounded regardless of N
+- Round 1 calls are parallel — same wall-clock time as 1-call merge
+- Middle-position bias is eliminated (every proposal is in position 1 or 2 in its merge)
+
+Trade-off: log₂(N) merge rounds vs. 1 round. For N=5: 3 rounds, each with bounded context.
+The Krum/epistemic leader elected proposal should be seeded into round 1 position 1 (always "first"
+position) to exploit the attention recency effect.
+
+**Effort estimate.** 1 week for hierarchical merge. Requires new `MergeStrategy` variant in
+`merger.rs` (`HierarchicalTournament` vs current `OneShot`). Config toggle to enable.
+
+---
+
+### GAP-D6: CRDT Semilattice on Binary Constraint Flags — Algorithmic Simplification Opportunity ✅ Not a deployment concern — Low
+
+**Clarification on "complexity" framing.**
+External reviewers may flag H2AI's state infrastructure (NATS JetStream + delta checkpoints +
+BFT Krum + CRDT semilattice) as operationally complex. This conflates implementation complexity
+with operational complexity. Deployed as a Docker container, all 16 crates compile to a single
+binary; NATS runs embedded; no component is operator-facing. Rust's zero-cost abstractions and
+lack of GC mean the full pipeline — including eigenvalue decomposition, event-sourced state,
+and async Tokio orchestration — has a smaller runtime memory footprint than an equivalent Python
+implementation of a simpler design. Operational surface area = `docker compose up`. This is
+not a weakness.
+
+**Actual narrow gap (algorithmic, not operational).**
+The CRDT semilattice in the merger operates on binary constraint-satisfaction fingerprints:
+for each constraint, a proposal either satisfies it (1) or doesn't (0). A semilattice join
+over binary vectors is equivalent to bitwise OR (or AND depending on semantics). The CRDT
+abstraction is correct and future-compatible with geo-distributed concurrent merges, but for
+the current single-region single-JetStream deployment the CRDT machinery (lattice ordering,
+join commutativity proofs) adds code complexity without producing a different result than
+`bitwise_and(fingerprints)` on the surviving proposals.
+
+**Recommendation.**
+No action for correctness — the CRDT is not wrong and positions the system for multi-region
+extension. As a code simplification opportunity: document within `merger.rs` that the semilattice
+join on binary satisfaction vectors degenerates to bitwise AND/OR, making the algorithm
+reviewable without knowledge of CRDT theory.
 
 ---
 
@@ -870,6 +1040,8 @@ representative task distribution.
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
 | GAP-B1 β_eff functional form fit | Medium | 2 weeks | Controlled calibration | Session 5 |
 | ~~GAP-D3 Bootstrap calibration~~ | — | — | — | **Closed 2026-05-14** |
+| ~~GAP-D4 Verification parallelism~~ | — | — | — | **Closed 2026-05-18** |
+| GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
 
 ---
