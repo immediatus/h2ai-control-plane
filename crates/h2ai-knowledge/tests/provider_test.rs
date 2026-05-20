@@ -137,6 +137,35 @@ async fn provider_explicit_ids_bypass_bm25() {
 }
 
 #[tokio::test]
+async fn provider_explicit_ids_includes_topic_entry_points() {
+    // When constraint IDs are given as explicit_ids, wiki topic nodes whose
+    // entry_points list those IDs must also be returned (vocabulary-gap bypass).
+    let source = Arc::new(YamlDirSource::new(fixture_dir()));
+    let provider = Bm25WikiProvider::build(source, Default::default()).await;
+    let explicit = vec!["C-004".to_string()];
+    let q = KnowledgeQuery {
+        text: "unrelated query text that won't match",
+        tags: &[],
+        explicit_ids: &explicit,
+        top_k: 10,
+        depths: &[NodeDepth::Topic, NodeDepth::Leaf],
+        mode: RetrievalMode::TreeTraversal,
+        scope: SearchScope::Auto,
+        expand_hops: 0,
+    };
+    let result = provider.query(&q).await;
+    let ids: Vec<&str> = result.nodes.iter().map(|(n, _)| n.id.as_str()).collect();
+    assert!(
+        ids.contains(&"C-004"),
+        "explicit C-004 leaf must be in results"
+    );
+    assert!(
+        ids.contains(&"topic:financial-systems"),
+        "topic node with entry_point C-004 must be included"
+    );
+}
+
+#[tokio::test]
 async fn provider_ppr_expands_related_leaves() {
     let source = Arc::new(YamlDirSource::new(fixture_dir()));
     let provider = Bm25WikiProvider::build(source, Default::default()).await;

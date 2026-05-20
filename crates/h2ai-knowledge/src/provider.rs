@@ -238,18 +238,25 @@ fn boost_leaf_score(base: f32, node: &KnowledgeNode, query_text: &str, id_boost:
 #[async_trait]
 impl KnowledgeProvider for Bm25WikiProvider {
     async fn query(&self, query: &KnowledgeQuery<'_>) -> KnowledgeResult {
-        // 1. Explicit ID bypass
+        // 1. Explicit ID bypass: fetch leaf nodes by exact ID + topic nodes by entry_point match.
+        // This guarantees constraint-specific wiki articles are always returned regardless of
+        // BM25 vocabulary overlap (e.g., "CONSTRAINT-005" → kafka-audit topic node).
         if !query.explicit_ids.is_empty() {
-            let nodes: Vec<(KnowledgeNode, f32)> = query
-                .explicit_ids
-                .iter()
-                .filter_map(|id| {
-                    self.leaf_items
-                        .iter()
-                        .find(|n| &n.id == id)
-                        .map(|n| (n.clone(), 1.0))
-                })
-                .collect();
+            let mut nodes: Vec<(KnowledgeNode, f32)> = Vec::new();
+            for id in query.explicit_ids {
+                if let Some(n) = self.leaf_items.iter().find(|n| &n.id == id) {
+                    nodes.push((n.clone(), 1.0));
+                }
+            }
+            for topic in &self.topic_nodes {
+                if topic
+                    .entry_points
+                    .iter()
+                    .any(|ep| query.explicit_ids.contains(ep))
+                {
+                    nodes.push((topic.clone(), 1.0));
+                }
+            }
             return KnowledgeResult {
                 global_included: false,
                 surfaced_tensions: vec![],

@@ -214,7 +214,7 @@ async fn fetch_iteration_knowledge(
     let query = KnowledgeQuery {
         text: &query_text,
         tags: input.constraint_tags,
-        explicit_ids: &[],
+        explicit_ids: input.constraint_ids,
         top_k: profile.top_k,
         depths: &[NodeDepth::Topic, NodeDepth::Leaf],
         mode,
@@ -588,4 +588,113 @@ fn strip_json_fences(s: &str) -> &str {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use h2ai_adapters::SequencedMockAdapter;
+    use h2ai_knowledge::factory::ProviderKind;
+    use h2ai_knowledge::types::{KnowledgeQuery, KnowledgeResult};
+    use std::sync::{Arc, Mutex};
+
+    /// Spy provider: records explicit_ids from every query(), returns empty results.
+    struct SpyProvider {
+        captured: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl SpyProvider {
+        fn new() -> (Self, Arc<Mutex<Vec<Vec<String>>>>) {
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    captured: Arc::clone(&captured),
+                },
+                captured,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl KnowledgeProvider for SpyProvider {
+        async fn query(&self, query: &KnowledgeQuery<'_>) -> KnowledgeResult {
+            self.captured
+                .lock()
+                .unwrap()
+                .push(query.explicit_ids.to_vec());
+            KnowledgeResult {
+                nodes: vec![],
+                global_included: false,
+                surfaced_tensions: vec![],
+                ppr_expanded: false,
+            }
+        }
+
+        async fn global_summary(&self) -> Option<h2ai_knowledge::types::KnowledgeNode> {
+            None
+        }
+
+        fn is_ready(&self) -> bool {
+            true
+        }
+
+        fn kind(&self) -> &ProviderKind {
+            &ProviderKind::Bm25Wiki
+        }
+    }
+
+    /// Regression: run() must forward ThinkingLoopInput::constraint_ids as explicit_ids
+    /// to every knowledge query. Before the fix, explicit_ids was hardcoded to &[] so the
+    /// provider never received the constraint IDs regardless of what the caller passed in.
+    #[tokio::test]
+    async fn run_forwards_constraint_ids_to_knowledge_query() {
+        let (spy, captured) = SpyProvider::new();
+        let cfg = ThinkingLoopConfig {
+            enabled: true,
+            max_iterations: 1,
+            max_archetypes: 1,
+            ..Default::default()
+        };
+
+        // SequencedMockAdapter: archetype select → brainstorm → synthesis (one iteration, one archetype).
+        let archetype_json = r#"[{"name":"audit","persona":"You are an audit engineer.","scope":"compliance","confidence":0.8,"tau":0.3,"model_tier":"capable","cot_style":"first_principles"}]"#;
+        let brainstorm_text = "Use Kafka for audit trail.";
+        let synthesis_json = r#"{"shared_understanding":"publish to Kafka before HTTP 200","tensions":[],"coverage_score":0.85}"#;
+        let adapter = SequencedMockAdapter::new(vec![
+            archetype_json.to_string(),
+            brainstorm_text.to_string(),
+            synthesis_json.to_string(),
+        ]);
+
+        let constraint_ids = vec!["CONSTRAINT-005".to_string(), "CONSTRAINT-004".to_string()];
+        let input = ThinkingLoopInput {
+            task_description: "budget enforcement system",
+            constraint_ids: &constraint_ids,
+            constraint_tags: &[],
+            research_context: "",
+            knowledge_provider: Some(Arc::new(spy)),
+            n_archetypes: 1,
+            cfg: &cfg,
+            adapter: &adapter,
+            embedding_model: None,
+            nats_client: None,
+            task_id: "",
+        };
+
+        run(input).await;
+
+        let queries = captured.lock().unwrap();
+        assert!(
+            !queries.is_empty(),
+            "knowledge provider must have been queried at least once"
+        );
+        for ids in queries.iter() {
+            assert_eq!(
+                ids, &constraint_ids,
+                "explicit_ids passed to provider must equal ThinkingLoopInput::constraint_ids; \
+                 got {ids:?}, want {constraint_ids:?}"
+            );
+        }
+    }
 }
