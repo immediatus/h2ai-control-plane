@@ -38,6 +38,11 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Start NATS with JetStream
+        run: |
+          docker run -d --name nats-server -p 4222:4222 nats:2-alpine -js
+          until docker exec nats-server nats-server --help >/dev/null 2>&1 || nc -z 127.0.0.1 4222; do sleep 1; done
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

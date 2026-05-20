@@ -29,7 +29,9 @@ async fn disabled_loop_returns_empty_report() {
     let input = ThinkingLoopInput {
         task_description: "test task",
         constraint_ids: &[],
+        constraint_tags: &[],
         research_context: "",
+        knowledge_provider: None,
         n_archetypes: 2,
         cfg: &cfg_disabled(),
         adapter: &adapter,

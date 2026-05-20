@@ -17,17 +17,30 @@ use h2ai_config::prompts::{
 };
 use h2ai_config::ThinkingLoopConfig;
 use h2ai_context::embedding::EmbeddingModel;
+use h2ai_knowledge::provider::KnowledgeProvider;
+use h2ai_knowledge::types::{KnowledgeQuery, NodeDepth, SearchScope};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
+use h2ai_types::config::AgentRole;
 use h2ai_types::events::OracleGateResultEvent;
+use h2ai_types::knowledge::{profile_for_role, RetrievalMode as TypesRetrievalMode};
 use h2ai_types::sizing::TauValue;
 use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ThinkingReport};
 use serde::Deserialize;
+use std::sync::Arc;
 // ─── Public input struct ──────────────────────────────────────────────────────
 
 pub struct ThinkingLoopInput<'a> {
     pub task_description: &'a str,
     pub constraint_ids: &'a [String],
+    /// Domain tags used to focus knowledge retrieval (e.g. ["rtb", "latency"]).
+    pub constraint_tags: &'a [String],
+    /// Static fallback context used when no knowledge provider is configured.
     pub research_context: &'a str,
+    /// Knowledge provider queried at each iteration. When present, domain articles
+    /// and constraint wiki content are fetched and injected into every brainstorm
+    /// prompt — giving archetypes access to relevant knowledge without requiring
+    /// manually-written hints.
+    pub knowledge_provider: Option<Arc<dyn KnowledgeProvider>>,
     pub n_archetypes: usize,
     pub cfg: &'a ThinkingLoopConfig,
     pub adapter: &'a dyn IComputeAdapter,
@@ -120,7 +133,17 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
             input.cfg.expansion_quality_floor,
         );
 
-        let archetypes = select_archetypes(&input, &report, iteration, n_this_iter).await;
+        // Query knowledge provider at each iteration. Later iterations refine the
+        // query with unresolved tensions so retrieval focuses on current gaps.
+        let iteration_knowledge = fetch_iteration_knowledge(&input, &report, iteration).await;
+        let research_context = if iteration_knowledge.is_empty() {
+            input.research_context
+        } else {
+            &iteration_knowledge
+        };
+
+        let archetypes =
+            select_archetypes(&input, research_context, &report, iteration, n_this_iter).await;
         if archetypes.is_empty() {
             break;
         }
@@ -132,7 +155,7 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
             input.cfg.tau_min,
         );
 
-        let outputs = brainstorm_all(&input, &archetypes, iteration_tau).await;
+        let outputs = brainstorm_all(&input, research_context, &archetypes, iteration_tau).await;
         let mut new_report = synthesize(&input, &outputs, &report).await;
 
         new_report.prev_similarity = compute_similarity(
@@ -161,10 +184,58 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
     report
 }
 
+// ─── Knowledge retrieval ─────────────────────────────────────────────────────
+
+/// Fetch domain knowledge for this iteration from the knowledge provider.
+/// Iteration 0 queries with the bare task description; later iterations
+/// refine with unresolved tensions so retrieval focuses on current gaps.
+/// Returns an empty string when no provider is configured.
+async fn fetch_iteration_knowledge(
+    input: &ThinkingLoopInput<'_>,
+    report: &ThinkingReport,
+    iteration: usize,
+) -> String {
+    let provider = match &input.knowledge_provider {
+        Some(p) => p,
+        None => return String::new(),
+    };
+
+    let query_text = if iteration == 0 || report.tensions.is_empty() {
+        input.task_description.to_string()
+    } else {
+        format!("{} {}", input.task_description, report.tensions.join(" "))
+    };
+
+    let profile = profile_for_role(&AgentRole::Synthesizer);
+    let mode = match profile.mode {
+        TypesRetrievalMode::TreeTraversal => h2ai_knowledge::types::RetrievalMode::TreeTraversal,
+        TypesRetrievalMode::CollapsedTree => h2ai_knowledge::types::RetrievalMode::CollapsedTree,
+    };
+    let query = KnowledgeQuery {
+        text: &query_text,
+        tags: input.constraint_tags,
+        explicit_ids: &[],
+        top_k: profile.top_k,
+        depths: &[NodeDepth::Topic, NodeDepth::Leaf],
+        mode,
+        scope: SearchScope::Auto,
+        expand_hops: profile.expand_hops,
+    };
+
+    let result = provider.query(&query).await;
+    let synthesis: Vec<&str> = result
+        .nodes
+        .iter()
+        .map(|(n, _)| n.synthesis.as_str())
+        .collect();
+    synthesis.join("\n\n")
+}
+
 // ─── Archetype selection ──────────────────────────────────────────────────────
 
 async fn select_archetypes(
     input: &ThinkingLoopInput<'_>,
+    research_context: &str,
     report: &ThinkingReport,
     iteration: usize,
     n_this_iter: usize,
@@ -176,7 +247,7 @@ async fn select_archetypes(
         THINKING_ARCHETYPE_SELECT_ITER1.render(&[
             ("description", input.task_description),
             ("constraints", &constraints),
-            ("research_context", input.research_context),
+            ("research_context", research_context),
             ("n", &n),
         ])
     } else {
@@ -223,18 +294,28 @@ async fn select_archetypes(
 
 async fn brainstorm_all(
     input: &ThinkingLoopInput<'_>,
+    research_context: &str,
     archetypes: &[ArchetypeSpec],
     iteration_tau: f64,
 ) -> Vec<ArchetypeOutput> {
     let futures: Vec<_> = archetypes
         .iter()
-        .map(|a| brainstorm_one(input, a, iteration_tau, input.nats_client.clone()))
+        .map(|a| {
+            brainstorm_one(
+                input,
+                research_context,
+                a,
+                iteration_tau,
+                input.nats_client.clone(),
+            )
+        })
         .collect();
     join_all(futures).await
 }
 
 async fn brainstorm_one(
     input: &ThinkingLoopInput<'_>,
+    research_context: &str,
     archetype: &ArchetypeSpec,
     iteration_tau: f64,
     nats_client: Option<async_nats::Client>,
@@ -243,7 +324,7 @@ async fn brainstorm_one(
     let task = THINKING_BRAINSTORM_TASK.render(&[
         ("cot_instruction", cot_instruction),
         ("description", input.task_description),
-        ("research_context", input.research_context),
+        ("research_context", research_context),
     ]);
 
     let tau = TauValue::new(archetype.tau.clamp(0.0, iteration_tau))

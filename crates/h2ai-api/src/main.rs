@@ -305,6 +305,7 @@ async fn main() {
 
     // Wire knowledge provider
     app_state.knowledge_provider = {
+        use h2ai_config::ConstraintWikiConfig;
         use h2ai_knowledge::factory::KnowledgeProviderFactory;
         use h2ai_knowledge::provider::PassthroughProvider;
         match &app_state.cfg.knowledge {
@@ -313,13 +314,43 @@ async fn main() {
                 KnowledgeProviderFactory::build_provider(k_cfg).await
             }
             None => {
-                tracing::info!(
-                    target: "h2ai.startup",
-                    "knowledge provider: passthrough (no [knowledge] config)"
-                );
-                Arc::new(PassthroughProvider::new(
-                    (*app_state.constraint_resolver).clone(),
-                ))
+                // When [knowledge] is absent, check if [constraint_wiki] corpus has a wiki/
+                // subdirectory. If so, build a Bm25WikiProvider from it so the thinking loop
+                // can surface domain articles during brainstorm iterations.
+                let constraint_wiki_path = if let ConstraintWikiConfig::Fs { corpus_path, .. } =
+                    &app_state.cfg.constraint_wiki
+                {
+                    let wiki_sub = std::path::Path::new(corpus_path).join("wiki");
+                    if wiki_sub.exists() {
+                        Some(corpus_path.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                match constraint_wiki_path {
+                    Some(corpus_path) => {
+                        tracing::info!(
+                            target: "h2ai.startup",
+                            corpus_path = %corpus_path,
+                            "building knowledge provider from constraint wiki (no [knowledge] config)"
+                        );
+                        KnowledgeProviderFactory::build_from_constraint_corpus(
+                            std::path::Path::new(&corpus_path),
+                        )
+                        .await
+                    }
+                    None => {
+                        tracing::info!(
+                            target: "h2ai.startup",
+                            "knowledge provider: passthrough (no [knowledge] config, no wiki dir)"
+                        );
+                        Arc::new(PassthroughProvider::new(
+                            (*app_state.constraint_resolver).clone(),
+                        ))
+                    }
+                }
             }
         }
     };

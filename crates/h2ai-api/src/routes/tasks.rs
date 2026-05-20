@@ -223,10 +223,18 @@ pub async fn submit_task(
         let n_target = (n_domains + 1).max(2).min(n_max.max(1));
         let thinking_task_id = task_id_clone.to_string();
         let thinking_nats_client = state_clone.nats.client.clone();
+        let thinking_constraint_tags: Vec<String> = corpus
+            .iter()
+            .flat_map(|d| d.domains.iter().cloned())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
         let thinking_report = thinking_loop::run(ThinkingLoopInput {
             task_description: &manifest_clone.description,
             constraint_ids: &corpus.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+            constraint_tags: &thinking_constraint_tags,
             research_context: "",
+            knowledge_provider: Some(state_clone.knowledge_provider.clone()),
             n_archetypes: state_clone.cfg.thinking_loop.max_archetypes,
             cfg: &state_clone.cfg.thinking_loop,
             adapter: adapter_pool[0].as_ref(),

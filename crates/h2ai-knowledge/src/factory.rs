@@ -110,6 +110,24 @@ impl KnowledgeProviderFactory {
         }
     }
 
+    /// Build a `Bm25WikiProvider` from a constraint corpus directory.
+    ///
+    /// Used when no explicit `[knowledge]` config is present but a `wiki/` subdirectory
+    /// exists under the constraint corpus path — so the explorer's knowledge-gathering
+    /// cycle can surface domain articles without requiring manually-written hints.
+    pub async fn build_from_constraint_corpus(
+        corpus_path: &std::path::Path,
+    ) -> Arc<dyn KnowledgeProvider> {
+        let cfg = KnowledgeConfig {
+            provider: ProviderKind::Bm25Wiki,
+            source: SourceKind::YamlDir {
+                path: corpus_path.to_path_buf(),
+            },
+            scoring: ScoringConfig::default(),
+        };
+        Self::build_provider(&cfg).await
+    }
+
     pub fn build_source(cfg: &KnowledgeConfig) -> Arc<dyn crate::source::KnowledgeSource> {
         match &cfg.source {
             SourceKind::YamlDir { path } => Arc::new(YamlDirSource::new(path.clone())),
