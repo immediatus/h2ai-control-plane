@@ -43,6 +43,11 @@ SCENARIOS_DIR = pathlib.Path(__file__).parent / "scenarios"
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 SERVER_BIN = REPO_ROOT / "target" / "release" / "h2ai-control-plane"
 MULTIFAMILY = os.environ.get("H2AI_E2E_MULTIFAMILY", "").strip() == "1"
+# Single model token budget for all LLM calls in the e2e harness.
+# Mirrors model_max_tokens in reference.toml.
+MODEL_MAX_TOKENS = 32768
+# Judge calls (PRESENT/MISSING verdicts) use a small budget — one word needed.
+JUDGE_MAX_TOKENS = 64
 
 
 # ── Scenario loading ──────────────────────────────────────────────────────────
@@ -542,37 +547,29 @@ def _load_constraint_context(scenario_dir: pathlib.Path, task: dict) -> str:
 
 # ── Baseline mode (direct LLM, no H2AI) ──────────────────────────────────────
 
-def _llm_endpoint_for_scenario(scenario_name: str) -> tuple[str, str]:
-    """Return (endpoint_url, model_name) for the scenario's first adapter profile.
+def _llm_endpoint_for_scenario(scenario_name: str) -> tuple[str, str, int]:
+    """Return (endpoint_url, model_name, max_tokens) for the scenario's first adapter profile.
 
-    Priority:
-      1. H2AI_LLM_ENDPOINT / H2AI_LLM_MODEL env vars
-      2. First [[adapter_profiles]] entry in the scenario's h2ai.toml
-      3. Hard fallback: host.docker.internal:8080
+    model_max_tokens is read from the scenario's h2ai.toml; falls back to MODEL_MAX_TOKENS.
     """
-    if endpoint := os.environ.get("H2AI_LLM_ENDPOINT"):
-        model = os.environ.get("H2AI_LLM_MODEL", "local")
-        return endpoint, model
-
     toml_path = SCENARIOS_DIR / scenario_name.split("/")[-1] / "h2ai.toml"
     if not toml_path.exists():
-        # Try full relative path
         toml_path = SCENARIOS_DIR / scenario_name / "h2ai.toml"
     if toml_path.exists():
         cfg = tomllib.loads(toml_path.read_text())
+        max_tokens = int(cfg.get("model_max_tokens", MODEL_MAX_TOKENS))
         for profile in cfg.get("adapter_profiles", []):
             kind = profile.get("kind", {})
-            # CloudGeneric and OpenAI-compatible adapters expose "endpoint"
             for adapter_cfg in kind.values():
                 if isinstance(adapter_cfg, dict) and "endpoint" in adapter_cfg:
                     base = adapter_cfg["endpoint"].rstrip("/")
                     model = profile.get("name", "local")
-                    return f"{base}/chat/completions", model
+                    return f"{base}/chat/completions", model, max_tokens
 
-    return "http://host.docker.internal:8080/v1/chat/completions", "local"
+    return "http://host.docker.internal:8080/v1/chat/completions", "local", MODEL_MAX_TOKENS
 
 
-def _llm_call(endpoint: str, model: str, messages: list[dict], max_tokens: int = 8192) -> str:
+def _llm_call(endpoint: str, model: str, messages: list[dict], max_tokens: int = MODEL_MAX_TOKENS) -> str:
     payload = json.dumps({"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.6}).encode()
     req = urllib.request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
@@ -594,7 +591,7 @@ def _eval_checks_against_output(output: str, checks: list[dict], scenario_name: 
     """
     if not output:
         return []
-    endpoint, model = _llm_endpoint_for_scenario(scenario_name)
+    endpoint, model, _max_tokens = _llm_endpoint_for_scenario(scenario_name)
     results = []
     for check in checks:
         prompt = (
@@ -603,7 +600,7 @@ def _eval_checks_against_output(output: str, checks: list[dict], scenario_name: 
             f"ANSWER:\n{output[:8000]}\n\n"
             f"Respond with exactly one word on its own line: PRESENT (if the answer clearly satisfies the check) or MISSING (if it does not)."
         )
-        resp = _llm_call(endpoint, model, [{"role": "user", "content": prompt}], max_tokens=16)
+        resp = _llm_call(endpoint, model, [{"role": "user", "content": prompt}], max_tokens=JUDGE_MAX_TOKENS)
         # Accept PRESENT anywhere in the full response to handle models that add preamble
         verdict = "PRESENT" if "PRESENT" in resp.upper() else "MISSING"
         results.append({"id": check["id"], "verdict": verdict, "pass": verdict == "PRESENT"})
@@ -612,9 +609,9 @@ def _eval_checks_against_output(output: str, checks: list[dict], scenario_name: 
 
 
 def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -> dict:
-    endpoint, model = _llm_endpoint_for_scenario(scenario_name)
+    endpoint, model, max_tokens = _llm_endpoint_for_scenario(scenario_name)
     mode_label = "context-augmented" if constraint_context else "bare LLM"
-    print(f"  LLM endpoint: {endpoint}  model: {model}  mode: {mode_label}")
+    print(f"  LLM endpoint: {endpoint}  model: {model}  max_tokens: {max_tokens}  mode: {mode_label}")
 
     expected = task.get("_expected", {})
     checks = expected.get("checks", [])
@@ -636,7 +633,7 @@ def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -
     answer = _llm_call(endpoint, model, [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
-    ])
+    ], max_tokens=max_tokens)
     elapsed = time.time() - t0
     print(f"  Answer: {len(answer)} chars in {elapsed:.0f}s")
 

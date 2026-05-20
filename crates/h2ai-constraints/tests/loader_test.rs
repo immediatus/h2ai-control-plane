@@ -46,7 +46,8 @@ fn load_corpus_ignores_non_yaml_files() {
 }
 
 #[test]
-fn load_corpus_yaml_produces_llm_judge_predicate() {
+fn load_corpus_yaml_produces_composite_predicate_ending_in_llm_judge() {
+    use h2ai_constraints::types::CompositeOp;
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("C-001.yaml"),
@@ -56,10 +57,19 @@ fn load_corpus_yaml_produces_llm_judge_predicate() {
 
     let corpus = load_corpus(dir.path()).unwrap();
     assert_eq!(corpus.len(), 1);
-    assert!(
-        matches!(corpus[0].predicate, ConstraintPredicate::LlmJudge { .. }),
-        "YAML constraint must produce LlmJudge predicate"
-    );
+    match &corpus[0].predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert!(
+                children
+                    .last()
+                    .map(|c| matches!(c, ConstraintPredicate::LlmJudge { .. }))
+                    .unwrap_or(false),
+                "YAML constraint Composite must end with LlmJudge"
+            );
+        }
+        other => panic!("YAML constraint must produce Composite predicate; got {other:?}"),
+    }
 }
 
 #[test]

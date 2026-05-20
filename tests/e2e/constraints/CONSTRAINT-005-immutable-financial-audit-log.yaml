@@ -7,11 +7,18 @@ domains:
 related_to:
   - CONSTRAINT-004  # budget deductions are the events that must reach the audit log
   - CONSTRAINT-007  # billing event timestamps must use HLC (linearizable), not wall clock
-remediation_hint: "Publish billing events to Kafka before acknowledging the debit request (at-least-once guarantee). Project into ClickHouse or equivalent append-only columnar store for analytics. Never use UPDATE or DELETE on financial event records — treat the event log as the ledger of record."
-predicates:
-  - type: semantic_ordering
-    first: "account debit"
-    then: "Kafka publish"
+remediation_hint: "The required operation order is: (1) debit the budget atomically first via Redis Lua EVAL, (2) then publish the billing event to Kafka financial-events topic. The debit MUST happen before the Kafka publish — not after. Use a local WAL-backed retry queue so Kafka downtime never blocks the debit or creates audit gaps. Project Kafka events into ClickHouse for analytics. Never use UPDATE or DELETE on financial event records."
+semantic:
+  exclusions:
+    - pattern: "direct database or log-file write on the charge path"
+      passes: 3
+  requirements:
+    - concept: "Kafka financial-events topic"
+      passes: 3
+  orderings:
+    - first: "account debit"
+      then: "Kafka publish"
+      passes: 3
 criteria:
   pass: |
     Financial/billing events are written to a storage system where records cannot be modified

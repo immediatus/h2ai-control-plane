@@ -85,7 +85,7 @@ C4Container
     Container(autonomic, "h2ai-autonomic", "Rust", "Calibration harness.\nEpistemic diagnostics.\nBandit (Thompson Sampling).")
     Container(agent, "h2ai-agent", "Rust / Tokio", "Edge agent binary.\nTaoAgent loop.\nDispatchLoop + HeartbeatTask.")
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
-    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
+    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CALIBRATION_RECORDS KV\nH2AI_AUDITOR_HEALTH KV\nH2AI_PROBE_LEASE KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
 
     Rel(client, api, "POST /:tenant_id/tasks\nGET /:tenant_id/tasks/:task_id/events", "HTTPS")
     Rel(api, orchestrator, "spawn ExecutionEngine", "in-process")
@@ -288,7 +288,7 @@ flowchart TD
     M --> A{"Analyse: n_eff vs diversity_threshold x n_requested"}
     A -->|"n_eff > threshold x n_requested"| CE["ConstrainedExploration: diverse generation, constraints rejected all"]
     A -->|"n_eff <= threshold"| MC["ModeCollapse: correlated hallucination"]
-    CE --> P1["Plan: synthesize Constraint Violation Tombstone (IDs + severity only)"]
+    CE --> P1["Plan: CSPR-v2 repair context (when cspr.enabled)\nor Constraint Violation Tombstone (legacy)"]
     MC --> P2["Plan: increment adapter_rotation_offset mod pool_size"]
     P1 --> Ex["Execute: RetryPolicy::decide next topology or tau-reduction"]
     P2 --> Ex
@@ -313,7 +313,7 @@ The `h2ai-orchestrator` crate implements the MAPE-K loop as three distinct layer
 |-------|------|----------------|
 | **Phase modules** | `src/phases/` (16 modules) | Pure data transformations. Each module exposes an `Input` struct, an `Output` struct, and a `run()` function returning `StepResult<Output>`. No retry state; no cross-wave memory. |
 | **ExecutionPipeline** | `src/pipeline.rs` | Sequences the 16 phase modules for one wave. Stateless — receives `PipelineParams` each wave, returns `PipelineWaveResult`. Can be tested in isolation without a running controller. |
-| **MapeKController** | `src/mape_k.rs` | Owns all retry state. Implements `observe(wave)` (aggregates events across waves), `params()` (projects current state into `PipelineParams` for the next wave), and `decide(outcome)` (maps `PipelineOutcome` to `MapeKDecision`). |
+| **MapeKController** | `src/mape_k.rs` | Owns all retry state. Implements `observe(wave)` (aggregates events across waves — also updates `global_best_proposal: Option<(f64, String)>` cross-wave accumulator), `params()` (projects current state into `PipelineParams` for the next wave), and `decide(outcome)` (maps `PipelineOutcome` to `MapeKDecision`). Carries `conflict_graph: ConstraintConflictGraph` (built once at task start). When `cspr.enabled = true`, `apply_retry_action` uses `build_repair_context()` (CSPR-v2) instead of the legacy tombstone+hints format — anchors repair on the best prior proposal, emits per-violated-constraint REPAIR TARGET instructions, and adds a `[COMPETING CONSTRAINTS DETECTED]` MetaRepair block when two violated constraints are in the conflict graph. |
 | **Coordinator** | `src/engine.rs` (~30 lines) | Creates controller and pipeline, runs the `loop { pipeline.run → controller.observe → controller.decide }` cycle, routes `MapeKDecision` to return/continue/error. |
 
 ### Phase execution sequence

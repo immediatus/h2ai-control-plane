@@ -1388,19 +1388,12 @@ async fn engine_hint_injected_into_explorer_on_retry() {
     // system_context during the second generation iteration.
     let hint_text = "Use TTL-based caches with no node affinity required.";
 
-    let corpus = vec![h2ai_constraints::types::ConstraintDoc {
-        id: "C-HINT".into(),
-        source_file: "C-HINT.yaml".into(),
-        description: "Stateless caching rule".into(),
-        severity: ConstraintSeverity::Hard { threshold: 0.45 },
-        predicate: ConstraintPredicate::LlmJudge {
-            rubric: "The proposal must use TTL-based caches with no node affinity.".into(),
-        },
-        remediation_hint: Some(hint_text.into()),
-        domains: vec![],
-        mandatory_for_tags: vec![],
-        related_to: vec![],
-    }];
+    let mut doc = ConstraintDoc::new_llm_judge(
+        "C-HINT",
+        "The proposal must use TTL-based caches with no node affinity.",
+    );
+    doc.remediation_hint = Some(hint_text.into());
+    let corpus = vec![doc];
 
     // Explorer: two proposals (one per iteration), content doesn't matter
     let explorer = CapturingAdapter::new(vec![

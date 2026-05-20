@@ -242,6 +242,14 @@ pub struct MapeKController {
     /// AssembledContexts from the most recently completed wave.
     /// Passed as `prev_assembled_contexts` to the next wave's generation phase.
     pub(crate) prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
+
+    // ── CSPR-v2: Conflict-Aware Constraint-Scoped Prior Repair ──────────────
+    /// Cross-wave global best proposal: (score, proposal_text).
+    /// Updated by `observe()` each wave; used by CSPR-v2 repair context builder.
+    pub(crate) global_best_proposal: Option<(f64, String)>,
+    /// Static conflict graph built from the task's constraint corpus.
+    /// Passed from engine.rs at construction time.
+    pub(crate) conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph,
 }
 
 impl MapeKController {
@@ -254,6 +262,7 @@ impl MapeKController {
         input: &crate::engine::EngineInput<'_>,
         bootstrap_out: &crate::phases::bootstrap::Output,
         complexity_out: &crate::phases::complexity::Output,
+        conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph,
     ) -> Self {
         let task_id = input.task_id.clone();
         let assessed_quadrant = complexity_out.assessed_quadrant;
@@ -343,6 +352,8 @@ impl MapeKController {
             pending_socratic_diagnosis_events: Vec::new(),
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
+            global_best_proposal: None,
+            conflict_graph,
         }
     }
 
@@ -412,6 +423,25 @@ impl MapeKController {
         // Epistemic leader: snapshot last-wave verification events and proposal texts.
         self.last_wave_verification_events = e.verification_events.clone();
         self.last_wave_proposal_texts = e.wave_proposal_texts.clone();
+        // CSPR-v2: update cross-wave global-best proposal.
+        for (explorer_id, text) in &e.wave_proposal_texts {
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(ev) = e
+                .verification_events
+                .iter()
+                .find(|ev| &ev.explorer_id == explorer_id)
+            {
+                let is_better = self
+                    .global_best_proposal
+                    .as_ref()
+                    .is_none_or(|(best_score, _)| ev.score > *best_score);
+                if is_better {
+                    self.global_best_proposal = Some((ev.score, text.clone()));
+                }
+            }
+        }
         self.last_wave_violated_constraint_ids = self
             .last_wave_pruned
             .iter()
@@ -635,19 +665,68 @@ impl MapeKController {
                 self.force_topology = Some(topology);
                 if !hints.is_empty() {
                     let attempts_remaining = (self.max_retries as u32).saturating_sub(retry_count);
-                    let hint_lines = hints
-                        .iter()
-                        .map(|h| format!("• {h}"))
-                        .collect::<Vec<_>>()
-                        .join("\n\n");
-                    self.retry_context = Some(format!(
-                        "{ctx}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
-                        The following constraints were violated. Fix ALL of these in your next response:\n\n\
-                        {hint_lines}\n\n\
-                        {attempts_remaining} retry attempt(s) remaining.\n\
-                        ---",
-                        ctx = self.system_context_with_rubric
-                    ));
+
+                    let use_cspr = self.cfg_ref.cspr.enabled && self.global_best_proposal.is_some();
+
+                    if use_cspr {
+                        // CSPR-v2: patch repair anchored on best prior proposal.
+                        let (_, prior_text) = self.global_best_proposal.as_ref().unwrap();
+
+                        let violated_ids: Vec<String> = self
+                            .last_wave_pruned
+                            .iter()
+                            .flat_map(|p| {
+                                p.violated_constraints
+                                    .iter()
+                                    .map(|v| v.constraint_id.clone())
+                            })
+                            .collect();
+                        let violated_hints: Vec<Option<String>> = self
+                            .last_wave_pruned
+                            .iter()
+                            .flat_map(|p| {
+                                p.violated_constraints
+                                    .iter()
+                                    .map(|v| v.remediation_hint.clone())
+                            })
+                            .collect();
+
+                        // Fall back to hint strings from RetryPolicy when last_wave_pruned has no detail.
+                        let (final_ids, final_hints) = if !violated_ids.is_empty() {
+                            (violated_ids, violated_hints)
+                        } else {
+                            let ids: Vec<String> = hints.clone();
+                            let hs: Vec<Option<String>> = vec![None; hints.len()];
+                            (ids, hs)
+                        };
+
+                        self.retry_context = Some(h2ai_autonomic::repair::build_repair_context(
+                            h2ai_autonomic::repair::RepairInput {
+                                prior_proposal_text: prior_text,
+                                violated_ids: &final_ids,
+                                violated_hints: &final_hints,
+                                conflict_graph: &self.conflict_graph,
+                                retry_count,
+                                attempts_remaining,
+                                system_context_with_rubric: &self.system_context_with_rubric,
+                            },
+                        ));
+                    } else {
+                        // Legacy hint-only format (cspr disabled or no prior proposal yet).
+                        let hint_lines = hints
+                            .iter()
+                            .map(|h| format!("• {h}"))
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        self.retry_context = Some(format!(
+                            "{ctx}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
+                            The following constraints were violated. Fix ALL of these in your next response:\n\n\
+                            {hint_lines}\n\n\
+                            {attempts_remaining} retry attempt(s) remaining.\n\
+                            ---",
+                            ctx = self.system_context_with_rubric
+                        ));
+                    }
                 }
                 self.run_apply_optimizer(filter_ratio);
                 MapeKDecision::Retry
@@ -1058,6 +1137,8 @@ impl MapeKController {
             pending_socratic_diagnosis_events: Vec::new(),
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
+            global_best_proposal: None,
+            conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph::build(&[]),
         }
     }
 

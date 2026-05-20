@@ -46,4 +46,5 @@ pub use conflict::{ConflictRateAccumulator, ConflictRateSample};
 pub mod knowledge;
 pub mod thinking;
 pub use knowledge::{profile_for_role, KnowledgeNodePattern, KnowledgeProfile, RetrievalMode};
+pub mod calibration;
 pub mod signal;

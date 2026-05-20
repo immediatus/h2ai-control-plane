@@ -43,28 +43,25 @@ cost_evaluator   = 0.9
 cost_synthesizer = 0.1
 
 # ── Token budgets ─────────────────────────────────────────────────────────────
+# Single model budget: all full-generation LLM calls use model_max_tokens = 32768.
+# Intentional exceptions: leader_diagnosis_max_tokens (128, one Socratic question)
+# and calibration_probe.max_tokens (512, short structure probe).
+model_max_tokens = 32768
 
 # Maximum tokens per explorer generation call.
-# Reasoning models spend most of their budget on internal CoT before writing
-# the visible response — 8192 gives enough room for both.
-explorer_max_tokens = 65536
+explorer_max_tokens = 32768
 
 # Maximum tokens per evaluator verification call.
-# Reasoning models (chain-of-thought) consume tokens internally before writing
-# the compliance check output — 8192 gives sufficient budget for both.
-evaluator_max_tokens = 65536
+evaluator_max_tokens = 32768
 
 # Maximum tokens per calibration probe call.
-# Small but enough for the short probe response; reasoning overhead included.
 calibration_max_tokens = 32768
 
 # Maximum tokens for decomposition steps 1 and 2 (analysis + role design).
-decomposition_step_max_tokens = 65536
+decomposition_step_max_tokens = 32768
 
 # Maximum tokens for decomposition step 3 (JSON formatting).
-# Thinking models spend their token budget on <think> chains before emitting JSON;
-# set high enough that the JSON output lands within the budget.
-decomposition_json_max_tokens = 65536
+decomposition_json_max_tokens = 32768
 
 # Disable extended thinking chains on Qwen3-style models (llama.cpp chat_template_kwargs).
 # Set false for local thinking models to keep multi-step pipelines fast.
@@ -288,11 +285,27 @@ snapshot_interval_events = 50
 # the corresponding route handlers are already registered in the binary.
 api_version = "v1"
 
+# HTTP listen address for the API server. Default: "0.0.0.0:8080".
+listen_addr = "0.0.0.0:8080"
+
 # ── NATS ──────────────────────────────────────────────────────────────────────
 
 # NATS server URL for the API server, edge agents, and integration tests.
 # Override via H2AI_NATS_URL env var or the nats_url field in your override TOML.
 nats_url = "nats://localhost:4222"
+
+# Enable NATS agent dispatch mode. When true, explorer slots are dispatched to
+# TaoAgent processes via NATS rather than calling the in-process LLM adapter.
+nats_dispatch_enabled = false
+
+# TTL in seconds for NATS-dispatched agent task slots. Default: 30.
+nats_agent_ttl_secs = 30
+
+# Model name reported in AgentDescriptor for NATS-dispatched agent tasks.
+nats_agent_model = "local"
+
+# Timeout in seconds for a single NATS-dispatched agent task. Default: 120.
+nats_agent_timeout_secs = 120
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
@@ -346,10 +359,10 @@ synthesis_min_proposals = 2
 synthesis_tau = 0.2
 
 # Max tokens for the critique call (Stage 1).
-synthesis_critique_max_tokens = 65536
+synthesis_critique_max_tokens = 32768
 
 # Max tokens for the synthesis call (Stage 2).
-synthesis_max_tokens = 65536
+synthesis_max_tokens = 32768
 
 # ── Shell Tool ────────────────────────────────────────────────────────────────
 
@@ -665,6 +678,21 @@ ambiguity_threshold = 2
 [calibration_bootstrap]
 prior_weight = 5
 
+# ── Epistemic probe — β₀ from N_eff^adj ──────────────────────────────────────
+[calibration_probe]
+agents             = 3
+max_tokens         = 512
+system_modifier    = "compress_reasoning"
+probe_task_source  = "same"
+neff_cg_exponent   = 2.0
+
+# ── AIMD slow start ───────────────────────────────────────────────────────────
+[calibration_slow_start]
+seed_alpha        = 0.15
+decay_rate        = 0.95
+reset_multiplier  = 3.0
+reset_threshold   = 0.4
+
 # ── State: NATS bucket names and delta checkpoint encoding ────────────────────
 [state]
 snapshots_bucket           = "H2AI_SNAPSHOTS"
@@ -681,6 +709,9 @@ reasoning_checkpoint_bucket_prefix  = "H2AI_CHECKPOINT"
 task_meta_state_bucket_prefix       = "H2AI_META"
 tenant_memory_bucket_prefix         = "H2AI_MEMORY"
 conflict_beta_bucket_prefix         = "H2AI_CONFLICT"
+calibration_records_bucket          = "H2AI_CALIBRATION_RECORDS"
+auditor_health_bucket               = "H2AI_AUDITOR_HEALTH"
+probe_lease_bucket                  = "H2AI_PROBE_LEASE"
 tasks_stream               = "H2AI_TASKS"
 telemetry_stream           = "H2AI_TELEMETRY"
 results_stream             = "H2AI_RESULTS"
@@ -691,3 +722,10 @@ enabled           = true
 base_interval     = 10
 cache_ttl_secs    = 60
 cache_max_entries = 200
+
+# ── CSPR-v2: Conflict-Aware Constraint-Scoped Prior Repair ───────────────────
+[cspr]
+# Enable patch-based repair on ZeroSurvival/ConstrainedExploration.
+# When true, RetryWithHints anchors on the best prior proposal and emits
+# targeted per-constraint repair instructions. Default: false.
+enabled = false

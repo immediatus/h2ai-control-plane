@@ -51,6 +51,13 @@ pub const EVALUATOR_SYSTEM_PROMPT: &str = concat!(
 /// instructed to look for a specific failure mode, so the verifier should probe adversarially
 /// rather than check rubric compliance. This partially restores verifier independence
 /// without requiring a separate model family (GAP-A4).
+/// System prompt for binary YES/NO factual checks (SemanticPresence, SemanticExclusion, SemanticOrdering).
+/// Must NOT use the adversarial evaluator framing — factual presence checks require neutral classification,
+/// not hostile scoring. The adversarial framing causes the model to answer NO regardless of content.
+pub const BINARY_CLASSIFIER_SYSTEM_PROMPT: &str =
+    "You are a precise text classifier. Answer with exactly one word: YES or NO. \
+     Do not add punctuation, explanation, or any other text.";
+
 pub const ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT: &str = concat!(
     "You are a hostile reviewer. Your goal is NOT to check whether this proposal follows the rubric.\n",
     "Your goal is to find the single most likely way this proposal fails silently, violates a \n",

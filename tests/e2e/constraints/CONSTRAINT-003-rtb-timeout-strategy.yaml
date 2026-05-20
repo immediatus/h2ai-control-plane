@@ -9,7 +9,7 @@ related_to:
   - CONSTRAINT-006  # JVM GC pauses compete with RTB deadline; ZGC chosen to stay under 2ms
 remediation_hint: "Track per-DSP latency histograms locally in each Ad Server instance (no cross-instance coordination). Use P95 observed latency as the per-DSP cutoff budget; enforce a minimum warm-up sample count before activating adaptive mode. Always proceed with partial bids on timeout — never extend the global deadline."
 numeric_checks:
-  - pattern: "(?i)(?:T_global|global[^0-9\\n]{0,25}timeout|deadline_ts_ms\\s*=\\s*[^+\\n]*\\+\\s*)([0-9]+)"
+  - pattern: "(?i)(?:T_global|global[^0-9\\n]{0,25}timeout|deadline_ts_ms\\s*=\\s*[^+\\n]*\\+\\s*)[^\\d\\n]{0,40}([0-9]+)"
     op: le
     value: 100.0
 criteria:

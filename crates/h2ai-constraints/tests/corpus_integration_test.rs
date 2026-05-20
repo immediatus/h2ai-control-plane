@@ -45,27 +45,27 @@ fn corpus_loads_all_yaml_constraints() {
 }
 
 #[test]
-fn corpus_all_constraints_have_llm_judge_predicate() {
+fn corpus_all_constraints_have_composite_predicate_ending_in_llm_judge() {
     use h2ai_constraints::types::CompositeOp;
     let (store, _) = load_corpus();
     for doc in store.all_docs_sorted() {
-        let has_llm_judge = match &doc.predicate {
-            ConstraintPredicate::LlmJudge { .. } => true,
-            // Composite(And([..., LlmJudge])) — numeric_checks present
+        match &doc.predicate {
             ConstraintPredicate::Composite { op, children } => {
-                *op == CompositeOp::And
-                    && children
+                assert_eq!(*op, CompositeOp::And, "constraint {} must use And", doc.id);
+                assert!(
+                    children
                         .last()
                         .map(|c| matches!(c, ConstraintPredicate::LlmJudge { .. }))
-                        .unwrap_or(false)
+                        .unwrap_or(false),
+                    "constraint {} Composite must end with LlmJudge",
+                    doc.id
+                );
             }
-            _ => false,
-        };
-        assert!(
-            has_llm_judge,
-            "constraint {} must have LlmJudge predicate (or Composite ending in LlmJudge); got non-LlmJudge",
-            doc.id
-        );
+            other => panic!(
+                "constraint {} must be Composite(And([..., LlmJudge])); got {other:?}",
+                doc.id
+            ),
+        }
     }
 }
 
@@ -73,13 +73,18 @@ fn corpus_all_constraints_have_llm_judge_predicate() {
 fn corpus_rubrics_include_domain_context() {
     let (store, _) = load_corpus();
     for doc in store.all_docs_sorted() {
-        if let ConstraintPredicate::LlmJudge { rubric } = &doc.predicate {
-            assert!(
-                rubric.contains("Domain:"),
-                "constraint {} rubric must include 'Domain:' line; got: {}",
-                doc.id,
-                &rubric[..rubric.len().min(200)]
-            );
+        if doc.domains.is_empty() {
+            continue;
+        }
+        if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+            if let Some(ConstraintPredicate::LlmJudge { rubric }) = children.last() {
+                assert!(
+                    rubric.contains("Domain:"),
+                    "constraint {} rubric must include 'Domain:' line; got: {}",
+                    doc.id,
+                    &rubric[..rubric.len().min(200)]
+                );
+            }
         }
     }
 }
@@ -88,13 +93,18 @@ fn corpus_rubrics_include_domain_context() {
 fn corpus_rubrics_include_remediation_hint() {
     let (store, _) = load_corpus();
     for doc in store.all_docs_sorted() {
-        if let ConstraintPredicate::LlmJudge { rubric } = &doc.predicate {
-            assert!(
-                rubric.contains("Remediation hint:"),
-                "constraint {} rubric must include 'Remediation hint:'; got: {}",
-                doc.id,
-                &rubric[..rubric.len().min(200)]
-            );
+        if doc.remediation_hint.is_none() {
+            continue;
+        }
+        if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+            if let Some(ConstraintPredicate::LlmJudge { rubric }) = children.last() {
+                assert!(
+                    rubric.contains("Remediation hint:"),
+                    "constraint {} rubric must include 'Remediation hint:'; got: {}",
+                    doc.id,
+                    &rubric[..rubric.len().min(200)]
+                );
+            }
         }
     }
 }
@@ -156,24 +166,28 @@ numeric_checks:
 }
 
 #[test]
-fn yaml_without_numeric_checks_still_produces_llm_judge() {
-    use h2ai_constraints::types::ConstraintPredicate;
+fn yaml_without_semantic_or_predicates_produces_composite_with_single_llm_judge() {
+    use h2ai_constraints::types::{CompositeOp, ConstraintPredicate};
     use h2ai_constraints::yaml::parse_yaml_constraint;
     use std::path::Path;
 
     let yaml = r#"
-id: TEST-PLAIN
+id: TEST-PLAIN2
 title: "Plain LLM judge"
 severity: hard
 criteria:
   pass: "Proposal is stateless."
   fail: "Proposal uses state."
 "#;
-    let doc = parse_yaml_constraint(Path::new("TEST-PLAIN.yaml"), yaml).unwrap();
-    assert!(
-        matches!(doc.predicate, ConstraintPredicate::LlmJudge { .. }),
-        "no numeric_checks → plain LlmJudge"
-    );
+    let doc = parse_yaml_constraint(Path::new("TEST-PLAIN2.yaml"), yaml).unwrap();
+    match &doc.predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert_eq!(children.len(), 1, "no semantic gates → only LlmJudge child");
+            assert!(matches!(&children[0], ConstraintPredicate::LlmJudge { .. }));
+        }
+        other => panic!("expected Composite(And([LlmJudge])), got {other:?}"),
+    }
 }
 
 // ── Domain navigation ────────────────────────────────────────────────────────
@@ -343,7 +357,7 @@ async fn source_resolve_semantic_union_merges_tag_and_bm25() {
 }
 
 #[tokio::test]
-async fn source_load_payload_returns_llm_judge_with_remediation() {
+async fn source_load_payload_has_remediation_hint_in_composite_rubric() {
     let resolver = make_resolver();
     let docs = resolver
         .resolve(&["CONSTRAINT-004".to_string()], &[], "")
@@ -354,16 +368,260 @@ async fn source_load_payload_returns_llm_judge_with_remediation() {
         "must resolve exactly one doc for explicit ID"
     );
     assert_eq!(docs[0].id, "CONSTRAINT-004");
-    if let ConstraintPredicate::LlmJudge { rubric } = &docs[0].predicate {
-        assert!(
-            rubric.contains("Remediation hint:"),
-            "fetched rubric must include remediation hint"
+    if let ConstraintPredicate::Composite { children, .. } = &docs[0].predicate {
+        if let Some(ConstraintPredicate::LlmJudge { rubric }) = children.last() {
+            assert!(
+                rubric.contains("Remediation hint:"),
+                "rubric must include hint"
+            );
+            assert!(rubric.contains("Domain:"), "rubric must include domain");
+        } else {
+            panic!("CONSTRAINT-004 Composite must end with LlmJudge");
+        }
+    } else {
+        panic!("CONSTRAINT-004 must be Composite predicate");
+    }
+}
+
+#[test]
+fn yaml_semantic_section_parses_exclusion_requirement_ordering() {
+    use h2ai_constraints::types::{CompositeOp, ConstraintPredicate};
+    use h2ai_constraints::yaml::parse_yaml_constraint;
+    use std::path::Path;
+
+    let yaml = r#"
+id: TEST-SEM
+title: "Semantic section test"
+severity: hard
+criteria:
+  pass: "Uses Kafka."
+  fail: "Does not use Kafka."
+semantic:
+  exclusions:
+    - pattern: "direct DB write"
+      passes: 3
+  requirements:
+    - concept: "Kafka topic"
+      passes: 3
+  orderings:
+    - first: "debit"
+      then: "publish"
+      passes: 3
+"#;
+    let doc = parse_yaml_constraint(Path::new("TEST-SEM.yaml"), yaml).unwrap();
+    match &doc.predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert_eq!(
+                children.len(),
+                4,
+                "1 exclusion + 1 requirement + 1 ordering + LlmJudge"
+            );
+            assert!(matches!(
+                &children[0],
+                ConstraintPredicate::SemanticExclusion { .. }
+            ));
+            assert!(matches!(
+                &children[1],
+                ConstraintPredicate::SemanticPresence { .. }
+            ));
+            assert!(matches!(
+                &children[2],
+                ConstraintPredicate::SemanticOrdering { .. }
+            ));
+            assert!(matches!(&children[3], ConstraintPredicate::LlmJudge { .. }));
+        }
+        other => panic!("expected Composite, got {other:?}"),
+    }
+}
+
+#[test]
+fn yaml_both_semantic_and_predicates_returns_none() {
+    use h2ai_constraints::yaml::parse_yaml_constraint;
+    use std::path::Path;
+
+    let yaml = r#"
+id: TEST-COLLISION
+title: "Key collision test"
+severity: hard
+criteria:
+  pass: "Pass."
+  fail: "Fail."
+semantic:
+  exclusions:
+    - pattern: "bad pattern"
+predicates:
+  - type: semantic_ordering
+    first: "a"
+    then: "b"
+"#;
+    let result = parse_yaml_constraint(Path::new("TEST-COLLISION.yaml"), yaml);
+    assert!(
+        result.is_none(),
+        "both semantic: and predicates: must result in None"
+    );
+}
+
+#[test]
+fn yaml_legacy_predicates_array_maps_to_composite() {
+    use h2ai_constraints::types::{CompositeOp, ConstraintPredicate};
+    use h2ai_constraints::yaml::parse_yaml_constraint;
+    use std::path::Path;
+
+    let yaml = r#"
+id: TEST-LEGACY
+title: "Legacy predicates test"
+severity: hard
+criteria:
+  pass: "Ordering correct."
+  fail: "Ordering wrong."
+predicates:
+  - type: semantic_ordering
+    first: "account debit"
+    then: "Kafka publish"
+"#;
+    let doc = parse_yaml_constraint(Path::new("TEST-LEGACY.yaml"), yaml).unwrap();
+    match &doc.predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert_eq!(children.len(), 2, "1 SemanticOrdering + LlmJudge");
+            if let ConstraintPredicate::SemanticOrdering { first, .. } = &children[0] {
+                assert_eq!(first, "account debit");
+            } else {
+                panic!("first child must be SemanticOrdering");
+            }
+        }
+        other => panic!("expected Composite, got {other:?}"),
+    }
+}
+
+#[test]
+fn new_llm_judge_produces_composite_not_bare_llm_judge() {
+    use h2ai_constraints::types::{CompositeOp, ConstraintDoc, ConstraintPredicate};
+    let doc = ConstraintDoc::new_llm_judge("C-TEST", "The proposal must be stateless.");
+    match &doc.predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert_eq!(children.len(), 1);
+            assert!(
+                matches!(&children[0], ConstraintPredicate::LlmJudge { rubric } if rubric.contains("stateless"))
+            );
+        }
+        other => panic!("new_llm_judge must produce Composite(And([LlmJudge])), got {other:?}"),
+    }
+}
+
+#[test]
+fn new_soft_llm_judge_produces_composite_not_bare_llm_judge() {
+    use h2ai_constraints::types::{CompositeOp, ConstraintDoc, ConstraintPredicate};
+    let doc = ConstraintDoc::new_soft_llm_judge("C-SOFT", "Soft requirement text.");
+    match &doc.predicate {
+        ConstraintPredicate::Composite { op, children } => {
+            assert_eq!(*op, CompositeOp::And);
+            assert_eq!(children.len(), 1);
+            assert!(matches!(&children[0], ConstraintPredicate::LlmJudge { .. }));
+        }
+        other => panic!("new_soft_llm_judge must produce Composite, got {other:?}"),
+    }
+}
+
+#[test]
+fn constraint_004_has_exclusion_and_requirement_semantic_gates() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    let (store, _) = load_corpus();
+    let doc = store
+        .all_docs_sorted()
+        .into_iter()
+        .find(|d| d.id == "CONSTRAINT-004")
+        .unwrap();
+    if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+        let exclusions = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticExclusion { .. }))
+            .count();
+        let requirements = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticPresence { .. }))
+            .count();
+        assert_eq!(
+            exclusions, 1,
+            "CONSTRAINT-004 must have 1 SemanticExclusion gate"
         );
-        assert!(
-            rubric.contains("Domain:"),
-            "fetched rubric must include domain context"
+        assert_eq!(
+            requirements, 1,
+            "CONSTRAINT-004 must have 1 SemanticPresence gate"
         );
     } else {
-        panic!("CONSTRAINT-004 payload must be LlmJudge");
+        panic!("CONSTRAINT-004 must be Composite");
+    }
+}
+
+#[test]
+fn constraint_005_has_exclusion_requirement_and_ordering_gates() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    let (store, _) = load_corpus();
+    let doc = store
+        .all_docs_sorted()
+        .into_iter()
+        .find(|d| d.id == "CONSTRAINT-005")
+        .unwrap();
+    if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+        let exclusions = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticExclusion { .. }))
+            .count();
+        let requirements = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticPresence { .. }))
+            .count();
+        let orderings = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticOrdering { .. }))
+            .count();
+        assert_eq!(
+            exclusions, 1,
+            "CONSTRAINT-005 must have 1 SemanticExclusion gate"
+        );
+        assert_eq!(
+            requirements, 1,
+            "CONSTRAINT-005 must have 1 SemanticPresence gate"
+        );
+        assert_eq!(
+            orderings, 1,
+            "CONSTRAINT-005 must have 1 SemanticOrdering gate"
+        );
+    } else {
+        panic!("CONSTRAINT-005 must be Composite");
+    }
+}
+
+#[test]
+fn constraint_008_has_exclusion_and_requirement_semantic_gates() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    let (store, _) = load_corpus();
+    let doc = store
+        .all_docs_sorted()
+        .into_iter()
+        .find(|d| d.id == "CONSTRAINT-008")
+        .unwrap();
+    if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+        let exclusions = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticExclusion { .. }))
+            .count();
+        let requirements = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticPresence { .. }))
+            .count();
+        assert_eq!(
+            exclusions, 1,
+            "CONSTRAINT-008 must have 1 SemanticExclusion gate"
+        );
+        assert_eq!(
+            requirements, 1,
+            "CONSTRAINT-008 must have 1 SemanticPresence gate"
+        );
+    } else {
+        panic!("CONSTRAINT-008 must be Composite");
     }
 }

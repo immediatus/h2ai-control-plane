@@ -17,7 +17,6 @@ mathematical improvement, and simulation protocol for every open gap.
 | [Group B — Math Apparatus](#brainstorm-group-b--mathematical-formula-validity) | Are the formulas principled or arbitrary? |
 | [Group D — Infrastructure](#brainstorm-group-d--infrastructure-and-operational-gaps) | Do the inputs to the math arrive correctly? |
 | [Group E — Quality Measurement](#brainstorm-group-e--quality-measurement-infrastructure) | Can we measure what we claim to optimise? |
-| [New Gaps](#new-gaps-from-2026-05-13-review) | Newly identified from critical review and arXiv research |
 | [Shared Infrastructure](#shared-infrastructure-required-for-group-a) | Pre-work that blocks Group A experiments |
 
 ---
@@ -29,24 +28,22 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-A1 Self-MoA vs. multi-family routing** | 🟡 PARTIAL | **Critical** | H2-P vs. B3 experiment runnable today |
 | **GAP-A2 USL N_max vs. quality curve** | 🔴 OPEN | **Critical** | Replace USL with N_IT as primary sizer; USL → cost cap only |
 | **GAP-A6 Self-MoA as direct empirical competitor** | 🔴 OPEN | **Critical** | Structured experiment with constraint compliance as primary metric |
-| **GAP-A7 Preference leakage in LlmJudge** | ✅ CLOSED 2026-05-16 | **High** | Cross-family panel + persona-diverse fallback; `ConstraintAmbiguityEvent` corpus quality signal |
-| **GAP-B1 β_eff functional form** | 🔴 OPEN | Medium | First-principles derivation now available — unify with context-aware formula |
+
+| **GAP-B1 β_eff functional form** | 🟡 PARTIAL | Medium | Epistemic β₀ wired 2026-05-20 — empirical validation of linear β_eff still open |
 | GAP-B3 Attribution self-referential | 🟡 PARTIAL | Medium | Conformal prediction once oracle data exists |
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🔴 OPEN | **High** | Three interconnected heuristic proxies; online ρ_EMA mitigates rho after 30 obs |
 | **GAP-B6 LLM-as-Judge validity — Krum on biased scores** | 🔴 OPEN | **High** | Pairwise ranking + adversarial critique; oracle calibration (blocked on GAP-A6) |
 | **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🔴 OPEN | **High** | Multi-family committee enforcement on ModeCollapse retry; structural pre-generation family diversity gate |
-| **GAP-D4 Verification throughput** | ✅ CLOSED 2026-05-18 | — | Already parallel; rubric threshold bug fixed |
+
 | **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🔴 OPEN | Medium | Hierarchical tournament merge; bounded context |
-| **GAP-D6 State infrastructure complexity mismatch** | 🔴 OPEN | Low | BFT/CRDT overhead in single-region deployments |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
-| **GAP-F1 Knowledge provider wired into generation pipeline** | ✅ CLOSED 2026-05-18 | — | Role-stratified retrieval via `KnowledgeProfile`/`profile_for_role` (Coordinator → CollapsedTree/top_k=3; Executor/Evaluator → TreeTraversal+PPR; Synthesizer → CollapsedTree+1 PPR hop); parallel per-slot queries in `generation.rs` Phase B1; `InductionStore` records high-hit-rate node IDs on `MergeResolved` and injects as `explicit_ids` on subsequent tasks; wired into `EngineInput.induction_store`; **partial**: `tasks.rs` and `recovery.rs` pass `induction_store: None` (follow-up: wire through AppState); graceful degradation when `[knowledge]` absent |
-| **GAP-F2 ResumeSignal — JetStream HITL** | ✅ CLOSED 2026-05-19 | — | Replaces polling-based KV approval entirely. `H2AI_APPROVALS` KV + `approval_reaper.rs` deleted; `H2AI_SIGNALS` JetStream stream + durable per-task push consumers replace them. Engine parks at Merging phase with `tokio::select!` on signal or adaptive timeout; `POST /signal` (202 fire-and-forget) is the new operator endpoint; `POST /approve` → 301 redirect to `/signal`. Two signal types: `Approve` (HITL gate resolution) and `WaveContinue` (grounding injection at wave boundaries when `signal_wave_window_ms > 0`). Adaptive timeout decay: `effective_ms = timeout_ms × decay^hitl_timeouts_fired`, floored at `timeout_floor_ms`. |
+
 | **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🔴 OPEN | **High** | BM25 retrieval is wired but there is no measurement of whether it helps; solve with contrastive task pairs (with/without knowledge augmentation) isolating knowledge network contribution |
 | **GAP-F5 Constraint violations don't reshape retrieval routing** | 🔴 OPEN | Medium | Violation signals reach `conflict_beta` bandit but never update knowledge graph edge weights; closed-loop propagation (Solvita-style) would make the retrieval layer learn from failures |
-| **GAP-D7 Retry loop uses full regeneration, not patch-based repair** | 🔴 OPEN | Medium | MAPE-K retry discards all proposals and regenerates from scratch; Solvita shows patch-based SEARCH/REPLACE repair outperforms full regeneration (82.4% vs 75.8%) by preserving invariants on already-passing constraints |
+
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
@@ -101,103 +98,6 @@ Config additions to `reference.toml`: `reasoning_memory_tag_gate_threshold = 0.2
 Three cross-cutting innovations that each close multiple gaps without requiring new infrastructure.
 Implement these before running any Group A experiments — the experiments will produce better-
 grounded data if the math inputs are correct.
-
-### INNOVATION-2 — Conflict-Count β₀ (replaces API-latency β)
-
-**Closed:** GAP-D1 (2026-05-15). See `docs/architecture/reference.md → Conflict-Rate β (GAP-D1)`.  
-**Cost:** 1 week to extend calibration harness.  
-**Why now:** The constraint verifier already runs on every proposal in Phase B calibration. Counting
-constraint violations per proposal pair is free — the data already flows through.
-
-**Current state (wrong signal):**
-
-```
-β₀ = (z_M - z_2 × (M-1)) / ((M-1)(M-2))   where z = wall-clock time
-```
-
-Fast API (local LLM) → small z → small β₀ → large N_max.  
-This is backwards: local single-model deployments produce the most correlated proposals and need
-the *smallest* N_max, not the largest.
-
-**Proposed state (principled signal):**
-
-USL's β is defined as the cost of N(N-1) pairwise coherency checks. In H2AI, a coherency check
-is a constraint conflict resolution. The coordination cost between agents i and j is proportional
-to the number of constraints where they disagree.
-
-```
-conflict_rate(M) = (1/M(M-1)) × Σ_{i≠j} |constraints_violated_by_i XOR violated_by_j| / |corpus|
-
-β_conflict = (conflict_rate(M) - conflict_rate(2)) / ((M-1)(M-2))
-```
-
-Two β values in parallel:
-- `beta_latency` — existing timing β (useful for latency estimation only)
-- `beta_quality` — new conflict-count β (drives N_max for quality bounding)
-
-N_max uses `beta_quality`. Latency prediction uses `beta_latency`. These are separate concerns and
-should never share the same estimate.
-
-**First-principles derivation of β_eff:**
-
-Given `beta_quality`, the β_eff formula now has a derivation:
-
-```
-β_eff = β_quality × (1 - CG_mean)
-```
-
-Interpretation: `β_quality` is the conflict cost per pair per unit CG distance.
-`(1 - CG_mean)` is the expected CG distance between any two adapters in the pool.
-Product: expected conflict cost per adapter pair in the actual pool.
-
-This is not a heuristic — it follows from the definition if `conflict_rate ∝ (1 - CG)`. That
-proportionality is an empirical claim to verify, but it is now falsifiable: measure
-`conflict_rate` and `CG_mean` independently and fit the linear coefficient.
-
-**Simulation:**
-
-```python
-# Validate: does constraint conflict rate scale linearly with (1 - CG_mean)?
-# Use synthetic binary satisfaction vectors
-import numpy as np
-
-def conflict_rate(profiles):
-    """profiles: (N, K) binary array where profiles[i,k] = agent i satisfies constraint k"""
-    N, K = profiles.shape
-    conflicts = 0
-    for i in range(N):
-        for j in range(i+1, N):
-            conflicts += np.sum(profiles[i] != profiles[j]) / K
-    return conflicts / (N * (N-1) / 2)
-
-def hamming_cg(profiles):
-    N, K = profiles.shape
-    agree = 0
-    for i in range(N):
-        for j in range(i+1, N):
-            agree += np.sum(profiles[i] == profiles[j]) / K
-    return agree / (N * (N-1) / 2)
-
-# Sweep CG_mean by varying cross-profile overlap probability p_agree
-results = []
-for p_agree in np.linspace(0.3, 0.95, 15):
-    profiles = (np.random.rand(6, 100) < p_agree).astype(int)
-    # Introduce controlled disagreement: flip with prob (1-p_agree)
-    for i in range(1, 6):
-        mask = np.random.rand(100) < (1 - p_agree)
-        profiles[i] = np.where(mask, 1 - profiles[0], profiles[0])
-    cg = hamming_cg(profiles)
-    cr = conflict_rate(profiles)
-    results.append((cg, cr))
-    print(f"CG_mean={cg:.3f}, conflict_rate={cr:.3f}, 1-CG={1-cg:.3f}")
-
-# Fit: conflict_rate ~ β₀ × (1 - CG_mean)
-cgs, crs = zip(*results)
-from numpy.polynomial import polynomial as P
-coef = np.polyfit([1 - c for c in cgs], crs, 1)
-print(f"Fit: conflict_rate = {coef[0]:.3f} × (1 - CG) + {coef[1]:.4f}")
-print(f"If R² > 0.95, the linear form is validated.")
-```
 
 ### INNOVATION-4 — N_IT as Primary Sizer; USL as Cost Cap
 
@@ -538,51 +438,13 @@ position but requires rewritten documentation.
 
 ---
 
-## New Gaps From 2026-05-13 Review
-
----
-
-### GAP-A7: Preference Leakage in LlmJudge ✅ CLOSED 2026-05-16 — **High**
-
-**Gap statement.**
-When the constraint evaluation adapter (LlmJudge in Phase 3.5 and Phase 4) belongs to the same
-LLM family as the explorer adapters, the judge systematically favours outputs that match its
-family's stylistic patterns. This is not a neutral evaluation — it is an in-family affinity bias
-that inflates verification scores for outputs that echo the judge's own training distribution.
-
-**Literature grounding.**
-arXiv 2502.01534 (Li et al., 2025) — *"Preference Leakage: A Contamination Problem in LLM-as-a-
-Judge"* — demonstrates that when the same LLM family generates synthetic training data AND judges
-it, the judge systematically favours the model's own output style. Feedback loop: the judge's
-high scores reinforce generator outputs that look like the judge's own style, creating a
-self-amplifying bias.
-
-arXiv 2410.13341 (Dorner et al., 2024) — *"LLM as Judge Won't Beat Twice the Data"* — proves
-that LLM judge self-preferencing bias is irreducible. Debiasing tools reduce but cannot eliminate
-it. Pairwise evaluation (arXiv 2504.14716) is less biased than pointwise but introduces
-Condorcet cycles at scale.
-
-**Implementation (closed 2026-05-16).**
-
-Phase 3.5 now uses `JudgePanel` (h2ai-orchestrator) built from the verification adapter plus cross-family explorer adapters:
-
-- **`CrossFamily` panel** (≥2 distinct families): one variant per family, cap 3, `Literal` persona, `temperature_override: None`. Supermajority vote: `quorum = ceil(N × quorum_fraction)`. Pass / Fail / Uncertain.
-- **`PersonaOnly` fallback** (single family): 3 variants — Literal (0.0), Contextual (0.2), Skeptical (0.4) — requiring unanimous agreement; any dissent → Uncertain.
-- **Uncertain handling**: proposals with only uncertain constraint failures pass with `score × uncertainty_weight` (default 0.7). Hard non-uncertain failures still prune.
-- **`ConstraintAmbiguityEvent`**: fire-and-forget tracing log when ≥`ambiguity_threshold` proposals in a wave produce uncertain votes on the same constraint — corpus quality signal.
-- **Key insight from Prosa (2605.01630)**: binary rubric decomposition (each constraint evaluated independently) removes judge-model bias sensitivity more than cross-family diversity alone. The constraint corpus as an analytic rubric is the primary mitigation; panel diversity is second-order.
-
-**Research backing:** PoLL (2404.18796) cross-family panel 7× cheaper than large single judge; CARE (2603.00039) same-family panels amplify correlated bias → unanimous rule for PersonaOnly; Prosa (2605.01630) binary rubric removes bias sensitivity; Logarithmic Scores (2604.00477) 3 judges captures ~90% quality gain; TCVA (2604.08595) generalized aggregation; Autorubric (2603.00077) few-shot calibration.
-
-**Remaining open surface:** `uncertainty_weight = 0.7` is not calibrated per constraint severity. Future work: `constraint_severity: Strict | Standard` corpus metadata field mapping to per-constraint uncertainty weights. Empirical validation of cross-family vs. single-family panel Spearman correlation with oracle is pending.
-
----
-
 ## Brainstorm Group B — Mathematical Formula Validity
 
 ---
 
-### GAP-B1: β_eff Functional Form Empirically Unvalidated 🔴 OPEN — Medium
+### GAP-B1: β_eff Functional Form 🟡 PARTIAL — Medium
+
+**Status: PARTIAL** — Epistemic β₀ wired (2026-05-20). Empirical validation of the linear β_eff assumption remains open.
 
 **Gap statement.**
 `β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation under the assumption that conflict resolution cost is linear in conflict count (see math.md §2). However, the **linear-cost assumption is empirically unvalidated**. If conflict resolution is super-linear (e.g. due to "Lost in the Middle" attention degradation in long synthesis contexts), the formula needs a higher-order term.
@@ -615,8 +477,8 @@ fill(N)  = min(1, N × proposal_tokens / max_tokens)
 This is already computed in `n_max_context_aware` but is not used in the primary `n_max()`
 function. Unify them: make the attention term the standard formula, not a contextual variant.
 
-**Empirical validation with INNOVATION-2 data:**
-When the conflict-count β (INNOVATION-2) is available, regress `conflict_rate` against
+**Empirical validation with conflict-count β data:**
+With `beta_quality` now live (`ConflictRateAccumulator`, `H2AI_CONFLICT_{tenant}` KV), regress `conflict_rate` against
 `(1 - CG_mean)` and `(1 - CG_mean) × fill(N)`. If the bivariate R² > R² of the univariate fit,
 the attention term has explanatory power.
 
@@ -835,30 +697,6 @@ None of the mitigations address systematic bias in the judge itself.
 
 ---
 
-### GAP-D4: Verification Throughput ✅ Already Parallel — **Closed**
-
-**Status: closed on inspection (2026-05-18).**
-
-The external feedback correctly identified Phase 3.5 verification as a potential bottleneck.
-Code inspection (`verification.rs`) reveals both parallelism dimensions are already implemented:
-
-- **Proposal-level**: `join_all(futures)` at `verification.rs:109` — all N proposal evaluations
-  fire concurrently.
-- **Constraint-level**: `join_all(futs)` at `verification.rs:537` (inside `eval_all`) — all M
-  constraint evaluations fire concurrently per proposal.
-
-The true bottleneck is the LLM adapter's HTTP concurrency capacity (one GPU inference queue for
-local models), not missing parallelism in H2AI code. No action required on H2AI side.
-
-**Actual bug found and fixed (2026-05-18):** The rubric fallback path (empty corpus) in
-`eval_all` used a hardcoded `Hard { threshold: 0.45 }` severity, ignoring the caller's
-`verify_threshold` config. This caused proposals to collapse to score 0.0 when the constraint
-wiki was disabled — the hard gate fired at 0.45 regardless of `verify_threshold = 0.2`.
-Fixed by threading `rubric_threshold` through `eval_all` and using the outer verification
-threshold for the rubric constraint's hard gate.
-
----
-
 ### GAP-D5: Synthesis Merge Bottleneck — Single Sequential Synthesis Step 🔴 OPEN — Medium
 
 **Gap statement.**
@@ -900,35 +738,6 @@ position) to exploit the attention recency effect.
 
 ---
 
-### GAP-D6: CRDT Semilattice on Binary Constraint Flags — Algorithmic Simplification Opportunity ✅ Not a deployment concern — Low
-
-**Clarification on "complexity" framing.**
-External reviewers may flag H2AI's state infrastructure (NATS JetStream + delta checkpoints +
-BFT Krum + CRDT semilattice) as operationally complex. This conflates implementation complexity
-with operational complexity. Deployed as a Docker container, all 16 crates compile to a single
-binary; NATS runs embedded; no component is operator-facing. Rust's zero-cost abstractions and
-lack of GC mean the full pipeline — including eigenvalue decomposition, event-sourced state,
-and async Tokio orchestration — has a smaller runtime memory footprint than an equivalent Python
-implementation of a simpler design. Operational surface area = `docker compose up`. This is
-not a weakness.
-
-**Actual narrow gap (algorithmic, not operational).**
-The CRDT semilattice in the merger operates on binary constraint-satisfaction fingerprints:
-for each constraint, a proposal either satisfies it (1) or doesn't (0). A semilattice join
-over binary vectors is equivalent to bitwise OR (or AND depending on semantics). The CRDT
-abstraction is correct and future-compatible with geo-distributed concurrent merges, but for
-the current single-region single-JetStream deployment the CRDT machinery (lattice ordering,
-join commutativity proofs) adds code complexity without producing a different result than
-`bitwise_and(fingerprints)` on the surviving proposals.
-
-**Recommendation.**
-No action for correctness — the CRDT is not wrong and positions the system for multi-region
-extension. As a code simplification opportunity: document within `merger.rs` that the semilattice
-join on binary satisfaction vectors degenerates to bitwise AND/OR, making the algorithm
-reviewable without knowledge of CRDT theory.
-
----
-
 ### GAP-D2: Compound Task Cost Is Unconstrained 🔴 OPEN — Low
 
 A `CompoundTaskEngine` DAG fires a full wave for each subtask with no pre-execution cost estimate
@@ -940,12 +749,6 @@ adapter path; 3–5 to full ensemble. The probe cost is 1 small-model call vs. N
 Use the existing Thompson Sampling bandit to improve probe accuracy over time.
 
 **Effort estimate.** 1 week cost estimate + SSE event; 2 weeks complexity probe + bandit routing.
-
----
-
-### GAP-D3: Calibration Bootstrapping — **Closed (2026-05-14)**
-
-Closed by the Adaptive Prompt Harness (OPRO). `seed_all_bootstrap_priors` in `h2ai-api/src/bootstrap.rs` seeds Bayesian beta priors at startup from `AdapterProfile.tier` (Capable=0.78, Standard=0.62, Fast=0.45 j_eff median priors), providing principled calibration before any tasks have run. New deployments no longer return 503 on the first task for prompt-quality bootstrapping; ensemble physics calibration (α, β) still requires a `POST /calibrate` run.
 
 ---
 
@@ -1036,8 +839,8 @@ The architecture maps closely to H2AI:
 
 | Solvita | H2AI equivalent | Gap |
 |---|---|---|
-| Planner (strategy retrieval) | Context assembler + knowledge provider | GAP-F1, GAP-F4 |
-| Solver (patch-based repair) | Explorer adapters + MAPE-K retry | GAP-D7 |
+| Planner (strategy retrieval) | Context assembler + knowledge provider | GAP-F4 |
+| Solver (patch-based repair) | Explorer adapters + MAPE-K retry + **CSPR-v2 repair context** + **SemanticSpec IR** | Closed (GAP-D7, 2026-05-20) |
 | Oracle (certified test generation) | Verifier + oracle gate | GAP-E1 |
 | Hacker (adversarial attack) | Auditor / constraint eval | GAP-B6, GAP-C5 |
 | Trainable edge weights (REINFORCE) | Bandit state / `conflict_beta` | GAP-F4, GAP-F5 |
@@ -1103,40 +906,6 @@ Solvita's graph-weight REINFORCE works because it has access to binary test pass
 
 ---
 
-### GAP-D7: Retry Loop Uses Full Regeneration, Not Patch-Based Repair 🔴 OPEN — Medium
-
-**Gap statement.**
-When the MAPE-K controller fires a retry (ZeroSurvival, HallucinationDetected, or ConstraintViolation), the current implementation discards all N proposals and regenerates from scratch with a new retry context injected into the system prompt. This is full regeneration. Any constraints already satisfied by the original proposals are not preserved — the retry must re-satisfy them along with fixing the violated ones.
-
-**Solvita evidence.**
-Solvita's Solver uses patch-based repair exclusively: SEARCH/REPLACE edits targeting the failing section of the code, not full rewrites. The ablation result is decisive: patch repair achieves 82.4% on CodeContests; full regeneration achieves 75.76%. The mechanism is clear — full regeneration introduces regressions on previously passing tests by changing unrelated code regions. Patch repair preserves invariants by construction.
-
-The analogy to H2AI: when retry context says "constraint X violated, regenerate respecting all constraints," the LLM re-explores the entire solution space and may violate constraints Y and Z that were satisfied in the original proposal. Patch-mode retry would instead inject: "keep sections A and B; revise section C to satisfy constraint X" — preserving Y and Z satisfaction while targeting X.
-
-**Recommended approach.**
-
-**Targeted constraint-repair prompting (minimal change).**
-Rather than a full new system prompt on retry, structure the retry context as an explicit constraint repair instruction:
-
-```
-The following proposal satisfied constraints: {passing_constraint_ids}
-The following constraints were violated: {violated_constraint_ids}
-Repair ONLY the sections relevant to the violated constraints.
-Do not modify sections already satisfying the passing constraints.
-```
-
-This does not require architecture changes — it is a retry context template change in `MapeKController`. The preservation instructions can be derived from the existing `VerificationScoredEvent` which already records per-constraint pass/fail per proposal.
-
-**Structured SEARCH/REPLACE mode (full Solvita parity).**
-For code generation tasks: ask the retry adapter to emit SEARCH/REPLACE diffs rather than full proposals. H2AI's merger would apply the diffs to the best-scoring surviving proposal from the previous wave. This requires a new `MergeStrategy::PatchApply` variant and a diff format convention in the generation prompts. Only applicable when the constraint corpus identifies the task as a code generation task (`task_quadrant == Code`).
-
-**Effort estimate.** Targeted constraint-repair prompting: 3 days (retry context template refactor). Full patch mode: 2 weeks (MergeStrategy extension, diff format, quadrant gating).
-
-**Constraint for early adoption.**
-Patch repair is most valuable on Tier 3 tasks (6+ constraints) where regression risk is highest. For Tier 1 tasks (1–2 constraints), full regeneration is equivalent and simpler. Gate patch-repair prompting on `n_violated < n_satisfied` — only if more constraints are passing than failing is patch mode conservative enough to be safe.
-
----
-
 ### Solvita Cross-Cutting Insights for Existing Gaps
 
 **GAP-C5 (Krum under correlated hallucination) — Hacker-Oracle complementarity.**
@@ -1146,7 +915,7 @@ Solvita's Oracle and Hacker decompose the problem space with opposite optimizati
 Solvita's Hacker generates adversarial test cases that attack surviving proposals. The H2AI equivalent is adversarial critique generation: for each proposal that passes verification, generate a dedicated "attack" prompt asking the judge to find a constraint the proposal violates or a scenario where it fails. Proposals that survive adversarial critique are more reliable than those that only survive the forward verification pass. This addresses the verbosity bias and sycophancy cascade identified in GAP-B6 by forcing a contrarian evaluation path independent of the forward judgment.
 
 **GAP-A6 (Self-MoA as empirical competitor) — Routing over retrieval, not prompting.**
-Solvita's most actionable finding for H2AI's positioning debate: freezing LLM weights while training only the retrieval routing layer (knowledge graph edge weights) matches or exceeds performance from architectures that invest in prompt engineering. The implication is that H2AI's comparative advantage over Self-MoA will be more defensible if it is grounded in structured retrieval routing (what context is assembled for each role, GAP-F1/F4) than in prompt-level diversity (temperature spread, GAP-A1). The INNOVATION-5 experiment should specifically test whether the knowledge provider, when calibrated contrastively, adds measurable advantage over Self-MoA — not just whether MAPE-K enforcement does.
+Solvita's most actionable finding for H2AI's positioning debate: freezing LLM weights while training only the retrieval routing layer (knowledge graph edge weights) matches or exceeds performance from architectures that invest in prompt engineering. The implication is that H2AI's comparative advantage over Self-MoA will be more defensible if it is grounded in structured retrieval routing (what context is assembled for each role, GAP-F4) than in prompt-level diversity (temperature spread, GAP-A1). The INNOVATION-5 experiment should specifically test whether the knowledge provider, when calibrated contrastively, adds measurable advantage over Self-MoA — not just whether MAPE-K enforcement does.
 
 ---
 
@@ -1154,23 +923,16 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 
 | Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
 |---|---|---|---|---|
-| **INNOVATION-2 Conflict-count β₀** | Critical | 1 week | Calibration runs | **Week 1** |
 | **INNOVATION-5 H2-P vs B3 experiment** | Critical | 1 week | None (single-model) | **Week 1** |
 | **INNOVATION-4 N_IT as primary sizer** | High | 1 week | None | **Week 2** |
-| **GAP-A7 Preference leakage** | High | ~~1 week~~ | — | ✅ Closed 2026-05-16 |
 | **GAP-B5 rho_mean documentation** | Medium | 2 days | None | **Week 2** |
 | GAP-E1 Domain-specific oracles | Blocking for A/B | 1–3 weeks | Domain test suites | Session 1 |
 | GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
 | GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
 | GAP-A2 USL quality curve experiment | High | 2 weeks | Shared task set | Session 2 |
-| ~~GAP-D1 Calibration harness extension~~ | — | — | — | **Closed 2026-05-15** |
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
-| GAP-B1 β_eff functional form fit | Medium | 2 weeks | Controlled calibration | Session 5 |
-| ~~GAP-D3 Bootstrap calibration~~ | — | — | — | **Closed 2026-05-14** |
-| ~~GAP-D4 Verification parallelism~~ | — | — | — | **Closed 2026-05-18** |
 | GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
 | **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
-| **GAP-D7 Patch-based constraint repair** | Medium | 3 days (targeted prompting) | None | Week 2 |
 | **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
 

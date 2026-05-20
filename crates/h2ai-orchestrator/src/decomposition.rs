@@ -1,6 +1,7 @@
 use h2ai_config::prompts::{
-    DECOMPOSITION_STEP1_SYSTEM, DECOMPOSITION_STEP1_TASK, DECOMPOSITION_STEP2_SYSTEM,
-    DECOMPOSITION_STEP2_TASK, DECOMPOSITION_STEP3_SYSTEM, DECOMPOSITION_STEP3_TASK,
+    DECOMPOSITION_CONSTRAINT_ENTRY, DECOMPOSITION_STEP1_SYSTEM, DECOMPOSITION_STEP1_TASK,
+    DECOMPOSITION_STEP2_SYSTEM, DECOMPOSITION_STEP2_TASK, DECOMPOSITION_STEP3_SYSTEM,
+    DECOMPOSITION_STEP3_TASK,
 };
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate};
 use h2ai_context::embedding::{cosine_similarity, EmbeddingModel};
@@ -360,11 +361,13 @@ fn step1_analyze_task(
                     doc.domains.join(", ")
                 };
                 let rubric = extract_rubric(&doc.predicate);
-                let hint = doc.remediation_hint.as_deref().unwrap_or("").to_string();
-                format!(
-                    "CONSTRAINT {id} [{domains}]\nRubric: {rubric}\nRemediation hint: {hint}",
-                    id = doc.id,
-                )
+                let hint = doc.remediation_hint.as_deref().unwrap_or("");
+                DECOMPOSITION_CONSTRAINT_ENTRY.render(&[
+                    ("id", &doc.id),
+                    ("domains", &domains),
+                    ("rubric", &rubric),
+                    ("hint", hint),
+                ])
             })
             .collect::<Vec<_>>()
             .join("\n\n")

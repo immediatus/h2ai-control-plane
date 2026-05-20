@@ -399,8 +399,15 @@ impl ExecutionEngine {
             &domain_cov_out,
             task_eval_cache,
         );
-        let mut controller =
-            crate::mape_k::MapeKController::new(&input, &bootstrap_out, &complexity_out).await;
+        let conflict_graph =
+            h2ai_constraints::conflict::ConstraintConflictGraph::build(&input.constraint_corpus);
+        let mut controller = crate::mape_k::MapeKController::new(
+            &input,
+            &bootstrap_out,
+            &complexity_out,
+            conflict_graph,
+        )
+        .await;
         // Wire diversity degraded event from domain coverage into the controller so it
         // is included in the final EngineOutput via MapeKController::finalize().
         controller.diversity_degraded_event = diversity_degraded_event;

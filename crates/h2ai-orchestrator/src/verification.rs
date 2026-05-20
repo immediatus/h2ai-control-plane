@@ -8,6 +8,7 @@ use h2ai_constraints::types::{
     ConstraintSeverity,
 };
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
+use h2ai_types::prompts::BINARY_CLASSIFIER_SYSTEM_PROMPT;
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{ConstraintViolation, ProposalEvent};
 use h2ai_types::identity::ExplorerId;
@@ -853,10 +854,14 @@ impl VerificationPhase {
     /// Majority-vote binary check. Calls the evaluator `passes` times with a YES/NO prompt.
     /// Returns 1.0 if strictly more than half answer YES, 0.0 otherwise (conservative: tie → fail).
     /// If `invert` is true, YES means the pattern was FOUND → returns 0.0 (used for exclusion gates).
+    ///
+    /// Uses a neutral binary-classifier system prompt instead of the adversarial evaluator prompt.
+    /// The adversarial framing (hostile reviewer → find failures) is wrong for factual presence
+    /// checks and causes the model to answer NO regardless of content.
     async fn majority_binary_check(
         prompt: &str,
         evaluator: &dyn IComputeAdapter,
-        sp: &str,
+        _sp: &str,
         tau: h2ai_types::sizing::TauValue,
         passes: u8,
         invert: bool,
@@ -865,10 +870,10 @@ impl VerificationPhase {
         let mut yes_count = 0usize;
         for _ in 0..passes {
             let req = ComputeRequest {
-                system_context: sp.to_owned(),
+                system_context: BINARY_CLASSIFIER_SYSTEM_PROMPT.to_owned(),
                 task: prompt.to_owned(),
                 tau,
-                max_tokens: 64,
+                max_tokens: 16,
             };
             let is_yes = match evaluator.execute(req).await {
                 Ok(resp) => resp.output.trim().to_uppercase().starts_with("YES"),

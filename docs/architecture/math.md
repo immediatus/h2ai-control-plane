@@ -72,13 +72,25 @@ The runtime uses an effective β driven by Hamming CG:
 > attention degradation in long synthesis contexts). The context-aware formula `β_ctx(N)` in §2.3
 > handles this case. Whether super-linearity is significant is an open empirical question.
 >
-> **Calibration note:** the current calibration measures `β₀` from API round-trip latency,
-> not constraint conflict count. A fast local LLM produces small β₀ and large N_max — the opposite
-> of the correct direction for a single-model deployment. The correct signal is `beta_quality` — a
-> conflict-count β measured from constraint-satisfaction Hamming distances across adapters during
-> calibration, stored per-tenant in `ConflictRateAccumulator` (`H2AI_CONFLICT_{tenant_id}` KV
-> bucket). When ≥`min_samples_for_override` production tasks have accumulated, `beta_quality`
-> overrides the latency-based proxy in N_max computation.
+> **Calibration — β₀ derivation (2026-05-20):** Three-tier β₀ resolution in priority order:
+>
+> **1. Epistemic β₀ (preferred):** When an embedding model is available and N_cal ≥ 3, β₀ is
+> computed from the USL constraint-inversion formula using the cosine N_eff eigenvalue:
+> ```
+> N_eff_adj = clamp(N_eff × CG_mean^k, 1.0, N_cal)
+> β₀ = max((1/N_eff_adj − 1/N_cal) / (N_cal − 1), 1e-6)
+> ```
+> Where k = `calibration_probe.neff_cg_exponent` (default 2.0). This is physically grounded:
+> N_eff_adj reflects the actual semantic independence of the adapter pool, adjusted for group
+> coherence. Mode collapse (N_eff≈1, CG≈1) → β₀≈0.333; ideal pool (N_eff=3, CG=0.9, k=2) → β₀≈0.039.
+>
+> **2. Conflict-count β₀ (online override):** `beta_quality` measured from constraint-satisfaction
+> Hamming distances, stored per-tenant in `ConflictRateAccumulator` (`H2AI_CONFLICT_{tenant_id}` KV).
+> When ≥`min_samples_for_override` production tasks have accumulated, overrides the latency proxy.
+>
+> **3. Latency-derived β₀ (fallback):** `β₀ = (z_M − z_2 × (M−1)) / ((M−1)(M−2))` from timing.
+> A fast local LLM produces small β₀ and large N_max — the wrong direction for a single-model
+> deployment. This path is only taken when no embedding model is available or N_cal < 3.
 
 Setting `dX/dN = 0` gives the ensemble cost ceiling:
 
@@ -135,6 +147,23 @@ Analytical USL fit (M ≥ 3):
 ```
 
 When M < 3 the fit falls back to `cfg.calibration_default_alpha` and `cfg.calibration_default_beta`. Online β₀ is then tracked via `beta_from_token_spans` — an EMA over per-merge timing pulled from the live token stream.
+
+### 2.6 AIMD slow start (infrastructure, not yet wired to calibration loop)
+
+Per-task yield tracking and α adaptation are provided by three pure functions in `crates/h2ai-autonomic/src/calibration.rs`, to be integrated in Plan B:
+
+```
+aimd_decay(α_current, α_measured, decay_rate):
+  α_next = max(α_current × decay_rate, α_measured)     [success: decay toward measured yield]
+
+aimd_reset(α_current, seed_alpha, reset_multiplier):
+  α_next = min(α_current × reset_multiplier, seed_alpha)  [poor yield: reset toward seed]
+
+yield_from_history([(n_useful, n_max, unix_min), ...]):
+  returns mean(n_useful / n_max) or None if empty
+```
+
+Config: `calibration_slow_start.seed_alpha = 0.15`, `decay_rate = 0.95`, `reset_multiplier = 3.0`, `reset_threshold = 0.4` (yield below this triggers reset).
 
 ---
 

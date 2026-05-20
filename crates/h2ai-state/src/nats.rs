@@ -1,6 +1,7 @@
 use async_nats::jetstream::{self, kv, stream};
 use async_nats::Client;
 use h2ai_config::StateConfig;
+use h2ai_types::calibration::{AuditorHealth, CalibrationRecord};
 use h2ai_types::checkpoint::TaskCheckpoint;
 use h2ai_types::checkpoint_delta::{CheckpointKind, TaskCheckpointEntry};
 use h2ai_types::conflict::ConflictRateAccumulator;
@@ -206,6 +207,30 @@ impl NatsClient {
         })
         .await?;
 
+        // KV bucket: per-adapter CalibrationRecord telemetry
+        self.ensure_kv_bucket(kv::Config {
+            bucket: self.state_cfg.calibration_records_bucket.clone(),
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: AuditorHealth circuit-breaker state
+        self.ensure_kv_bucket(kv::Config {
+            bucket: self.state_cfg.auditor_health_bucket.clone(),
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
+        // KV bucket: probe lease CAS tokens (Memory: leases are ephemeral)
+        self.ensure_kv_bucket(kv::Config {
+            bucket: self.state_cfg.probe_lease_bucket.clone(),
+            storage: stream::StorageType::Memory,
+            ..Default::default()
+        })
+        .await?;
+
         Ok(())
     }
 
@@ -317,6 +342,141 @@ impl NatsClient {
             Ok(None) => Ok(None),
             Err(e) => Err(NatsError::KvError(e.to_string())),
         }
+    }
+
+    /// Persist a CalibrationRecord for an adapter profile.
+    ///
+    /// Key: `adapter_profile` field of the record.
+    pub async fn put_calibration_record(
+        &self,
+        record: &CalibrationRecord,
+    ) -> Result<(), NatsError> {
+        let payload =
+            serde_json::to_vec(record).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.calibration_records_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put(&record.adapter_profile, payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve a CalibrationRecord for an adapter profile, or None if absent.
+    pub async fn get_calibration_record(
+        &self,
+        adapter_profile: &str,
+    ) -> Result<Option<CalibrationRecord>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.calibration_records_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(adapter_profile).await {
+            Ok(Some(entry)) => {
+                let record = serde_json::from_slice::<CalibrationRecord>(&entry)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(record))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Persist AuditorHealth for an adapter profile.
+    pub async fn put_auditor_health(
+        &self,
+        adapter_profile: &str,
+        health: &AuditorHealth,
+    ) -> Result<(), NatsError> {
+        let payload =
+            serde_json::to_vec(health).map_err(|e| NatsError::Serialize(e.to_string()))?;
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.auditor_health_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        kv.put(adapter_profile, payload.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve AuditorHealth for an adapter profile, or None if absent.
+    pub async fn get_auditor_health(
+        &self,
+        adapter_profile: &str,
+    ) -> Result<Option<AuditorHealth>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.auditor_health_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        match kv.get(adapter_profile).await {
+            Ok(Some(entry)) => {
+                let health = serde_json::from_slice::<AuditorHealth>(&entry)
+                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
+                Ok(Some(health))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    /// Attempt to acquire a probe lease for an adapter profile (HalfOpen CAS).
+    ///
+    /// Uses NATS KV `create` (atomic create-if-not-exists): only one caller wins per
+    /// `ttl_secs` window. Returns `true` if this caller won the lease, `false` if another
+    /// caller holds it.
+    ///
+    /// The lease value is the unix timestamp (seconds) at which it was acquired.
+    pub async fn acquire_probe_lease(
+        &self,
+        adapter_profile: &str,
+        ttl_secs: u64,
+    ) -> Result<bool, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.probe_lease_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = adapter_profile;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Check for stale lease before attempting create
+        if let Ok(Some(existing)) = kv.get(key).await {
+            if let Ok(s) = std::str::from_utf8(&existing) {
+                if let Ok(acquired_at) = s.parse::<u64>() {
+                    if now_secs.saturating_sub(acquired_at) < ttl_secs {
+                        return Ok(false); // lease still held by another caller
+                    }
+                    // Stale lease — delete it so create can succeed
+                    let _ = kv.delete(key).await;
+                }
+            }
+        }
+        let payload = now_secs.to_string().into_bytes();
+        match kv.create(key, payload.into()).await {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false), // another caller won the race
+        }
+    }
+
+    /// Release a probe lease for an adapter profile.
+    ///
+    /// A no-op if the lease does not exist.
+    pub async fn release_probe_lease(&self, adapter_profile: &str) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.probe_lease_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let _ = kv.delete(adapter_profile).await;
+        Ok(())
     }
 
     /// Persist the rolling oracle calibration observations window.

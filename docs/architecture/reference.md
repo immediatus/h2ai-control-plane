@@ -522,6 +522,42 @@ The TOML key is the lower-snake-case Rust field name. The env-var key is the upp
 | `auto_baseline_eval_min_tasks` | `50` | Threshold for auto-promotion. |
 | `family_constraint` | `"single_family_ok"` | `"single_family_ok"` \| `"require_diverse"` \| `"disabled"`. Production profile sets `"require_diverse"`. |
 
+### Calibration probe (epistemic β₀)
+
+```toml
+[calibration_probe]
+agents           = 3      # synthetic probe pool size for epistemic β₀
+max_tokens       = 512    # token budget per probe call
+neff_cg_exponent = 2.0    # k exponent in N_eff_adj = clamp(N_eff × CG_mean^k, 1, N_cal)
+```
+
+`[calibration_probe]` governs the epistemic β₀ path (active when `embedding_model` is configured and `calibration_adapter_count ≥ 3`). The three-tier β₀ resolution order is: (1) epistemic formula — `β₀ = max((1/N_eff_adj − 1/N_cal) / (N_cal − 1), 1e-6)` where `N_eff_adj = clamp(N_eff × CG_mean^k, 1, N_cal)`; (2) conflict-count online override from `ConflictRateAccumulator`; (3) latency-based fallback proxy. The epistemic path requires both an embedding model and ≥3 calibration adapters; without these, tier 2 or 3 is used.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `calibration_probe.agents` | `3` | Probe pool size. Must be ≥ 3 to activate the epistemic path. |
+| `calibration_probe.max_tokens` | `512` | Token budget per probe adapter call. |
+| `calibration_probe.neff_cg_exponent` | `2.0` | Exponent `k` in `N_eff_adj = clamp(N_eff × CG_mean^k, 1, N_cal)`. Higher k amplifies CG's dampening effect on N_eff. Mode collapse (N_eff≈1, CG≈0) → β₀≈0.333; ideal pool (N_eff=3, CG=0.9, k=2) → β₀≈0.039. |
+
+### Calibration slow start (AIMD α adaptation)
+
+```toml
+[calibration_slow_start]
+seed_alpha       = 0.15   # starting α for new adapter pools
+decay_rate       = 0.95   # per-measurement multiplicative decay
+reset_multiplier = 3.0    # α expansion factor on ZeroSurvival reset
+reset_threshold  = 0.40   # α_measured below this triggers AIMD decay
+```
+
+AIMD slow-start governs how the calibration harness adapts the `alpha_contention` estimate over time. On each measurement: `α_new = max(α_cur × decay_rate, α_measured)` (steady decay toward the measured value). On a `ZeroSurvival` event: `α_new = min(α_cur × reset_multiplier, seed_alpha)` (multiplicative expansion, capped at seed). This prevents the system from over-committing to a low-α estimate after a failure event.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `calibration_slow_start.seed_alpha` | `0.15` | Initial α prior for new adapter pools. |
+| `calibration_slow_start.decay_rate` | `0.95` | Per-measurement decay factor. Smaller = faster convergence to measured α. |
+| `calibration_slow_start.reset_multiplier` | `3.0` | α expansion factor on ZeroSurvival. Caution: multiplier > seed_alpha/α_floor risks runaway expansion. |
+| `calibration_slow_start.reset_threshold` | `0.40` | `α_measured` below this triggers AIMD decay; above this, α stays at measured value. |
+
 ### MAPE-K and self-optimizer
 
 | Field | Default | Purpose |
@@ -661,6 +697,9 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `H2AI_META_{tenant_id}` | KV store | `task_id` string | no TTL | `TaskMetaState` projections (uncompressed JSON). Per-tenant; consumed by InductionScheduler (Phase 2). |
 | `H2AI_MEMORY_{tenant_id}` | KV store | `"latest"` string | no TTL | `TenantMemoryStore` distilled from meta-state (Phase 2). Per-tenant; written by InductionScheduler. |
 | `H2AI_CONFLICT_{tenant_id}` | KV store | `"accumulator"` string | no TTL | `ConflictRateAccumulator` — rolling per-task conflict rates for `beta_quality` derivation. |
+| `H2AI_CALIBRATION_RECORDS` | KV | `{adapter_profile}` | — | Global (not tenanted). `CalibrationRecord` per adapter profile — `n_useful_history` ring buffer `(N_useful: u8, N_max: u8, unix_minutes: u32)`. Written by the calibration harness; read by the epistemic β₀ `yield_from_history` path. Shared across all tenants because the adapter pool is shared infrastructure. |
+| `H2AI_AUDITOR_HEALTH` | KV | `{adapter_profile}` | — | Global (not tenanted). `AuditorHealth` circuit-breaker state per adapter profile. Tracks `AuditorCircuitState` (Closed/Open/HalfOpen), consecutive failures, and `tripped_at` (unix millis). HalfOpen uses NATS KV `create` (CAS) as a probe lease serialiser. |
+| `H2AI_PROBE_LEASE` | KV | `{adapter_profile}` | — | Global (not tenanted). Atomic probe-lease guards. `acquire_probe_lease` uses `kv.create()` (CAS, create-if-not-exists) with stale-lease eviction — only one caller wins per TTL window; `release_probe_lease` deletes the key. Serialises concurrent HalfOpen probe attempts across processes. |
 
 `TaskCheckpoint` schema (written after each phase boundary):
 
@@ -706,6 +745,9 @@ prompt_variants_bucket         = "H2AI_PROMPT_VARIANTS"
 constraint_wiki_bucket         = "H2AI_CONSTRAINT_WIKI"
 constraint_meta_bucket         = "H2AI_CONSTRAINT_META"
 constraint_payloads_bucket     = "H2AI_CONSTRAINT_PAYLOADS"
+calibration_records_bucket     = "H2AI_CALIBRATION_RECORDS"
+auditor_health_bucket          = "H2AI_AUDITOR_HEALTH"
+probe_lease_bucket             = "H2AI_PROBE_LEASE"
 
 # Per-tenant bucket prefixes — actual bucket: {prefix}_{tenant_id}
 reasoning_checkpoint_bucket_prefix = "H2AI_CHECKPOINT"  # TaskReasoningCheckpoint (7d TTL)
@@ -1024,8 +1066,8 @@ Signal delivery uses JetStream durable push consumers (live since 2026-05-19). T
 
 | Field | Default | Purpose |
 |---|---|---|
-| `constraint_wiki.enabled` | `false` | When `true`, corpus access routes through `NatsWikiConstraintSource` (NATS KV + Object Store). When `false`, falls back to `FsConstraintSource` (flat directory). |
-| `constraint_wiki.corpus_path` | `"/constraints"` | Filesystem path for `FsConstraintSource` (used when `enabled = false`). Ignored when wiki is enabled. |
+| `constraint_wiki.enabled` | `false` | When `true`, corpus access routes through `NatsWikiConstraintSource` (NATS KV + Object Store). When `false`, falls back to `YamlDirSource` (flat directory). |
+| `constraint_wiki.corpus_path` | `"/constraints"` | Filesystem path for `YamlDirSource` (used when `enabled = false`). Ignored when wiki is enabled. |
 | `constraint_wiki.resolve_k` | `50` | Reserved: max constraints returned per `resolve_context` call (future Qdrant semantic search limit). |
 
 ### Knowledge Provider
@@ -1174,9 +1216,34 @@ These are priors; the calibration harness measures actual α and β₀ for the d
 
 ## 7. Constraint Corpus
 
-The corpus is a directory of markdown files. The Constraint Compiler reads them recursively and produces machine-checkable predicates.
+The corpus is a directory of YAML files (preferred) or legacy markdown files. The Constraint Compiler reads them and produces `ConstraintDoc` with a `Composite` predicate — all constraints share the same bytecode shape regardless of authoring format.
 
 ### Format
+
+**Preferred: YAML with `semantic:` section** (`crates/h2ai-constraints/src/yaml.rs`)
+
+```yaml
+id: CONSTRAINT-001
+title: Stateless Authentication
+severity: Hard
+threshold: 0.9
+domains: [auth, session]
+remediation_hint: "Authentication must be JWT-based with no server-side session state."
+semantic:
+  exclusions:
+    - pattern: "server-side session or sticky session"
+      passes: 3
+  requirements:
+    - concept: "JWT stateless authentication"
+      passes: 3
+quality:
+  pass: "Proposal uses JWT with no session state."
+  fail: "Proposal stores session state server-side."
+```
+
+`semantic.exclusions` produce `SemanticExclusion` children (structural anti-pattern gates). `semantic.requirements` produce `SemanticPresence` children (structural must-have gates). `semantic.orderings` produce `SemanticOrdering` children (operation-order gates). All are compiled into a `Composite(And([...gates..., LlmJudge]))` predicate.
+
+**Legacy: markdown** (still loaded; logs deprecation warning when `predicates:` key present)
 
 ```markdown
 # CONSTRAINT-001: Stateless Authentication
@@ -1196,7 +1263,7 @@ The proposal must state authentication is JWT-based and stateless.
 
 **Severity:** `Hard threshold=<float>` (blocks merge when `score < threshold`), `Soft weight=<float>` (contributes to weighted soft score), or `Advisory` (informational).
 
-**Predicate kinds:**
+**Predicate kinds (legacy markdown):**
 
 - `VocabularyPresence AllOf|AnyOf|NoneOf` + bullet terms.
 - `NegativeKeyword` + bullet terms (fails if any term appears).
@@ -1232,5 +1299,6 @@ The typed constraint wiki system introduces three types for structured constrain
 ### ConstraintSource Abstraction
 
 Corpus access is mediated by the `ConstraintSource` trait (`crates/h2ai-constraints/src/source.rs`); callers never invoke `load_corpus` directly.
-- **`FsConstraintSource`**: wraps `load_corpus` for backward compatibility with flat-directory corpora; falls back to all docs when tags are supplied but no frontmatter domain metadata is present.
+- **`YamlDirSource`** (`crates/h2ai-constraints/src/loader.rs`): implements `ConstraintSource` over a filesystem directory; loads YAML constraint files via `into_semantic_spec()`, deduplicates by ID, and logs a deprecation warning when the legacy `predicates:` key is present. Replaces the old `load_corpus()` function for production use.
+- **`RuntimeConstraintStore`** (formerly `FsConstraintStore`, backward-compat alias preserved): builds an in-memory `ConstraintIndex` from any `ConstraintSource`; callers that held `FsConstraintStore` continue to compile without changes.
 - **`NatsWikiConstraintSource`** (in `h2ai-api`): reads from NATS KV `H2AI_CONSTRAINT_WIKI` + Object Store; enables hot-reload without restart.

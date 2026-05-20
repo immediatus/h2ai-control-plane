@@ -4,6 +4,20 @@
 use h2ai_state::nats::NatsClient;
 use h2ai_types::identity::TenantId;
 
+async fn make_client() -> Option<NatsClient> {
+    let url = h2ai_config::H2AIConfig::default().nats_url;
+    match NatsClient::connect(&url).await {
+        Ok(c) => {
+            c.ensure_infrastructure().await.ok()?;
+            Some(c)
+        }
+        Err(e) => {
+            eprintln!("NATS unavailable at {url} — skipping: {e}");
+            None
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn ensure_infrastructure_is_idempotent() {
@@ -143,4 +157,93 @@ async fn signal_round_trips_via_jetstream() {
     ));
 
     client.delete_signal_consumer(&task_id).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn calibration_record_roundtrip() {
+    use h2ai_types::calibration::{AuditorCircuitState, CalibrationRecord, ProbeSource};
+    let Some(client) = make_client().await else {
+        return;
+    };
+    let record = CalibrationRecord {
+        adapter_profile: "test-profile".to_string(),
+        constraint_id: None,
+        alpha: 0.12,
+        alpha_measured: 0.10,
+        beta_0: 0.039,
+        k: 2.0,
+        n_useful_history: vec![(2, 3, 1000)],
+        probe_source: ProbeSource::Same,
+        fingerprint: None,
+        circuit_state: AuditorCircuitState::Closed,
+    };
+    client.put_calibration_record(&record).await.unwrap();
+    let got = client
+        .get_calibration_record("test-profile")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, record);
+}
+
+#[tokio::test]
+#[ignore]
+async fn auditor_health_roundtrip() {
+    use h2ai_types::calibration::{AuditorCircuitState, AuditorHealth};
+    let Some(client) = make_client().await else {
+        return;
+    };
+    let health = AuditorHealth {
+        state: AuditorCircuitState::Open,
+        last_probe_cg: 0.0,
+        tripped_at: Some(1_700_000_000_000),
+        recovery_probe_count: 3,
+    };
+    client
+        .put_auditor_health("test-profile", &health)
+        .await
+        .unwrap();
+    let got = client
+        .get_auditor_health("test-profile")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, health);
+}
+
+#[tokio::test]
+#[ignore]
+async fn probe_lease_cas_exclusive() {
+    let Some(client) = make_client().await else {
+        return;
+    };
+    let profile = "cas-test-profile";
+    // Release any stale lease first
+    client.release_probe_lease(profile).await.unwrap();
+    // First acquire should succeed
+    let won = client.acquire_probe_lease(profile, 60).await.unwrap();
+    assert!(won, "first acquire should win");
+    // Second acquire (same profile, within TTL) should fail
+    let won2 = client.acquire_probe_lease(profile, 60).await.unwrap();
+    assert!(!won2, "second acquire should lose");
+    // Release, then third acquire should succeed
+    client.release_probe_lease(profile).await.unwrap();
+    let won3 = client.acquire_probe_lease(profile, 60).await.unwrap();
+    assert!(won3, "acquire after release should win");
+    // Cleanup
+    client.release_probe_lease(profile).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn get_calibration_record_missing_returns_none() {
+    let Some(client) = make_client().await else {
+        return;
+    };
+    let got = client
+        .get_calibration_record("nonexistent-profile-xyz")
+        .await
+        .unwrap();
+    assert!(got.is_none());
 }

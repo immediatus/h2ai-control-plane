@@ -179,8 +179,11 @@ impl ConstraintDoc {
             source_file: format!("{id}.yaml"),
             description: String::new(),
             severity: ConstraintSeverity::Hard { threshold: 0.45 },
-            predicate: ConstraintPredicate::LlmJudge {
-                rubric: rubric.to_owned(),
+            predicate: ConstraintPredicate::Composite {
+                op: CompositeOp::And,
+                children: vec![ConstraintPredicate::LlmJudge {
+                    rubric: rubric.to_owned(),
+                }],
             },
             remediation_hint: None,
             domains: vec![],
@@ -196,8 +199,11 @@ impl ConstraintDoc {
             source_file: format!("{id}.yaml"),
             description: String::new(),
             severity: ConstraintSeverity::Soft { weight: 1.0 },
-            predicate: ConstraintPredicate::LlmJudge {
-                rubric: rubric.to_owned(),
+            predicate: ConstraintPredicate::Composite {
+                op: CompositeOp::And,
+                children: vec![ConstraintPredicate::LlmJudge {
+                    rubric: rubric.to_owned(),
+                }],
             },
             remediation_hint: None,
             domains: vec![],

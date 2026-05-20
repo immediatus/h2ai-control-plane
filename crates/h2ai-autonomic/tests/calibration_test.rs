@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use h2ai_adapters::mock::MockAdapter;
-use h2ai_autonomic::calibration::{beta_from_merge_spans, CalibrationHarness, CalibrationInput};
+use h2ai_autonomic::calibration::{
+    aimd_decay, aimd_reset, beta_from_merge_spans, beta_from_n_eff_adj, yield_from_history,
+    CalibrationHarness, CalibrationInput,
+};
 use h2ai_config::H2AIConfig;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
@@ -633,4 +636,171 @@ async fn adapter_families_three_distinct_families() {
         !event.single_family_warning,
         "three-family ensemble must leave single_family_warning=false"
     );
+}
+
+// ── epistemic β₀ override ───────────────────────────────────────────────────
+
+struct FixedEmbeddingModel;
+impl h2ai_context::embedding::EmbeddingModel for FixedEmbeddingModel {
+    fn embed(&self, _text: &str) -> Vec<f32> {
+        // All outputs get the same vector → cosine = 1.0 across all pairs
+        // → N_eff will be close to 1 (fully collapsed / mode collapse)
+        vec![1.0, 0.0]
+    }
+}
+
+#[tokio::test]
+async fn calibration_with_embedding_model_uses_epistemic_beta() {
+    // Arrange: 3 adapters + an embedding model → epistemic β₀ path triggers
+    let a1 = MockAdapter::new("solution one: stateless JWT auth".into());
+    let a2 = MockAdapter::new("solution two: session token redis".into());
+    let a3 = MockAdapter::new("solution three: OAuth2 flow with PKCE".into());
+    let cfg = H2AIConfig::default();
+    let model = FixedEmbeddingModel;
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["Describe an auth strategy".into()],
+        adapters: vec![
+            &a1 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &a2 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &a3 as &dyn h2ai_types::adapter::IComputeAdapter,
+        ],
+        cfg: &cfg,
+        constraint_corpus: &[],
+        embedding_model: Some(&model as &dyn h2ai_context::embedding::EmbeddingModel),
+    };
+    let event = CalibrationHarness::run(input).await.unwrap();
+    // Epistemic β₀ must be positive and within the USL-valid range
+    assert!(
+        event.coefficients.beta_base > 0.0,
+        "beta_base must be positive, got {}",
+        event.coefficients.beta_base
+    );
+    assert!(
+        event.coefficients.beta_base <= 0.5,
+        "beta_base must be ≤ 0.5 (not degenerate), got {}",
+        event.coefficients.beta_base
+    );
+    // With FixedEmbeddingModel (all same vector → cg_mean ≈ 1.0, n_eff ≈ 1.0),
+    // beta_from_n_eff_adj(~1.0, ~1.0, 3, 2.0) ≈ 0.333 — significantly higher
+    // than the cfg.beta_base_default fallback (~0.039).
+    // This confirms the epistemic β₀ override path was taken.
+    assert!(
+        event.coefficients.beta_base > cfg.beta_base_default,
+        "epistemic β₀ ({}) must exceed cfg.beta_base_default ({}) under mode collapse",
+        event.coefficients.beta_base,
+        cfg.beta_base_default
+    );
+}
+
+// ── beta_from_n_eff_adj ──────────────────────────────────────────────────────
+
+#[test]
+fn beta_from_n_eff_adj_mode_collapse() {
+    // N_eff=1.0, CG=0.0 → N_eff_adj=clamp(0,1,3)=1; β₀=(1/1 - 1/3)/(3-1)=0.333
+    let b = beta_from_n_eff_adj(1.0, 0.0, 3, 2.0);
+    assert!(
+        (b - 0.333).abs() < 1e-3,
+        "mode collapse β₀ should be ~0.333, got {b}"
+    );
+}
+
+#[test]
+fn beta_from_n_eff_adj_partial_coherence() {
+    // N_eff=3.0, CG=0.7, k=2 → N_eff_adj=clamp(3×0.49,1,3)=clamp(1.47,1,3)=1.47
+    // β₀=(1/1.47 - 1/3)/(3-1)=(0.680-0.333)/2≈0.174 — intermediate, not clamped
+    let b = beta_from_n_eff_adj(3.0, 0.7, 3, 2.0);
+    assert!(
+        (b - 0.174).abs() < 1e-3,
+        "partial coherence β₀ should be ~0.174, got {b}"
+    );
+}
+
+#[test]
+fn beta_from_n_eff_adj_ideal() {
+    // N_eff=3, CG=0.9, k=2 → N_eff_adj=clamp(3×0.81,1,3)=clamp(2.43,1,3)=2.43
+    // β₀=(1/2.43 - 1/3)/(3-1)=(0.4115 - 0.3333)/2=0.0391
+    let b = beta_from_n_eff_adj(3.0, 0.9, 3, 2.0);
+    assert!(
+        (b - 0.039).abs() < 1e-3,
+        "ideal β₀ should be ~0.039, got {b}"
+    );
+}
+
+#[test]
+fn beta_from_n_eff_adj_clamp_upper() {
+    // N_eff=100, CG=1.0, k=2 → N_eff_adj=clamp(100,1,3)=3; β₀=(1/3-1/3)/2=0 → max(0, 1e-6)=1e-6
+    let b = beta_from_n_eff_adj(100.0, 1.0, 3, 2.0);
+    assert!(
+        (b - 1e-6_f64).abs() < 1e-9,
+        "upper-clamped β₀ should be 1e-6, got {b}"
+    );
+}
+
+#[test]
+fn beta_from_n_eff_adj_degenerate() {
+    // n_cal=1 → degenerate, return 1e-6
+    let b = beta_from_n_eff_adj(1.0, 1.0, 1, 2.0);
+    assert_eq!(b, 1e-6, "degenerate β₀ should be 1e-6, got {b}");
+}
+
+// ── aimd_decay ───────────────────────────────────────────────────────────────
+
+#[test]
+fn aimd_decay_normal_step() {
+    // α_current=0.15, decay_rate=0.95, alpha_measured=0.10
+    // max(0.15×0.95, 0.10) = max(0.1425, 0.10) = 0.1425
+    let a = aimd_decay(0.15, 0.10, 0.95);
+    assert!((a - 0.1425).abs() < 1e-9, "decay normal: got {a}");
+}
+
+#[test]
+fn aimd_decay_floors_at_measured() {
+    // α_current=0.05, decay_rate=0.95, alpha_measured=0.10
+    // max(0.05×0.95, 0.10) = max(0.0475, 0.10) = 0.10
+    let a = aimd_decay(0.05, 0.10, 0.95);
+    assert!((a - 0.10).abs() < 1e-9, "decay floor: got {a}");
+}
+
+// ── aimd_reset ───────────────────────────────────────────────────────────────
+
+#[test]
+fn aimd_reset_normal_step() {
+    // α_current=0.04, reset_multiplier=3.0, seed_alpha=0.15
+    // min(0.04×3.0, 0.15) = min(0.12, 0.15) = 0.12
+    let a = aimd_reset(0.04, 0.15, 3.0);
+    assert!((a - 0.12).abs() < 1e-9, "reset normal: got {a}");
+}
+
+#[test]
+fn aimd_reset_caps_at_seed() {
+    // α_current=0.10, reset_multiplier=3.0, seed_alpha=0.15
+    // min(0.10×3.0, 0.15) = min(0.30, 0.15) = 0.15
+    let a = aimd_reset(0.10, 0.15, 3.0);
+    assert!((a - 0.15).abs() < 1e-9, "reset cap: got {a}");
+}
+
+// ── yield_from_history ───────────────────────────────────────────────────────
+
+#[test]
+fn yield_from_history_empty() {
+    assert_eq!(yield_from_history(&[]), None);
+}
+
+#[test]
+fn yield_from_history_normal() {
+    // entries: (2,3,0) → 0.667, (3,4,0) → 0.75, (1,2,0) → 0.5
+    // mean = (0.667 + 0.75 + 0.5) / 3 = 0.639
+    let history = vec![(2u8, 3u8, 0u32), (3, 4, 0), (1, 2, 0)];
+    let y = yield_from_history(&history).unwrap();
+    assert!((y - 0.639).abs() < 1e-3, "yield normal: got {y}");
+}
+
+#[test]
+fn yield_from_history_skips_zero_n_max() {
+    // (2,3,0) → 0.667, (0,0,0) → skip, (1,2,0) → 0.5
+    // mean = (0.667 + 0.5) / 2 = 0.583
+    let history = vec![(2u8, 3u8, 0u32), (0, 0, 0), (1, 2, 0)];
+    let y = yield_from_history(&history).unwrap();
+    assert!((y - 0.583).abs() < 1e-3, "yield skip zero: got {y}");
 }

@@ -15,64 +15,14 @@ mod tenant_registry;
 use axum::Router;
 use h2ai_adapters::factory::AdapterFactory;
 use h2ai_adapters::mock::MockAdapter;
-use h2ai_config::{AdapterProfile, FamilyConstraint, H2AIConfig};
+use h2ai_config::{FamilyConstraint, H2AIConfig};
 use h2ai_provisioner::nats_provider::NatsAgentProvider;
 use h2ai_state::nats::NatsClient;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::config::AdapterKind;
 use state::AppState;
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-
-fn adapter_kind_from_env(prefix: &str) -> AdapterKind {
-    let provider = env::var(format!("H2AI_{prefix}_PROVIDER"))
-        .unwrap_or_else(|_| "mock".into())
-        .to_lowercase();
-    let model = env::var(format!("H2AI_{prefix}_MODEL")).unwrap_or_else(|_| "gpt-4o".into());
-    let api_key_env =
-        env::var(format!("H2AI_{prefix}_API_KEY_ENV")).unwrap_or_else(|_| "OPENAI_API_KEY".into());
-    let endpoint = env::var(format!("H2AI_{prefix}_ENDPOINT")).ok();
-
-    match provider.as_str() {
-        "anthropic" => AdapterKind::Anthropic { api_key_env, model },
-        "openai" => AdapterKind::OpenAI { api_key_env, model },
-        "ollama" => AdapterKind::Ollama {
-            endpoint: endpoint.unwrap_or_else(|| "http://localhost:11434".into()),
-            model,
-        },
-        "cloudgeneric" | "cloud" => AdapterKind::CloudGeneric {
-            endpoint: endpoint.unwrap_or_else(|| "http://localhost:8000/v1".into()),
-            api_key_env,
-            model: env::var(format!("H2AI_{prefix}_MODEL")).ok(),
-        },
-        _ => AdapterKind::CloudGeneric {
-            endpoint: "mock://localhost".into(),
-            api_key_env: "MOCK".into(),
-            model: None,
-        },
-    }
-}
-
-/// Resolve adapter kind for a role: prefer env vars; fall back to the config's
-/// adapter_profiles (prefers a profile named "local", then the first profile).
-fn adapter_kind_for_role(prefix: &str, profiles: &[AdapterProfile]) -> AdapterKind {
-    let provider = env::var(format!("H2AI_{prefix}_PROVIDER"))
-        .unwrap_or_default()
-        .to_lowercase();
-    if !provider.is_empty() && provider != "mock" {
-        return adapter_kind_from_env(prefix);
-    }
-    // No explicit env var — use config adapter_profiles if available.
-    if let Some(profile) = profiles
-        .iter()
-        .find(|p| p.name == "local")
-        .or_else(|| profiles.first())
-    {
-        return profile.kind.clone();
-    }
-    adapter_kind_from_env(prefix)
-}
 
 fn build_adapter(kind: &AdapterKind, enable_thinking: bool) -> Arc<dyn IComputeAdapter> {
     match AdapterFactory::build_with_thinking(kind, enable_thinking) {
@@ -119,8 +69,6 @@ async fn main() {
         }
     }
 
-    let listen_addr = env::var("H2AI_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
-
     let cfg = {
         let config_path = resolve_config_path();
         match &config_path {
@@ -135,6 +83,8 @@ async fn main() {
             }
         }
     };
+
+    let listen_addr = cfg.listen_addr.clone();
 
     h2ai_config::log_startup_config_report(&cfg);
 
@@ -165,81 +115,56 @@ async fn main() {
     let profiles = &cfg.adapter_profiles;
     let thinking = cfg.adapter_enable_thinking;
 
-    // Build adapter_pool: one adapter per profile (in order) if profiles are non-empty,
-    // otherwise fall back to env-var path (EXPLORER + EXPLORER2, deduplicated by pointer).
-    let adapter_pool: Vec<Arc<dyn IComputeAdapter>> = if !profiles.is_empty() {
-        profiles
-            .iter()
-            .map(|p| build_adapter(&p.kind, thinking))
-            .collect()
-    } else {
-        let explorer_kind = adapter_kind_for_role("EXPLORER", profiles);
-        let explorer2_provider = env::var("H2AI_EXPLORER2_PROVIDER")
-            .unwrap_or_else(|_| "same".into())
-            .to_lowercase();
-        let explorer_adapter = build_adapter(&explorer_kind, thinking);
-        if explorer2_provider == "same" || explorer2_provider.is_empty() {
-            vec![explorer_adapter]
-        } else {
-            let explorer2_kind = adapter_kind_for_role("EXPLORER2", profiles);
-            let explorer2_adapter = build_adapter(&explorer2_kind, thinking);
-            // Deduplicate by pointer identity
-            if Arc::ptr_eq(&explorer_adapter, &explorer2_adapter) {
-                vec![explorer_adapter]
-            } else {
-                vec![explorer_adapter, explorer2_adapter]
-            }
-        }
-    };
+    // Build adapter_pool from config profiles. If profiles is empty, pool is empty —
+    // that is the correct failure mode (config is wrong).
+    let adapter_pool: Vec<Arc<dyn IComputeAdapter>> = profiles
+        .iter()
+        .map(|p| build_adapter(&p.kind, thinking))
+        .collect();
 
-    let auditor_kind = adapter_kind_for_role("AUDITOR", profiles);
+    let auditor_kind = profiles
+        .iter()
+        .find(|p| p.name == "auditor")
+        .or_else(|| profiles.first())
+        .map(|p| p.kind.clone())
+        .unwrap_or_else(|| AdapterKind::CloudGeneric {
+            endpoint: "mock://localhost".into(),
+            api_key_env: "MOCK".into(),
+            model: None,
+        });
     // Reuse the pool Arc when the auditor kind matches every explorer's kind so that
     // the pointer-based skip_audit check in phases/audit.rs fires correctly.
     let auditor_adapter: Arc<dyn IComputeAdapter> =
-        if adapter_pool.iter().all(|a| *a.kind() == auditor_kind) {
+        if adapter_pool.iter().all(|a| *a.kind() == auditor_kind) && !adapter_pool.is_empty() {
             adapter_pool[0].clone()
         } else {
             build_adapter(&auditor_kind, thinking)
         };
 
-    let scoring_kind_opt = {
-        let provider = env::var("H2AI_SCORING_PROVIDER")
-            .unwrap_or_else(|_| "none".into())
-            .to_lowercase();
-        if provider == "none" || provider.is_empty() {
-            None
-        } else {
-            Some(adapter_kind_for_role("SCORING", profiles))
-        }
-    };
+    let scoring_kind_opt = profiles
+        .iter()
+        .find(|p| p.name == "scoring")
+        .map(|p| p.kind.clone());
     let scoring_adapter: Option<Arc<dyn IComputeAdapter>> = scoring_kind_opt
         .as_ref()
         .map(|k| build_adapter(k, thinking));
 
-    let shadow_auditor_kind_opt = {
-        let provider = env::var("H2AI_SHADOW_AUDITOR_PROVIDER")
-            .unwrap_or_else(|_| "none".into())
-            .to_lowercase();
-        if provider == "none" || provider.is_empty() {
-            None
-        } else {
-            Some(adapter_kind_for_role("SHADOW_AUDITOR", profiles))
-        }
+    let shadow_auditor_kind_opt = if cfg.safety.shadow_auditor.enabled {
+        profiles
+            .iter()
+            .find(|p| p.name == "shadow_auditor" || p.name == "shadow")
+            .map(|p| p.kind.clone())
+    } else {
+        None
     };
     let shadow_auditor_adapter: Option<Arc<dyn IComputeAdapter>> = shadow_auditor_kind_opt
         .as_ref()
         .map(|k| build_adapter(k, thinking));
 
-    let researcher_kind_opt = {
-        let provider = env::var("H2AI_RESEARCHER_PROVIDER")
-            .unwrap_or_else(|_| "none".into())
-            .to_lowercase();
-        if provider == "none" || provider.is_empty() {
-            None
-        } else {
-            Some(adapter_kind_for_role("RESEARCHER", profiles))
-        }
-    };
+    let researcher_kind_opt = profiles
+        .iter()
+        .find(|p| p.name == "researcher")
+        .map(|p| p.kind.clone());
     let researcher_adapter: Option<Arc<dyn IComputeAdapter>> = researcher_kind_opt
         .as_ref()
         .map(|k| build_adapter(k, thinking));
@@ -428,19 +353,11 @@ async fn main() {
         });
     }
 
-    // Wire NATS dispatch when H2AI_NATS_DISPATCH=true.
+    // Wire NATS dispatch when nats_dispatch_enabled = true in config.
     // When enabled, explorer slots are dispatched to TaoAgent processes via NATS
     // rather than calling the in-process LLM adapter.
-    if std::env::var("H2AI_NATS_DISPATCH")
-        .unwrap_or_default()
-        .eq_ignore_ascii_case("true")
-    {
-        let ttl = Duration::from_secs(
-            std::env::var("H2AI_AGENT_TTL_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30),
-        );
+    if app_state.cfg.nats_dispatch_enabled {
+        let ttl = Duration::from_secs(app_state.cfg.nats_agent_ttl_secs);
         match NatsAgentProvider::new(app_state.nats.client.clone(), ttl).await {
             Ok(provider) => {
                 tracing::info!(target: "h2ai.startup", ttl = ?ttl, "NATS agent dispatch enabled");

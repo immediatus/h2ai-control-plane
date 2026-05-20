@@ -189,7 +189,7 @@ pub async fn submit_task(
                     nats: state_clone.nats.clone(),
                     provider: std::sync::Arc::clone(provider),
                     agent_descriptor: AgentDescriptor {
-                        model: std::env::var("H2AI_AGENT_MODEL").unwrap_or_else(|_| "local".into()),
+                        model: state_clone.cfg.nats_agent_model.clone(),
                         tools: vec![AgentTool::Shell, AgentTool::FileSystem],
                         cost_tier: CostTier::Mid,
                     },
@@ -197,12 +197,7 @@ pub async fn submit_task(
                         max_cost_tier: CostTier::High,
                         required_tools: vec![AgentTool::Shell, AgentTool::FileSystem],
                     },
-                    task_timeout: Duration::from_secs(
-                        std::env::var("H2AI_AGENT_TIMEOUT_SECS")
-                            .ok()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(120),
-                    ),
+                    task_timeout: Duration::from_secs(state_clone.cfg.nats_agent_timeout_secs),
                     payload_store: state_clone.payload_store.clone(),
                     offload_threshold_bytes: 8 * 1024,
                 });

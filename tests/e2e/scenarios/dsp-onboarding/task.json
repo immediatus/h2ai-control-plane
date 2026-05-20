@@ -26,7 +26,7 @@
     "checks": [
       {
         "id": "C-003/1",
-        "text": "Does the configuration keep the global RTB timeout at or below 100ms?"
+        "text": "Does the proposal keep the global RTB timeout (T_global) at or below 100ms?"
       },
       {
         "id": "C-003/2",

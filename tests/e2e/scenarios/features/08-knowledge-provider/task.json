@@ -26,11 +26,11 @@
       },
       {
         "id": "KP/2",
-        "text": "Does the proposal read budget balances from Redis atomic counters directly, not from the L1 or L2 feature cache?"
+        "text": "Does the proposal avoid caching budget enforcement data in the L1 or L2 feature cache — keeping budget checks isolated to their own Redis cluster with no feature-cache layer in front?"
       },
       {
         "id": "KP/3",
-        "text": "Does the proposal address the long-tail cache miss problem — for example via L2 TTL extension, probabilistic early re-caching, or off-peak pre-warming?"
+        "text": "Does the proposal reduce the L2 Redis cache miss rate for long-tail users by any means — such as an additional cache layer (L3), TTL extension, probabilistic early re-caching, or pre-warming on session start?"
       }
     ],
     "checks_pass_threshold": 2

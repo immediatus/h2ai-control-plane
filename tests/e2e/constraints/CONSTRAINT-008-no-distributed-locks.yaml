@@ -8,6 +8,13 @@ domains:
 related_to:
   - CONSTRAINT-004  # use atomic Redis operations instead of locks
 remediation_hint: "Use lock-free atomic operations: Redis Lua EVAL for check-and-debit in one round-trip, or Redis WATCH/MULTI/EXEC for optimistic concurrency. Distributed locks (Redlock, SETNX-based advisory locks, PostgreSQL advisory locks) add unbounded wait time under contention and are prohibited on the critical path."
+semantic:
+  exclusions:
+    - pattern: "Redlock or advisory lock on the charge path"
+      passes: 3
+  requirements:
+    - concept: "lock-free Redis atomic operation"
+      passes: 3
 criteria:
   pass: |
     The proposal uses only lock-free atomicity mechanisms on the critical charge path:

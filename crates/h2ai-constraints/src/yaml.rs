@@ -39,6 +39,38 @@ fn default_binary_passes_yaml() -> u8 {
     3
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct SemanticSectionYaml {
+    #[serde(default)]
+    pub exclusions: Vec<ExclusionYaml>,
+    #[serde(default)]
+    pub requirements: Vec<RequirementYaml>,
+    #[serde(default)]
+    pub orderings: Vec<OrderingYaml>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExclusionYaml {
+    pub pattern: String,
+    #[serde(default = "default_binary_passes_yaml")]
+    pub passes: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequirementYaml {
+    pub concept: String,
+    #[serde(default = "default_binary_passes_yaml")]
+    pub passes: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrderingYaml {
+    pub first: String,
+    pub then: String,
+    #[serde(default = "default_binary_passes_yaml")]
+    pub passes: u8,
+}
+
 /// A failure mode entry — enriches the LlmJudge rubric with known failure patterns.
 /// Accepts both (trigger/consequence) and (name/description/impact) field variants
 /// so the struct is compatible with existing constraint files.
@@ -131,6 +163,10 @@ pub struct ConstraintYaml {
     /// When non-empty, builds Composite(And([...structural, LlmJudge])).
     #[serde(default)]
     pub predicates: Vec<StructuredPredicate>,
+
+    /// Typed semantic facets — preferred over the legacy `predicates:` array.
+    #[serde(default)]
+    pub semantic: Option<SemanticSectionYaml>,
 
     /// Failure modes appended to the LlmJudge rubric for richer evaluator context.
     #[serde(default)]
@@ -267,79 +303,75 @@ impl ConstraintYaml {
             SeverityKind::Advisory => ConstraintSeverity::Advisory,
         };
 
-        let structural_predicates: Vec<ConstraintPredicate> = self
-            .predicates
-            .into_iter()
-            .filter_map(|p| match p.predicate_type.as_str() {
-                "semantic_ordering" => {
-                    let first = p.first.filter(|s| !s.is_empty())?;
-                    let then = p.then.filter(|s| !s.is_empty())?;
-                    Some(ConstraintPredicate::SemanticOrdering {
-                        first,
-                        then,
-                        passes: p.passes,
-                    })
+        // Build structural predicates from semantic: section OR legacy predicates: array.
+        // Key collision: if both are present, log and skip both — parse_yaml_constraint()
+        // handles this case cleanly via the None return path.
+        let structural_predicates: Vec<ConstraintPredicate> =
+            if self.semantic.is_some() && !self.predicates.is_empty() {
+                tracing::warn!(
+                    constraint_id = %constraint_id,
+                    "contains both 'semantic:' and 'predicates:' — ignoring structural predicates"
+                );
+                vec![]
+            } else {
+                let section = match self.semantic {
+                    Some(s) => s,
+                    None => map_legacy_predicates(&self.predicates),
+                };
+                let mut children = Vec::new();
+                for e in section.exclusions {
+                    children.push(ConstraintPredicate::SemanticExclusion {
+                        pattern: e.pattern,
+                        passes: e.passes,
+                    });
                 }
-                "semantic_presence" => {
-                    let concept = p.concept.filter(|s| !s.is_empty())?;
-                    Some(ConstraintPredicate::SemanticPresence {
-                        concept,
-                        passes: p.passes,
-                    })
+                for r in section.requirements {
+                    children.push(ConstraintPredicate::SemanticPresence {
+                        concept: r.concept,
+                        passes: r.passes,
+                    });
                 }
-                "semantic_exclusion" => {
-                    let pattern = p.pattern.filter(|s| !s.is_empty())?;
-                    Some(ConstraintPredicate::SemanticExclusion {
-                        pattern,
-                        passes: p.passes,
-                    })
+                for o in section.orderings {
+                    children.push(ConstraintPredicate::SemanticOrdering {
+                        first: o.first,
+                        then: o.then,
+                        passes: o.passes,
+                    });
                 }
-                other => {
-                    tracing::warn!(
-                        constraint_id = %constraint_id,
-                        predicate_type = other,
-                        "unknown predicate type; skipping"
-                    );
-                    None
+                children
+            };
+
+        // Numeric pre-conditions run first (cheapest gate).
+        let mut children: Vec<ConstraintPredicate> = self
+            .numeric_checks
+            .iter()
+            .map(|nc| {
+                let op = match nc.op.as_str() {
+                    "lt" => NumericOp::Lt,
+                    "le" => NumericOp::Le,
+                    "eq" => NumericOp::Eq,
+                    "ge" => NumericOp::Ge,
+                    "gt" => NumericOp::Gt,
+                    other => {
+                        tracing::warn!("unknown numeric_check op '{}'; defaulting to le", other);
+                        NumericOp::Le
+                    }
+                };
+                ConstraintPredicate::NumericThreshold {
+                    field_pattern: nc.pattern.clone(),
+                    op,
+                    value: nc.value,
                 }
             })
             .collect();
+        children.extend(structural_predicates);
+        // LlmJudge always last — reached only when all structural gates pass.
+        children.push(ConstraintPredicate::LlmJudge { rubric });
 
-        let predicate = if self.numeric_checks.is_empty() && structural_predicates.is_empty() {
-            ConstraintPredicate::LlmJudge { rubric }
-        } else {
-            let mut children: Vec<ConstraintPredicate> = self
-                .numeric_checks
-                .iter()
-                .map(|nc| {
-                    let op = match nc.op.as_str() {
-                        "lt" => NumericOp::Lt,
-                        "le" => NumericOp::Le,
-                        "eq" => NumericOp::Eq,
-                        "ge" => NumericOp::Ge,
-                        "gt" => NumericOp::Gt,
-                        other => {
-                            tracing::warn!(
-                                "unknown numeric_check op '{}'; defaulting to le",
-                                other
-                            );
-                            NumericOp::Le
-                        }
-                    };
-                    ConstraintPredicate::NumericThreshold {
-                        field_pattern: nc.pattern.clone(),
-                        op,
-                        value: nc.value,
-                    }
-                })
-                .collect();
-            // Structural predicates run before LlmJudge — a 0.0 gate short-circuits it
-            children.extend(structural_predicates);
-            children.push(ConstraintPredicate::LlmJudge { rubric });
-            ConstraintPredicate::Composite {
-                op: CompositeOp::And,
-                children,
-            }
+        // Always Composite — bytecode homogeneity for 2-arm compiler match.
+        let predicate = ConstraintPredicate::Composite {
+            op: CompositeOp::And,
+            children,
         };
 
         ConstraintDoc {
@@ -354,12 +386,167 @@ impl ConstraintYaml {
             related_to: self.related_to,
         }
     }
+
+    /// Convert to SemanticSpec IR. Returns Err(message) on key collision (Fix #4).
+    pub fn into_semantic_spec(self) -> Result<crate::spec::SemanticSpec, String> {
+        use crate::spec::{
+            Example, Exclusion, FailureMode, Ordering, QualityRubric, Requirement, SemanticSpec,
+        };
+
+        if self.semantic.is_some() && !self.predicates.is_empty() {
+            return Err(format!(
+                "Constraint '{}' contains both 'semantic:' and 'predicates:'. \
+                 Remove the deprecated 'predicates:' key before loading.",
+                self.id
+            ));
+        }
+
+        let section = match self.semantic {
+            Some(s) => s,
+            None => map_legacy_predicates(&self.predicates),
+        };
+
+        let severity = match self.severity {
+            SeverityKind::Hard => crate::types::ConstraintSeverity::Hard {
+                threshold: self.threshold.unwrap_or(0.45),
+            },
+            SeverityKind::Soft => crate::types::ConstraintSeverity::Soft {
+                weight: self.threshold.unwrap_or(1.0),
+            },
+            SeverityKind::Advisory => crate::types::ConstraintSeverity::Advisory,
+        };
+
+        let failure_modes: Vec<FailureMode> = self
+            .failure_modes
+            .into_iter()
+            .map(|fm| FailureMode {
+                id: fm.id,
+                name: fm.name.unwrap_or_default(),
+                description: fm.description.unwrap_or_default(),
+                impact: fm.impact,
+            })
+            .collect();
+
+        let negative_examples: Vec<Example> = self
+            .negative_examples
+            .into_iter()
+            .map(|ex| Example {
+                label: ex.scenario.unwrap_or_default(),
+                code: ex.code,
+                rationale: ex.why_wrong.unwrap_or_default(),
+            })
+            .collect();
+
+        let positive_examples: Vec<Example> = self
+            .positive_examples
+            .into_iter()
+            .map(|ex| Example {
+                label: ex.scenario.unwrap_or_default(),
+                code: ex.code,
+                rationale: ex.why_correct.unwrap_or_default(),
+            })
+            .collect();
+
+        Ok(SemanticSpec {
+            id: self.id.clone(),
+            title: self.title,
+            source_file: self.id,
+            severity,
+            domains: self.domains,
+            mandatory_for_tags: self.mandatory_for_tags,
+            related_to: self.related_to,
+            remediation_hint: self.remediation_hint,
+            exclusions: section
+                .exclusions
+                .into_iter()
+                .map(|e| Exclusion {
+                    pattern: e.pattern,
+                    passes: e.passes,
+                })
+                .collect(),
+            requirements: section
+                .requirements
+                .into_iter()
+                .map(|r| Requirement {
+                    concept: r.concept,
+                    passes: r.passes,
+                })
+                .collect(),
+            orderings: section
+                .orderings
+                .into_iter()
+                .map(|o| Ordering {
+                    first: o.first,
+                    then: o.then,
+                    passes: o.passes,
+                })
+                .collect(),
+            rubric: QualityRubric {
+                pass: self.criteria.pass,
+                partial: self.criteria.partial,
+                fail: self.criteria.fail,
+                checks: self.criteria.checks,
+                failure_modes,
+                negative_examples,
+                positive_examples,
+            },
+        })
+    }
 }
 
-/// Parse a single `.yaml` constraint file. Returns `None` on parse error (logged as warning).
+fn map_legacy_predicates(predicates: &[StructuredPredicate]) -> SemanticSectionYaml {
+    let mut section = SemanticSectionYaml::default();
+    for p in predicates {
+        match p.predicate_type.as_str() {
+            "semantic_ordering" => {
+                if let (Some(first), Some(then)) = (
+                    p.first.as_ref().filter(|s| !s.is_empty()),
+                    p.then.as_ref().filter(|s| !s.is_empty()),
+                ) {
+                    section.orderings.push(OrderingYaml {
+                        first: first.clone(),
+                        then: then.clone(),
+                        passes: p.passes,
+                    });
+                }
+            }
+            "semantic_presence" => {
+                if let Some(concept) = p.concept.as_ref().filter(|s| !s.is_empty()) {
+                    section.requirements.push(RequirementYaml {
+                        concept: concept.clone(),
+                        passes: p.passes,
+                    });
+                }
+            }
+            "semantic_exclusion" => {
+                if let Some(pattern) = p.pattern.as_ref().filter(|s| !s.is_empty()) {
+                    section.exclusions.push(ExclusionYaml {
+                        pattern: pattern.clone(),
+                        passes: p.passes,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    section
+}
+
+/// Parse a single `.yaml` constraint file. Returns `None` on parse error or key collision
+/// (both logged as warnings).
 pub fn parse_yaml_constraint(path: &Path, content: &str) -> Option<ConstraintDoc> {
     match serde_yaml::from_str::<ConstraintYaml>(content) {
-        Ok(y) => Some(y.into_constraint_doc()),
+        Ok(y) => {
+            if y.semantic.is_some() && !y.predicates.is_empty() {
+                tracing::warn!(
+                    path = %path.display(),
+                    id = %y.id,
+                    "constraint contains both 'semantic:' and 'predicates:' — skipping"
+                );
+                return None;
+            }
+            Some(y.into_constraint_doc())
+        }
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),

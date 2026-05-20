@@ -325,9 +325,91 @@ pub const THINKING_QUALITY_GATE_TASK: PromptTemplate = PromptTemplate(concat!(
      Answer YES or NO with one sentence reason."
 ));
 
+// ── Explorer system context — constraint entry templates ─────────────────────
+//
+// These templates are used by h2ai-context::compiler to build the system context
+// injected into every explorer prompt. Keeping them here ensures prompt text
+// is configurable and visible alongside other workspace prompts.
+
+/// Task manifest section header. Variables: `{manifest}`.
+pub const COMPILER_TASK_MANIFEST: PromptTemplate = PromptTemplate("## Task Manifest\n{manifest}");
+
+/// Entry for a Hard or include_rubric=true LlmJudge constraint.
+/// Variables: `{id}`, `{rubric}`.
+pub const COMPILER_CONSTRAINT_HARD_RUBRIC: PromptTemplate =
+    PromptTemplate("## {id} Constraint\n{rubric}");
+
+/// Entry for a Soft LlmJudge constraint when rubric is withheld.
+/// Variables: `{id}`.
+pub const COMPILER_CONSTRAINT_ACTIVE_ID: PromptTemplate =
+    PromptTemplate("## Active Constraint: {id}");
+
+/// Vocabulary constraint block. Variables: `{id}`, `{terms}`.
+pub const COMPILER_CONSTRAINT_VOCABULARY: PromptTemplate =
+    PromptTemplate("## {id} Constraints\n{terms}");
+
+/// Guidance suffix appended to any constraint entry that has a remediation hint.
+pub const COMPILER_CONSTRAINT_GUIDANCE_SUFFIX: &str = "\nGuidance: ";
+
+/// Requirement suffix used for soft-LlmJudge constraints (rubric withheld, hint shown).
+pub const COMPILER_CONSTRAINT_REQUIREMENT_SUFFIX: &str = "\nRequirement: ";
+
+/// Ordering constraint entry. Variables: `{id}`, `{first}`, `{then}`.
+pub const COMPILER_CONSTRAINT_ORDERING: PromptTemplate = PromptTemplate(concat!(
+    "## Active Constraint: {id} [ordering requirement]\n",
+    "Required sequence: '{first}' must occur before '{then}' in your proposal."
+));
+
+/// Semantic presence constraint entry. Variables: `{id}`, `{concept}`.
+pub const COMPILER_CONSTRAINT_PRESENCE: PromptTemplate = PromptTemplate(concat!(
+    "## Active Constraint: {id} [semantic requirement]\n",
+    "Your proposal must address: {concept}."
+));
+
+/// Semantic exclusion constraint entry. Variables: `{id}`, `{pattern}`.
+pub const COMPILER_CONSTRAINT_EXCLUSION: PromptTemplate = PromptTemplate(concat!(
+    "## Active Constraint: {id} [exclusion requirement]\n",
+    "Your proposal must NOT include: {pattern}."
+));
+
+/// Ordering sub-requirement appended inside a Composite constraint entry.
+/// Variables: `{first}`, `{then}`.
+pub const COMPILER_COMPOSITE_ORDERING_DETAIL: PromptTemplate =
+    PromptTemplate("\nRequired sequence: '{first}' must occur before '{then}'.");
+
+/// Presence sub-requirement appended inside a Composite constraint entry.
+/// Variables: `{concept}`.
+pub const COMPILER_COMPOSITE_PRESENCE_DETAIL: PromptTemplate =
+    PromptTemplate("\nRequired: {concept}.");
+
+/// Exclusion sub-requirement appended inside a Composite constraint entry.
+/// Variables: `{pattern}`.
+pub const COMPILER_COMPOSITE_EXCLUSION_DETAIL: PromptTemplate =
+    PromptTemplate("\nMust NOT include: {pattern}.");
+
+/// Decomposition step-1 constraint block entry.
+/// Variables: `{id}`, `{domains}`, `{rubric}`, `{hint}`.
+pub const DECOMPOSITION_CONSTRAINT_ENTRY: PromptTemplate = PromptTemplate(concat!(
+    "CONSTRAINT {id} [{domains}]\n",
+    "Rubric: {rubric}\n",
+    "Remediation hint: {hint}"
+));
+
 #[cfg(test)]
 mod thinking_prompts_tests {
     use super::*;
+
+    #[test]
+    fn semantic_ordering_template_renders_all_fields() {
+        let rendered = COMPILER_CONSTRAINT_ORDERING.render(&[
+            ("id", "C-005"),
+            ("first", "account debit"),
+            ("then", "Kafka publish"),
+        ]);
+        assert!(rendered.contains("C-005"));
+        assert!(rendered.contains("account debit"));
+        assert!(rendered.contains("Kafka publish"));
+    }
 
     #[test]
     fn archetype_select_iter1_renders_required_fields() {

@@ -268,6 +268,23 @@ impl CalibrationHarness {
         };
         // ─────────────────────────────────────────────────────────────────────
 
+        // ── Epistemic β₀ override ──────────────────────────────────────────────
+        // When an embedding model is available and we have ≥ 3 adapters, replace
+        // the timing-derived β₀ with the USL constraint-inversion estimate.
+        // This produces physically grounded friction consistent with observed N_eff.
+        let beta_base = if input.embedding_model.is_some() && m >= 3 {
+            let cg_mean = if cg_samples.is_empty() {
+                input.cfg.calibration_cg_fallback
+            } else {
+                cg_samples.iter().copied().sum::<f64>() / cg_samples.len() as f64
+            };
+            let k = input.cfg.calibration_probe.neff_cg_exponent;
+            beta_from_n_eff_adj(n_eff_cosine_prior, cg_mean, m, k)
+        } else {
+            beta_base
+        };
+        // ─────────────────────────────────────────────────────────────────────
+
         let usl_from_fallback = m < 3;
         let cg_from_fallback = adapter_outputs.len() < 2;
         let calibration_source = match (usl_from_fallback, cg_from_fallback) {
@@ -562,6 +579,72 @@ pub fn beta_from_merge_spans(spans: &[(f64, usize)], t1_secs: f64) -> Option<f64
         .sum();
     let mean_per_pair = sum / spans.len() as f64;
     Some((mean_per_pair / t1_secs).clamp(1e-9, 0.1))
+}
+
+/// Additive-increase step: decay α toward the measured yield.
+///
+/// On a successful iteration, α moves toward `alpha_measured` at rate `decay_rate`:
+/// `α_next = max(α_current × decay_rate, alpha_measured)`
+///
+/// `decay_rate` ∈ (0, 1] — typical value 0.95.
+/// Returns `alpha_measured` when `α_current × decay_rate < alpha_measured`.
+pub fn aimd_decay(alpha_current: f64, alpha_measured: f64, decay_rate: f64) -> f64 {
+    (alpha_current * decay_rate).max(alpha_measured)
+}
+
+/// Multiplicative-decrease step: reset α when yield falls below threshold.
+///
+/// On a poor iteration (yield < reset_threshold), α jumps back toward `seed_alpha`:
+/// `α_next = min(α_current × reset_multiplier, seed_alpha)`
+///
+/// `reset_multiplier` > 1 — typical value 3.0.
+/// Returns `seed_alpha` when `α_current × reset_multiplier > seed_alpha`.
+pub fn aimd_reset(alpha_current: f64, seed_alpha: f64, reset_multiplier: f64) -> f64 {
+    (alpha_current * reset_multiplier).min(seed_alpha)
+}
+
+/// Compute the mean yield from a `n_useful_history` ring buffer.
+///
+/// Each entry is `(n_useful: u8, n_max: u8, _unix_minutes: u32)`.
+/// Yield = n_useful / n_max for each entry. Returns `None` when `history` is empty
+/// or all entries have `n_max == 0`.
+pub fn yield_from_history(history: &[(u8, u8, u32)]) -> Option<f64> {
+    if history.is_empty() {
+        return None;
+    }
+    let (sum, count) = history
+        .iter()
+        .fold((0.0_f64, 0_usize), |(s, c), &(n_useful, n_max, _)| {
+            if n_max == 0 {
+                (s, c)
+            } else {
+                (s + n_useful as f64 / n_max as f64, c + 1)
+            }
+        });
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f64)
+    }
+}
+
+/// Compute epistemic β₀ from adjusted N_eff using the USL constraint inversion formula.
+///
+/// Returns the Kontrollier friction parameter β₀ such that when N_eff agents collaborate
+/// with group-coherence CG, `N_max = sqrt((1 - α) / β_eff)` is physically consistent.
+///
+/// # Formula
+/// `N_eff_adj = clamp(N_eff × CG^k, 1.0, N_cal)`
+/// `β₀ = max((1/N_eff_adj − 1/N_cal) / (N_cal − 1), 1e-6)`
+///
+/// Returns `1e-6` when `n_cal < 2` (degenerate: can't fit USL with fewer than 2 calibration samples).
+pub fn beta_from_n_eff_adj(n_eff: f64, cg_mean: f64, n_cal: usize, k: f64) -> f64 {
+    if n_cal < 2 {
+        return 1e-6;
+    }
+    let n_cal_f = n_cal as f64;
+    let n_eff_adj = (n_eff * cg_mean.powf(k)).clamp(1.0, n_cal_f);
+    ((1.0 / n_eff_adj - 1.0 / n_cal_f) / (n_cal_f - 1.0)).max(1e-6)
 }
 
 /// Derive β₀ from token costs of merge phase executions.

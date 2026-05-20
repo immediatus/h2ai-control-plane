@@ -424,6 +424,92 @@ impl Default for CalibrationBootstrapConfig {
     }
 }
 
+/// Modifier injected into the system context for the epistemic probe phase.
+/// Invalid TOML values cause a serde deserialization error at startup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemModifier {
+    /// Injects: "Provide a maximally compressed architectural skeleton. Do not write
+    /// implementation details. Prove constraint compliance immediately."
+    #[default]
+    CompressReasoning,
+    /// Sends the full task prompt without modification.
+    FullTask,
+    /// Compiled from constraint YAML fields: criteria.pass + predicates → canonical task.
+    ConstraintSkeleton,
+}
+
+/// Whether the epistemic probe uses the production prompt or a synthetic task.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeTaskSource {
+    /// Use the production prompt, truncated to probe max_tokens budget.
+    #[default]
+    Same,
+    /// Compile from constraint YAML: criteria.pass + predicates → canonical task.
+    /// Enables stationary k-regression independent of user payload entropy.
+    Synthetic,
+}
+
+/// Configuration for the epistemic probe phase (Phase 2 of two-phase calibration).
+///
+/// The probe runs `agents` LLM instances on a short task, embeds outputs via cosine kernel,
+/// computes N_eff, and derives β₀ = f(N_eff^adj, CG, k).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationProbeConfig {
+    /// Number of agents in the epistemic probe. Minimum 3 for a valid β₀ solve.
+    pub agents: usize,
+    /// Max tokens for probe completions.
+    pub max_tokens: u64,
+    /// System context modifier injected during the probe.
+    pub system_modifier: SystemModifier,
+    /// Whether to use the production prompt or a synthetic constraint-derived task.
+    pub probe_task_source: ProbeTaskSource,
+    /// Exponent k in N_eff^adj = clamp(N_eff × CG^k, 1, N_cal).
+    /// k=2 is a quadratic trapdoor: CG=0.65 → N_eff^adj collapses to ~1.
+    pub neff_cg_exponent: f64,
+}
+
+impl Default for CalibrationProbeConfig {
+    fn default() -> Self {
+        Self {
+            agents: 3,
+            max_tokens: 512,
+            system_modifier: SystemModifier::CompressReasoning,
+            probe_task_source: ProbeTaskSource::Same,
+            neff_cg_exponent: 2.0,
+        }
+    }
+}
+
+/// Configuration for AIMD slow start and congestion recovery.
+///
+/// On first registration, alpha starts at `seed_alpha`.
+/// After each verified wave: `alpha = max(alpha × decay_rate, alpha_measured)`.
+/// On yield < `reset_threshold`: `alpha = min(alpha × reset_multiplier, seed_alpha)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationSlowStartConfig {
+    /// Initial alpha for new adapter registrations. Conservative — suppresses N_max cold-start.
+    pub seed_alpha: f64,
+    /// Multiplicative decay per successful verification wave.
+    pub decay_rate: f64,
+    /// Multiplier applied to alpha on AIMD reset (yield < reset_threshold).
+    pub reset_multiplier: f64,
+    /// Yield floor (N_useful/N_max) below which AIMD reset fires.
+    pub reset_threshold: f64,
+}
+
+impl Default for CalibrationSlowStartConfig {
+    fn default() -> Self {
+        Self {
+            seed_alpha: 0.15,
+            decay_rate: 0.95,
+            reset_multiplier: 3.0,
+            reset_threshold: 0.4,
+        }
+    }
+}
+
 impl Default for SraniConfig {
     fn default() -> Self {
         Self {
@@ -689,6 +775,17 @@ impl Default for ThinkingLoopConfig {
     }
 }
 
+/// Configuration for CSPR-v2 patch-based constraint repair.
+///
+/// When enabled, `RetryWithHints` uses the best prior proposal as an anchor
+/// and injects targeted per-violated-constraint repair instructions instead of
+/// regenerating from scratch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CsprConfig {
+    /// Enable CSPR-v2 patch repair. Default: false.
+    pub enabled: bool,
+}
+
 /// Configuration for delta checkpoint encoding parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateDeltaConfig {
@@ -741,6 +838,15 @@ pub struct StateConfig {
     pub estimator_bucket: String,
     #[serde(default = "default_calibration_bucket")]
     pub calibration_bucket: String,
+    /// KV bucket for per-adapter-profile CalibrationRecord telemetry. Default: "H2AI_CALIBRATION_RECORDS".
+    #[serde(default = "default_calibration_records_bucket")]
+    pub calibration_records_bucket: String,
+    /// KV bucket for per-adapter-profile AuditorHealth circuit-breaker state. Default: "H2AI_AUDITOR_HEALTH".
+    #[serde(default = "default_auditor_health_bucket")]
+    pub auditor_health_bucket: String,
+    /// KV bucket for probe lease CAS tokens (HalfOpen circuit-breaker). Default: "H2AI_PROBE_LEASE".
+    #[serde(default = "default_probe_lease_bucket")]
+    pub probe_lease_bucket: String,
     #[serde(default = "default_sessions_bucket")]
     pub sessions_bucket: String,
     #[serde(default = "default_audit_shadow_bucket")]
@@ -800,6 +906,15 @@ fn default_estimator_bucket() -> String {
 fn default_calibration_bucket() -> String {
     "H2AI_CALIBRATION".to_string()
 }
+fn default_calibration_records_bucket() -> String {
+    "H2AI_CALIBRATION_RECORDS".to_string()
+}
+fn default_auditor_health_bucket() -> String {
+    "H2AI_AUDITOR_HEALTH".to_string()
+}
+fn default_probe_lease_bucket() -> String {
+    "H2AI_PROBE_LEASE".to_string()
+}
 fn default_sessions_bucket() -> String {
     "H2AI_SESSIONS".to_string()
 }
@@ -849,6 +964,9 @@ impl Default for StateConfig {
             oracle_calibration_bucket: default_oracle_calibration_bucket(),
             estimator_bucket: default_estimator_bucket(),
             calibration_bucket: default_calibration_bucket(),
+            calibration_records_bucket: default_calibration_records_bucket(),
+            auditor_health_bucket: default_auditor_health_bucket(),
+            probe_lease_bucket: default_probe_lease_bucket(),
             sessions_bucket: default_sessions_bucket(),
             audit_shadow_bucket: default_audit_shadow_bucket(),
             prompt_variants_bucket: default_prompt_variants_bucket(),
@@ -901,6 +1019,9 @@ pub struct H2AIConfig {
     /// Maximum tokens kept after context compaction. `None` means no limit; omit from the override file to leave unlimited.
     #[serde(default)]
     pub max_context_tokens: Option<usize>,
+    /// Single model token budget — canonical reference for all full-generation LLM calls.
+    /// Intentional exceptions: `leader_diagnosis_max_tokens` (128) and `calibration_probe.max_tokens` (512).
+    pub model_max_tokens: u64,
     /// Maximum tokens per explorer generation call.
     pub explorer_max_tokens: u64,
     /// Maximum tokens per calibration probe call.
@@ -1047,8 +1168,18 @@ pub struct H2AIConfig {
     /// URL path prefix for all versioned API routes (tasks, calibrate).
     /// Health/ready/metrics are always mounted at root. Example: `"v1"` → `/v1/tasks`.
     pub api_version: String,
+    /// HTTP listen address for the API server. Default: "0.0.0.0:8080".
+    pub listen_addr: String,
     /// NATS server URL used by the API server, agent binary, and integration tests.
     pub nats_url: String,
+    /// Enable NATS agent dispatch mode. When true, explorer slots are dispatched to TaoAgent processes via NATS. Default: false.
+    pub nats_dispatch_enabled: bool,
+    /// TTL in seconds for NATS-dispatched agent task slots. Default: 30.
+    pub nats_agent_ttl_secs: u64,
+    /// Model name reported in AgentDescriptor for NATS-dispatched agent tasks.
+    pub nats_agent_model: String,
+    /// Timeout in seconds for a single NATS-dispatched agent task. Default: 120.
+    pub nats_agent_timeout_secs: u64,
     /// Enable the synthesis phase. When false, the engine uses the selection chain exclusively.
     /// Default: true. Set false to reproduce pre-synthesis behavior for benchmarking.
     pub synthesis_enabled: bool,
@@ -1147,6 +1278,9 @@ pub struct H2AIConfig {
     /// the 3-step decomposition. Disabled by default — opt-in per scenario.
     #[serde(default)]
     pub thinking_loop: ThinkingLoopConfig,
+    /// CSPR-v2 patch-based constraint repair configuration.
+    #[serde(default)]
+    pub cspr: CsprConfig,
     /// Oracle gate configuration.
     /// Controls Phase 3 → Phase 4 verification via oracle service.
     #[serde(default)]
@@ -1184,6 +1318,14 @@ pub struct H2AIConfig {
     /// Maximum timeout_ms a caller may request via POST /signal.
     #[serde(default = "default_signal_max_timeout_ms")]
     pub signal_max_timeout_ms: u64,
+    /// Epistemic probe phase configuration (two-phase calibration, spec section 2-3).
+    /// Absent from config file → uses defaults (agents=3, max_tokens=512, k=2.0).
+    #[serde(default)]
+    pub calibration_probe: CalibrationProbeConfig,
+    /// AIMD slow start and congestion recovery configuration (spec section 4).
+    /// Absent from config file → uses defaults (seed_alpha=0.15, decay_rate=0.95).
+    #[serde(default)]
+    pub calibration_slow_start: CalibrationSlowStartConfig,
 }
 
 fn default_correlated_hallucination_cv_threshold() -> f64 {
@@ -1314,8 +1456,8 @@ mod synthesis_config_tests {
         assert!(cfg.synthesis_enabled);
         assert_eq!(cfg.synthesis_min_proposals, 2);
         assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
-        assert_eq!(cfg.synthesis_critique_max_tokens, 65536);
-        assert_eq!(cfg.synthesis_max_tokens, 65536);
+        assert_eq!(cfg.synthesis_critique_max_tokens, 32768);
+        assert_eq!(cfg.synthesis_max_tokens, 32768);
     }
 
     #[test]

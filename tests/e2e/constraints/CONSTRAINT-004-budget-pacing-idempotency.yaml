@@ -8,6 +8,13 @@ related_to:
   - CONSTRAINT-005  # every budget deduction must publish to the immutable audit log
   - CONSTRAINT-007  # budget reads must use strong consistency (Redis counters, not cache)
 remediation_hint: "Use a single Redis Lua script (EVAL) that atomically checks the idempotency key and debits the budget counter in one round-trip. Store idempotency keys with TTL matching your retry window. Never split the check and debit into separate commands."
+semantic:
+  exclusions:
+    - pattern: "separate GET then DECRBY without atomicity"
+      passes: 3
+  requirements:
+    - concept: "Redis Lua EVAL atomic script"
+      passes: 3
 criteria:
   pass: |
     The proposal (1) introduces an idempotency key or token tied to each request to detect
