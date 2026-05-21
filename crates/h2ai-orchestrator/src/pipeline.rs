@@ -667,6 +667,7 @@ impl<'a> ExecutionPipeline<'a> {
                 timestamp: Utc::now(),
                 merge_elapsed_secs: None,
                 n_input_proposals: synthesis_candidates.len(),
+                n_failed_proposals: 0,
             };
 
             // Accumulate iteration verification events (mirrors engine.rs line 1058).

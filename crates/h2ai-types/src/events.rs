@@ -331,6 +331,10 @@ pub struct SelectionResolvedEvent {
     /// Number of proposals (valid + pruned) that entered resolve().
     #[serde(default)]
     pub n_input_proposals: usize,
+    /// Number of non-pruned proposals that scored exactly 0.0 and were excluded
+    /// from selection to prevent synthesis contamination (GAP-D8).
+    #[serde(default)]
+    pub n_failed_proposals: usize,
 }
 
 /// Emitted when the merge engine produces the final resolved output string for a task.

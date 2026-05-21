@@ -102,7 +102,37 @@ USL, CJT, Krum, and CRDT semantics all assume failure independence in different 
 
 The runtime corrects with `(1 − ρ)` in CJT and the bivariate-CG check at Phase 2.6. The corrections do not eliminate the underlying assumption; they bound its damage. When the constraint corpus is sparse, Hamming CG is near-zero regardless of true pool diversity, and compounding four formulas over a noisy base does not increase precision.
 
-### 4.2 The O(N²) synthesis cost is not bypassed by DAG topology
+### 4.2 Synthesis contamination from score-blind merger (GAP-D8) 🔴 OPEN
+
+**Root cause (confirmed, 2026-05-20).** `SemilatticeResult::compile` (`crates/h2ai-state/src/semilattice.rs:124`) strips verification scores before forwarding proposals to the merger:
+
+```rust
+valid_proposals: scored.into_iter().map(|(p, _)| p).collect()  // score discarded
+```
+
+`MergerInput` therefore receives all non-pruned proposals with no way to distinguish `score=1.0` from `score=0.0`. Text from constraint-violating proposals (describing incorrect patterns) is merged with equal weight alongside passing proposals, introducing internal contradictions in the synthesised output. This was confirmed by the GAP-D7 benchmark run (2026-05-20): a merged output containing both `acks=all` (from a passing Kafka proposal) and `fire-and-forget` (from a failing proposal) caused the binary judge to answer MISSING on C-005/1 even when Kafka was unambiguously present — the judge cannot confirm a claim that the merger itself contradicted.
+
+**Why this happens.** The `ProposalSet` CRDT LUB is selection, not synthesis. It correctly selects the highest-scored surviving proposal for the CRDT convergence path. The synthesis path is a separate Phase 5a pipeline that calls the merger LLM. The LUB design predates the Phase 5a synthesis pipeline; the score-stripping was never a deliberate decision — it is a structural artefact of a pipeline extension that never retrofitted score metadata.
+
+**Literature grounding.** The problem is a specific instance of the *synthesis bottleneck* identified empirically in ensemble research:
+
+- **"When Agents Disagree" (Zheng et al. 2025) — arXiv 2603.20324.** Selection bottleneck in Mixture-of-Agents: heterogeneous teams outperform in generation diversity but *lose* under naive synthesis aggregation because low-quality inputs contaminate the merged output. The paper's central finding — that MoA quality depends critically on *what is fed to the aggregator*, not just what is generated — directly maps to GAP-D8. Their remedy is ensemble filtering before aggregation: only proposals above a quality threshold feed the synthesis step.
+
+- **Constitutional AI (Bai et al. 2022) — arXiv 2212.08073.** The critique-revision loop uses failing outputs explicitly as *negative targets* — the model is shown what it must NOT produce. This is the theoretical basis for the "anti-patterns to avoid" synthesis prompt section in the full GAP-D8 fix: rather than simply excluding failing proposals, they can be included in the prompt under a `## Anti-patterns to avoid` header, converting low-scored proposals from a contamination vector into a negative-example signal.
+
+- **RouteMoA (Li et al. 2025) — arXiv 2601.18130.** Score-based dynamic routing before synthesis: proposals below a quality gate are routed out of the synthesis input. Empirically finds that selective routing recovers most of the diversity gain while avoiding contamination from poor proposals. The recommended minimum fix (expose score to merger, filter `score < threshold`) is an implementation of this routing principle.
+
+- **"Consensus is Not Verification" (Zhang et al. 2026) — arXiv 2603.06612.** Crowd wisdom fails without external verifiers separate from the generation process. When low-quality proposals that failed the external constraint verifier are reintroduced to synthesis without annotation, the crowd-wisdom mechanism inverts: the crowd is averaged toward the wrong answer. Verifier scores — already computed by Phase 3.5 — must flow through to synthesis for external verification to have any downstream effect.
+
+- **SMoA (Chen et al. 2024) — arXiv 2411.03284.** Sparse interaction between proposals preserves diversity and reduces contamination: not every proposal should influence every other. Score-stratified synthesis is a one-dimensional approximation of this: passing proposals interact at high weight; failing proposals at zero or negative weight.
+
+**Minimum fix (2 lines, low risk).** Change `semilattice.rs:124` to preserve `(ProposalEvent, f64)` pairs and propagate the score field through `MergerInput`. The merger can then filter `score == 0.0` proposals out of the synthesis context, stopping contamination without requiring any prompt changes.
+
+**Full fix (score-stratified merge).** Split into `valid_proposals` (score > 0.0, used as synthesis inputs) and `failed_proposals` (score = 0.0, injected under `## Anti-patterns to avoid` in the synthesis prompt). This converts the Constitutional AI pattern into an implementation. Expected improvement: `avg_score` uplift from 0.333 toward 0.50–0.60 on the benchmark, C-005/1 MISSING signal resolved.
+
+**Empirical prediction.** With only 1/6 proposals passing and synthesis treating all six symmetrically, the merged output quality is currently bounded *below* the single best proposal (the merger actively degrades the passing material). With score-stratified merge, the output quality should approach or exceed the single best proposal — the merged output is now built from verified-correct text, with failing text reframed as guidance on what to avoid.
+
+### 4.3 The O(N²) synthesis cost is not bypassed by DAG topology
 
 A natural objection: "the system uses a DAG with Kahn's topological sort for orchestration, which is O(N). The `HierarchicalTree` topology further reduces explorer coordination to O(N). So where does USL's O(N²) β term come from? Isn't it a mathematical artefact of a topology the system doesn't actually use?"
 
@@ -280,6 +310,11 @@ Papers are grouped by the architectural concern they address. Each entry states 
 | arXiv 2508.09654 | Temperature alone is insufficient for diversity; training loss distribution governs. Supports the claim that multi-family (Coverage quadrant) is necessary for genuine error decorrelation, not just temperature-spread within one model. | Published result. Supports Coverage quadrant design. |
 | JMLR 2023 (unified diversity decomposition) | Unified bias-variance-diversity decomposition: `ensemble error = bias² + variance/N + covariance×(N−1)/N`. Failed proposals increase the covariance term disproportionately. This is the theoretical basis for j_eff's "double penalty": failures reduce both `n_valid` (fewer Condorcet voters) and `filter_ratio` (lower per-voter competence), penalising covariance twice — once through count, once through individual quality. | Proven (regression). Domain transfer to LLM quality scores is the open question. Applied in `compute_j_eff` design rationale. |
 | Wang et al. (2024) — arXiv 2406.04692 (MoA) | *"Mixture-of-Agents enhances large language model capabilities."* Achieves 65.1% on AlpacaEval 2.0 vs GPT-4o's 57.5% with generative aggregation. Primary baseline: H2AI's claim is that USL-bounded + bivariate-CG + MAPE-K outperforms unbounded MoA on quality/cost. | Published result. Empirical comparison pending. |
+| Zheng et al. (2025) — arXiv 2603.20324 | *"When Agents Disagree: Selection Bottleneck in Mixture-of-Agents."* MoA quality depends critically on what feeds the aggregator — heterogeneous teams lose quality under naive synthesis because low-quality inputs contaminate the merged output. Score-stratified filtering before synthesis recovers diversity without contamination. Root motivation for GAP-D8 fix. | Published result. Applied in GAP-D8 fix design. |
+| Li et al. (2025) — arXiv 2601.18130 (RouteMoA) | *"RouteMoA: Dynamic Routing in Mixture-of-Agents."* Score-based dynamic routing before synthesis excludes proposals below a quality gate. Empirically recovers most diversity gain while avoiding contamination. Direct implementation model for GAP-D8 minimum fix (filter `score == 0.0` before merger). | Published result. Applied in GAP-D8 fix design. |
+| Zhang et al. (2026) — arXiv 2603.06612 | *"Consensus is Not Verification."* Crowd-wisdom fails without external verifiers: low-quality proposals included in synthesis without annotation invert the ensemble average toward wrong answers. Verifier scores must flow through to synthesis for external verification to have any downstream effect on output quality. | Published result. Core motivation for score propagation through `SemilatticeResult`. |
+| Bai et al. (2022) — arXiv 2212.08073 (Constitutional AI) | *"Constitutional AI: Harmlessness from AI Feedback."* Critique-revision loop uses failing outputs as negative targets. The `## Anti-patterns to avoid` synthesis prompt section (GAP-D8 full fix) implements this principle: failing proposals are reframed from contamination vectors into guided negative examples. | Published result. Theoretical basis for full GAP-D8 fix. |
+| Chen et al. (2024) — arXiv 2411.03284 (SMoA) | *"Sparse Mixture-of-Agents."* Sparse interaction between proposals preserves diversity and reduces contamination. Score-stratified synthesis is a one-dimensional instance: passing proposals interact at full weight; failing proposals at zero or negative weight. | Published result. Supports score-stratified merge design. |
 
 #### Merge strategy and Byzantine fault tolerance
 
@@ -418,6 +453,11 @@ Papers are grouped by the architectural concern they address. Each entry states 
 - **arXiv 2602.03794.** *Understanding Agent Scaling via Diversity.* Homogeneous agents saturate quickly because correlated outputs provide diminishing marginal information. USL's single-N parameter cannot distinguish homogeneous from heterogeneous pools. Direct motivation for the bivariate-CG extension: cosine N_eff distinguishes semantic homogeneity that Hamming CG misses.
 - **arXiv 2506.07962.** Error correlation in LLM ensembles is driven by training data distribution and model architecture, not by prompting strategy. This challenges the assumption that `role_frame` diversity in prompts measurably reduces ρ. If confirmed for H2AI's task domain, the value driver is MAPE-K enforcement, not prompt diversity — a direct falsification target for experiments.
 - **arXiv 2508.09654.** Temperature variation is insufficient to produce independent errors; training loss distribution governs the correlation structure. Supports the Coverage quadrant (cross-family adapters) as the structural mechanism for genuine error decorrelation, not the Precision quadrant (τ-spread within one family).
+- **Zheng et al. (2025).** *When Agents Disagree: Selection Bottleneck in Mixture-of-Agents.* arXiv 2603.20324. Central finding: MoA quality depends on what feeds the aggregator, not just what is generated — heterogeneous generation diversity is wasted when low-quality proposals contaminate synthesis. Score-stratified filtering before aggregation recovers quality. Root motivation for GAP-D8.
+- **Li, J. et al. (2025).** *RouteMoA: Dynamic Routing in Mixture-of-Agents.* arXiv 2601.18130. Quality-gated routing before synthesis step. Empirically recovers most diversity gain while eliminating contamination from sub-threshold proposals. Implementation model for GAP-D8 minimum fix.
+- **Zhang et al. (2026).** *Consensus is Not Verification.* arXiv 2603.06612. Without external verifiers separated from generation, crowd-wisdom synthesis inverts toward wrong answers when failing proposals are included without annotation. Verifier scores must flow to synthesis to have downstream effect.
+- **Bai, Y. et al. (2022).** *Constitutional AI: Harmlessness from AI Feedback.* arXiv 2212.08073. Critique-revision loop using failing outputs as negative targets. Theoretical basis for `## Anti-patterns to avoid` synthesis prompt section in GAP-D8 full fix.
+- **Chen et al. (2024).** *Sparse Mixture-of-Agents (SMoA).* arXiv 2411.03284. Sparse interaction between proposals preserves diversity and reduces contamination from low-quality inputs. Score-stratified synthesis is a one-dimensional implementation of this principle.
 
 ### Byzantine fault tolerance and CRDT merge
 

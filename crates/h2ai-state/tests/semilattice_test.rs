@@ -83,8 +83,8 @@ fn semilattice_result_valid_proposals_excludes_pruned() {
     let e1 = ExplorerId::new();
     let e2 = ExplorerId::new();
     let mut proposals = ProposalSet::new();
-    proposals.insert(proposal(e1.clone(), tid.clone(), "out1"));
-    proposals.insert(proposal(e2.clone(), tid.clone(), "out2"));
+    proposals.insert_scored(proposal(e1.clone(), tid.clone(), "out1"), 0.8);
+    proposals.insert_scored(proposal(e2.clone(), tid.clone(), "out2"), 0.6);
 
     let pruned_list = vec![pruned(e2.clone(), tid.clone())];
     let result = SemilatticeResult::compile(tid.clone(), proposals, pruned_list);
@@ -98,13 +98,54 @@ fn semilattice_result_empty_when_all_pruned() {
     let tid = TaskId::new();
     let e1 = ExplorerId::new();
     let mut proposals = ProposalSet::new();
-    proposals.insert(proposal(e1.clone(), tid.clone(), "out1"));
+    proposals.insert_scored(proposal(e1.clone(), tid.clone(), "out1"), 0.9);
 
     let pruned_list = vec![pruned(e1.clone(), tid.clone())];
     let result = SemilatticeResult::compile(tid.clone(), proposals, pruned_list);
 
     assert!(result.valid_proposals.is_empty());
     assert_eq!(result.pruned_proposals.len(), 1);
+}
+
+#[test]
+fn semilattice_result_zero_score_goes_to_failed_not_valid() {
+    let tid = TaskId::new();
+    let e1 = ExplorerId::new();
+    let e2 = ExplorerId::new();
+    let mut proposals = ProposalSet::new();
+    proposals.insert_scored(proposal(e1.clone(), tid.clone(), "passing"), 0.8);
+    proposals.insert_scored(proposal(e2.clone(), tid.clone(), "failing"), 0.0);
+
+    let result = SemilatticeResult::compile(tid.clone(), proposals, vec![]);
+
+    assert_eq!(
+        result.valid_proposals.len(),
+        1,
+        "only score>0 proposals feed selection"
+    );
+    assert_eq!(
+        result.failed_proposals.len(),
+        1,
+        "score=0.0 goes to failed_proposals"
+    );
+    assert_eq!(result.valid_proposals[0].raw_output, "passing");
+    assert_eq!(result.failed_proposals[0].raw_output, "failing");
+}
+
+#[test]
+fn semilattice_result_all_zero_score_yields_empty_valid() {
+    let tid = TaskId::new();
+    let mut proposals = ProposalSet::new();
+    proposals.insert_scored(proposal(ExplorerId::new(), tid.clone(), "fail1"), 0.0);
+    proposals.insert_scored(proposal(ExplorerId::new(), tid.clone(), "fail2"), 0.0);
+
+    let result = SemilatticeResult::compile(tid.clone(), proposals, vec![]);
+
+    assert!(
+        result.valid_proposals.is_empty(),
+        "no valid proposals → ZeroSurvival path"
+    );
+    assert_eq!(result.failed_proposals.len(), 2);
 }
 
 #[test]

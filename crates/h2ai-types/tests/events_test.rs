@@ -209,6 +209,7 @@ fn selection_resolved_event_includes_merge_strategy() {
         timestamp: Utc::now(),
         merge_elapsed_secs: None,
         n_input_proposals: 0,
+        n_failed_proposals: 0,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: SelectionResolvedEvent = serde_json::from_str(&json).unwrap();
@@ -386,6 +387,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             timestamp: Utc::now(),
             merge_elapsed_secs: None,
             n_input_proposals: 0,
+            n_failed_proposals: 0,
         }),
         H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: task_id(),

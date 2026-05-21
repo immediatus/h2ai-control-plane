@@ -175,6 +175,7 @@ impl MergeEngine {
             timestamp: Utc::now(),
             merge_elapsed_secs: Some(merge_elapsed),
             n_input_proposals: n_input,
+            n_failed_proposals: result.failed_proposals.len(),
         };
 
         let resolved = MergeResolvedEvent {

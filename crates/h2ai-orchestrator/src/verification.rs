@@ -8,10 +8,10 @@ use h2ai_constraints::types::{
     ConstraintSeverity,
 };
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
-use h2ai_types::prompts::BINARY_CLASSIFIER_SYSTEM_PROMPT;
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{ConstraintViolation, ProposalEvent};
 use h2ai_types::identity::ExplorerId;
+use h2ai_types::prompts::BINARY_CLASSIFIER_SYSTEM_PROMPT;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;

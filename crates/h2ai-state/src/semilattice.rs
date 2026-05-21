@@ -84,20 +84,27 @@ impl Default for ProposalSet {
     }
 }
 
-/// Output of compiling a `ProposalSet` into ranked valid and pruned partitions.
+/// Output of compiling a `ProposalSet` into ranked valid, failed, and pruned partitions.
 ///
 /// Produced by `SemilatticeResult::compile`; consumed by the merger to feed
 /// the consensus selection step (Krum, ConsensusMedian, or Weiszfeld).
 pub struct SemilatticeResult {
     /// Task this result belongs to.
     pub task_id: TaskId,
-    /// Non-pruned proposals sorted by verification score descending.
+    /// Non-pruned proposals with verification score > 0, sorted descending.
     ///
-    /// Index 0 holds the highest-scored proposal, so ScoreOrdered merge needs
-    /// only take `valid_proposals[0]`.
+    /// Index 0 holds the highest-scored proposal so ScoreOrdered merge needs
+    /// only take `valid_proposals[0]`. Score=0 proposals are excluded to
+    /// prevent synthesis contamination (GAP-D8).
     pub valid_proposals: Vec<ProposalEvent>,
+    /// Non-pruned proposals that scored exactly 0.0 on every constraint.
+    ///
+    /// These failed verification. They are kept here for optional use as
+    /// negative examples in the synthesis prompt ("anti-patterns to avoid")
+    /// but must never feed the selection strategies alongside valid proposals.
+    pub failed_proposals: Vec<ProposalEvent>,
     /// Proposals whose explorer branch was pruned before consensus; excluded
-    /// from `valid_proposals` so pruned outputs never influence selection.
+    /// from both `valid_proposals` and `failed_proposals`.
     pub pruned_proposals: Vec<BranchPrunedEvent>,
 }
 
@@ -119,9 +126,20 @@ impl SemilatticeResult {
         // Sort by score descending so ScoreOrdered merge gets the best proposal at index 0.
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+        let mut valid_proposals = Vec::new();
+        let mut failed_proposals = Vec::new();
+        for (proposal, score) in scored {
+            if score > 0.0 {
+                valid_proposals.push(proposal);
+            } else {
+                failed_proposals.push(proposal);
+            }
+        }
+
         Self {
             task_id,
-            valid_proposals: scored.into_iter().map(|(p, _)| p).collect(),
+            valid_proposals,
+            failed_proposals,
             pruned_proposals: pruned,
         }
     }
@@ -177,12 +195,21 @@ mod tests {
     }
 
     #[test]
-    fn insert_without_score_defaults_to_zero() {
+    fn insert_without_score_goes_to_failed_proposals() {
         let task_id = TaskId::new();
         let mut set = ProposalSet::new();
         set.insert(prop("unscored proposal"));
         let result = SemilatticeResult::compile(task_id, set, vec![]);
-        assert_eq!(result.valid_proposals.len(), 1);
+        assert_eq!(
+            result.valid_proposals.len(),
+            0,
+            "score=0.0 must not feed the merger"
+        );
+        assert_eq!(
+            result.failed_proposals.len(),
+            1,
+            "score=0.0 goes to failed_proposals"
+        );
     }
 
     fn prop_with_id(text: &str, id: ExplorerId) -> ProposalEvent {

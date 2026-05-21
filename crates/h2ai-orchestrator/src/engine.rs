@@ -886,6 +886,7 @@ impl ExecutionEngine {
                     timestamp: chrono::Utc::now(),
                     merge_elapsed_secs: None,
                     n_input_proposals: 0,
+                    n_failed_proposals: 0,
                 },
                 attribution,
                 attribution_interval: None,

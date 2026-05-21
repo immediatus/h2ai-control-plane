@@ -1,0 +1,145 @@
+id: CONSTRAINT-010
+title: "No Distributed Lock Held During External API Calls — Lock-Free Saga Coordination"
+severity: hard
+domains:
+  - distributed-systems
+  - concurrency
+  - saga-pattern
+related_to:
+  - CONSTRAINT-009  # saga state must be durable so locks are not needed for recovery
+  - CONSTRAINT-008  # broader no-lock-on-critical-path constraint
+remediation_hint: >
+  Release any room reservation hold BEFORE calling the external payment provider.
+  Use a TTL-based optimistic reservation (e.g. Redis key with 30s expiry) instead of a lock.
+  After payment succeeds, atomically re-acquire the reservation slot using a compare-and-set
+  with the original reservation nonce. Recovery after a crashed saga queries the payment
+  provider's idempotency endpoint — it NEVER replays the charge request.
+semantic:
+  exclusions:
+    - pattern: "distributed lock or SETNX advisory lock held during payment provider call"
+      passes: 3
+    - pattern: "replay original charge request to recover crashed saga"
+      passes: 3
+  requirements:
+    - concept: "TTL-based optimistic room hold released before external call"
+      passes: 3
+    - concept: "query payment provider idempotency endpoint for crash recovery"
+      passes: 3
+
+criteria:
+  pass: |
+    No distributed lock (Redis SETNX, Redlock, ZooKeeper, database advisory lock) is held
+    for the duration of the external payment API call. Room availability is managed via
+    a TTL-based optimistic hold that auto-expires if the saga stalls. Crash recovery
+    queries the payment provider's idempotency API to determine outcome — it never
+    re-submits the original charge.
+  partial: |
+    No lock is held during the payment call but crash recovery replays the charge
+    (risking double-charge), OR a lock is held but only for a bounded sub-millisecond window
+    within the saga (not for the full payment call duration).
+  fail: |
+    A distributed lock is acquired before or during the payment API call and released only
+    after the response, OR crash recovery re-submits the original charge request.
+  checks:
+    - Is any distributed lock released before the external payment API call begins?
+    - Does the room reservation use a TTL-based hold rather than an explicit lock?
+    - Does crash recovery query the payment provider's outcome API (not replay the charge)?
+    - Does the proposal address what happens if the optimistic TTL expires during a slow payment call?
+
+failure_modes:
+  - id: FM-010-1
+    trigger: "Redis SETNX lock held for 350ms payment API call"
+    consequence: |
+      Payment provider averages 200ms, P99 500ms. With 5,000 TPS and 80% targeting
+      20 hotels, each hotel sees ~200 concurrent sagas. Lock queue depth: 200 sagas × 350ms
+      average hold = lock contention causes P99 latency to spike above 10 seconds.
+      Under payment provider degradation (1s calls), lock TTL expires, releasing the lock
+      to the next waiter while the original holder is still waiting for the payment response.
+      Two sagas now attempt to charge the same room — one succeeds, one fails with a
+      double-booking.
+    correct_handling: |
+      Issue an optimistic TTL-based room hold: SET room:{hotel}:{room} {saga_id} NX EX 30.
+      Release it immediately (before calling the payment provider), not after. On payment
+      success, use a compare-and-set to confirm the room: SET room:{hotel}:{room} CONFIRMED
+      only if value == saga_id. If the room was re-assigned during the payment call (TTL
+      expired and another saga grabbed it), fail gracefully and compensate.
+  - id: FM-010-2
+    trigger: "Crashed saga recovery replays the charge request"
+    consequence: |
+      Node crashes mid-payment-call. Recovery assumes the call failed and re-submits the
+      charge with the same amount and card. Payment provider charges the guest twice.
+      Many providers accept the replay as a new charge (not idempotent by card+amount alone).
+    correct_handling: |
+      Before the payment call, store the payment provider's idempotency key in the durable
+      saga log. On recovery, call provider.query_status(idempotency_key) — if SUCCEEDED,
+      advance the saga to CONFIRMING without re-charging. If FAILED, compensate. If PENDING,
+      wait and poll. Never submit the charge a second time.
+  - id: FM-010-3
+    trigger: "Optimistic TTL expires during slow payment call"
+    consequence: |
+      Payment call takes 28 seconds (provider degraded). Room TTL expires at 30s. Another
+      saga grabs the room. First saga's payment succeeds at 28s — it attempts confirmation
+      but the room was given to a different saga. Two guests are confirmed in the same room.
+    correct_handling: |
+      Use a saga-id-scoped CAS for room confirmation. If confirmation fails (room nonce
+      doesn't match), the payment must be refunded immediately using the compensation
+      idempotency key. The compensation is part of the normal forward-path failure handling —
+      not a special crash-recovery path. Emit an audit event before issuing the refund.
+
+negative_examples:
+  - description: "SETNX lock held across payment provider call"
+    code: |
+      # WRONG — lock held for up to 500ms
+      lock_acquired = redis.setnx(f"lock:room:{hotel}:{room}", saga_id)
+      if not lock_acquired:
+          return Error("room unavailable")
+      try:
+          result = payment_provider.charge(card, amount, ttl=500_ms)
+          if result.ok:
+              confirm_room(hotel, room, saga_id)
+      finally:
+          redis.delete(f"lock:room:{hotel}:{room}")  # released AFTER call
+    why_wrong: |
+      Lock held for 200-500ms. Under 5,000 TPS with 80% on 20 hotels, lock queue
+      depth exceeds 100. P99 latency blows past 10s. Lock expiry during slow calls
+      creates double-booking race condition.
+  - description: "Crash recovery replays the charge"
+    code: |
+      # WRONG — recovery re-charges instead of querying outcome
+      def recover_saga(saga_id):
+          saga = load_saga(saga_id)
+          if saga.state == "PAYMENT_IN_FLIGHT":
+              # Re-submit charge — risky!
+              result = payment_provider.charge(saga.card, saga.amount)
+    why_wrong: |
+      Provider may have already succeeded. Re-submitting charges the guest twice.
+      No payment provider is idempotent on (card, amount) alone.
+
+positive_examples:
+  - description: "TTL-based optimistic hold, released before payment call"
+    code: |
+      # CORRECT — optimistic hold, no lock during call
+      # 1. Reserve room with TTL (30s window for the saga)
+      held = redis.set(f"room:{hotel}:{room}", saga_id, nx=True, ex=30)
+      if not held:
+          return Error("room unavailable")
+
+      # 2. Write saga state BEFORE calling provider
+      redis.hset(f"saga:{saga_id}", {"state": "PAYMENT_IN_FLIGHT",
+                                      "idem": f"saga:{saga_id}:step2:fwd",
+                                      "room_nonce": saga_id})
+
+      # 3. Release the explicit hold — rely on CAS at confirmation instead
+      redis.delete(f"room:{hotel}:{room}")   # ← released BEFORE call
+
+      # 4. Call provider (no lock held)
+      result = payment_provider.charge(card, amount, idempotency_key=f"saga:{saga_id}:step2:fwd")
+
+      if result.ok:
+          # 5. Confirm via CAS — fails if room was re-assigned during call
+          confirmed = redis.set(f"room:{hotel}:{room}", "CONFIRMED",
+                                xx=True, get=True)  # only if key still held by us
+    why_correct: |
+      No lock held during the provider call. Room is confirmed via CAS — if it was
+      re-assigned during a slow call, confirmation fails and payment is refunded using
+      the compensation key. Recovery queries provider.query_status(), never re-charges.

@@ -34,11 +34,11 @@ fn make_resolver() -> ConstraintResolver {
 fn corpus_loads_all_yaml_constraints() {
     let (store, _) = load_corpus();
     let docs = store.all_docs_sorted();
-    // 8 original ads-platform constraints + 4 CACHE constraints added for agent-comparison experiment
+    // 8 original ads-platform constraints + 4 CACHE constraints + 3 saga constraints (C-009/C-010/C-011)
     assert_eq!(
         docs.len(),
-        12,
-        "ads-platform corpus must contain exactly 12 constraints; got {}: {:?}",
+        15,
+        "ads-platform corpus must contain exactly 15 constraints; got {}: {:?}",
         docs.len(),
         docs.iter().map(|d| &d.id).collect::<Vec<_>>()
     );
@@ -623,5 +623,114 @@ fn constraint_008_has_exclusion_and_requirement_semantic_gates() {
         );
     } else {
         panic!("CONSTRAINT-008 must be Composite");
+    }
+}
+
+#[test]
+fn constraint_009_has_exclusion_requirement_and_ordering_gates() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    let (store, _) = load_corpus();
+    let doc = store
+        .all_docs_sorted()
+        .into_iter()
+        .find(|d| d.id == "CONSTRAINT-009")
+        .expect("CONSTRAINT-009 must exist");
+    if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+        let exclusions = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticExclusion { .. }))
+            .count();
+        let requirements = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticPresence { .. }))
+            .count();
+        let orderings = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticOrdering { .. }))
+            .count();
+        assert!(
+            exclusions >= 2,
+            "CONSTRAINT-009 must have ≥2 SemanticExclusion gates"
+        );
+        assert!(
+            requirements >= 2,
+            "CONSTRAINT-009 must have ≥2 SemanticPresence gates"
+        );
+        assert!(
+            orderings >= 1,
+            "CONSTRAINT-009 must have ≥1 SemanticOrdering gate"
+        );
+    } else {
+        panic!("CONSTRAINT-009 must be Composite");
+    }
+}
+
+#[test]
+fn constraint_010_has_exclusion_and_requirement_semantic_gates() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    let (store, _) = load_corpus();
+    let doc = store
+        .all_docs_sorted()
+        .into_iter()
+        .find(|d| d.id == "CONSTRAINT-010")
+        .expect("CONSTRAINT-010 must exist");
+    if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+        let exclusions = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticExclusion { .. }))
+            .count();
+        let requirements = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticPresence { .. }))
+            .count();
+        assert!(
+            exclusions >= 2,
+            "CONSTRAINT-010 must have ≥2 SemanticExclusion gates"
+        );
+        assert!(
+            requirements >= 2,
+            "CONSTRAINT-010 must have ≥2 SemanticPresence gates"
+        );
+    } else {
+        panic!("CONSTRAINT-010 must be Composite");
+    }
+}
+
+#[test]
+fn constraint_011_has_exclusion_requirement_and_ordering_gates() {
+    use h2ai_constraints::types::ConstraintPredicate;
+    let (store, _) = load_corpus();
+    let doc = store
+        .all_docs_sorted()
+        .into_iter()
+        .find(|d| d.id == "CONSTRAINT-011")
+        .expect("CONSTRAINT-011 must exist");
+    if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
+        let exclusions = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticExclusion { .. }))
+            .count();
+        let requirements = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticPresence { .. }))
+            .count();
+        let orderings = children
+            .iter()
+            .filter(|c| matches!(c, ConstraintPredicate::SemanticOrdering { .. }))
+            .count();
+        assert!(
+            exclusions >= 2,
+            "CONSTRAINT-011 must have ≥2 SemanticExclusion gates"
+        );
+        assert!(
+            requirements >= 2,
+            "CONSTRAINT-011 must have ≥2 SemanticPresence gates"
+        );
+        assert!(
+            orderings >= 1,
+            "CONSTRAINT-011 must have ≥1 SemanticOrdering gate"
+        );
+    } else {
+        panic!("CONSTRAINT-011 must be Composite");
     }
 }

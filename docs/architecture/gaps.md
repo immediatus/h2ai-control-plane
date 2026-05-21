@@ -36,6 +36,7 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🔴 OPEN | **High** | Multi-family committee enforcement on ModeCollapse retry; structural pre-generation family diversity gate |
 
 | **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🔴 OPEN | Medium | Hierarchical tournament merge; bounded context |
+| **GAP-D8 Synthesis contamination — failing proposals corrupt merged output** | 🔴 OPEN | **High** | Score-aware merge: pass failing proposals as "avoid" context not synthesis input |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
@@ -738,6 +739,90 @@ position) to exploit the attention recency effect.
 
 ---
 
+### GAP-D8: Synthesis Contamination — Failing Proposals Corrupt Merged Output 🔴 OPEN — High
+
+**Gap statement.**
+`SemilatticeResult::compile` passes ALL non-pruned proposals to `valid_proposals` regardless
+of their verification score, and strips the score before the merger receives them:
+
+```rust
+// semilattice.rs:124 — score dropped here
+valid_proposals: scored.into_iter().map(|(p, _)| p).collect(),
+```
+
+When the majority of explorer proposals fail verification (score = 0.0) — the normal outcome
+for hard tasks where semantic constraint gates correctly filter out constraint-violating proposals —
+the merger receives and synthesizes ALL of them symmetrically. Text from failing proposals
+(e.g., a proposal that routes audit events to CockroachDB instead of Kafka) bleeds into
+the merged output alongside text from the single passing proposal (Kafka path). The result
+is an internally contradictory merged output that is **worse quality than the best passing
+proposal alone**.
+
+**Empirical evidence.**
+Observed across 4 benchmark runs (2026-05-20):
+- avg_score = 0.167 (1/6 passing) and 0.333 (1/3 passing)
+- Merged output simultaneously contained "fire-and-forget" (from score=0.0 proposal) and
+  "acks=all" (from score=1.0 proposal) for Kafka publishing semantics
+- `CoherenceIncomplete` event fired on both runs — synthesis could not reconcile the contradictions
+- C-005/1 content check ("publishes to Kafka") returned MISSING even though the passing
+  proposal's Kafka pattern was clearly present — judge confused by contradictory text
+
+**Root cause location.**
+- `crates/h2ai-state/src/semilattice.rs` — `SemilatticeResult::compile` strips scores
+- `crates/h2ai-autonomic/src/merger.rs` — merger receives proposals without scores, cannot
+  differentiate passing from failing
+
+**Why this is distinct from GAP-D5.**
+GAP-D5 addresses merge *architecture* (tournament vs. one-shot, context size).
+GAP-D8 is about *what enters the merge* — the pre-merge filtering contract.
+Fixing GAP-D5 (hierarchical tournament) would not help: a tournament among proposals that
+includes score=0.0 candidates still propagates contradictory text in every round.
+
+**Proposed solution — score-stratified merge.**
+
+Split `SemilatticeResult::compile` by verification score threshold (default: score > 0.0):
+
+```rust
+pub struct SemilatticeResult {
+    pub task_id: TaskId,
+    /// Proposals that passed verification (score > pass_threshold), sorted score descending.
+    pub valid_proposals: Vec<ProposalEvent>,
+    /// Proposals that failed verification (score ≤ pass_threshold).
+    /// Passed to the merger as "avoid" context, not synthesis input.
+    pub failed_proposals: Vec<ProposalEvent>,
+    /// Proposals whose explorer branch was pruned by the auditor.
+    pub pruned_proposals: Vec<BranchPrunedEvent>,
+}
+```
+
+**Merger synthesis prompt modification:**
+```
+## Synthesis inputs (verified compliant — use as primary material)
+<passing proposals>
+
+## Anti-patterns to avoid (failed verification — do NOT incorporate these patterns)
+<failing proposals, each prefaced with which constraint it violated>
+```
+
+**Edge case — all proposals score 0.0:** Fall back to `valid_proposals = all proposals`
+(current behavior) so the merge always produces output. Log a `AllProposalsFailedVerification`
+event to signal degraded mode.
+
+**Interaction with GAP-D5.** The two fixes are composable: stratified merge first, then
+tournament merge within the passing stratum. The tournament fix is still valuable (handles
+long contexts when N passing proposals > 3); stratified split is necessary regardless.
+
+**Effort estimate.** Medium: 2–3 days.
+- `semilattice.rs`: add `failed_proposals` field; split in `compile()`
+- `merger.rs`: thread `failed_proposals` into the synthesis prompt as avoidance context
+- `pipeline.rs`: propagate `failed_proposals` through `AuditOut` → `SemilatticeResult`
+- Tests: unit test for stratified split; integration test confirming failing proposal text
+  does not appear in merged output when passing proposals exist
+
+**Closes:** Synthesis contamination finding from 2026-05-20 benchmark analysis.
+
+---
+
 ### GAP-D2: Compound Task Cost Is Unconstrained 🔴 OPEN — Low
 
 A `CompoundTaskEngine` DAG fires a full wave for each subtask with no pre-execution cost estimate
@@ -931,6 +1016,7 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 | GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
 | GAP-A2 USL quality curve experiment | High | 2 weeks | Shared task set | Session 2 |
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
+| **GAP-D8 Synthesis contamination** | **High** | **2–3 days** | **None** | **Week 2** |
 | GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
 | **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
 | **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |

@@ -1,0 +1,157 @@
+id: CONSTRAINT-011
+title: "Write-Ahead Audit — Compensation Records Must Precede State Mutation"
+severity: hard
+domains:
+  - audit
+  - saga-pattern
+  - compliance
+related_to:
+  - CONSTRAINT-009  # durable saga state enables write-ahead ordering
+  - CONSTRAINT-005  # audit must reach Kafka even under backend failure
+remediation_hint: >
+  Before executing any compensation mutation (releasing a room, issuing a refund, rolling back
+  a reservation), write the audit record to the durable audit log first. Use a two-phase
+  approach: (1) write audit entry to local WAL or Kafka with status=COMPENSATION_INITIATED,
+  (2) execute the mutation, (3) update audit entry to COMPENSATION_COMPLETE. If the node
+  crashes between steps 1 and 2, the audit record is present and recovery can determine
+  the mutation did not complete. If the node crashes between steps 2 and 3, the compensation
+  is idempotent and can be safely re-applied; the audit entry status is updated on retry.
+  Never write the audit entry AFTER the mutation completes.
+semantic:
+  exclusions:
+    - pattern: "audit entry written after compensation completes"
+      passes: 3
+    - pattern: "compensation executes before audit log entry exists"
+      passes: 3
+  requirements:
+    - concept: "write audit record before executing compensation mutation"
+      passes: 3
+    - concept: "two-phase audit status: initiated then complete"
+      passes: 3
+  orderings:
+    - first: "write audit entry"
+      then: "execute compensation mutation"
+      passes: 3
+
+criteria:
+  pass: |
+    An audit record with status COMPENSATION_INITIATED is written to durable audit storage
+    BEFORE the compensation mutation executes. After the mutation completes, the audit record
+    is updated to COMPENSATION_COMPLETE (or a second record is appended). The ordering
+    guarantee means a crash at any point leaves either: (a) an audit record with no mutation,
+    or (b) both the mutation and the audit record present.
+  partial: |
+    The audit record is written in the same atomic transaction as the compensation mutation,
+    but there is no clear first/second ordering — the atomicity provides correctness but
+    the write-ahead ordering is not explicitly described.
+  fail: |
+    The audit record is written only after the compensation mutation succeeds, creating a
+    window where the mutation happened but no audit record exists. If the node crashes after
+    the mutation but before the audit write, the compensation is invisible to the audit trail.
+  checks:
+    - Is the audit record for compensation written BEFORE the compensation mutation executes?
+    - Does the proposal use a two-phase audit status (initiated → complete) or an equivalent write-ahead log pattern?
+    - Does the proposal guarantee that a crash between the audit write and the mutation leaves the system in an auditable and recoverable state?
+    - Does the audit record for compensation include the saga_id, step, direction, and timestamp so it can be correlated with the forward operation's audit record?
+
+failure_modes:
+  - id: FM-011-1
+    trigger: "Node crash after compensation but before audit write"
+    consequence: |
+      Saga step 2 (payment) fails. Compensation releases the room reservation. Node
+      crashes before writing the audit entry. Audit trail shows the reservation was
+      never compensated — finance audit sees a confirmed reservation with no matching
+      charge record, and no compensation record. Compliance team cannot reconcile the
+      state.
+    correct_handling: |
+      Write audit entry {saga_id, step: 2, direction: compensate, status: INITIATED}
+      to the audit log BEFORE releasing the room. Even if the node crashes immediately
+      after, the audit trail has a compensation record. Recovery retries the room release
+      (idempotent) and updates the audit entry to COMPLETED.
+  - id: FM-011-2
+    trigger: "Audit written at end of saga (batch mode)"
+    consequence: |
+      Engineering team decides to batch all saga audit writes at the end of the saga
+      for efficiency. A saga gets to step 3, the confirmation crashes. The compensation
+      runs (room released, card refunded) but the audit write at the end never executes.
+      All intermediary saga events are invisible to the audit trail — the saga simply
+      disappears from the compliance log.
+    correct_handling: |
+      Each saga transition (forward and compensating) writes its own audit entry
+      immediately — not batched. Use a local WAL queue if the audit backend is
+      temporarily unavailable (see CONSTRAINT-005 pattern). Never defer audit writes
+      to the end of a multi-step saga.
+  - id: FM-011-3
+    trigger: "Audit record missing saga correlation fields"
+    consequence: |
+      Compensation audit record contains only {timestamp, action: 'room_released'} without
+      the saga_id, step index, or direction. Finance audit cannot correlate the compensation
+      with the original booking attempt — cannot determine whether the release was intentional
+      (failed payment) or erroneous (software bug). Compliance gap: cannot reconstruct the
+      full saga history for a disputed transaction.
+    correct_handling: |
+      Audit record schema: {saga_id, step_index, direction: 'compensate'|'forward',
+      status: 'initiated'|'complete', idempotency_key, payload_hash, timestamp_ms}.
+      The idempotency_key field allows cross-referencing with the payment provider's
+      own audit log.
+
+negative_examples:
+  - description: "Audit written after compensation completes"
+    code: |
+      # WRONG — audit after mutation
+      def compensate_room_release(saga_id, hotel, room):
+          redis.delete(f"room:{hotel}:{room}")   # ← mutation first
+          kafka.produce("saga-audit", {          # ← audit after (crash window!)
+              "saga_id": saga_id,
+              "action": "room_released",
+              "ts": now()
+          })
+    why_wrong: |
+      If the node crashes between the redis.delete and kafka.produce, the room was
+      released but no audit record exists. Finance audit sees a vanished reservation.
+  - description: "No compensation audit — only forward events logged"
+    code: |
+      # WRONG — compensations are silent
+      def process_saga(saga):
+          log_audit("room_reserved", saga.id)
+          result = payment_provider.charge(...)
+          if not result.ok:
+              release_room(saga)   # ← no audit entry for this
+    why_wrong: |
+      Compensation is invisible to the audit trail. Compliance reports cannot distinguish
+      intentional cancellations from bugs or fraud.
+
+positive_examples:
+  - description: "Write-ahead audit with two-phase status"
+    code: |
+      # CORRECT — audit before mutation, two-phase status
+      def compensate_room_release(saga_id, hotel, room, idem_key):
+          # Phase 1: write audit BEFORE mutation
+          audit_entry = {
+              "saga_id": saga_id,
+              "step": 2,
+              "direction": "compensate",
+              "status": "INITIATED",
+              "idempotency_key": idem_key,
+              "ts_ms": hlc_now(),
+          }
+          try:
+              kafka.produce("saga-audit", audit_entry, timeout_ms=50)
+          except KafkaException:
+              local_wal.append(audit_entry)   # durable fallback (CONSTRAINT-005 pattern)
+
+          # Phase 2: execute mutation (idempotent, safe to retry)
+          released = redis.delete(f"room:{hotel}:{room}")
+
+          # Phase 3: update audit status
+          audit_entry["status"] = "COMPLETE"
+          audit_entry["released"] = bool(released)
+          try:
+              kafka.produce("saga-audit", audit_entry, timeout_ms=50)
+          except KafkaException:
+              local_wal.append(audit_entry)
+    why_correct: |
+      Crash after Phase 1 but before Phase 2: audit record present with INITIATED status.
+      Recovery retries compensation (idempotent) and updates to COMPLETE. No audit gap.
+      Crash after Phase 2 but before Phase 3: mutation complete, audit shows INITIATED.
+      Recovery updates to COMPLETE — compensation is detectable and traceable.

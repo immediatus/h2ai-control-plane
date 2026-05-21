@@ -1,0 +1,129 @@
+id: CONSTRAINT-009
+title: "Saga State Durability — Crash-Safe Transitions with Compensation-Distinct Idempotency"
+severity: hard
+domains:
+  - distributed-systems
+  - saga-pattern
+  - idempotency
+related_to:
+  - CONSTRAINT-010  # saga recovery must not re-acquire locks
+  - CONSTRAINT-011  # audit must be written before compensation state change
+remediation_hint: >
+  Persist saga state to durable external storage (Redis HASH, RDBMS, or append-only log) BEFORE
+  executing each transition. Use a composite idempotency key: (saga_id, step_index, direction) where
+  direction is 'fwd' or 'cmp' — this guarantees compensation and forward operations can never collide
+  even under repeated retries. Never use request_id alone as the compensation idempotency key.
+semantic:
+  exclusions:
+    - pattern: "in-memory saga state or process-local saga context"
+      passes: 3
+    - pattern: "same idempotency key for compensation as for the forward charge"
+      passes: 3
+  requirements:
+    - concept: "durable saga log persisted before each state transition"
+      passes: 3
+    - concept: "compensation idempotency key distinct from forward operation key"
+      passes: 3
+  orderings:
+    - first: "persist saga state"
+      then: "execute transition"
+      passes: 3
+
+criteria:
+  pass: |
+    Saga state is written to durable storage before each transition (write-ahead approach).
+    Compensation uses a distinct idempotency key namespace (e.g. saga_id + step + 'compensate')
+    that cannot collide with the forward operation key. The system can reconstruct full saga state
+    from durable storage after a crash.
+  partial: |
+    Saga state is durably stored but compensation and forward operations share the same idempotency
+    key, or saga state is written after the transition (not before), creating a crash window.
+  fail: |
+    Saga state exists only in process memory, OR compensation uses the same idempotency key as
+    the forward operation (allowing compensation-as-forward-charge confusion), OR no idempotency
+    mechanism exists for compensation.
+  checks:
+    - Is saga state written to durable storage BEFORE each state transition, not after?
+    - Does the compensation idempotency key include a direction or step suffix to prevent collision with the forward key?
+    - Can the saga be fully reconstructed from durable storage after a node crash at any point?
+    - Does the proposal specify the TTL or expiry policy for saga state records?
+
+failure_modes:
+  - id: FM-009-1
+    trigger: "Node crash between payment success and saga state update"
+    consequence: |
+      Payment provider charged the guest. Node crashes before marking saga as CHARGED.
+      On recovery, a new node re-executes step 2 (charges again) because saga appears to be in
+      RESERVING state. Without compensation-distinct idempotency keys, the second charge goes through.
+    correct_handling: |
+      Before calling the payment provider, write saga state to durable storage:
+      saga_id → {state: PAYMENT_IN_FLIGHT, payment_ref: <nonce>}. On recovery, query
+      the payment provider using the nonce to determine actual outcome. If CHARGED, advance
+      to CONFIRMING without re-charging. The payment_ref nonce is the forward idempotency key.
+  - id: FM-009-2
+    trigger: "Compensation retry re-executes forward charge"
+    consequence: |
+      Compensation uses the same key as the forward operation: idem:{saga_id}. First compensation
+      attempt writes idem:{saga_id} = 'released'. Second attempt (after crash) finds the key
+      exists and returns 'released'. But a third request with the same saga_id (a new forward
+      attempt) also uses idem:{saga_id} — it finds 'released' and treats it as a prior success,
+      skipping the actual charge. Guest gets the room without being charged.
+    correct_handling: |
+      Compensation key: idem:{saga_id}:step2:cmp. Forward key: idem:{saga_id}:step2:fwd.
+      These keys are disjoint — compensation can never satisfy a forward idempotency check.
+  - id: FM-009-3
+    trigger: "Saga state written after transition (not before)"
+    consequence: |
+      Step 2 calls the payment provider. Payment succeeds. Node crashes before writing
+      saga state. Recovery node cannot know payment succeeded — it re-executes step 2.
+      Payment provider receives a second charge. Even with idempotency keys, if the original
+      forward key was never durably stored, recovery cannot look it up.
+    correct_handling: |
+      Write saga_id → {state: PAYMENT_IN_FLIGHT, idempotency_key: K} to durable storage
+      BEFORE calling the payment provider. If crash occurs after write but before call:
+      recovery finds PAYMENT_IN_FLIGHT and queries provider with K to confirm outcome.
+
+negative_examples:
+  - description: "In-memory saga state with shared idempotency key"
+    code: |
+      # WRONG — state in memory, shared idem key
+      class SagaContext:
+          def __init__(self, saga_id):
+              self.saga_id = saga_id
+              self.state = "PENDING"   # ← in process memory, lost on crash
+              self.idem_key = saga_id  # ← shared between forward and compensation
+
+      ctx.state = "CHARGING"
+      payment = provider.charge(ctx.idem_key, amount)  # forward
+      # Crash here → recovery re-charges (idem_key already consumed by forward)
+      if payment.failed:
+          provider.refund(ctx.idem_key, amount)  # ← WRONG: same key, provider returns
+          # the cached "charge succeeded" response from the forward call
+    why_wrong: |
+      In-memory state is lost on crash. Shared idem_key means compensation query
+      returns the forward operation's cached result — compensation becomes a no-op.
+
+positive_examples:
+  - description: "Durable saga log with direction-scoped idempotency keys"
+    code: |
+      # CORRECT — durable state, distinct keys
+      forward_idem_key = f"saga:{saga_id}:step2:fwd"
+      compensate_idem_key = f"saga:{saga_id}:step2:cmp"
+
+      # Write-ahead: persist before calling provider
+      redis.hset(f"saga:{saga_id}", mapping={
+          "state": "PAYMENT_IN_FLIGHT",
+          "forward_key": forward_idem_key,
+          "amount": amount,
+      })
+
+      result = provider.charge(forward_idem_key, amount)  # idempotent forward
+
+      if result.failed:
+          # Write compensation intent before executing
+          redis.hset(f"saga:{saga_id}", "state", "COMPENSATING")
+          provider.refund(compensate_idem_key, amount)    # idempotent compensation
+    why_correct: |
+      State is durable before each call. forward_key and compensate_idem_key are
+      distinct — retrying compensation cannot shadow a forward operation result.
+      Recovery reads redis HASH to determine current state and which keys to query.

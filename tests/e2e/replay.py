@@ -597,7 +597,7 @@ def _eval_checks_against_output(output: str, checks: list[dict], scenario_name: 
         prompt = (
             f"Does the following ANSWER satisfy the CHECK?\n\n"
             f"CHECK: {check['text']}\n\n"
-            f"ANSWER:\n{output[:8000]}\n\n"
+            f"ANSWER:\n{output[:16000]}\n\n"
             f"Respond with exactly one word on its own line: PRESENT (if the answer clearly satisfies the check) or MISSING (if it does not)."
         )
         resp = _llm_call(endpoint, model, [{"role": "user", "content": prompt}], max_tokens=JUDGE_MAX_TOKENS)
