@@ -13,7 +13,7 @@ pub struct TaskCheckpointEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "data")]
 pub enum CheckpointKind {
     Base(Box<TaskCheckpoint>),
     Delta(Vec<json_patch::PatchOperation>),

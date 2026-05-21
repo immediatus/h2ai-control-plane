@@ -28,7 +28,7 @@ pub struct PromptBanditArm {
     pub beta: f64,  // Beta distribution beta (failures + prior)
 }
 
-/// Per-adapter OPRO state, stored in NATS under {adapter_name}/_opro_state.
+/// Per-adapter OPRO state, stored in NATS under {`adapter_name`}/_`opro_state`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterOproState {
     pub adapter_name: String,
@@ -37,6 +37,6 @@ pub struct AdapterOproState {
     pub n_tasks_since_last_opro: u32,
     pub last_opro_started_at: Option<DateTime<Utc>>,
     pub suppress_until_n_tasks: u32,
-    /// Bandit arms per prompt_key: each key maps to a list of arms (one per variant)
+    /// Bandit arms per `prompt_key`: each key maps to a list of arms (one per variant)
     pub bandit_arms: HashMap<String, Vec<PromptBanditArm>>,
 }

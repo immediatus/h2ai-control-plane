@@ -8,7 +8,7 @@ pub mod web_search;
 use async_trait::async_trait;
 
 /// Describes a tool's interface for injection into LLM prompts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSchema {
     pub name: &'static str,
     pub description: &'static str,

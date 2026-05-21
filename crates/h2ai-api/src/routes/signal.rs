@@ -15,7 +15,7 @@ use serde::Deserialize;
 /// concrete `Deserialize` impl that Axum's `Json` extractor can use directly.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", content = "data")]
-pub(crate) enum SignalPayloadDto {
+pub enum SignalPayloadDto {
     WaveContinue(h2ai_types::signal::WaveContinueSignal),
     Approve(ApproveSignal),
     #[serde(other)]
@@ -25,9 +25,9 @@ pub(crate) enum SignalPayloadDto {
 impl From<SignalPayloadDto> for SignalPayload {
     fn from(dto: SignalPayloadDto) -> Self {
         match dto {
-            SignalPayloadDto::WaveContinue(w) => SignalPayload::WaveContinue(w),
-            SignalPayloadDto::Approve(a) => SignalPayload::Approve(a),
-            SignalPayloadDto::Unknown => SignalPayload::Unknown,
+            SignalPayloadDto::WaveContinue(w) => Self::WaveContinue(w),
+            SignalPayloadDto::Approve(a) => Self::Approve(a),
+            SignalPayloadDto::Unknown => Self::Unknown,
         }
     }
 }
@@ -41,7 +41,7 @@ pub struct SignalRequest {
 /// `POST /tenants/{tenant_id}/tasks/{task_id}/signal`
 ///
 /// Inject an external signal into a running task. Returns 202 immediately after
-/// JetStream publish — does not wait for engine acknowledgement.
+/// `JetStream` publish — does not wait for engine acknowledgement.
 pub async fn submit_signal(
     Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -94,11 +94,11 @@ pub async fn submit_signal(
         issued_at_ms: now_ms,
     };
 
-    state
-        .nats
-        .publish_signal(&signal)
-        .await
-        .map_err(|e| ApiError::NatsUnavailable(e.to_string()))?;
+    if let Some(nats) = &state.nats {
+        nats.publish_signal(&signal)
+            .await
+            .map_err(|e| ApiError::NatsUnavailable(e.to_string()))?;
+    }
 
     Ok((
         StatusCode::ACCEPTED,

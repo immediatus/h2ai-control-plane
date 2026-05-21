@@ -15,9 +15,9 @@ fn cfg() -> H2AIConfig {
 }
 
 /// Scripted 3-tool traversal:
-/// 1. LLM emits web_search call
-/// 2. LLM emits file_system read_file call
-/// 3. LLM emits code_execution javascript call
+/// 1. LLM emits `web_search` call
+/// 2. LLM emits `file_system` `read_file` call
+/// 3. LLM emits `code_execution` javascript call
 /// 4. LLM emits final answer
 #[tokio::test]
 async fn tao_agent_traverses_three_tools_and_produces_final_answer() {
@@ -48,7 +48,7 @@ async fn tao_agent_traverses_three_tools_and_produces_final_answer() {
     let result = TaoAgent::new(&adapter as &dyn IComputeAdapter, registry, &cfg())
         .run(TaoAgentInput {
             instructions: "Find the default value of agent_max_tool_iterations, confirm it in the config file, then compute its square.".into(),
-            system_context: "".into(),
+            system_context: String::new(),
             tau: TauValue::new(0.5).unwrap(),
             max_tokens: 256,
         })
@@ -77,7 +77,7 @@ async fn tao_agent_traverses_three_tools_and_produces_final_answer() {
     );
 
     assert!(
-        result.tool_calls[0].output.contains("5"),
+        result.tool_calls[0].output.contains('5'),
         "web_search observation must mention the default value; got: {:?}",
         result.tool_calls[0].output
     );

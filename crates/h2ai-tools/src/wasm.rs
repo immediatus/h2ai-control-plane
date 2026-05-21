@@ -40,6 +40,12 @@ pub struct RealWasmBackend {
 
 #[cfg(feature = "wasm")]
 impl RealWasmBackend {
+    /// Load a WASM module from a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolError::InitializationFailed` if the file cannot be read, the
+    /// Wasmtime engine cannot be configured, or the module cannot be compiled.
     pub fn from_file(path: &str, fuel_budget: u64) -> Result<Self, ToolError> {
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| ToolError::InitializationFailed(format!("cannot read {path}: {e}")))?;
@@ -91,12 +97,14 @@ impl WasmBackend for RealWasmBackend {
             .map_err(|_| ToolError::InitializationFailed("missing 'dealloc' export".into()))?;
 
         let script_bytes = script.as_bytes();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let len = script_bytes.len() as i32;
 
         let ptr = alloc
             .call(&mut store, len)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
+        #[allow(clippy::cast_sign_loss)]
         memory
             .data_mut(&mut store)
             .get_mut(ptr as usize..ptr as usize + script_bytes.len())
@@ -115,12 +123,12 @@ impl WasmBackend for RealWasmBackend {
         })?;
 
         let data = memory.data(&store);
+        #[allow(clippy::cast_sign_loss)]
         let start = res_ptr as usize;
         let end = data[start..]
             .iter()
             .position(|&b| b == 0)
-            .map(|p| start + p)
-            .unwrap_or(data.len());
+            .map_or(data.len(), |p| start + p);
         let result = String::from_utf8_lossy(&data[start..end]).into_owned();
 
         let _ = dealloc.call(&mut store, (ptr, len));
@@ -136,6 +144,7 @@ pub struct WasmExecutor {
 }
 
 impl WasmExecutor {
+    #[must_use]
     pub fn new(backend: Box<dyn WasmBackend>) -> Self {
         Self { backend }
     }

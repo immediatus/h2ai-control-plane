@@ -1,3 +1,56 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 use chrono::Utc;
 use h2ai_state::semilattice::{ProposalSet, SemilatticeResult};
 use h2ai_types::config::AdapterKind;
@@ -41,10 +94,10 @@ fn pruned(explorer_id: ExplorerId, task_id: TaskId) -> BranchPrunedEvent {
 fn join_is_idempotent() {
     let tid = TaskId::new();
     let eid = ExplorerId::new();
-    let p = proposal(eid.clone(), tid.clone(), "out");
+    let p = proposal(eid, tid, "out");
     let mut set = ProposalSet::new();
     set.insert(p.clone());
-    set.insert(p.clone());
+    set.insert(p);
     assert_eq!(set.len(), 1);
 }
 
@@ -53,16 +106,16 @@ fn join_is_commutative() {
     let tid = TaskId::new();
     let e1 = ExplorerId::new();
     let e2 = ExplorerId::new();
-    let p1 = proposal(e1.clone(), tid.clone(), "out1");
-    let p2 = proposal(e2.clone(), tid.clone(), "out2");
+    let p1 = proposal(e1, tid.clone(), "out1");
+    let p2 = proposal(e2, tid, "out2");
 
     let mut set_ab = ProposalSet::new();
     set_ab.insert(p1.clone());
     set_ab.insert(p2.clone());
 
     let mut set_ba = ProposalSet::new();
-    set_ba.insert(p2.clone());
-    set_ba.insert(p1.clone());
+    set_ba.insert(p2);
+    set_ba.insert(p1);
 
     assert_eq!(set_ab.len(), set_ba.len());
 }
@@ -73,7 +126,7 @@ fn join_includes_all_distinct_explorers() {
     let mut set = ProposalSet::new();
     set.insert(proposal(ExplorerId::new(), tid.clone(), "a"));
     set.insert(proposal(ExplorerId::new(), tid.clone(), "b"));
-    set.insert(proposal(ExplorerId::new(), tid.clone(), "c"));
+    set.insert(proposal(ExplorerId::new(), tid, "c"));
     assert_eq!(set.len(), 3);
 }
 
@@ -83,14 +136,23 @@ fn semilattice_result_valid_proposals_excludes_pruned() {
     let e1 = ExplorerId::new();
     let e2 = ExplorerId::new();
     let mut proposals = ProposalSet::new();
-    proposals.insert_scored(proposal(e1.clone(), tid.clone(), "out1"), 0.8);
+    proposals.insert_scored(proposal(e1, tid.clone(), "out1"), 0.8);
     proposals.insert_scored(proposal(e2.clone(), tid.clone(), "out2"), 0.6);
 
-    let pruned_list = vec![pruned(e2.clone(), tid.clone())];
-    let result = SemilatticeResult::compile(tid.clone(), proposals, pruned_list);
+    let pruned_list = vec![pruned(e2, tid.clone())];
+    let result = SemilatticeResult::compile(tid, proposals, pruned_list);
 
     assert_eq!(result.valid_proposals.len(), 1);
     assert_eq!(result.pruned_proposals.len(), 1);
+    assert_eq!(
+        result.valid_proposal_scores.len(),
+        result.valid_proposals.len(),
+        "scores must be parallel to valid_proposals"
+    );
+    assert!(
+        result.valid_proposal_scores.iter().all(|&s| s > 0.0),
+        "all valid scores must be > 0.0"
+    );
 }
 
 #[test]
@@ -100,10 +162,14 @@ fn semilattice_result_empty_when_all_pruned() {
     let mut proposals = ProposalSet::new();
     proposals.insert_scored(proposal(e1.clone(), tid.clone(), "out1"), 0.9);
 
-    let pruned_list = vec![pruned(e1.clone(), tid.clone())];
-    let result = SemilatticeResult::compile(tid.clone(), proposals, pruned_list);
+    let pruned_list = vec![pruned(e1, tid.clone())];
+    let result = SemilatticeResult::compile(tid, proposals, pruned_list);
 
     assert!(result.valid_proposals.is_empty());
+    assert!(
+        result.valid_proposal_scores.is_empty(),
+        "no valid proposals → no scores"
+    );
     assert_eq!(result.pruned_proposals.len(), 1);
 }
 
@@ -113,10 +179,10 @@ fn semilattice_result_zero_score_goes_to_failed_not_valid() {
     let e1 = ExplorerId::new();
     let e2 = ExplorerId::new();
     let mut proposals = ProposalSet::new();
-    proposals.insert_scored(proposal(e1.clone(), tid.clone(), "passing"), 0.8);
-    proposals.insert_scored(proposal(e2.clone(), tid.clone(), "failing"), 0.0);
+    proposals.insert_scored(proposal(e1, tid.clone(), "passing"), 0.8);
+    proposals.insert_scored(proposal(e2, tid.clone(), "failing"), 0.0);
 
-    let result = SemilatticeResult::compile(tid.clone(), proposals, vec![]);
+    let result = SemilatticeResult::compile(tid, proposals, vec![]);
 
     assert_eq!(
         result.valid_proposals.len(),
@@ -130,6 +196,15 @@ fn semilattice_result_zero_score_goes_to_failed_not_valid() {
     );
     assert_eq!(result.valid_proposals[0].raw_output, "passing");
     assert_eq!(result.failed_proposals[0].raw_output, "failing");
+    assert_eq!(
+        result.valid_proposal_scores.len(),
+        result.valid_proposals.len(),
+        "scores must be parallel to valid_proposals"
+    );
+    assert!(
+        (result.valid_proposal_scores[0] - 0.8).abs() < 1e-9,
+        "valid score for 'passing' must be 0.8"
+    );
 }
 
 #[test]
@@ -139,11 +214,15 @@ fn semilattice_result_all_zero_score_yields_empty_valid() {
     proposals.insert_scored(proposal(ExplorerId::new(), tid.clone(), "fail1"), 0.0);
     proposals.insert_scored(proposal(ExplorerId::new(), tid.clone(), "fail2"), 0.0);
 
-    let result = SemilatticeResult::compile(tid.clone(), proposals, vec![]);
+    let result = SemilatticeResult::compile(tid, proposals, vec![]);
 
     assert!(
         result.valid_proposals.is_empty(),
         "no valid proposals → ZeroSurvival path"
+    );
+    assert!(
+        result.valid_proposal_scores.is_empty(),
+        "no valid proposals → no scores"
     );
     assert_eq!(result.failed_proposals.len(), 2);
 }
@@ -155,7 +234,7 @@ fn insert_scored_same_explorer_first_value_wins() {
     let e = ExplorerId::new();
     let mut set = ProposalSet::new();
     set.insert_scored(proposal(e.clone(), tid.clone(), "first output"), 0.9);
-    set.insert_scored(proposal(e.clone(), tid.clone(), "second output"), 0.1);
+    set.insert_scored(proposal(e, tid.clone(), "second output"), 0.1);
     // Only one entry should exist and it must be the first.
     assert_eq!(
         set.len(),
@@ -179,7 +258,7 @@ fn proposal_set_len_and_is_empty() {
     set.insert(proposal(ExplorerId::new(), tid.clone(), "a"));
     assert!(!set.is_empty());
     assert_eq!(set.len(), 1);
-    set.insert(proposal(ExplorerId::new(), tid.clone(), "b"));
+    set.insert(proposal(ExplorerId::new(), tid, "b"));
     assert_eq!(set.len(), 2);
 }
 
@@ -187,6 +266,10 @@ fn proposal_set_len_and_is_empty() {
 fn semilattice_result_empty_proposals_with_no_pruned() {
     let result = SemilatticeResult::compile(TaskId::new(), ProposalSet::new(), vec![]);
     assert!(result.valid_proposals.is_empty());
+    assert!(
+        result.valid_proposal_scores.is_empty(),
+        "no valid proposals → no scores"
+    );
     assert!(result.pruned_proposals.is_empty());
 }
 
@@ -200,10 +283,23 @@ fn semilattice_valid_proposals_sorted_by_score_descending() {
     set.insert_scored(proposal(ExplorerId::new(), tid.clone(), "mid"), 0.5);
     let result = SemilatticeResult::compile(tid, set, vec![]);
     assert_eq!(result.valid_proposals.len(), 3);
+    assert_eq!(
+        result.valid_proposal_scores.len(),
+        result.valid_proposals.len(),
+        "scores must be parallel to valid_proposals"
+    );
     // First must be highest score.
     assert_eq!(
         result.valid_proposals[0].raw_output, "high",
         "valid_proposals must be sorted by score descending"
+    );
+    assert!(
+        (result.valid_proposal_scores[0] - 0.9).abs() < 1e-9,
+        "first score must be 0.9"
+    );
+    assert!(
+        (result.valid_proposal_scores[2] - 0.2).abs() < 1e-9,
+        "last score must be 0.2"
     );
     assert_eq!(result.valid_proposals[2].raw_output, "low");
 }
@@ -225,7 +321,7 @@ fn crdt_higher_generation_supersedes_higher_score() {
         timestamp: Utc::now(),
     };
     let p1 = ProposalEvent {
-        task_id: tid.clone(),
+        task_id: tid,
         explorer_id: eid.clone(),
         tau: TauValue::new(0.5).unwrap(),
         generation: 1,
@@ -248,6 +344,28 @@ fn crdt_higher_generation_supersedes_higher_score() {
 }
 
 #[test]
+fn join_semilattice_idempotent_via_join_method() {
+    // Tests ProposalSet::join(S, S) = S (idempotency using the join() method,
+    // distinct from insert-based idempotency tested in join_is_idempotent).
+    let tid = TaskId::new();
+    let eid = ExplorerId::new();
+    let p = proposal(eid, tid.clone(), "proposal text");
+
+    let mut s1 = ProposalSet::new();
+    s1.insert_scored(p.clone(), 0.7);
+    let mut s2 = ProposalSet::new();
+    s2.insert_scored(p, 0.7);
+
+    let joined = ProposalSet::join(s1, s2);
+    let result = SemilatticeResult::compile(tid, joined, vec![]);
+    assert_eq!(
+        result.valid_proposals.len(),
+        1,
+        "join(S, S) = S (idempotent)"
+    );
+}
+
+#[test]
 fn crdt_same_generation_higher_score_wins() {
     let tid = TaskId::new();
     let eid = ExplorerId::new();
@@ -263,7 +381,7 @@ fn crdt_same_generation_higher_score_wins() {
         timestamp: Utc::now(),
     };
     let pb = ProposalEvent {
-        task_id: tid.clone(),
+        task_id: tid,
         explorer_id: eid.clone(),
         tau: TauValue::new(0.5).unwrap(),
         generation: 2,

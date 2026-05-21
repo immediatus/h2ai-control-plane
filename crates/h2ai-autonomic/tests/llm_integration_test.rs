@@ -1,49 +1,22 @@
-//! Real-LLM integration tests — prove calibration theory matches implementation.
+//! Calibration theory tests — prove calibration invariants hold with mock adapters.
 //!
-//! Run with llama.server on port 8080:
-//! ```bash
-//! LLAMACPP_BASE_URL=http://host.docker.internal:8080/v1 \
-//!   cargo nextest run -p h2ai-autonomic --test llm_integration_test --run-ignored all --nocapture
-//! ```
+//! All LLM calls are replaced with `MockAdapter` so these tests run without any
+//! external service.  Real-LLM behaviour is validated by the adapter integration
+//! tests in h2ai-adapters.
 //!
 //! What these tests prove:
-//!   - β_eff = β₀ × (1 − CG) holds in computed output
-//!   - N_max = √((1−α)/β_eff) holds in computed output
-//!   - With real corpus, CG is measured (not fallback)
-//!   - N_max is in plausible range for AI agents
+//!   - `β_eff` = β₀ × (1 − CG) holds in computed output
+//!   - `N_max` = √((`1−α)/β_eff`) holds in computed output
+//!   - With no corpus, CG equals `cfg.calibration_cg_fallback`
+//!   - With a corpus, CG is measured (not the fallback)
 
-use h2ai_adapters::openai::OpenAIAdapter;
+use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::CoherencyCoefficients;
-
-fn llamacpp_endpoint() -> String {
-    std::env::var("LLAMACPP_BASE_URL")
-        .unwrap_or_else(|_| "http://host.docker.internal:8080/v1".into())
-}
-
-fn make_adapter() -> OpenAIAdapter {
-    OpenAIAdapter::new(
-        llamacpp_endpoint(),
-        "LLAMACPP_API_KEY".into(),
-        std::env::var("LLAMACPP_MODEL").unwrap_or_else(|_| "local".into()),
-    )
-}
-
-async fn is_reachable() -> bool {
-    std::env::set_var("LLAMACPP_API_KEY", "local");
-    let a = make_adapter();
-    let probe = h2ai_types::adapter::ComputeRequest {
-        system_context: "You are a helpful assistant.".into(),
-        task: "Reply with one word: ready".into(),
-        tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
-        max_tokens: 10,
-    };
-    a.execute(probe).await.is_ok()
-}
 
 fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
     let alpha = coeff.alpha;
@@ -65,14 +38,12 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
         ((1.0 - alpha) / beta_eff.max(1e-9)).sqrt()
     );
 
-    // Structural invariants
     assert!((0.0..1.0).contains(&alpha), "α ∉ [0,1): {alpha}");
     assert!(beta_base > 0.0, "β₀ must be > 0: {beta_base}");
     assert!((0.0..=1.0).contains(&cg), "CG ∉ [0,1]: {cg}");
     assert!(beta_eff > 0.0, "β_eff must be > 0: {beta_eff}");
     assert!(n_max >= 1.0, "N_max must be ≥ 1: {n_max}");
 
-    // β_eff formula: β_eff = β₀ × (1 − CG)  [clamped to ≥ 1e-6]
     let expected_beta_eff = (beta_base * (1.0 - cg)).max(1e-6);
     let rel_err = (beta_eff - expected_beta_eff).abs() / expected_beta_eff;
     assert!(
@@ -80,7 +51,6 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
         "β_eff = β₀×(1−CG) violated: got={beta_eff:.6} want={expected_beta_eff:.6} rel_err={rel_err:.4}"
     );
 
-    // N_max formula: N_max = √((1−α)/β_eff)
     let expected_n_max = ((1.0 - alpha) / beta_eff).sqrt();
     let n_max_err = (n_max - expected_n_max).abs();
     assert!(
@@ -88,7 +58,6 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
         "N_max = √((1−α)/β_eff) violated: got={n_max:.2} want={expected_n_max:.2} err={n_max_err:.2}"
     );
 
-    // Plausibility
     assert!(
         (2.0..=50.0).contains(&n_max),
         "N_max outside [2,50]: {n_max}"
@@ -99,30 +68,20 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
     eprintln!("  ✓ N_max in plausible range [2,50]");
 }
 
-fn is_adapter_unavailable(e: &h2ai_autonomic::calibration::CalibrationError) -> bool {
-    let s = e.to_string();
-    s.contains("network error") || s.contains("connection refused") || s.contains("timed out")
-}
-
-/// Proves: with no constraint corpus, CG is the configured fallback,
+/// Proves: with no constraint corpus, CG equals the configured fallback,
 /// and all structural invariants hold for the computed coefficients.
+///
+/// With `MockAdapter` (no corpus): `adapter_pair_cg` returns `calibration_cg_fallback` directly,
+/// so `CG_mean` == `calibration_cg_fallback`. USL timing with instant mock adapters uses
+/// fallback α/β₀.
 #[tokio::test]
-#[ignore = "requires llama.server at LLAMACPP_BASE_URL"]
 async fn calibration_no_corpus_fallback_cg_invariants_hold() {
-    if !is_reachable().await {
-        eprintln!(
-            "SKIP: llama.server not reachable at {}",
-            llamacpp_endpoint()
-        );
-        return;
-    }
-
-    let a1 = make_adapter();
-    let a2 = make_adapter();
-    let a3 = make_adapter();
+    let a1 = MockAdapter::new("JWT is a stateless token used for authentication.".into());
+    let a2 = MockAdapter::new("JWT is a stateless token used for authentication.".into());
+    let a3 = MockAdapter::new("JWT is a stateless token used for authentication.".into());
     let cfg = H2AIConfig::default();
 
-    let event = match CalibrationHarness::run(CalibrationInput {
+    let event = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec![
             "Describe a stateless auth strategy for microservices. Be concise.".into(),
@@ -139,14 +98,7 @@ async fn calibration_no_corpus_fallback_cg_invariants_hold() {
         embedding_model: None,
     })
     .await
-    {
-        Ok(ev) => ev,
-        Err(e) if is_adapter_unavailable(&e) => {
-            eprintln!("SKIP: LLM became unreachable mid-calibration: {e}");
-            return;
-        }
-        Err(e) => panic!("calibration failed with non-network error: {e}"),
-    };
+    .expect("calibration must succeed with mock adapters");
 
     assert_theory_invariants(&event.coefficients, "3-adapter / no corpus / fallback CG");
 
@@ -162,25 +114,19 @@ async fn calibration_no_corpus_fallback_cg_invariants_hold() {
     );
 }
 
-/// Proves: with a real constraint corpus, CG is measured from Hamming distance
-/// on actual LLM constraint-satisfaction profiles (not the fallback).
-/// CG must be in (0, 1) because real LLM responses vary.
+/// Proves: with a constraint corpus, CG is measured from Hamming distance on
+/// constraint-satisfaction fingerprints (not the fallback).
+///
+/// With two identical `MockAdapters` and `LlmJudge` constraints:
+/// - `eval_sync` returns 1.0 (pass-through) for `LlmJudge` predicates
+/// - Both fingerprints are identical → Hamming distance = 0.0 → CG = 0.0
+/// - 0.0 ≠ `calibration_cg_fallback` (0.7) → corpus measurement was used
 #[tokio::test]
-#[ignore = "requires llama.server at LLAMACPP_BASE_URL"]
 async fn calibration_with_corpus_measures_real_cg() {
-    if !is_reachable().await {
-        eprintln!(
-            "SKIP: llama.server not reachable at {}",
-            llamacpp_endpoint()
-        );
-        return;
-    }
-
-    let a1 = make_adapter();
-    let a2 = make_adapter();
+    let a1 = MockAdapter::new("Use stateless JWT tokens for API authentication.".into());
+    let a2 = MockAdapter::new("Use stateless JWT tokens for API authentication.".into());
     let cfg = H2AIConfig::default();
 
-    // Two constraints the model will sometimes satisfy — creates measurable diversity
     let corpus = vec![
         ConstraintDoc::new_llm_judge(
             "stateless",
@@ -189,7 +135,7 @@ async fn calibration_with_corpus_measures_real_cg() {
         ConstraintDoc::new_soft_llm_judge("jwt", "Prefer JWT tokens. Mention JWT explicitly."),
     ];
 
-    let event = match CalibrationHarness::run(CalibrationInput {
+    let event = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec![
             "Design an auth system for APIs. Be brief.".into(),
@@ -201,14 +147,7 @@ async fn calibration_with_corpus_measures_real_cg() {
         embedding_model: None,
     })
     .await
-    {
-        Ok(ev) => ev,
-        Err(e) if is_adapter_unavailable(&e) => {
-            eprintln!("SKIP: LLM became unreachable mid-calibration: {e}");
-            return;
-        }
-        Err(e) => panic!("calibration failed with non-network error: {e}"),
-    };
+    .expect("calibration must succeed with mock adapters");
 
     let cg = event.coefficients.cg_mean();
     eprintln!("\n── CG from Hamming distance on constraint profiles ──");
@@ -219,9 +158,6 @@ async fn calibration_with_corpus_measures_real_cg() {
         cfg.calibration_cg_fallback
     );
 
-    // CG must be a valid measurement (not the fallback).
-    // CG=0.0 is valid: both adapters agreed on all constraint satisfactions (Hamming=0).
-    // CG=0.7 would mean the corpus was ignored and fallback was used.
     assert!(
         (cg - cfg.calibration_cg_fallback).abs() > 0.001,
         "CG={cg:.3} equals fallback={:.3} — corpus was not used for measurement",
@@ -232,12 +168,12 @@ async fn calibration_with_corpus_measures_real_cg() {
         "Measured CG must be in [0,1]: {cg}"
     );
 
-    assert_theory_invariants(&event.coefficients, "2-adapter / real corpus / measured CG");
+    assert_theory_invariants(&event.coefficients, "2-adapter / mock corpus / measured CG");
 
     if cg == 0.0 {
-        eprintln!("  ✓ CG=0.0 — both adapters satisfied the same constraints (high agreement)");
+        eprintln!("  ✓ CG=0.0 — identical mock outputs: both adapters agree on all constraints");
     } else {
-        eprintln!("  ✓ CG={cg:.3} — real constraint-profile diversity detected");
+        eprintln!("  ✓ CG={cg:.3} — constraint-profile diversity detected");
     }
-    eprintln!("  ✓ CG measured from real LLM responses (not fallback)");
+    eprintln!("  ✓ CG measured from constraint fingerprints (not fallback)");
 }

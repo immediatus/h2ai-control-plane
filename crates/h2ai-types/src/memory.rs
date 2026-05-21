@@ -27,6 +27,7 @@ impl MemoryTier {
     /// Reflects how reliably a single ensemble agent can use knowledge from this
     /// tier: high ρ for stable procedural rules (reliable), low ρ for ephemeral
     /// working memory (uncertain).
+    #[must_use]
     pub const fn rho(self) -> f64 {
         match self {
             Self::Working => 0.08,
@@ -39,6 +40,7 @@ impl MemoryTier {
     /// Exponential decay time constant τ in seconds: at age t=τ, weight = e^−1 ≈ 0.37.
     ///
     /// Uses `exp(-t/τ)` (same convention as `CoherencyCoefficients::beta_eff_temporal`).
+    #[must_use]
     pub const fn decay_halflife_secs(self) -> u64 {
         match self {
             Self::Working => 3_600,        // 1 hour
@@ -53,63 +55,8 @@ impl MemoryTier {
     /// Derived from `n_it_optimal(self.rho())`. Ranges from 9 (Working) to 2
     /// (Procedural) — procedural rules require only two agents to reach
     /// consensus; ephemeral working memory needs the full ensemble.
+    #[must_use]
     pub fn n_it_optimal(self) -> usize {
         n_it_optimal(self.rho())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tier_ordering_reflects_consolidation_level() {
-        assert!(MemoryTier::Working < MemoryTier::Episodic);
-        assert!(MemoryTier::Episodic < MemoryTier::Semantic);
-        assert!(MemoryTier::Semantic < MemoryTier::Procedural);
-    }
-
-    #[test]
-    fn higher_tier_lower_n_it_optimal() {
-        // More consolidated memory → fewer ensemble agents needed
-        let nw = MemoryTier::Working.n_it_optimal();
-        let ne = MemoryTier::Episodic.n_it_optimal();
-        let ns = MemoryTier::Semantic.n_it_optimal();
-        let np = MemoryTier::Procedural.n_it_optimal();
-        assert!(nw >= ne, "Working({nw}) must need ≥ Episodic({ne}) agents");
-        assert!(ne >= ns, "Episodic({ne}) must need ≥ Semantic({ns}) agents");
-        assert!(
-            ns >= np,
-            "Semantic({ns}) must need ≥ Procedural({np}) agents"
-        );
-    }
-
-    #[test]
-    fn n_it_optimal_concrete_values() {
-        assert_eq!(MemoryTier::Working.n_it_optimal(), 9);
-        assert_eq!(MemoryTier::Episodic.n_it_optimal(), 5);
-        assert_eq!(MemoryTier::Semantic.n_it_optimal(), 3);
-        assert_eq!(MemoryTier::Procedural.n_it_optimal(), 2);
-    }
-
-    #[test]
-    fn higher_tier_longer_halflife() {
-        assert!(
-            MemoryTier::Working.decay_halflife_secs() < MemoryTier::Episodic.decay_halflife_secs()
-        );
-        assert!(
-            MemoryTier::Episodic.decay_halflife_secs() < MemoryTier::Semantic.decay_halflife_secs()
-        );
-        assert!(
-            MemoryTier::Semantic.decay_halflife_secs()
-                < MemoryTier::Procedural.decay_halflife_secs()
-        );
-    }
-
-    #[test]
-    fn rho_strictly_increases_with_tier() {
-        assert!(MemoryTier::Working.rho() < MemoryTier::Episodic.rho());
-        assert!(MemoryTier::Episodic.rho() < MemoryTier::Semantic.rho());
-        assert!(MemoryTier::Semantic.rho() < MemoryTier::Procedural.rho());
     }
 }

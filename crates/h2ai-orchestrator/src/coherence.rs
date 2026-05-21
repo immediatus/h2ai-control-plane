@@ -9,17 +9,18 @@ use std::collections::{HashMap, HashSet};
 /// `violated_constraints` list. A contradiction exists when two surviving proposals
 /// score on opposite sides of the pass threshold for the same constraint domain.
 /// When `is_closed()` is true, both fields are empty.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CoherenceState {
     /// Constraint domains that had violations in pruned proposals. Sorted alphabetically.
     pub uncovered_domains: Vec<String>,
     /// Pairs of surviving proposals that contradict on the same constraint domain.
-    /// Each entry is (explorer_a, explorer_b, domain). Sorted by domain then explorer ID.
+    /// Each entry is (`explorer_a`, `explorer_b`, domain). Sorted by domain then explorer ID.
     pub active_contradictions: Vec<(ExplorerId, ExplorerId, String)>,
 }
 
 impl CoherenceState {
     /// Compute uncovered domains from a constraint corpus and all pruned proposals.
+    #[must_use]
     pub fn from_pruned(corpus: &[ConstraintDoc], all_pruned: &[BranchPrunedEvent]) -> Self {
         let violated: HashSet<String> = all_pruned
             .iter()
@@ -63,6 +64,7 @@ impl CoherenceState {
     ///
     /// A contradiction is when proposals i and j score on opposite sides of 0.5 on any
     /// constraint in the same domain. Only one entry per (pair, domain) is recorded.
+    #[must_use]
     pub fn with_contradictions(
         mut self,
         corpus: &[ConstraintDoc],
@@ -130,7 +132,8 @@ impl CoherenceState {
         self
     }
 
-    pub fn is_closed(&self) -> bool {
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
         self.uncovered_domains.is_empty() && self.active_contradictions.is_empty()
     }
 }

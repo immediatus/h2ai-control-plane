@@ -33,20 +33,20 @@ pub struct PipelineParams {
     pub prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 }
 
-/// Talagrand feedback stored in WaveEvents.
+/// Talagrand feedback stored in `WaveEvents`.
 #[derive(Clone, Debug)]
 pub struct TalagrandFeedback {
     pub tau_spread_next: f64,
 }
 
-/// TaoEstimator update stored in WaveEvents.
+/// `TaoEstimator` update stored in `WaveEvents`.
 #[derive(Clone, Debug)]
 pub struct TaoEstimatorUpdate {
     pub t1_score: f64,
     pub final_score: f64,
 }
 
-/// All events produced in one pipeline wave, collected for observe().
+/// All events produced in one pipeline wave, collected for `observe()`.
 #[derive(Clone, Debug)]
 pub struct WaveEvents {
     pub verification_events: Vec<VerificationScoredEvent>,
@@ -63,19 +63,19 @@ pub struct WaveEvents {
     /// Updated `srani_last_wave_fired` flag from the SRANI phase output.
     /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
     pub srani_last_wave_fired: bool,
-    /// Updated srani_tier from the SRANI phase output.
+    /// Updated `srani_tier` from the SRANI phase output.
     /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
     pub srani_tier_updated: usize,
-    /// Updated srani_ema_cfi from the SRANI phase output.
+    /// Updated `srani_ema_cfi` from the SRANI phase output.
     /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
     pub srani_ema_cfi_updated: f64,
-    /// Updated srani_count from the SRANI phase output (as usize, matching engine.rs).
+    /// Updated `srani_count` from the SRANI phase output (as usize, matching engine.rs).
     /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
     pub srani_count_updated: usize,
-    /// Updated retry_context from the SRANI phase (may have been extended with SRANI hint).
+    /// Updated `retry_context` from the SRANI phase (may have been extended with SRANI hint).
     pub srani_retry_context: Option<String>,
     /// Verification filter ratio from this wave's merge phase (surviving / total evaluated).
-    /// 1.0 when no merge ran (early-exit before merge). Used by the coordinator to call decide().
+    /// 1.0 when no merge ran (early-exit before merge). Used by the coordinator to call `decide()`.
     pub filter_ratio: f64,
     /// Pruned branch events from this wave's audit phase.
     /// Accumulated by `observe()` into `all_pruned` so `RetryPolicy::decide` can
@@ -86,7 +86,7 @@ pub struct WaveEvents {
     pub conflict_rate: Option<f64>,
     /// Proposal texts keyed by explorer ID — populated in pipeline.rs before verification.
     pub wave_proposal_texts: std::collections::HashMap<h2ai_types::identity::ExplorerId, String>,
-    /// AssembledContexts from this wave's generation phase, for next-wave delta encoding.
+    /// `AssembledContexts` from this wave's generation phase, for next-wave delta encoding.
     pub assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 }
 
@@ -118,7 +118,7 @@ impl Default for WaveEvents {
     }
 }
 
-/// Successful merge result — passed from pipeline to controller via PipelineOutcome::Resolved.
+/// Successful merge result — passed from pipeline to controller via `PipelineOutcome::Resolved`.
 pub struct MergeOutput {
     pub task_id: TaskId,
     pub resolved_output: String,
@@ -239,12 +239,12 @@ pub struct MapeKController {
     pub(crate) pending_leader_elected_events: Vec<h2ai_types::events::LeaderElectedEvent>,
     pub(crate) pending_socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
     pub(crate) last_wave_violated_constraint_ids: Vec<String>,
-    /// AssembledContexts from the most recently completed wave.
+    /// `AssembledContexts` from the most recently completed wave.
     /// Passed as `prev_assembled_contexts` to the next wave's generation phase.
     pub(crate) prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
 
     // ── CSPR-v2: Conflict-Aware Constraint-Scoped Prior Repair ──────────────
-    /// Cross-wave global best proposal: (score, proposal_text).
+    /// Cross-wave global best proposal: (score, `proposal_text`).
     /// Updated by `observe()` each wave; used by CSPR-v2 repair context builder.
     pub(crate) global_best_proposal: Option<(f64, String)>,
     /// Static conflict graph built from the task's constraint corpus.
@@ -275,8 +275,9 @@ impl MapeKController {
             .calibration
             .ensemble
             .as_ref()
-            .map(|ec| (ec.n_optimal as u32).min(manifest_count))
-            .unwrap_or(manifest_count);
+            .map_or(manifest_count, |ec| {
+                (ec.n_optimal as u32).min(manifest_count)
+            });
 
         let bandit_n = if let Some(ref bandit_arc) = input.bandit_state {
             let bandit = bandit_arc.read().await;
@@ -291,7 +292,7 @@ impl MapeKController {
 
         let current_params = OptimizerParams {
             n_agents: initial_n_agents,
-            max_turns: input.tao_config.max_turns as u32,
+            max_turns: u32::from(input.tao_config.max_turns),
             verify_threshold: input.verification_config.threshold,
         };
 
@@ -360,6 +361,7 @@ impl MapeKController {
     // ── Snapshot ───────────────────────────────────────────────────────────────
 
     /// Return an immutable snapshot of the current MAPE-K parameters for one wave.
+    #[must_use]
     pub fn params(&self) -> PipelineParams {
         PipelineParams {
             optimizer: self.current_params.clone(),
@@ -692,12 +694,12 @@ impl MapeKController {
                             .collect();
 
                         // Fall back to hint strings from RetryPolicy when last_wave_pruned has no detail.
-                        let (final_ids, final_hints) = if !violated_ids.is_empty() {
-                            (violated_ids, violated_hints)
-                        } else {
+                        let (final_ids, final_hints) = if violated_ids.is_empty() {
                             let ids: Vec<String> = hints.clone();
                             let hs: Vec<Option<String>> = vec![None; hints.len()];
                             (ids, hs)
+                        } else {
+                            (violated_ids, violated_hints)
                         };
 
                         self.retry_context = Some(h2ai_autonomic::repair::build_repair_context(
@@ -829,6 +831,7 @@ impl MapeKController {
 
     /// Compute a `LeaderElectionPlan` from the last wave's verification events.
     /// Returns `None` when no verification events are available yet.
+    #[must_use]
     pub fn prepare_leader_election(
         &self,
         cfg: &h2ai_config::H2AIConfig,
@@ -861,7 +864,7 @@ impl MapeKController {
         let leader_id = if do_rotate {
             runner_up_id.clone().unwrap_or_else(|| winner_id.clone())
         } else {
-            winner_id.clone()
+            winner_id
         };
 
         let prior_proposal = self
@@ -878,10 +881,9 @@ impl MapeKController {
         let q_confidence = scores
             .iter()
             .find(|(id, _)| *id == leader_id)
-            .map(|(_, s)| *s)
-            .unwrap_or(0.0);
+            .map_or(0.0, |(_, s)| *s);
 
-        let term = self.leader.as_ref().map(|ls| ls.term + 1).unwrap_or(1);
+        let term = self.leader.as_ref().map_or(1, |ls| ls.term + 1);
 
         let existing_credibility = if do_rotate {
             1.0
@@ -986,13 +988,7 @@ impl MapeKController {
                         ls.stagnation_count + 1
                     }
                 }
-                None => {
-                    if improved {
-                        0
-                    } else {
-                        1
-                    }
-                }
+                None => u32::from(!improved),
             }
         };
 
@@ -1045,17 +1041,20 @@ impl MapeKController {
     // ── Coordinator helpers ────────────────────────────────────────────────────
 
     /// Returns the task deadline for the coordinator's deadline check.
-    pub fn deadline(&self) -> Option<std::time::Instant> {
+    #[must_use]
+    pub const fn deadline(&self) -> Option<std::time::Instant> {
         self.task_deadline
     }
 
-    /// Returns all verification events collected — used for MaxRetriesExhausted error.
+    /// Returns all verification events collected — used for `MaxRetriesExhausted` error.
+    #[must_use]
     pub fn take_verification_events(&self) -> Vec<h2ai_types::events::VerificationScoredEvent> {
         self.all_verification_events.clone()
     }
 
     // ── Test helpers ───────────────────────────────────────────────────────────
 
+    #[must_use]
     pub fn new_for_test(cfg: h2ai_config::H2AIConfig) -> Self {
         use crate::tao_loop::TaoMultiplierEstimator;
         use h2ai_types::events::TaskComplexityAssessedEvent;
@@ -1140,126 +1139,5 @@ impl MapeKController {
             global_best_proposal: None,
             conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph::build(&[]),
         }
-    }
-
-    #[cfg(test)]
-    pub fn verification_event_count(&self) -> usize {
-        self.all_verification_events.len()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::phases::ExitReason;
-    use h2ai_config::H2AIConfig;
-
-    fn default_controller() -> MapeKController {
-        MapeKController::new_for_test(H2AIConfig::default())
-    }
-
-    fn empty_wave(outcome: PipelineOutcome) -> PipelineWaveResult {
-        PipelineWaveResult {
-            outcome,
-            events: WaveEvents::default(),
-        }
-    }
-
-    #[test]
-    fn decide_retry_or_fail_on_multiplication_failed() {
-        use h2ai_types::sizing::MultiplicationConditionFailure;
-
-        let mut ctrl = default_controller();
-        let wave = empty_wave(PipelineOutcome::EarlyExit(
-            ExitReason::MultiplicationFailed {
-                msg: "test".into(),
-                tau_values: vec![0.3, 0.5, 0.7],
-                failure: MultiplicationConditionFailure::InsufficientCompetence {
-                    actual: 0.1,
-                    required: 0.6,
-                },
-            },
-        ));
-        ctrl.observe(&wave);
-        let decision = ctrl.decide(
-            PipelineOutcome::EarlyExit(ExitReason::MultiplicationFailed {
-                msg: "test".into(),
-                tau_values: vec![0.3, 0.5, 0.7],
-                failure: MultiplicationConditionFailure::InsufficientCompetence {
-                    actual: 0.1,
-                    required: 0.6,
-                },
-            }),
-            0,
-            1.0,
-        );
-        // Either Retry (policy chose a new topology) or Fail (retries exhausted)
-        assert!(matches!(
-            decision,
-            MapeKDecision::Retry | MapeKDecision::Fail(_)
-        ));
-    }
-
-    #[test]
-    fn observe_aggregates_verification_events_across_waves() {
-        use chrono::Utc;
-        use h2ai_types::events::VerificationScoredEvent;
-        use h2ai_types::identity::{ExplorerId, TaskId};
-
-        let mut ctrl = default_controller();
-
-        let make_event = || VerificationScoredEvent {
-            task_id: TaskId::new(),
-            explorer_id: ExplorerId::new(),
-            score: 0.8,
-            reason: "ok".into(),
-            passed: true,
-            cache_hit: false,
-            timestamp: Utc::now(),
-        };
-
-        let mut wave1_events = WaveEvents::default();
-        wave1_events.verification_events.push(make_event());
-        ctrl.observe(&PipelineWaveResult {
-            outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
-            events: wave1_events,
-        });
-
-        let mut wave2_events = WaveEvents::default();
-        wave2_events.verification_events.push(make_event());
-        ctrl.observe(&PipelineWaveResult {
-            outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
-            events: wave2_events,
-        });
-
-        assert_eq!(ctrl.verification_event_count(), 2);
-    }
-
-    #[test]
-    fn wave_events_default_has_none_conflict_rate() {
-        let events = WaveEvents::default();
-        assert!(events.conflict_rate.is_none());
-    }
-
-    #[test]
-    fn leader_state_is_none_on_new_controller() {
-        let ctrl = default_controller();
-        assert!(ctrl.leader.is_none());
-    }
-
-    #[test]
-    fn decide_fail_on_oracle_blocked() {
-        let mut ctrl = default_controller();
-        let wave = PipelineWaveResult {
-            outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
-            events: WaveEvents::default(),
-        };
-        ctrl.observe(&wave);
-        let decision = ctrl.decide(
-            PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
-            0,
-            1.0,
-        );
-        assert!(matches!(decision, MapeKDecision::Fail(_)));
     }
 }

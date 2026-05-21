@@ -15,8 +15,8 @@ fn approve_signal_round_trips() {
             reviewer_note: Some("LGTM".into()),
             operator_id: "ops@example.com".into(),
         }),
-        timeout_at_ms: 9999999999,
-        issued_at_ms: 1000000000,
+        timeout_at_ms: 9_999_999_999,
+        issued_at_ms: 1_000_000_000,
     };
     let json = serde_json::to_string(&sig).unwrap();
     let back: ResumeSignal = serde_json::from_str(&json).unwrap();
@@ -36,8 +36,8 @@ fn wave_continue_round_trips() {
             grounding: Some("Use Redis Lua script".into()),
             mandate_override: None,
         }),
-        timeout_at_ms: 9999999999,
-        issued_at_ms: 1000000000,
+        timeout_at_ms: 9_999_999_999,
+        issued_at_ms: 1_000_000_000,
     };
     let json = serde_json::to_string(&sig).unwrap();
     let back: ResumeSignal = serde_json::from_str(&json).unwrap();
@@ -72,4 +72,73 @@ fn wire_format_has_kind_and_data_fields() {
     let json = serde_json::to_string(&sig).unwrap();
     assert!(json.contains(r#""kind":"Approve""#));
     assert!(json.contains(r#""data":"#));
+}
+
+// ── Unknown variant serializes and round-trips ────────────────────────────────
+
+#[test]
+fn unknown_payload_serializes_with_kind_unknown() {
+    let sig = ResumeSignal {
+        task_id: make_task_id(),
+        tenant_id: TenantId::from("t"),
+        payload: SignalPayload::Unknown,
+        timeout_at_ms: 0,
+        issued_at_ms: 0,
+    };
+    let json = serde_json::to_string(&sig).unwrap();
+    // The Unknown variant serializes as kind=Unknown
+    assert!(json.contains(r#""kind":"Unknown""#));
+    // Re-deserialize: an explicit "Unknown" kind maps to the Unknown variant too
+    let back: ResumeSignal = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.payload, SignalPayload::Unknown));
+}
+
+// ── WaveContinue with mandate_override set ────────────────────────────────────
+
+#[test]
+fn wave_continue_with_mandate_override_round_trips() {
+    let sig = ResumeSignal {
+        task_id: make_task_id(),
+        tenant_id: TenantId::from("team"),
+        payload: SignalPayload::WaveContinue(WaveContinueSignal {
+            grounding: None,
+            mandate_override: Some("Switch to eventual consistency".into()),
+        }),
+        timeout_at_ms: 9_999_999_999,
+        issued_at_ms: 1_000_000_000,
+    };
+    let json = serde_json::to_string(&sig).unwrap();
+    let back: ResumeSignal = serde_json::from_str(&json).unwrap();
+    let SignalPayload::WaveContinue(w) = back.payload else {
+        panic!("wrong variant")
+    };
+    assert!(w.grounding.is_none());
+    assert_eq!(
+        w.mandate_override.unwrap(),
+        "Switch to eventual consistency"
+    );
+}
+
+// ── ApproveSignal with approved=false and no reviewer_note ───────────────────
+
+#[test]
+fn approve_signal_rejected_no_note_round_trips() {
+    let sig = ResumeSignal {
+        task_id: make_task_id(),
+        tenant_id: TenantId::from("t"),
+        payload: SignalPayload::Approve(ApproveSignal {
+            approved: false,
+            reviewer_note: None,
+            operator_id: "bot".into(),
+        }),
+        timeout_at_ms: 0,
+        issued_at_ms: 0,
+    };
+    let json = serde_json::to_string(&sig).unwrap();
+    let back: ResumeSignal = serde_json::from_str(&json).unwrap();
+    let SignalPayload::Approve(a) = back.payload else {
+        panic!("wrong variant")
+    };
+    assert!(!a.approved);
+    assert!(a.reviewer_note.is_none());
 }

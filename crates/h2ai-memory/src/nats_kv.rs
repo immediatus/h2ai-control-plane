@@ -11,6 +11,9 @@ pub struct NatsKvStore {
 impl NatsKvStore {
     /// Creates the named KV bucket. If the bucket already exists, the server
     /// returns it unchanged (async-nats behavior).
+    ///
+    /// # Errors
+    /// Returns `MemoryError` if the NATS `JetStream` call fails.
     pub async fn create(nats: &async_nats::Client, bucket: &str) -> Result<Self, MemoryError> {
         let js = jetstream::new(nats.clone());
         let store = js
@@ -27,7 +30,8 @@ impl NatsKvStore {
     }
 
     /// Wrap a pre-created KV store (used when the store is created by `ensure_infrastructure`).
-    pub fn new(kv: kv::Store) -> Self {
+    #[must_use]
+    pub const fn new(kv: kv::Store) -> Self {
         Self { kv }
     }
 }
@@ -99,13 +103,9 @@ impl MemoryProvider for NatsKvStore {
                 // session key simultaneously (network partition, pod eviction).
                 // On collision, re-read and fall through to the `update` path.
                 None => {
-                    match self.kv.create(&key, bytes).await {
-                        Ok(_) => return Ok(()),
-                        Err(_) => {
-                            // Another writer created the key first — re-read and
-                            // retry with the winning revision.
-                            continue;
-                        }
+                    // Another writer created the key first on Err — re-read and retry
+                    if self.kv.create(&key, bytes).await.is_ok() {
+                        return Ok(());
                     }
                 }
             }

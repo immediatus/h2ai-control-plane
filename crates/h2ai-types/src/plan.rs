@@ -14,7 +14,7 @@ pub struct Subtask {
     pub role_hint: Option<AgentRole>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "data", rename_all = "snake_case")]
 pub enum PlanStatus {
     Draft,

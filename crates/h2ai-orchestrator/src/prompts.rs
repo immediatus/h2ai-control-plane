@@ -1,3 +1,4 @@
+use h2ai_state::backend::OproStore;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -46,15 +47,16 @@ fn cache() -> &'static Mutex<PromptCache> {
 }
 
 /// Resolve a prompt for an adapter, checking NATS for an active variant first.
+///
 /// Falls back to `default_text` if no variant is active or NATS is unavailable.
 /// Uses a 30-second in-memory cache to avoid NATS roundtrips on every call.
-pub async fn resolve_prompt(
+pub async fn resolve_prompt<S: OproStore>(
     adapter_name: &str,
     prompt_key: &str,
     default_text: &str,
-    nats: Option<&h2ai_state::NatsClient>,
+    nats: Option<&S>,
 ) -> String {
-    let cache_key = format!("{}/{}", adapter_name, prompt_key);
+    let cache_key = format!("{adapter_name}/{prompt_key}");
     let ttl = Duration::from_secs(30);
 
     // Cache hit
@@ -75,7 +77,7 @@ pub async fn resolve_prompt(
                 .get_prompt_variant(adapter_name, prompt_key, &variant_id)
                 .await
             {
-                let text = variant.text.clone();
+                let text = variant.text;
                 cache().lock().unwrap().insert(cache_key, text.clone());
                 return text;
             }

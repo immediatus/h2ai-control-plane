@@ -172,3 +172,102 @@ fn aggregate_compliance_score_one_when_no_soft_constraints() {
     }];
     assert!((aggregate_compliance_score(&results) - 1.0).abs() < 1e-9);
 }
+
+// ── Lines 42-44: default_oracle_timeout_secs via serde ───────────────────────
+
+#[test]
+fn oracle_execution_default_timeout_via_serde() {
+    // Deserialize without timeout_secs — serde must call default_oracle_timeout_secs()
+    let json =
+        r#"{"OracleExecution":{"test_runner_uri":"http://localhost/run","test_suite":"suite.py"}}"#;
+    let pred: ConstraintPredicate = serde_json::from_str(json).expect("must deserialize");
+    match pred {
+        ConstraintPredicate::OracleExecution { timeout_secs, .. } => {
+            assert_eq!(timeout_secs, 30, "default timeout must be 30");
+        }
+        other => panic!("expected OracleExecution, got {other:?}"),
+    }
+}
+
+// ── Lines 114-116: default_binary_passes via serde ───────────────────────────
+
+#[test]
+fn semantic_presence_default_passes_via_serde() {
+    let json = r#"{"SemanticPresence":{"concept":"idempotency key"}}"#;
+    let pred: ConstraintPredicate = serde_json::from_str(json).expect("must deserialize");
+    match pred {
+        ConstraintPredicate::SemanticPresence { passes, .. } => {
+            assert_eq!(passes, 3, "default passes must be 3");
+        }
+        other => panic!("expected SemanticPresence, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_ordering_default_passes_via_serde() {
+    let json = r#"{"SemanticOrdering":{"first":"debit","then":"publish"}}"#;
+    let pred: ConstraintPredicate = serde_json::from_str(json).expect("must deserialize");
+    match pred {
+        ConstraintPredicate::SemanticOrdering { passes, .. } => {
+            assert_eq!(passes, 3);
+        }
+        other => panic!("expected SemanticOrdering, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_exclusion_default_passes_via_serde() {
+    let json = r#"{"SemanticExclusion":{"pattern":"direct DB write"}}"#;
+    let pred: ConstraintPredicate = serde_json::from_str(json).expect("must deserialize");
+    match pred {
+        ConstraintPredicate::SemanticExclusion { passes, .. } => {
+            assert_eq!(passes, 3);
+        }
+        other => panic!("expected SemanticExclusion, got {other:?}"),
+    }
+}
+
+// ── Line 291: aggregate_compliance_score with total_weight == 0.0 ─────────────
+
+#[test]
+fn aggregate_compliance_score_returns_one_when_all_weights_zero() {
+    // Soft constraint with weight=0.0 → total_weight=0.0 → early return 1.0
+    let results = vec![ComplianceResult {
+        constraint_id: "s-zero".into(),
+        score: 0.5,
+        severity: ConstraintSeverity::Soft { weight: 0.0 },
+        remediation_hint: None,
+    }];
+    assert!(
+        (aggregate_compliance_score(&results) - 1.0).abs() < 1e-9,
+        "zero-weight soft must return 1.0"
+    );
+}
+
+// ── Line 365: ConstraintMeta::from_doc with empty description ────────────────
+
+#[test]
+fn constraint_meta_from_doc_empty_description_uses_fallback() {
+    use h2ai_constraints::types::{ConstraintMeta, PredicateKind};
+    let doc = ConstraintDoc {
+        id: "C-EMPTY-DESC".into(),
+        source_file: "c.yaml".into(),
+        description: String::new(), // empty!
+        severity: ConstraintSeverity::Advisory,
+        predicate: ConstraintPredicate::LengthRange {
+            min_chars: Some(10),
+            max_chars: None,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+    let meta = ConstraintMeta::from_doc(&doc);
+    assert!(
+        meta.summary.contains("C-EMPTY-DESC"),
+        "fallback summary must contain the constraint id, got: {}",
+        meta.summary
+    );
+    assert_eq!(meta.predicate_kind, PredicateKind::Static);
+}

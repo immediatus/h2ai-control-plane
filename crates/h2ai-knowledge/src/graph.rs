@@ -27,6 +27,7 @@ pub struct ConstraintGraph {
 
 impl ConstraintGraph {
     /// Build the graph from a slice of [`KnowledgeNode`]s.
+    #[allow(clippy::cast_precision_loss)]
     pub fn build(nodes: &[KnowledgeNode]) -> Self {
         // --- index ---
         let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
@@ -89,7 +90,7 @@ impl ConstraintGraph {
         }
     }
 
-    /// Personalised PageRank.
+    /// Personalised `PageRank`.
     ///
     /// Returns `(constraint_id, ppr_score)` sorted descending, with seed nodes excluded.
     /// Only entries with score > 0 are returned, truncated to `top_k`.
@@ -100,7 +101,7 @@ impl ConstraintGraph {
     /// - `top_k`: maximum number of results.
     /// - `max_iter`: number of power-iteration steps.
     ///
-    /// Personalised PageRank.
+    /// Personalised `PageRank`.
     ///
     /// Returns `(constraint_id, ppr_score)` sorted descending, with seed nodes excluded.
     /// Only entries with score > 0 are returned, truncated to `top_k`.
@@ -111,6 +112,8 @@ impl ConstraintGraph {
     /// - `top_k`: maximum number of results.
     /// - `max_iter`: power-iteration steps. Convergence is typically reached in 20 iterations
     ///   for graphs with hundreds of nodes. Increase for denser graphs.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn ppr(
         &self,
         seed_ids: &[&str],
@@ -147,9 +150,7 @@ impl ConstraintGraph {
 
         for _ in 0..max_iter {
             // zero out accumulator
-            for v in new_r.iter_mut() {
-                *v = 0.0;
-            }
+            new_r.fill(0.0);
 
             // propagate: new_r[dst] += (1 - alpha) * r[src] * w
             for (src, &r_src) in r.iter().enumerate() {

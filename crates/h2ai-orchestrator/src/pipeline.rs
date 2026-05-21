@@ -9,6 +9,7 @@ use crate::verification::EvalCache;
 use async_nats::Client as NatsClient;
 use chrono::Utc;
 use futures::StreamExt;
+use h2ai_autonomic::retry_accumulator::RetryAccumulator;
 use h2ai_memory::provider::MemoryProvider;
 use h2ai_nats::subjects::{agent_telemetry_subject, ephemeral_task_subject, task_result_subject};
 use h2ai_provisioner::provider::AgentProvider;
@@ -18,6 +19,7 @@ use h2ai_types::agent::{
     AgentDescriptor, AgentTelemetryEvent, ContextPayload, TaskPayload, TaskResult,
 };
 use h2ai_types::identity::{AgentId, TaskId};
+use h2ai_types::sizing::OspConfig;
 use h2ai_types::sizing::TauValue;
 use std::time::Duration;
 
@@ -34,7 +36,7 @@ where
     P: AgentProvider,
     A: AuditProvider,
 {
-    pub fn new(memory: M, provisioner: P, auditor: A, nats: NatsClient) -> Self {
+    pub const fn new(memory: M, provisioner: P, auditor: A, nats: NatsClient) -> Self {
         Self {
             memory,
             provisioner,
@@ -96,7 +98,7 @@ where
         Ok(task_id)
     }
 
-    /// Commit a completed TaskResult to memory and flush audit log.
+    /// Commit a completed `TaskResult` to memory and flush audit log.
     pub async fn finalize(
         &self,
         session_id: &str,
@@ -136,9 +138,9 @@ where
 
     /// Full dispatch-and-await pipeline.
     ///
-    /// Publishes TaskPayload, subscribes to telemetry and result subjects, drives a
-    /// `tokio::select!` loop routing telemetry to the AuditProvider and returning the
-    /// TaskResult once received. Finalizes (commits memory + flushes audit) on success.
+    /// Publishes `TaskPayload`, subscribes to telemetry and result subjects, drives a
+    /// `tokio::select!` loop routing telemetry to the `AuditProvider` and returning the
+    /// `TaskResult` once received. Finalizes (commits memory + flushes audit) on success.
     /// Returns `Err(Timeout)` if no result arrives within `timeout`.
     pub async fn execute_and_await(
         &self,
@@ -169,13 +171,7 @@ where
             .await
             .map_err(|e| OrchestratorError::Provision(e.to_string()))?;
 
-        let payload_json = serde_json::to_string(&payload)
-            .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
-        self.nats
-            .publish(ephemeral_task_subject(&task_id), payload_json.into())
-            .await
-            .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
-
+        // Subscribe before publishing to eliminate the result-arrives-before-subscribe race.
         let mut telemetry_sub = self
             .nats
             .subscribe(agent_telemetry_subject(&agent_id))
@@ -185,6 +181,13 @@ where
         let mut result_sub = self
             .nats
             .subscribe(task_result_subject(&task_id))
+            .await
+            .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
+
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
+        self.nats
+            .publish(ephemeral_task_subject(&task_id), payload_json.into())
             .await
             .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
 
@@ -214,7 +217,7 @@ where
                         }
                     }
                 }
-                _ = tokio::time::sleep_until(deadline) => {
+                () = tokio::time::sleep_until(deadline) => {
                     return Err(OrchestratorError::Timeout {
                         task_id: task_id.to_string(),
                     });
@@ -263,7 +266,8 @@ pub struct ExecutionPipeline<'a> {
 
 impl<'a> ExecutionPipeline<'a> {
     /// Create an `ExecutionPipeline` from pre-loop phase outputs.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         input: &'a EngineInput<'a>,
         bootstrap: &'a BootstrapOutput,
         complexity: &'a ComplexityOutput,
@@ -285,7 +289,13 @@ impl<'a> ExecutionPipeline<'a> {
     /// - `Resolved(MergeOutput)` — success; the controller assembles `EngineOutput`.
     /// - `EarlyExit(ExitReason)` — retryable failure; the controller decides next action.
     /// - `Fatal(EngineError)` — non-retryable; the controller propagates the error.
-    pub async fn run(&self, params: PipelineParams, retry_count: usize) -> PipelineWaveResult {
+    pub async fn run(
+        &self,
+        params: PipelineParams,
+        retry_count: usize,
+        osp_accumulator: Option<&mut RetryAccumulator>,
+        osp_config: Option<&OspConfig>,
+    ) -> PipelineWaveResult {
         // Initialise WaveEvents with carry-forward SRANI state so early-exit paths
         // don't accidentally reset the EMA/count/tier to zero.
         let mut events = WaveEvents {
@@ -727,6 +737,12 @@ impl<'a> ExecutionPipeline<'a> {
         };
         events.filter_ratio = filter_ratio;
 
+        // Extract violations from pruned proposals before moving `pruned` into the merge phase.
+        let wave_violations: Vec<h2ai_types::events::ConstraintViolation> = pruned
+            .iter()
+            .flat_map(|p| p.violated_constraints.iter().cloned())
+            .collect();
+
         // ── Phase 5: Merge ───────────────────────────────────────────────────────
         let (merge_step, tau_expansion_hint) = phases::merge::run(
             proposal_set,
@@ -760,6 +776,9 @@ impl<'a> ExecutionPipeline<'a> {
                 all_pruned: &[],
                 synthesis_candidates_len: synthesis_candidates.len(),
                 provisioned_merge_strategy: provisioned.merge_strategy.clone(),
+                wave_violations,
+                retry_accumulator: osp_accumulator,
+                osp_config,
             },
         )
         .await;

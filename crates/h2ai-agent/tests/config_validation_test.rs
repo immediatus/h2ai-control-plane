@@ -1,5 +1,7 @@
 use h2ai_agent::config_validation::validate_tool_configs;
+use h2ai_agent::tools::agent_tools;
 use h2ai_config::{H2AIConfig, McpFilesystemConfig, WasmExecutorConfig, WebSearchConfig};
+use h2ai_types::agent::AgentTool;
 
 #[test]
 fn absent_sections_do_not_panic() {
@@ -61,4 +63,11 @@ fn mcp_filesystem_config_present_does_not_panic() {
         ..H2AIConfig::default()
     };
     validate_tool_configs(&cfg);
+}
+
+#[test]
+fn agent_tools_list_is_complete() {
+    let tools = agent_tools();
+    assert!(tools.contains(&AgentTool::Shell));
+    assert!(tools.contains(&AgentTool::FileSystem));
 }

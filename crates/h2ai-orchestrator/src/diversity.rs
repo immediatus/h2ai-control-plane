@@ -19,6 +19,7 @@ impl DiversityGuard {
     ///
     /// Fails open (returns `Diverse`) when fewer than 2 proposals, any fingerprint is
     /// empty, or fingerprint lengths are inconsistent (constraint corpus changed mid-run).
+    #[must_use]
     pub fn check(
         passed: &[(ProposalEvent, Vec<ComplianceResult>, bool)],
         threshold: f64,
@@ -29,7 +30,12 @@ impl DiversityGuard {
 
         let fingerprints: Vec<SatisfactionFingerprint> = passed
             .iter()
-            .map(|(_, results, _)| results.iter().map(|r| r.hard_passes()).collect())
+            .map(|(_, results, _)| {
+                results
+                    .iter()
+                    .map(h2ai_constraints::types::ComplianceResult::hard_passes)
+                    .collect()
+            })
             .collect();
 
         let len = fingerprints[0].len();
@@ -46,7 +52,7 @@ impl DiversityGuard {
             }
         }
 
-        if (total / pairs as f64) < threshold {
+        if (total / f64::from(pairs)) < threshold {
             DiversityResult::Collapsed
         } else {
             DiversityResult::Diverse

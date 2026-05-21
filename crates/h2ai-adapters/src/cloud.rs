@@ -11,10 +11,12 @@ pub struct CloudGenericAdapter {
 }
 
 impl CloudGenericAdapter {
+    #[must_use]
     pub fn new(endpoint: String, api_key_env: String, model: Option<String>) -> Self {
         Self::with_thinking(endpoint, api_key_env, model, true)
     }
 
+    #[must_use]
     pub fn with_thinking(
         endpoint: String,
         api_key_env: String,
@@ -40,9 +42,12 @@ impl CloudGenericAdapter {
     }
 
     fn api_key(&self) -> Result<String, AdapterError> {
-        let env_name = match &self.kind {
-            AdapterKind::CloudGeneric { api_key_env, .. } => api_key_env,
-            _ => unreachable!(),
+        let AdapterKind::CloudGeneric {
+            api_key_env: env_name,
+            ..
+        } = &self.kind
+        else {
+            unreachable!()
         };
         if env_name.is_empty() {
             return Ok(String::new());
@@ -62,7 +67,7 @@ struct ChatResponse {
 ///
 /// - Two-phase models: `content` holds the answer; `reasoning_content` is returned as the trace
 ///   so downstream components (e.g. Auditor Gate) can inspect the chain-of-thought.
-/// - Reasoning-only models (DeepSeek R1 etc.): `content` is empty; `reasoning_content` is the
+/// - Reasoning-only models (`DeepSeek` R1 etc.): `content` is empty; `reasoning_content` is the
 ///   full output.  Promoted to `output`; no separate trace.
 /// - `finish_reason == "length"` with empty content: model ran out of tokens in the thinking
 ///   phase — answer was never generated; fail fast to prevent poisoning the ensemble.
@@ -81,7 +86,7 @@ fn extract_output(choice: Choice) -> Result<(String, Option<String>), AdapterErr
 #[derive(Deserialize)]
 struct Choice {
     message: Message,
-    /// "stop" = natural finish; "length" = max_tokens reached mid-generation.
+    /// "stop" = natural finish; "length" = `max_tokens` reached mid-generation.
     #[serde(default)]
     finish_reason: String,
 }
@@ -90,7 +95,7 @@ struct Choice {
 struct Message {
     #[serde(default)]
     content: String,
-    /// Reasoning-only models (DeepSeek R1) put their entire answer here and
+    /// Reasoning-only models (`DeepSeek` R1) put their entire answer here and
     /// always leave `content` empty — use as output when `content` is absent
     /// AND `finish_reason` is "stop".  When `finish_reason` is "length", the
     /// model ran out of tokens mid-thinking; `content` is empty but the answer

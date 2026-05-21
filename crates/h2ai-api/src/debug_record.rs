@@ -50,6 +50,7 @@ pub struct TaskDebugRecord {
 }
 
 impl TaskDebugRecord {
+    #[must_use]
     pub fn build(
         description: &str,
         srani_ema_before: f64,
@@ -120,7 +121,7 @@ pub fn append_debug_record(path: &str, record: &TaskDebugRecord) {
         .create(true)
         .append(true)
         .open(path)
-        .and_then(|mut f| writeln!(f, "{line}").map(|_| ()));
+        .and_then(|mut f| writeln!(f, "{line}").map(|()| ()));
     if let Err(e) = result {
         tracing::warn!(target: "h2ai.debug_log", path = %path, "failed to write debug record: {e}");
     }

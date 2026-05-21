@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Per-proposal verdict from the critique stage.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CritiqueVerdict {
     Strong,
@@ -153,26 +153,24 @@ impl SynthesisPhase {
             .await
             .map_err(|e| SynthesisError::AdapterError(e.to_string()))?;
 
-        match serde_json::from_str::<CritiqueDocument>(&resp.output) {
-            Ok(doc) => Ok((doc, resp.output, resp.token_cost)),
-            Err(_) => {
-                // One retry with a stricter instruction prepended
-                let stricter = format!(
-                    "You MUST respond with ONLY valid JSON matching the schema. No prose.\n\n{}",
-                    critique_prompt
-                );
-                let retry_req = ComputeRequest {
-                    task: stricter,
-                    ..req
-                };
-                let retry_resp = adapter
-                    .execute(retry_req)
-                    .await
-                    .map_err(|e| SynthesisError::AdapterError(e.to_string()))?;
-                let doc = serde_json::from_str::<CritiqueDocument>(&retry_resp.output)
-                    .map_err(|e| SynthesisError::CritiqueFailed(e.to_string()))?;
-                Ok((doc, retry_resp.output, retry_resp.token_cost))
-            }
+        if let Ok(doc) = serde_json::from_str::<CritiqueDocument>(&resp.output) {
+            Ok((doc, resp.output, resp.token_cost))
+        } else {
+            // One retry with a stricter instruction prepended
+            let stricter = format!(
+                "You MUST respond with ONLY valid JSON matching the schema. No prose.\n\n{critique_prompt}"
+            );
+            let retry_req = ComputeRequest {
+                task: stricter,
+                ..req
+            };
+            let retry_resp = adapter
+                .execute(retry_req)
+                .await
+                .map_err(|e| SynthesisError::AdapterError(e.to_string()))?;
+            let doc = serde_json::from_str::<CritiqueDocument>(&retry_resp.output)
+                .map_err(|e| SynthesisError::CritiqueFailed(e.to_string()))?;
+            Ok((doc, retry_resp.output, retry_resp.token_cost))
         }
     }
 

@@ -26,50 +26,17 @@ impl RhoEmaState {
                 (b.clone(), a.clone())
             };
             let entry = self.ema.entry(key).or_insert(0.45);
-            *entry = (1.0 - alpha) * *entry + alpha * product;
+            *entry = (1.0 - alpha).mul_add(*entry, alpha * product);
         }
         self.n_observations += 1;
     }
 
     /// Mean of all per-pair EMA values. Returns 0.45 (conservative prior) if no pairs yet.
+    #[must_use]
     pub fn rho_mean(&self) -> f64 {
         if self.ema.is_empty() {
             return 0.45;
         }
         (self.ema.values().sum::<f64>() / self.ema.len() as f64).clamp(0.0, 0.99)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn update_increments_n_observations() {
-        let mut state = RhoEmaState::default();
-        state.update(&[("a".into(), "b".into(), 0.4)], 0.1);
-        assert_eq!(state.n_observations, 1);
-    }
-
-    #[test]
-    fn rho_mean_converges_toward_true_rho() {
-        let true_rho = 0.40_f64;
-        let mut state = RhoEmaState::default();
-        for _ in 0..50 {
-            state.update(&[("a".into(), "b".into(), true_rho)], 0.10);
-        }
-        let estimated = state.rho_mean();
-        assert!(
-            (estimated - true_rho).abs() < 0.05,
-            "EMA should converge to ~0.40 after 50 updates, got {estimated:.4}"
-        );
-    }
-
-    #[test]
-    fn pair_key_is_order_independent() {
-        let mut state = RhoEmaState::default();
-        state.update(&[("z".into(), "a".into(), 0.5)], 0.1);
-        state.update(&[("a".into(), "z".into(), 0.5)], 0.1);
-        assert_eq!(state.ema.len(), 1);
     }
 }

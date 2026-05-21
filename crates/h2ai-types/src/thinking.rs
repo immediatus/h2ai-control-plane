@@ -35,7 +35,7 @@ pub struct ArchetypeOutput {
     pub oracle_result: Option<OracleGateResultEvent>,
 }
 
-/// Synthesis output produced each iteration; carries forward (only shared_understanding +
+/// Synthesis output produced each iteration; carries forward (only `shared_understanding` +
 /// tensions forwarded to next archetype selection — Think Twice: discard intermediates).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ThinkingReport {
@@ -43,24 +43,6 @@ pub struct ThinkingReport {
     pub tensions: Vec<String>,
     pub coverage_score: f64,
     pub iteration: u32,
-    /// Cosine similarity to previous iteration's shared_understanding. 0.0 on first iteration.
+    /// Cosine similarity to previous iteration's `shared_understanding`. 0.0 on first iteration.
     pub prev_similarity: f64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn model_tier_default_is_standard() {
-        assert_eq!(ModelTier::default(), ModelTier::Standard);
-    }
-
-    #[test]
-    fn thinking_report_default_has_zero_coverage() {
-        let r = ThinkingReport::default();
-        assert_eq!(r.coverage_score, 0.0);
-        assert!(r.tensions.is_empty());
-        assert!(r.shared_understanding.is_empty());
-    }
 }

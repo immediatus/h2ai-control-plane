@@ -16,4 +16,5 @@ chrono       = { workspace = true }
 
 [dev-dependencies]
 h2ai-adapters = { path = "../h2ai-adapters" }
+async-trait   = { workspace = true }
 tokio         = { workspace = true }

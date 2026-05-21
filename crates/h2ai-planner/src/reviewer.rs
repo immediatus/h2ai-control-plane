@@ -20,6 +20,11 @@ impl PlanReviewer {
     ///
     /// Structural checks (empty plan, cyclic dependencies) run locally first.
     /// If both pass, makes one LLM call for a semantic review.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PlannerError::Adapter` if the LLM call fails, or `PlannerError::ParseError`
+    /// if the review JSON cannot be parsed.
     pub async fn evaluate(
         plan: &SubtaskPlan,
         original_description: &str,
@@ -103,22 +108,12 @@ fn parse_review(raw: &str) -> Result<ReviewOutcome, PlannerError> {
 
 /// Returns `Some(reason)` if a cycle is detected via DFS colour-marking.
 fn detect_cycle(plan: &SubtaskPlan) -> Option<String> {
-    let index: HashMap<&SubtaskId, usize> = plan
-        .subtasks
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (&s.id, i))
-        .collect();
-
     #[derive(Clone, Copy, PartialEq)]
     enum Color {
         White,
         Gray,
         Black,
     }
-
-    let n = plan.subtasks.len();
-    let mut color = vec![Color::White; n];
 
     fn dfs(
         v: usize,
@@ -139,6 +134,16 @@ fn detect_cycle(plan: &SubtaskPlan) -> Option<String> {
         color[v] = Color::Black;
         false
     }
+
+    let index: HashMap<&SubtaskId, usize> = plan
+        .subtasks
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (&s.id, i))
+        .collect();
+
+    let n = plan.subtasks.len();
+    let mut color = vec![Color::White; n];
 
     for i in 0..n {
         if color[i] == Color::White && dfs(i, plan, &index, &mut color) {

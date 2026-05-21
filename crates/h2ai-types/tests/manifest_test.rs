@@ -1,6 +1,6 @@
 use h2ai_types::manifest::{
-    CotStyle, ExplorerSlotConfig, MergeRequest, MergeResolution, TaskManifest, TaskStatusResponse,
-    TopologyRequest,
+    CalibrationAccepted, CotStyle, ExplorerSlotConfig, MergeRequest, MergeResolution, TaskAccepted,
+    TaskManifest, TaskStatusResponse, TopologyRequest,
 };
 
 #[test]
@@ -204,4 +204,99 @@ fn manifest_constraint_tags_roundtrip() {
     }"#;
     let m: TaskManifest = serde_json::from_str(json).unwrap();
     assert_eq!(m.constraint_tags, vec!["eu_data", "financial_report"]);
+}
+
+// ── TopologyRequest::default ─────────────────────────────────────────────────
+
+#[test]
+fn topology_request_default_kind_is_auto() {
+    let t = TopologyRequest::default();
+    assert_eq!(t.kind, "auto");
+    assert!(t.branching_factor.is_none());
+}
+
+// ── MergeResolution variants ──────────────────────────────────────────────────
+
+#[test]
+fn merge_resolution_synthesize_roundtrip() {
+    let req = MergeRequest {
+        resolution: MergeResolution::Synthesize,
+        selected_proposals: vec![],
+        synthesis_notes: Some("synthesized from A and B".into()),
+        final_output: Some("combined output".into()),
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    let back: MergeRequest = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.resolution, MergeResolution::Synthesize));
+}
+
+#[test]
+fn merge_resolution_reject_roundtrip() {
+    let req = MergeRequest {
+        resolution: MergeResolution::Reject,
+        selected_proposals: vec![],
+        synthesis_notes: None,
+        final_output: None,
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    let back: MergeRequest = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.resolution, MergeResolution::Reject));
+}
+
+#[test]
+fn merge_resolution_variants_are_distinct() {
+    assert_ne!(MergeResolution::Select, MergeResolution::Synthesize);
+    assert_ne!(MergeResolution::Select, MergeResolution::Reject);
+    assert_ne!(MergeResolution::Synthesize, MergeResolution::Reject);
+}
+
+// ── TaskAccepted ──────────────────────────────────────────────────────────────
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn task_accepted_roundtrip() {
+    let accepted = TaskAccepted {
+        task_id: "task-abc-123".into(),
+        status: "accepted".into(),
+        events_url: "/tasks/task-abc-123/events".into(),
+        topology_kind: "ensemble".into(),
+        n_max: 5.0,
+        interface_n_max: Some(3.0),
+    };
+    let json = serde_json::to_string(&accepted).unwrap();
+    let back: TaskAccepted = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.task_id, "task-abc-123");
+    assert_eq!(back.n_max, 5.0);
+    assert_eq!(back.interface_n_max, Some(3.0));
+}
+
+#[test]
+fn task_accepted_without_interface_n_max() {
+    let accepted = TaskAccepted {
+        task_id: "task-xyz".into(),
+        status: "accepted".into(),
+        events_url: "/tasks/task-xyz/events".into(),
+        topology_kind: "auto".into(),
+        n_max: 3.0,
+        interface_n_max: None,
+    };
+    let json = serde_json::to_string(&accepted).unwrap();
+    let back: TaskAccepted = serde_json::from_str(&json).unwrap();
+    assert!(back.interface_n_max.is_none());
+}
+
+// ── CalibrationAccepted ───────────────────────────────────────────────────────
+
+#[test]
+fn calibration_accepted_roundtrip() {
+    let cal = CalibrationAccepted {
+        calibration_id: "cal-001".into(),
+        status: "running".into(),
+        events_url: "/calibrate/cal-001/events".into(),
+        adapter_count: 3,
+    };
+    let json = serde_json::to_string(&cal).unwrap();
+    let back: CalibrationAccepted = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.calibration_id, "cal-001");
+    assert_eq!(back.adapter_count, 3);
 }

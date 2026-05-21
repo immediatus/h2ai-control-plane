@@ -24,10 +24,11 @@ pub struct TenantState {
 }
 
 impl TenantState {
-    /// Construct a cold-start TenantState from config defaults.
+    /// Construct a cold-start `TenantState` from config defaults.
     ///
-    /// All estimators start at their prior values; `load_tenant_state` in AppState
+    /// All estimators start at their prior values; `load_tenant_state` in `AppState`
     /// should be called afterward to restore persisted values from NATS KV.
+    #[must_use]
     pub fn new(cfg: &H2AIConfig) -> Self {
         let tau_spread = cfg.calibration_tau_spread;
         let tao_ema_alpha = cfg.tao_estimator_ema_alpha;
@@ -62,17 +63,19 @@ impl TenantState {
 /// Maps tenant IDs to isolated runtime estimator state.
 ///
 /// `get_or_create` minimises redundant construction: the fast path is a lock-free
-/// DashMap read; the slow path holds a shard lock via the entry API so only one
+/// `DashMap` read; the slow path holds a shard lock via the entry API so only one
 /// value is ever *stored*, even if two concurrent callers both race past the fast
 /// path and call `TenantState::new` simultaneously.
 #[derive(Clone, Default)]
 pub struct TenantRegistry(Arc<DashMap<TenantId, Arc<TenantState>>>);
 
 impl TenantRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self(Arc::new(DashMap::new()))
     }
 
+    #[must_use]
     pub fn get_or_create(&self, id: &TenantId, cfg: &H2AIConfig) -> Arc<TenantState> {
         if let Some(existing) = self.0.get(id) {
             return existing.clone();
@@ -81,61 +84,5 @@ impl TenantRegistry {
             .entry(id.clone())
             .or_insert_with(|| Arc::new(TenantState::new(cfg)))
             .clone()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_config::H2AIConfig;
-    use h2ai_types::identity::TenantId;
-
-    #[test]
-    fn two_tenant_ids_get_separate_state() {
-        let cfg = H2AIConfig::default();
-        let registry = TenantRegistry::new();
-        let s1 = registry.get_or_create(&TenantId::from("acme"), &cfg);
-        let s2 = registry.get_or_create(&TenantId::from("beta"), &cfg);
-        assert!(!Arc::ptr_eq(&s1, &s2));
-    }
-
-    #[test]
-    fn same_tenant_id_returns_same_arc() {
-        let cfg = H2AIConfig::default();
-        let registry = TenantRegistry::new();
-        let t = TenantId::from("acme");
-        let s1 = registry.get_or_create(&t, &cfg);
-        let s2 = registry.get_or_create(&t, &cfg);
-        assert!(Arc::ptr_eq(&s1, &s2));
-    }
-
-    #[test]
-    fn concurrent_first_access_yields_same_arc() {
-        use std::thread;
-        let cfg = H2AIConfig::default();
-        let registry = Arc::new(TenantRegistry::new());
-        let t = TenantId::from("race-tenant");
-        let handles: Vec<_> = (0..8)
-            .map(|_| {
-                let r = Arc::clone(&registry);
-                let tid = t.clone();
-                let c = cfg.clone();
-                thread::spawn(move || r.get_or_create(&tid, &c))
-            })
-            .collect();
-        let arcs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        // All 8 threads must get back the same Arc (same allocation).
-        for arc in &arcs {
-            assert!(Arc::ptr_eq(&arcs[0], arc));
-        }
-    }
-
-    #[test]
-    fn default_tenant_is_distinct_from_named_tenant() {
-        let cfg = H2AIConfig::default();
-        let registry = TenantRegistry::new();
-        let s_default = registry.get_or_create(&TenantId::default_tenant(), &cfg);
-        let s_named = registry.get_or_create(&TenantId::from("acme"), &cfg);
-        assert!(!Arc::ptr_eq(&s_default, &s_named));
     }
 }

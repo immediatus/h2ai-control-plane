@@ -1,6 +1,56 @@
-// Integration test: needs NATS. Start with:
-//   NATS_URL=nats://localhost:4222 cargo nextest run -p h2ai-orchestrator --test pipeline_await_test
-
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 use async_nats::Client;
 use futures::StreamExt;
 use h2ai_memory::in_memory::InMemoryCache;
@@ -13,7 +63,29 @@ use h2ai_types::agent::{
     AgentDescriptor, AgentTelemetryEvent, AgentTool, CostTier, TaskPayload, TaskResult,
 };
 use h2ai_types::sizing::TauValue;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
+
+// Serialize pipeline tests to prevent cross-test NATS message contamination.
+// Both tests subscribe to the same ephemeral subject wildcard; parallel execution
+// causes test 1's fake agent to intercept test 2's task.
+static PIPELINE_TEST_LOCK: std::sync::LazyLock<Arc<Mutex<()>>> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(())));
+
+async fn connect() -> Option<(h2ai_state::nats::NatsClient, async_nats::Client)> {
+    let url = h2ai_config::H2AIConfig::default().nats_url;
+    let state_client = match h2ai_state::nats::NatsClient::connect(&url).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("NATS unavailable at {url} — skipping: {e}");
+            return None;
+        }
+    };
+    state_client.ensure_infrastructure().await.expect("infra");
+    let nats = async_nats::connect(&url).await.expect("nats connect");
+    Some((state_client, nats))
+}
 
 async fn spawn_fake_agent(nats: Client) {
     tokio::spawn(async move {
@@ -24,7 +96,6 @@ async fn spawn_fake_agent(nats: Client) {
 
         if let Some(msg) = sub.next().await {
             let payload: TaskPayload = serde_json::from_slice(&msg.payload).expect("parse payload");
-            // Use the agent_id the control plane assigned in the payload.
             let agent_id = payload.agent_id.clone();
 
             let telemetry = AgentTelemetryEvent::LlmPromptSent {
@@ -59,16 +130,11 @@ async fn spawn_fake_agent(nats: Client) {
 }
 
 #[tokio::test]
-#[ignore = "requires live NATS at localhost:4222"]
 async fn execute_and_await_returns_task_result() {
-    let url = h2ai_config::H2AIConfig::default().nats_url;
-
-    let state_client = h2ai_state::nats::NatsClient::connect(&url)
-        .await
-        .expect("state connect");
-    state_client.ensure_infrastructure().await.expect("infra");
-
-    let nats = async_nats::connect(&url).await.expect("nats connect");
+    let _guard = PIPELINE_TEST_LOCK.lock().await;
+    let Some((_state, nats)) = connect().await else {
+        return;
+    };
     let pipeline = OrchestratorPipeline::new(
         InMemoryCache::new(),
         StaticProvider::new(10),
@@ -102,16 +168,11 @@ async fn execute_and_await_returns_task_result() {
 }
 
 #[tokio::test]
-#[ignore = "requires live NATS at localhost:4222"]
 async fn execute_and_await_times_out_without_agent() {
-    let url = h2ai_config::H2AIConfig::default().nats_url;
-
-    let state_client = h2ai_state::nats::NatsClient::connect(&url)
-        .await
-        .expect("state connect");
-    state_client.ensure_infrastructure().await.expect("infra");
-
-    let nats = async_nats::connect(&url).await.expect("nats connect");
+    let _guard = PIPELINE_TEST_LOCK.lock().await;
+    let Some((_state, nats)) = connect().await else {
+        return;
+    };
     let pipeline = OrchestratorPipeline::new(
         InMemoryCache::new(),
         StaticProvider::new(10),

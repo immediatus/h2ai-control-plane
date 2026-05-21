@@ -6,8 +6,8 @@
 /// with `{key}` form — bare `{` / `}` without an alphanumeric key are left as-is.
 ///
 /// # Single source of truth
-/// - Types in `h2ai-types` that embed prompt defaults (TaoConfig, VerificationConfig,
-///   AuditorConfig) reference `h2ai_types::prompts::*`.
+/// - Types in `h2ai-types` that embed prompt defaults (`TaoConfig`, `VerificationConfig`,
+///   `AuditorConfig`) reference `h2ai_types::prompts::*`.
 /// - Everything from that module is re-exported here so callers have one import path:
 ///   `h2ai_config::prompts`.
 /// - Planner prompts live here because h2ai-planner (and orchestrator) depend on h2ai-config.
@@ -26,6 +26,7 @@ pub struct PromptTemplate(pub &'static str);
 impl PromptTemplate {
     /// Substitute every `{key}` occurrence using `vars` pairs.
     /// Returns an owned `String` with all matched placeholders replaced.
+    #[must_use]
     pub fn render(&self, vars: &[(&str, &str)]) -> String {
         vars.iter().fold(self.0.to_owned(), |s, (key, val)| {
             s.replace(&format!("{{{key}}}"), val)
@@ -33,7 +34,8 @@ impl PromptTemplate {
     }
 
     /// Return the raw template string without any substitution.
-    pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         self.0
     }
 }
@@ -193,7 +195,7 @@ pub const PROBE_TASK: PromptTemplate =
 
 // ── Verification ──────────────────────────────────────────────────────────────
 
-/// Task prompt for LlmJudge evaluation calls.
+/// Task prompt for `LlmJudge` evaluation calls.
 /// Variables: `{rubric}`, `{output}`.
 pub const VERIFICATION_TASK: PromptTemplate =
     PromptTemplate("Criterion:\n{rubric}\n\nProposal:\n{output}");
@@ -260,9 +262,11 @@ pub const THINKING_ARCHETYPE_SELECT_ITER1: PromptTemplate = PromptTemplate(conca
     "Output ONLY the JSON array."
 ));
 
-/// Archetype selection task for iteration N>1. Feeds only distilled summary, not raw outputs
-/// (Think Twice principle: discard intermediates to force independent re-evaluation).
-/// Variables: `{description}`, `{understanding}`, `{tensions}`, `{n}`.
+/// Archetype selection task for iteration N>1.
+///
+/// Feeds only distilled summary, not raw outputs (Think Twice principle: discard intermediates
+/// to force independent re-evaluation). Variables: `{description}`, `{understanding}`,
+/// `{tensions}`, `{n}`.
 pub const THINKING_ARCHETYPE_SELECT_ITERN: PromptTemplate = PromptTemplate(concat!(
     "TASK: {description}\n\n",
     "PRIOR SYNTHESIS:\n{understanding}\n\n",
@@ -334,12 +338,12 @@ pub const THINKING_QUALITY_GATE_TASK: PromptTemplate = PromptTemplate(concat!(
 /// Task manifest section header. Variables: `{manifest}`.
 pub const COMPILER_TASK_MANIFEST: PromptTemplate = PromptTemplate("## Task Manifest\n{manifest}");
 
-/// Entry for a Hard or include_rubric=true LlmJudge constraint.
+/// Entry for a Hard or `include_rubric=true` `LlmJudge` constraint.
 /// Variables: `{id}`, `{rubric}`.
 pub const COMPILER_CONSTRAINT_HARD_RUBRIC: PromptTemplate =
     PromptTemplate("## {id} Constraint\n{rubric}");
 
-/// Entry for a Soft LlmJudge constraint when rubric is withheld.
+/// Entry for a Soft `LlmJudge` constraint when rubric is withheld.
 /// Variables: `{id}`.
 pub const COMPILER_CONSTRAINT_ACTIVE_ID: PromptTemplate =
     PromptTemplate("## Active Constraint: {id}");
@@ -394,43 +398,3 @@ pub const DECOMPOSITION_CONSTRAINT_ENTRY: PromptTemplate = PromptTemplate(concat
     "Rubric: {rubric}\n",
     "Remediation hint: {hint}"
 ));
-
-#[cfg(test)]
-mod thinking_prompts_tests {
-    use super::*;
-
-    #[test]
-    fn semantic_ordering_template_renders_all_fields() {
-        let rendered = COMPILER_CONSTRAINT_ORDERING.render(&[
-            ("id", "C-005"),
-            ("first", "account debit"),
-            ("then", "Kafka publish"),
-        ]);
-        assert!(rendered.contains("C-005"));
-        assert!(rendered.contains("account debit"));
-        assert!(rendered.contains("Kafka publish"));
-    }
-
-    #[test]
-    fn archetype_select_iter1_renders_required_fields() {
-        let rendered = THINKING_ARCHETYPE_SELECT_ITER1.render(&[
-            ("description", "design a caching layer"),
-            ("constraints", "CONSTRAINT-001"),
-            ("research_context", "Redis is the standard choice"),
-            ("n", "3"),
-        ]);
-        assert!(rendered.contains("design a caching layer"));
-        assert!(rendered.contains("CONSTRAINT-001"));
-        assert!(rendered.contains("Redis is the standard choice"));
-        assert!(rendered.contains("3"));
-    }
-
-    #[test]
-    fn synthesis_task_renders_perspectives_and_prior() {
-        let rendered = THINKING_SYNTHESIS_TASK.render(&[
-            ("perspectives", "arch A: use Redis"),
-            ("prior_understanding", ""),
-        ]);
-        assert!(rendered.contains("arch A: use Redis"));
-    }
-}

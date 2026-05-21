@@ -23,7 +23,7 @@ pub enum CostTier {
     High,
 }
 
-/// Scheduling requirements a task passes to AgentProvider::select_agent.
+/// Scheduling requirements a task passes to `AgentProvider::select_agent`.
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRequirements {
@@ -32,7 +32,7 @@ pub struct TaskRequirements {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDescriptor {
     pub model: String,
     pub tools: Vec<AgentTool>,
@@ -41,7 +41,7 @@ pub struct AgentDescriptor {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "message")]
 pub enum AgentState {
     Idle,
@@ -56,7 +56,7 @@ pub enum AgentState {
 /// Inline is used when `len(context_bytes) ≤ payload_offload_threshold_bytes`.
 /// Ref is used when the context exceeds the threshold, preventing NATS size-limit failures.
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value")]
 pub enum ContextPayload {
     /// Full context string inline.
@@ -66,10 +66,11 @@ pub enum ContextPayload {
 }
 
 impl ContextPayload {
-    pub fn as_inline(&self) -> Option<&str> {
+    #[must_use]
+    pub const fn as_inline(&self) -> Option<&str> {
         match self {
-            ContextPayload::Inline(s) => Some(s.as_str()),
-            ContextPayload::Ref { .. } => None,
+            Self::Inline(s) => Some(s.as_str()),
+            Self::Ref { .. } => None,
         }
     }
 }
@@ -98,7 +99,7 @@ pub struct TaskPayload {
 
 /// Single tool invocation record, carried in `TaskResult` for the NATS audit trail.
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool: AgentTool,
     /// Serialized JSON string of the input passed to the tool executor.
@@ -110,7 +111,7 @@ pub struct ToolCallRecord {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: TaskId,
     pub agent_id: AgentId,
@@ -123,7 +124,7 @@ pub struct TaskResult {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHeartbeat {
     pub agent_id: AgentId,
     pub descriptor: AgentDescriptor,
@@ -133,7 +134,7 @@ pub struct AgentHeartbeat {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event_type")]
 pub enum AgentTelemetryEvent {
     LlmPromptSent {

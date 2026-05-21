@@ -9,8 +9,8 @@ pub struct Input<'a> {
 
 /// Run Phase 2.6: Pool Diversity Guard.
 ///
-/// Checks whether the explorer pool's prior n_eff_cosine meets the configured
-/// diversity threshold. A low n_eff_prior (< 1.0 + diversity_threshold) signals
+/// Checks whether the explorer pool's prior `n_eff_cosine` meets the configured
+/// diversity threshold. A low `n_eff_prior` (< 1.0 + `diversity_threshold`) signals
 /// that the adapter pool is too homogeneous for meaningful ensemble diversity.
 ///
 /// When `diversity_threshold` is zero (disabled), or when `n_eff_prior` is zero
@@ -22,6 +22,7 @@ pub struct Input<'a> {
 /// `last_multiplication_failure` / `tau_values_tried` and invoking `RetryPolicy::decide`.
 ///
 /// Never returns `StepResult::Fatal`.
+#[must_use]
 pub fn run(input: Input<'_>) -> StepResult<()> {
     let engine_input = input.engine_input;
     let provisioned = input.provisioned;

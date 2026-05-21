@@ -49,3 +49,26 @@ async fn in_memory_cache_multiple_sessions_isolated() {
     assert_eq!(h1.len(), 1);
     assert_eq!(h2.len(), 2);
 }
+
+#[tokio::test]
+async fn in_memory_cache_default_is_empty() {
+    // Exercises `Default` impl (lines 19-21 in in_memory.rs)
+    let cache = InMemoryCache::default();
+    let history = cache.get_recent_history("any", 10).await.unwrap();
+    assert!(history.is_empty());
+}
+
+#[tokio::test]
+async fn in_memory_cache_retrieve_relevant_context_returns_empty() {
+    // Exercises `retrieve_relevant_context` (lines 50-57 in in_memory.rs)
+    let cache = InMemoryCache::new();
+    cache
+        .commit_new_memories("s1", vec![json!({"msg": "hello"})])
+        .await
+        .unwrap();
+    let results = cache
+        .retrieve_relevant_context("s1", "hello")
+        .await
+        .unwrap();
+    assert!(results.is_empty(), "in-memory cache has no semantic search");
+}

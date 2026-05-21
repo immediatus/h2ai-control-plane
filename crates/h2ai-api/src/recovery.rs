@@ -13,10 +13,10 @@ use uuid::Uuid;
 ///
 /// Used to distinguish own-node checkpoints (resume immediately) from
 /// foreign-node checkpoints (attempt optimistic CAS claim with jitter).
+#[must_use]
 pub fn local_node_id() -> String {
-    let host = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".into());
+    let host =
+        hostname::get().map_or_else(|_| "unknown".into(), |h| h.to_string_lossy().to_string());
     format!("{host}:{}", std::process::id())
 }
 
@@ -33,11 +33,22 @@ pub fn local_node_id() -> String {
 ///   If the CAS fails another node won the race; skip silently.
 pub async fn recover_in_flight_tasks(state: Arc<AppState>) {
     let my_node_id = local_node_id();
-    let entries = state.nats.list_task_checkpoints().await;
+    let nats = state
+        .nats
+        .as_ref()
+        .expect("NATS required for task recovery");
+    let entries = nats.list_task_checkpoints().await;
     tracing::info!("recovery: found {} checkpoints to inspect", entries.len());
 
     for checkpoint in entries {
-        if checkpoint.node_id != my_node_id {
+        if checkpoint.node_id == my_node_id {
+            tracing::info!(
+                task_id = %checkpoint.task_id,
+                phase  = %checkpoint.phase,
+                "recovery: resuming own task"
+            );
+            spawn_resume(state.clone(), checkpoint);
+        } else {
             // Foreign-node task: apply jitter before racing for ownership.
             let jitter_ms = rand::random::<u64>() % 1500;
             tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
@@ -47,6 +58,8 @@ pub async fn recover_in_flight_tasks(state: Arc<AppState>) {
 
             match state
                 .nats
+                .as_ref()
+                .expect("NATS required for task recovery")
                 .put_task_checkpoint(&claimed, Some(checkpoint.lease_seq))
                 .await
             {
@@ -66,13 +79,6 @@ pub async fn recover_in_flight_tasks(state: Arc<AppState>) {
                     );
                 }
             }
-        } else {
-            tracing::info!(
-                task_id = %checkpoint.task_id,
-                phase  = %checkpoint.phase,
-                "recovery: resuming own task"
-            );
-            spawn_resume(state.clone(), checkpoint);
         }
     }
 }
@@ -94,6 +100,8 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                 );
                 state
                     .nats
+                    .as_ref()
+                    .expect("NATS required for task recovery")
                     .delete_task_checkpoint(&checkpoint.task_id)
                     .await
                     .ok();
@@ -102,15 +110,14 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
         };
 
         // --- Parse task_id ---
-        let task_id: TaskId = match Uuid::parse_str(&checkpoint.task_id) {
-            Ok(u) => TaskId::from_uuid(u),
-            Err(_) => {
-                tracing::error!(
-                    task_id = %checkpoint.task_id,
-                    "recovery: invalid task_id format"
-                );
-                return;
-            }
+        let task_id: TaskId = if let Ok(u) = Uuid::parse_str(&checkpoint.task_id) {
+            TaskId::from_uuid(u)
+        } else {
+            tracing::error!(
+                task_id = %checkpoint.task_id,
+                "recovery: invalid task_id format"
+            );
+            return;
         };
 
         // --- Re-register in store so status queries work immediately ---
@@ -124,15 +131,14 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
 
         // --- Require calibration ---
         let ts = state.tenant_state(&manifest.tenant_id);
-        let calibration = match ts.calibration.read().await.clone() {
-            Some(c) => c,
-            None => {
-                tracing::warn!(
-                    task_id = %task_id,
-                    "recovery: no calibration available, skipping task"
-                );
-                return;
-            }
+        let calibration = if let Some(c) = ts.calibration.read().await.clone() {
+            c
+        } else {
+            tracing::warn!(
+                task_id = %task_id,
+                "recovery: no calibration available, skipping task"
+            );
+            return;
         };
 
         // --- Load constraint corpus ---
@@ -173,7 +179,10 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             task_id: task_id.clone(),
             manifest,
             calibration,
-            explorer_adapters: explorer_arcs.iter().map(|a| a.as_ref()).collect(),
+            explorer_adapters: explorer_arcs
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect(),
             verification_adapter: verifier.as_ref(),
             auditor_adapter: auditor.as_ref(),
             auditor_config: AuditorConfig {
@@ -199,7 +208,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             srani_grounding_chain: None,
             nats_raw: None,
             tenant_id,
-            nats: Some(state.nats.clone()),
+            nats: state.nats.clone(),
             prev_assembled_contexts: Vec::new(),
             compression_adapter: None,
             stable_cache: None,
@@ -215,8 +224,15 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                     j_eff: None,
                     timestamp: chrono::Utc::now(),
                     oracle_gate_passed: None,
+                    zone3_hints: None,
                 });
-                if let Err(e) = state.nats.publish_event(&output.task_id, &ev).await {
+                if let Err(e) = state
+                    .nats
+                    .as_ref()
+                    .expect("NATS required for task recovery")
+                    .publish_event(&output.task_id, &ev)
+                    .await
+                {
                     tracing::warn!(
                         task_id = %output.task_id,
                         "recovery: publish MergeResolved failed: {e}"
@@ -225,6 +241,8 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                 state.store.mark_resolved(&output.task_id);
                 if let Err(e) = state
                     .nats
+                    .as_ref()
+                    .expect("NATS required for task recovery")
                     .delete_task_checkpoint(&output.task_id.to_string())
                     .await
                 {
@@ -239,6 +257,8 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                 state.store.mark_failed(&task_id);
                 if let Err(gc_err) = state
                     .nats
+                    .as_ref()
+                    .expect("NATS required for task recovery")
                     .delete_task_checkpoint(&task_id.to_string())
                     .await
                 {

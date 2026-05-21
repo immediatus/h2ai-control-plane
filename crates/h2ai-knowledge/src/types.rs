@@ -71,6 +71,7 @@ pub struct KnowledgeQuery<'a> {
 }
 
 impl<'a> KnowledgeQuery<'a> {
+    #[must_use]
     pub fn all_depths(text: &'a str) -> Self {
         static ALL: &[NodeDepth] = &[NodeDepth::Global, NodeDepth::Topic, NodeDepth::Leaf];
         Self {

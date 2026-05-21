@@ -12,6 +12,7 @@ pub struct ProposalSet(HashMap<ExplorerId, (ProposalEvent, u64, f64)>);
 
 impl ProposalSet {
     /// Create an empty proposal set.
+    #[must_use]
     pub fn new() -> Self {
         Self(HashMap::new())
     }
@@ -49,6 +50,7 @@ impl ProposalSet {
     /// partition or a fan-out collection step), because it satisfies the CRDT commutativity,
     /// associativity, and idempotency axioms.  Use `insert_scored` in a loop instead when
     /// appending proposals one at a time to a single accumulator.
+    #[must_use]
     pub fn join(mut lhs: Self, rhs: Self) -> Self {
         for (_, (proposal, _gen, score)) in rhs.0 {
             lhs.insert_scored(proposal, score);
@@ -62,17 +64,20 @@ impl ProposalSet {
     }
 
     /// Number of distinct explorers with a recorded proposal.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Return `true` when no explorer has submitted a proposal yet.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Return the current winning `ProposalEvent` for `explorer_id`, or `None` if the
     /// explorer has not yet submitted a proposal.
+    #[must_use]
     pub fn get(&self, explorer_id: &ExplorerId) -> Option<&ProposalEvent> {
         self.0.get(explorer_id).map(|(p, _gen, _score)| p)
     }
@@ -87,16 +92,19 @@ impl Default for ProposalSet {
 /// Output of compiling a `ProposalSet` into ranked valid, failed, and pruned partitions.
 ///
 /// Produced by `SemilatticeResult::compile`; consumed by the merger to feed
-/// the consensus selection step (Krum, ConsensusMedian, or Weiszfeld).
+/// the consensus selection step (Krum, `ConsensusMedian`, or Weiszfeld).
 pub struct SemilatticeResult {
     /// Task this result belongs to.
     pub task_id: TaskId,
     /// Non-pruned proposals with verification score > 0, sorted descending.
     ///
-    /// Index 0 holds the highest-scored proposal so ScoreOrdered merge needs
+    /// Index 0 holds the highest-scored proposal so `ScoreOrdered` merge needs
     /// only take `valid_proposals[0]`. Score=0 proposals are excluded to
     /// prevent synthesis contamination (GAP-D8).
     pub valid_proposals: Vec<ProposalEvent>,
+    /// Verification scores for each entry in `valid_proposals` (parallel vector, same index).
+    /// All values are > 0.0. Sorted descending in lock-step with `valid_proposals`.
+    pub valid_proposal_scores: Vec<f64>,
     /// Non-pruned proposals that scored exactly 0.0 on every constraint.
     ///
     /// These failed verification. They are kept here for optional use as
@@ -109,6 +117,7 @@ pub struct SemilatticeResult {
 }
 
 impl SemilatticeResult {
+    #[must_use]
     pub fn compile(
         task_id: TaskId,
         proposals: ProposalSet,
@@ -127,10 +136,12 @@ impl SemilatticeResult {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut valid_proposals = Vec::new();
+        let mut valid_proposal_scores = Vec::new();
         let mut failed_proposals = Vec::new();
         for (proposal, score) in scored {
             if score > 0.0 {
                 valid_proposals.push(proposal);
+                valid_proposal_scores.push(score);
             } else {
                 failed_proposals.push(proposal);
             }
@@ -139,132 +150,9 @@ impl SemilatticeResult {
         Self {
             task_id,
             valid_proposals,
+            valid_proposal_scores,
             failed_proposals,
             pruned_proposals: pruned,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Utc;
-    use h2ai_types::config::AdapterKind;
-    use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::sizing::TauValue;
-
-    fn prop(text: &str) -> ProposalEvent {
-        ProposalEvent {
-            task_id: TaskId::new(),
-            explorer_id: ExplorerId::new(),
-            tau: TauValue::new(0.5).unwrap(),
-            generation: 0,
-            raw_output: text.into(),
-            token_cost: 1,
-            adapter_kind: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-            timestamp: Utc::now(),
-        }
-    }
-
-    #[test]
-    fn score_ordered_compile_sorts_by_score_descending() {
-        let task_id = TaskId::new();
-        let p_low = prop("low score proposal");
-        let p_high = prop("high score proposal");
-        let p_medium = prop("medium score proposal");
-
-        let mut set = ProposalSet::new();
-        set.insert_scored(p_low.clone(), 0.3);
-        set.insert_scored(p_high.clone(), 0.9);
-        set.insert_scored(p_medium.clone(), 0.6);
-
-        let result = SemilatticeResult::compile(task_id, set, vec![]);
-        assert_eq!(result.valid_proposals.len(), 3);
-        assert_eq!(
-            result.valid_proposals[0].raw_output, p_high.raw_output,
-            "highest-scored proposal must be first"
-        );
-        assert_eq!(
-            result.valid_proposals[2].raw_output, p_low.raw_output,
-            "lowest-scored proposal must be last"
-        );
-    }
-
-    #[test]
-    fn insert_without_score_goes_to_failed_proposals() {
-        let task_id = TaskId::new();
-        let mut set = ProposalSet::new();
-        set.insert(prop("unscored proposal"));
-        let result = SemilatticeResult::compile(task_id, set, vec![]);
-        assert_eq!(
-            result.valid_proposals.len(),
-            0,
-            "score=0.0 must not feed the merger"
-        );
-        assert_eq!(
-            result.failed_proposals.len(),
-            1,
-            "score=0.0 goes to failed_proposals"
-        );
-    }
-
-    fn prop_with_id(text: &str, id: ExplorerId) -> ProposalEvent {
-        ProposalEvent {
-            task_id: TaskId::new(),
-            explorer_id: id,
-            tau: TauValue::new(0.5).unwrap(),
-            generation: 0,
-            raw_output: text.into(),
-            token_cost: 1,
-            adapter_kind: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-            timestamp: Utc::now(),
-        }
-    }
-
-    #[test]
-    fn insert_scored_keeps_higher_score_for_same_explorer() {
-        let task_id = TaskId::new();
-        let explorer_id = ExplorerId::new();
-        let low = prop_with_id("low score output", explorer_id.clone());
-        let high = prop_with_id("high score output", explorer_id.clone());
-
-        let mut set = ProposalSet::new();
-        set.insert_scored(low, 0.3);
-        set.insert_scored(high, 0.9);
-
-        let result = SemilatticeResult::compile(task_id, set, vec![]);
-        assert_eq!(result.valid_proposals.len(), 1, "one explorer → one slot");
-        assert_eq!(
-            result.valid_proposals[0].raw_output, "high score output",
-            "LUB must keep higher-scored proposal"
-        );
-    }
-
-    #[test]
-    fn join_is_idempotent() {
-        let task_id = TaskId::new();
-        let explorer_id = ExplorerId::new();
-        let p = prop_with_id("proposal text", explorer_id.clone());
-
-        let mut s1 = ProposalSet::new();
-        s1.insert_scored(p.clone(), 0.7);
-        let mut s2 = ProposalSet::new();
-        s2.insert_scored(p, 0.7);
-
-        let joined = ProposalSet::join(s1, s2);
-        let result = SemilatticeResult::compile(task_id, joined, vec![]);
-        assert_eq!(
-            result.valid_proposals.len(),
-            1,
-            "join(S, S) = S (idempotent)"
-        );
     }
 }

@@ -79,7 +79,7 @@ async fn cloud_adapter_returns_network_error_when_env_var_missing() {
     assert!(matches!(result, Err(AdapterError::NetworkError(_))));
 }
 
-/// Reasoning models (DeepSeek R1, Qwen3, etc.) leave `content` as an empty string and place
+/// Reasoning models (`DeepSeek` R1, Qwen3, etc.) leave `content` as an empty string and place
 /// their output in `reasoning_content`. The adapter must fall back to `reasoning_content`
 /// when `content` is absent or empty.
 #[tokio::test]
@@ -145,7 +145,7 @@ async fn cloud_adapter_prefers_content_over_reasoning_content_when_both_present(
     assert_eq!(resp.output, "final answer");
 }
 
-/// When `finish_reason == "length"` and `content` is empty, the model hit max_tokens
+/// When `finish_reason == "length"` and `content` is empty, the model hit `max_tokens`
 /// during the thinking phase and never produced an answer — must return an error so
 /// callers can retry with a higher budget rather than treating thinking as the answer.
 #[tokio::test]
@@ -169,6 +169,73 @@ async fn cloud_adapter_errors_when_finish_reason_length_and_content_empty() {
     assert!(
         matches!(result, Err(AdapterError::NetworkError(ref msg)) if msg.contains("max_tokens")),
         "finish_reason=length with empty content must return NetworkError, got: {result:?}"
+    );
+}
+
+/// Empty `api_key_env` — exercises the `if env_name.is_empty() { return Ok(String::new()) }` path
+/// (line 48). When `api_key_env` is empty, no Authorization header is sent.
+#[tokio::test]
+async fn cloud_adapter_empty_api_key_env_sends_no_auth_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("anon response", 5)))
+        .mount(&server)
+        .await;
+
+    // Empty string api_key_env means no env lookup, no auth header
+    let adapter = CloudGenericAdapter::new(server.uri(), String::new(), None);
+    let resp = adapter.execute(request()).await.unwrap();
+    assert_eq!(resp.output, "anon response");
+}
+
+/// Connection refused — exercises the `send()` `map_err(NetworkError)` path (line 144)
+#[tokio::test]
+async fn cloud_adapter_network_error_on_connection_refused() {
+    let adapter = CloudGenericAdapter::new("http://127.0.0.1:1".into(), String::new(), None);
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "expected NetworkError on connection refused, got: {result:?}"
+    );
+}
+
+/// Malformed JSON response body — exercises the `json()` parse error path (line 169)
+#[tokio::test]
+async fn cloud_adapter_network_error_on_malformed_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("bad json", "application/json"))
+        .mount(&server)
+        .await;
+
+    let adapter = CloudGenericAdapter::new(server.uri(), String::new(), None);
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "expected NetworkError on malformed JSON, got: {result:?}"
+    );
+}
+
+/// Empty choices array — exercises the no-choices error path (line 175)
+#[tokio::test]
+async fn cloud_adapter_network_error_when_no_choices() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [],
+            "usage": {"total_tokens": 0}
+        })))
+        .mount(&server)
+        .await;
+
+    let adapter = CloudGenericAdapter::new(server.uri(), String::new(), None);
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "empty choices must be an error, got: {result:?}"
     );
 }
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Stored inside `TaskCheckpoint` for regulatory audit: "which constraints were active
 /// at task creation time and which versions were applied?"
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstraintSnapshot {
     /// NATS KV revision of the wiki index at task creation time.
     pub wiki_revision: u64,
@@ -19,7 +19,7 @@ pub struct ConstraintSnapshot {
 /// Phase-output checkpoint for in-flight task crash recovery.
 ///
 /// Written to NATS KV bucket `H2AI_TASK_CHECKPOINTS` (zstd-compressed JSON).
-/// Phase is stored as a string name ("ParallelGeneration") for version stability —
+/// Phase is stored as a string name ("`ParallelGeneration`") for version stability —
 /// enum discriminants shift when new variants are inserted; string names do not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskCheckpoint {
@@ -49,7 +49,7 @@ pub struct TaskCheckpoint {
     #[serde(default)]
     pub constraint_snapshot: Option<ConstraintSnapshot>,
     /// Jury Efficiency computed at merge time; persisted for the HITL approval path.
-    /// `None` when n_agents = 0 (Condorcet undefined) or for checkpoints predating this field.
+    /// `None` when `n_agents` = 0 (Condorcet undefined) or for checkpoints predating this field.
     #[serde(default)]
     pub j_eff: Option<f64>,
 }

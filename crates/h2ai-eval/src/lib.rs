@@ -5,6 +5,7 @@
 ///
 /// Handles pytest-style summary lines: "3 passed", "2 passed, 1 failed in 0.5s"
 /// Falls back to `exit_ok` for runners that don't emit structured counts.
+#[must_use]
 pub fn parse_result(output: &str, exit_ok: bool) -> (bool, usize, usize, usize) {
     let mut passed = 0usize;
     let mut failed = 0usize;

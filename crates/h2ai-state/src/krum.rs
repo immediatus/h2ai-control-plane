@@ -29,7 +29,7 @@
 //!
 //! ## Quorum requirement
 //!
-//! | f (outliers) | n_min |
+//! | f (outliers) | `n_min` |
 //! |--------------|-------|
 //! | 1            | 5     |
 //! | 2            | 7     |
@@ -39,11 +39,11 @@
 //! Call [`quorum_satisfied`] before invoking [`krum_select`] or
 //! [`multi_krum_select`]. The engine enforces this via `EngineError::InsufficientQuorum`.
 //!
-//! ## When to use Krum vs ConsensusMedian
+//! ## When to use Krum vs `ConsensusMedian`
 //!
 //! - **Krum**: high `role_error_cost` (adversarial/unreliable adapters), embedding
 //!   model present, quorum satisfied, AND `cluster_coherent` passes.
-//! - **ConsensusMedian**: stochastic LLM diversity where outputs legitimately differ,
+//! - **`ConsensusMedian`**: stochastic LLM diversity where outputs legitimately differ,
 //!   OR no embedding model is available. No cluster assumption required.
 //!
 //! **Krum always requires a semantic embedding model.** Without one, `cluster_coherent`,
@@ -53,9 +53,11 @@
 //! adapters writing the same code with different variable names appear as outliers to each
 //! other, allowing a degenerate stopword-heavy output to win the Krum selection.
 
-/// Maximum mean pairwise Jaccard distance below which the Krum cluster assumption
-/// is considered approximately satisfied. Above this threshold, honest proposals
-/// are too lexically diverse for Krum's BFT proof to apply.
+/// Maximum mean pairwise Jaccard distance for a valid Krum cluster.
+///
+/// Below this threshold the Krum cluster assumption is considered approximately
+/// satisfied.  Above this threshold honest proposals are too lexically diverse
+/// for Krum's BFT proof to apply.
 pub const MAX_CLUSTER_DIAMETER: f64 = 0.7;
 
 use h2ai_context::embedding::cosine_similarity;
@@ -71,11 +73,12 @@ use std::collections::HashSet;
 fn tokenize(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
+        .map(str::to_lowercase)
         .filter(|t| t.len() > 1)
         .collect()
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn token_jaccard(a: &str, b: &str) -> f64 {
     let ta = tokenize(a);
     let tb = tokenize(b);
@@ -91,6 +94,7 @@ fn token_jaccard(a: &str, b: &str) -> f64 {
 
 /// Minimum proposal count to tolerate `f` Byzantine faults via Krum.
 /// Derived from n ≥ 2f + 3 (Blanchard et al. 2017).
+#[must_use]
 pub const fn min_quorum(f: usize) -> usize {
     2 * f + 3
 }
@@ -100,7 +104,8 @@ pub const fn min_quorum(f: usize) -> usize {
 /// Requires `n ≥ 2f + 3` (equivalently `n ≥ min_quorum(f)`), which is the minimum
 /// needed for Krum's score function to have enough neighbours to distinguish an
 /// honest cluster from up to `f` outliers (Blanchard et al. 2017, Theorem 2).
-pub fn quorum_satisfied(n: usize, f: usize) -> bool {
+#[must_use]
+pub const fn quorum_satisfied(n: usize, f: usize) -> bool {
     n >= min_quorum(f)
 }
 
@@ -111,6 +116,7 @@ pub fn quorum_satisfied(n: usize, f: usize) -> bool {
 /// Jaccard when no embedding model is provided.
 ///
 /// Returns 0.0 for fewer than 2 proposals (trivially coherent).
+#[allow(clippy::unused_async)]
 pub async fn mean_pairwise_distance(
     proposals: &[ProposalEvent],
     embedding_model: Option<&dyn EmbeddingModel>,
@@ -119,13 +125,15 @@ pub async fn mean_pairwise_distance(
     if n < 2 {
         return 0.0;
     }
-    let dist = semantic_distance_matrix(proposals, embedding_model).await;
+    let dist = semantic_distance_matrix(proposals, embedding_model);
     let pairs_count = n * (n - 1) / 2;
     let total: f64 = (0..n)
         .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
         .map(|(i, j)| dist[i][j])
         .sum();
-    total / pairs_count as f64
+    #[allow(clippy::cast_precision_loss)]
+    let result = total / pairs_count as f64;
+    result
 }
 
 /// Returns `true` if proposals form a sufficiently tight cluster for Krum's BFT
@@ -155,6 +163,7 @@ pub async fn cluster_coherent(
 /// `k` is typically `n − f − 2`: each proposal is scored against enough neighbours
 /// to expose an outlier while excluding the `f` worst-case Byzantine peers.
 /// A lower score means the proposal is more deeply embedded in the densest cluster.
+#[must_use]
 pub fn krum_score_subset(idx: usize, subset: &[usize], distances: &[Vec<f64>], k: usize) -> f64 {
     let mut dists: Vec<f64> = subset
         .iter()
@@ -169,6 +178,7 @@ pub fn krum_score_subset(idx: usize, subset: &[usize], distances: &[Vec<f64>], k
 ///
 /// Scans all `n` proposals in `distances`, scoring each with `krum_score_subset`
 /// over the full set.  Returns `None` only when `distances` is empty.
+#[must_use]
 pub fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
     let n = distances.len();
     let all: Vec<usize> = (0..n).collect();
@@ -189,44 +199,41 @@ pub fn krum_index(distances: &[Vec<f64>], k: usize) -> Option<usize> {
 /// Pre-embeds all N proposals in a single `block_in_place` call (O(N) ONNX passes),
 /// then computes pairwise cosine distances from cached vectors (pure dot products,
 /// no further blocking).  Falls back to token Jaccard when `embedding_model` is `None`.
-async fn semantic_distance_matrix(
+fn semantic_distance_matrix(
     proposals: &[ProposalEvent],
     embedding_model: Option<&dyn EmbeddingModel>,
 ) -> Vec<Vec<f64>> {
     let n = proposals.len();
     let mut d = vec![vec![0.0f64; n]; n];
 
-    match embedding_model {
-        Some(m) => {
-            let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
-            // One block_in_place for all N embeds — avoids O(N²) redundant ONNX passes
-            // and signals Tokio to migrate other tasks off this thread.
-            let embeddings: Vec<Vec<f32>> =
-                tokio::task::block_in_place(|| outputs.iter().map(|s| m.embed(s)).collect());
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let sim = if embeddings[i].is_empty() || embeddings[j].is_empty() {
-                        if outputs[i] == outputs[j] {
-                            1.0
-                        } else {
-                            0.0
-                        }
+    if let Some(m) = embedding_model {
+        let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
+        // One block_in_place for all N embeds — avoids O(N²) redundant ONNX passes
+        // and signals Tokio to migrate other tasks off this thread.
+        let embeddings: Vec<Vec<f32>> =
+            tokio::task::block_in_place(|| outputs.iter().map(|s| m.embed(s)).collect());
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = if embeddings[i].is_empty() || embeddings[j].is_empty() {
+                    if outputs[i] == outputs[j] {
+                        1.0
                     } else {
-                        cosine_similarity(&embeddings[i], &embeddings[j]).max(0.0)
-                    };
-                    d[i][j] = 1.0 - sim;
-                    d[j][i] = 1.0 - sim;
-                }
+                        0.0
+                    }
+                } else {
+                    cosine_similarity(&embeddings[i], &embeddings[j]).max(0.0)
+                };
+                d[i][j] = 1.0 - sim;
+                d[j][i] = 1.0 - sim;
             }
         }
-        None => {
-            let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let dist = 1.0 - token_jaccard(outputs[i], outputs[j]);
-                    d[i][j] = dist;
-                    d[j][i] = dist;
-                }
+    } else {
+        let outputs: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dist = 1.0 - token_jaccard(outputs[i], outputs[j]);
+                d[i][j] = dist;
+                d[j][i] = dist;
             }
         }
     }
@@ -243,6 +250,7 @@ async fn semantic_distance_matrix(
 /// Returns `None` when `embedding_model` is `None` (token Jaccard silently breaks
 /// the BFT cluster assumption on long outputs — see module doc), when quorum is
 /// unsatisfied, or when `proposals` is empty.
+#[allow(clippy::unused_async)]
 pub async fn krum_select_semantic<'a>(
     proposals: &'a [ProposalEvent],
     f: usize,
@@ -258,7 +266,7 @@ pub async fn krum_select_semantic<'a>(
     if !quorum_satisfied(proposals.len(), f) {
         return None;
     }
-    let distances = semantic_distance_matrix(proposals, embedding_model).await;
+    let distances = semantic_distance_matrix(proposals, embedding_model);
     let k = proposals.len() - f - 2;
     krum_index(&distances, k).map(|i| &proposals[i])
 }
@@ -273,6 +281,13 @@ pub async fn krum_select_semantic<'a>(
 /// Returns an empty vec when `embedding_model` is `None` — same rationale as
 /// `krum_select_semantic`: token Jaccard silently breaks the BFT guarantee on real
 /// LLM outputs.
+///
+/// # Panics
+///
+/// Panics if the candidate set becomes empty before a best-scoring proposal is found
+/// (cannot happen in practice: the loop condition ensures `remaining` is non-empty
+/// before calling `min_by`).
+#[allow(clippy::unused_async)]
 pub async fn multi_krum_select_semantic<'a>(
     proposals: &'a [ProposalEvent],
     f: usize,
@@ -291,7 +306,7 @@ pub async fn multi_krum_select_semantic<'a>(
     if !quorum_satisfied(proposals.len(), f) {
         return vec![];
     }
-    let distances = semantic_distance_matrix(proposals, embedding_model).await;
+    let distances = semantic_distance_matrix(proposals, embedding_model);
     let mut remaining: Vec<usize> = (0..proposals.len()).collect();
     let mut selected = Vec::with_capacity(m);
     while selected.len() < m && remaining.len() > f + 2 {

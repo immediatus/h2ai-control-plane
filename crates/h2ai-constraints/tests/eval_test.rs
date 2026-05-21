@@ -1,5 +1,5 @@
 use h2ai_constraints::eval::eval_sync;
-use h2ai_constraints::types::{CompositeOp, ConstraintPredicate, VocabularyMode};
+use h2ai_constraints::types::{CompositeOp, ConstraintPredicate, NumericOp, VocabularyMode};
 
 #[test]
 fn vocabulary_presence_all_of_full_match() {
@@ -297,4 +297,163 @@ fn length_range_no_bounds_always_passes() {
     };
     assert!((eval_sync(&pred, "") - 1.0).abs() < 1e-9);
     assert!((eval_sync(&pred, "any text at all") - 1.0).abs() < 1e-9);
+}
+
+// ── Line 29: RegexMatch with invalid regex → 0.0 ─────────────────────────────
+
+#[test]
+fn regex_match_invalid_regex_returns_zero() {
+    let pred = ConstraintPredicate::RegexMatch {
+        pattern: "[invalid(regex".into(),
+        must_match: true,
+    };
+    assert!(
+        (eval_sync(&pred, "any output") - 0.0).abs() < 1e-9,
+        "invalid regex must return 0.0"
+    );
+}
+
+// ── Line 45: SemanticPresence/Ordering/Exclusion pass-through → 1.0 ──────────
+
+#[test]
+fn semantic_presence_sync_passthrough_returns_one() {
+    let pred = ConstraintPredicate::SemanticPresence {
+        concept: "idempotency key".into(),
+        passes: 3,
+    };
+    assert!((eval_sync(&pred, "any output") - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn semantic_ordering_sync_passthrough_returns_one() {
+    let pred = ConstraintPredicate::SemanticOrdering {
+        first: "debit".into(),
+        then: "publish".into(),
+        passes: 3,
+    };
+    assert!((eval_sync(&pred, "any output") - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn semantic_exclusion_sync_passthrough_returns_one() {
+    let pred = ConstraintPredicate::SemanticExclusion {
+        pattern: "SELECT.*WHERE".into(),
+        passes: 3,
+    };
+    assert!((eval_sync(&pred, "any output") - 1.0).abs() < 1e-9);
+}
+
+// ── Line 65: JsonSchema with invalid schema → 0.0 ────────────────────────────
+
+#[test]
+fn json_schema_invalid_schema_returns_zero() {
+    // A schema that causes jsonschema::validator_for to fail
+    let bad_schema = serde_json::json!({ "type": "not-a-valid-json-schema-type-xyz" });
+    let pred = ConstraintPredicate::JsonSchema { schema: bad_schema };
+    // output is valid JSON so we reach the validator step
+    assert!(
+        (eval_sync(&pred, r#"{"key": "value"}"#) - 0.0).abs() < 1e-9,
+        "invalid schema must return 0.0"
+    );
+}
+
+// ── Line 96: eval_vocabulary with empty terms → 1.0 ──────────────────────────
+
+#[test]
+fn vocabulary_presence_empty_terms_returns_one() {
+    let pred = ConstraintPredicate::VocabularyPresence {
+        mode: VocabularyMode::AllOf,
+        terms: vec![],
+    };
+    assert!((eval_sync(&pred, "any output") - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn negative_keyword_empty_terms_returns_one() {
+    let pred = ConstraintPredicate::NegativeKeyword { terms: vec![] };
+    assert!((eval_sync(&pred, "any output") - 1.0).abs() < 1e-9);
+}
+
+// ── Line 128: eval_numeric with invalid regex → 0.0 ──────────────────────────
+
+#[test]
+fn numeric_threshold_invalid_regex_returns_zero() {
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: "[bad(regex".into(),
+        op: NumericOp::Lt,
+        value: 100.0,
+    };
+    assert!((eval_sync(&pred, "latency: 50ms") - 0.0).abs() < 1e-9);
+}
+
+// ── Line 134: eval_numeric with no capture → 0.0 ─────────────────────────────
+
+#[test]
+fn numeric_threshold_no_match_in_output_returns_zero() {
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: r"timeout_ms[:\s]+(\d+)".into(),
+        op: NumericOp::Lt,
+        value: 500.0,
+    };
+    // output has no "timeout_ms" pattern
+    assert!((eval_sync(&pred, "response was fast") - 0.0).abs() < 1e-9);
+}
+
+// ── Line 137: eval_numeric with unparseable number → 0.0 ─────────────────────
+
+#[test]
+fn numeric_threshold_unparseable_number_returns_zero() {
+    // Regex matches but capture group is non-numeric
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: r"value[:\s]+([a-z]+)".into(),
+        op: NumericOp::Lt,
+        value: 100.0,
+    };
+    assert!((eval_sync(&pred, "value: abc") - 0.0).abs() < 1e-9);
+}
+
+// ── Lines 141-144: NumericOp Le, Eq, Ge, Gt passing paths ────────────────────
+
+#[test]
+fn numeric_op_le_passes_at_boundary() {
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: r"score[:\s]+(\d+(?:\.\d+)?)".into(),
+        op: NumericOp::Le,
+        value: 100.0,
+    };
+    assert!((eval_sync(&pred, "score: 100") - 1.0).abs() < 1e-9);
+    assert!((eval_sync(&pred, "score: 101") - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn numeric_op_eq_passes_at_exact_value() {
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: r"count[:\s]+(\d+(?:\.\d+)?)".into(),
+        op: NumericOp::Eq,
+        value: 42.0,
+    };
+    assert!((eval_sync(&pred, "count: 42") - 1.0).abs() < 1e-9);
+    assert!((eval_sync(&pred, "count: 43") - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn numeric_op_ge_passes_at_boundary() {
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: r"coverage[:\s]+(\d+(?:\.\d+)?)".into(),
+        op: NumericOp::Ge,
+        value: 80.0,
+    };
+    assert!((eval_sync(&pred, "coverage: 80") - 1.0).abs() < 1e-9);
+    assert!((eval_sync(&pred, "coverage: 79") - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn numeric_op_gt_passes_above_threshold() {
+    let pred = ConstraintPredicate::NumericThreshold {
+        field_pattern: r"throughput[:\s]+(\d+(?:\.\d+)?)".into(),
+        op: NumericOp::Gt,
+        value: 1000.0,
+    };
+    assert!((eval_sync(&pred, "throughput: 1001") - 1.0).abs() < 1e-9);
+    assert!((eval_sync(&pred, "throughput: 1000") - 0.0).abs() < 1e-9);
 }

@@ -1,16 +1,13 @@
 //! H2AI Oracle Sidecar
 //!
-//! Subscribes to `h2ai.oracle.pending`, runs the specified test suite against
-//! the winning merged output via the ShellExecutor perimeter, and publishes
+//! Subscribes to `h2ai.oracle.pending`, POSTs the winning output to the external
+//! oracle service specified in `oracle_spec.runner_uri`, and publishes
 //! `OracleResultEvent` to `h2ai.oracle.results`.
 //!
 //! Environment variables:
-//!   NATS_URL     — NATS server URL (default: nats://localhost:4222)
-//!   ORACLE_TIMEOUT_SECS — override per-spec timeout (optional)
+//!   `NATS_URL`     — NATS server URL (default: <nats://localhost:4222>)
 
 use futures::StreamExt;
-use h2ai_eval::parse_result;
-use h2ai_tools::shell::ShellExecutor;
 use h2ai_types::events::{OraclePendingEvent, OracleResultEvent};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
@@ -41,8 +38,11 @@ async fn main() {
 
     info!("oracle sidecar ready — listening on {PENDING_SUBJECT}");
 
+    let http_client = reqwest::Client::new();
+
     while let Some(msg) = sub.next().await {
         let nc = nc.clone();
+        let http_client = http_client.clone();
         tokio::spawn(async move {
             let pending: OraclePendingEvent = match serde_json::from_slice(&msg.payload) {
                 Ok(p) => p,
@@ -55,7 +55,7 @@ async fn main() {
             let task_id = pending.task_id.clone();
             info!(task_id = %task_id, "running oracle for task");
 
-            let result = evaluate(&pending).await;
+            let result = evaluate(&pending, &http_client).await;
 
             match serde_json::to_vec(&result) {
                 Ok(payload) => {
@@ -67,7 +67,6 @@ async fn main() {
                             passed = result.passed,
                             score = result.score,
                             residual = result.residual,
-                            duration_ms = result.duration_ms,
                             "oracle result published"
                         );
                     }
@@ -80,139 +79,74 @@ async fn main() {
     }
 }
 
-/// Run the oracle test suite against the winning output.
-///
-/// Writes the output to a temp file, invokes the test runner via ShellExecutor
-/// (which enforces process-group timeout and no shell interpreter), then parses
-/// pass/fail counts from the combined stdout+stderr.
-async fn evaluate(pending: &OraclePendingEvent) -> OracleResultEvent {
+/// POST the winning output to the external oracle service and return the result.
+async fn evaluate(
+    pending: &OraclePendingEvent,
+    http_client: &reqwest::Client,
+) -> OracleResultEvent {
     let spec = &pending.oracle_spec;
-    let timeout_secs = (spec.timeout_ms / 1000).max(1);
+    let timeout = std::time::Duration::from_millis(spec.timeout_ms);
 
     let start_ms = now_ms();
 
-    // Write winning output to a temp file
-    let (output_file, output_path) =
-        match write_temp_output(&pending.winning_output, &spec.language) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "failed to create temp file for oracle output");
-                return failure_result(pending, start_ms);
-            }
-        };
+    let body = serde_json::json!({
+        "task_id": pending.task_id,
+        "output": pending.winning_output,
+        "domain": pending.domain,
+    });
 
-    // Build executor — open allowlist since sidecar only runs operator-defined test suites
-    let executor = ShellExecutor::new(vec![], timeout_secs);
-
-    // Build command and args based on language
-    let (command, args) = build_command(&spec.language, &spec.test_suite, &output_path);
-
-    let result = executor.execute_structured(&command, &args).await;
-
-    // Temp file cleanup — ignore errors (OS will GC)
-    drop(output_file);
+    let result = http_client
+        .post(&spec.runner_uri)
+        .timeout(timeout)
+        .json(&body)
+        .send()
+        .await;
 
     let duration_ms = now_ms() - start_ms;
     let timestamp_ms = now_ms();
 
-    let (passed_bool, pass_count, fail_count, total) = match result {
-        Ok(stdout) => parse_result(&stdout, true),
-        Err(h2ai_tools::error::ToolError::ShellFailed { stderr, .. }) => {
-            parse_result(&stderr, false)
-        }
-        Err(h2ai_tools::error::ToolError::Timeout) => {
-            warn!(task_id = %pending.task_id, "oracle timed out after {timeout_secs}s");
-            (false, 0, 1, 1)
+    match result {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(json) => {
+                let passed = json
+                    .get("passed")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let score = json
+                    .get("score")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(if passed { 1.0 } else { 0.0 });
+                let residual = (pending.q_confidence - f64::from(u8::from(passed))).abs();
+                let verdict = Some(h2ai_types::sizing::OracleVerdict { details: json });
+
+                OracleResultEvent {
+                    task_id: pending.task_id.clone(),
+                    q_confidence: pending.q_confidence,
+                    n_used: pending.n_used,
+                    passed,
+                    score,
+                    residual,
+                    domain: pending.domain.clone(),
+                    duration_ms,
+                    timestamp_ms,
+                    tenant_id: pending.tenant_id.clone(),
+                    verdict,
+                }
+            }
+            Err(e) => {
+                warn!(task_id = %pending.task_id, error = %e, "oracle response parse failed");
+                failure_result(pending, start_ms)
+            }
+        },
+        Ok(resp) => {
+            warn!(task_id = %pending.task_id, status = %resp.status(), "oracle HTTP error");
+            failure_result(pending, start_ms)
         }
         Err(e) => {
-            warn!(task_id = %pending.task_id, error = %e, "oracle execution error");
-            (false, 0, 1, 1)
+            warn!(task_id = %pending.task_id, error = %e, "oracle HTTP call failed");
+            failure_result(pending, start_ms)
         }
-    };
-
-    let _ = (pass_count, fail_count); // counts informational
-    let score = if total > 0 {
-        pass_count as f64 / total as f64
-    } else if passed_bool {
-        1.0
-    } else {
-        0.0
-    };
-    let residual = (pending.q_confidence - passed_bool as u8 as f64).abs();
-
-    OracleResultEvent {
-        task_id: pending.task_id.clone(),
-        q_confidence: pending.q_confidence,
-        n_used: pending.n_used,
-        passed: passed_bool,
-        score,
-        residual,
-        domain: pending.domain.clone(),
-        oracle_type: spec.oracle_type.clone(),
-        duration_ms,
-        timestamp_ms,
     }
-}
-
-/// Build the (command, args) pair for the test runner.
-///
-/// Language dispatch:
-/// - "python" → `python3 -m pytest <test_suite> --tb=short -q`
-/// - "javascript" → `node <test_suite>`
-/// - other → `<language> <test_suite> <output_file>`
-///
-/// The output file path is always appended as the last arg so test suites
-/// can locate the output via positional arg or the `H2AI_OUTPUT_FILE` convention.
-/// Note: ShellExecutor does not support env var injection — suites must read
-/// the output path from argv[-1].
-fn build_command(language: &str, test_suite: &str, output_path: &str) -> (String, Vec<String>) {
-    match language {
-        "python" => (
-            "python3".to_owned(),
-            vec![
-                "-m".to_owned(),
-                "pytest".to_owned(),
-                test_suite.to_owned(),
-                "--tb=short".to_owned(),
-                "-q".to_owned(),
-                format!("--output-file={output_path}"),
-            ],
-        ),
-        "javascript" => (
-            "node".to_owned(),
-            vec![test_suite.to_owned(), output_path.to_owned()],
-        ),
-        lang => (
-            lang.to_owned(),
-            vec![test_suite.to_owned(), output_path.to_owned()],
-        ),
-    }
-}
-
-/// Write the winning output to a language-appropriate temp file.
-/// Returns the `NamedTempFile` (keep alive for its lifetime) and the path string.
-fn write_temp_output(
-    output: &str,
-    language: &str,
-) -> Result<(tempfile::NamedTempFile, String), std::io::Error> {
-    use std::io::Write;
-
-    let suffix = match language {
-        "python" => ".py",
-        "javascript" => ".js",
-        "rust" => ".rs",
-        _ => ".txt",
-    };
-
-    let mut f = tempfile::Builder::new()
-        .prefix("h2ai_oracle_")
-        .suffix(suffix)
-        .tempfile()?;
-    f.write_all(output.as_bytes())?;
-    f.flush()?;
-
-    let path = f.path().to_string_lossy().into_owned();
-    Ok((f, path))
 }
 
 fn failure_result(pending: &OraclePendingEvent, start_ms: u64) -> OracleResultEvent {
@@ -224,15 +158,18 @@ fn failure_result(pending: &OraclePendingEvent, start_ms: u64) -> OracleResultEv
         score: 0.0,
         residual: pending.q_confidence, // |q - 0.0|
         domain: pending.domain.clone(),
-        oracle_type: pending.oracle_spec.oracle_type.clone(),
         duration_ms: now_ms() - start_ms,
         timestamp_ms: now_ms(),
+        tenant_id: pending.tenant_id.clone(),
+        verdict: None,
     }
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
+    #[allow(clippy::cast_possible_truncation)]
+    let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis() as u64;
+    ms
 }

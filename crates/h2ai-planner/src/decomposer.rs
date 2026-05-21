@@ -35,6 +35,13 @@ struct LlmDecomposition {
 pub struct PlanningEngine;
 
 impl PlanningEngine {
+    /// Decomposes a task manifest into a subtask plan via an LLM call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PlannerError::Adapter` if the LLM call fails, `PlannerError::ParseError` if
+    /// the LLM response cannot be parsed, or `PlannerError::InvalidDependencyIndex` if the
+    /// decomposition references an out-of-range subtask index.
     pub async fn decompose(
         manifest: &TaskManifest,
         adapter: &dyn IComputeAdapter,
@@ -64,7 +71,7 @@ impl PlanningEngine {
             .map_err(|e| PlannerError::Adapter(e.to_string()))?;
 
         let decomposition = parse_decomposition(&response.output)?;
-        build_plan(decomposition)
+        build_plan(&decomposition)
     }
 }
 
@@ -75,8 +82,8 @@ fn parse_decomposition(raw: &str) -> Result<LlmDecomposition, PlannerError> {
     })
 }
 
-fn parse_role_hint(s: &Option<String>) -> Option<AgentRole> {
-    s.as_deref().and_then(|h| match h {
+fn parse_role_hint(s: Option<&str>) -> Option<AgentRole> {
+    s.and_then(|h| match h {
         "Executor" => Some(AgentRole::Executor),
         "Evaluator" => Some(AgentRole::Evaluator),
         "Synthesizer" => Some(AgentRole::Synthesizer),
@@ -87,7 +94,7 @@ fn parse_role_hint(s: &Option<String>) -> Option<AgentRole> {
     })
 }
 
-fn build_plan(decomp: LlmDecomposition) -> Result<SubtaskPlan, PlannerError> {
+fn build_plan(decomp: &LlmDecomposition) -> Result<SubtaskPlan, PlannerError> {
     let n = decomp.subtasks.len();
     let ids: Vec<SubtaskId> = (0..n).map(|_| SubtaskId::new()).collect();
 
@@ -112,7 +119,7 @@ fn build_plan(decomp: LlmDecomposition) -> Result<SubtaskPlan, PlannerError> {
                 id: ids[i].clone(),
                 description: raw.description.clone(),
                 depends_on,
-                role_hint: parse_role_hint(&raw.role_hint),
+                role_hint: parse_role_hint(raw.role_hint.as_deref()),
             })
         })
         .collect::<Result<Vec<_>, PlannerError>>()?;

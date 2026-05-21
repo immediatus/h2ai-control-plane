@@ -25,7 +25,9 @@ pub type ClarificationEntry = (Arc<Notify>, Arc<Mutex<Option<String>>>);
 #[derive(Clone)]
 pub struct AppState {
     /// NATS client used for event publishing and KV persistence.
-    pub nats: Arc<NatsClient>,
+    ///
+    /// `None` in unit-test builds that use `new_for_tests()`.
+    pub nats: Option<Arc<NatsClient>>,
     /// Resolved runtime configuration, loaded once at startup via `H2AIConfig::load_layered`.
     pub cfg: Arc<H2AIConfig>,
     /// In-memory task registry; tracks phase, status, and proposal counts per task ID.
@@ -62,7 +64,7 @@ pub struct AppState {
     /// In-memory Prometheus metrics state.
     pub metrics: std::sync::Arc<tokio::sync::RwLock<crate::metrics::MetricsState>>,
     /// When `Some`, `tasks.rs` builds a `NatsDispatchConfig` so explorer slots are
-    /// dispatched to TaoAgent via NATS instead of calling LLM adapters directly.
+    /// dispatched to `TaoAgent` via NATS instead of calling LLM adapters directly.
     pub agent_provider: Option<Arc<dyn AgentProvider>>,
     /// Content-addressed store for large task-context offloading.
     /// Passed through to `NatsDispatchConfig::payload_store`.
@@ -80,15 +82,15 @@ pub struct AppState {
     pub srani_grounding_chain:
         Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
     /// Pending human clarification waiters.
-    /// Maps task_id → (Notify to wake the waiting engine, slot for the answer text).
+    /// Maps `task_id` → (Notify to wake the waiting engine, slot for the answer text).
     /// Populated by the engine when it suspends for clarification; resolved by POST /tasks/{id}/clarify.
     pub clarification_waiters: Arc<Mutex<HashMap<String, ClarificationEntry>>>,
     /// FS-backed constraint resolver built once at startup from `constraint_wiki` config.
     /// Used to load `Vec<ConstraintDoc>` for the engine's `constraint_corpus`.
     pub constraint_resolver: Arc<ConstraintResolver>,
     /// Knowledge provider for hierarchical constraint retrieval.
-    /// Uses Bm25WikiProvider when [knowledge] config is present;
-    /// PassthroughProvider otherwise.
+    /// Uses `Bm25WikiProvider` when [knowledge] config is present;
+    /// `PassthroughProvider` otherwise.
     pub knowledge_provider: Arc<dyn KnowledgeProvider>,
 }
 
@@ -135,7 +137,7 @@ impl AppState {
             })
         };
         Self {
-            nats,
+            nats: Some(nats),
             cfg: Arc::new(cfg),
             store: TaskStore::new(),
             tenant_registry: Arc::new(TenantRegistry::new()),
@@ -170,9 +172,57 @@ impl AppState {
         }
     }
 
+    /// Construct a minimal `AppState` for unit tests. Does not connect to NATS.
+    #[allow(dead_code)]
+    pub fn new_for_tests(
+        cfg: H2AIConfig,
+        adapter_pool: Vec<Arc<dyn IComputeAdapter>>,
+        auditor_adapter: Arc<dyn IComputeAdapter>,
+    ) -> Self {
+        use h2ai_knowledge::provider::PassthroughProvider;
+        use h2ai_orchestrator::payload_store::MemoryPayloadStore;
+        assert!(!adapter_pool.is_empty(), "adapter_pool must be non-empty");
+        let max_tasks = cfg.max_concurrent_tasks;
+        let constraint_resolver = Arc::new(ConstraintResolver::new(
+            Arc::new(FsConstraintIndex::from_docs(&[])),
+            Arc::new(FsConstraintStore::from_docs(vec![])),
+        ));
+        Self {
+            nats: None,
+            cfg: Arc::new(cfg),
+            store: TaskStore::new(),
+            tenant_registry: Arc::new(TenantRegistry::new()),
+            journal: Arc::new(SessionJournal::new_noop()),
+            adapter_pool,
+            verification_adapter: auditor_adapter.clone(),
+            auditor_adapter,
+            scoring_adapter: None,
+            shadow_auditor_adapter: None,
+            promoted_audit_domains: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
+            task_semaphore: Arc::new(Semaphore::new(max_tasks)),
+            embedding_model: None,
+            metrics: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::metrics::MetricsState::default(),
+            )),
+            agent_provider: None,
+            payload_store: Arc::new(MemoryPayloadStore::new()),
+            shadow_accumulator: None,
+            researcher_adapter: None,
+            srani_grounding_chain: None,
+            clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
+            constraint_resolver,
+            knowledge_provider: Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
+                ".",
+            ))),
+        }
+    }
+
     /// Return isolated estimator state for the given tenant, creating it on first access.
     ///
     /// For single-tenant deployments: always call with `TenantId::default_tenant()`.
+    #[must_use]
     pub fn tenant_state(&self, id: &TenantId) -> Arc<TenantState> {
         self.tenant_registry.get_or_create(id, &self.cfg)
     }
@@ -196,7 +246,7 @@ impl AppState {
     /// Override the agent provider used for NATS-based explorer dispatch.
     ///
     /// When `None` (the default), explorer slots call the in-process LLM adapter directly.
-    /// When `Some`, each explorer slot is dispatched via NATS to a TaoAgent process;
+    /// When `Some`, each explorer slot is dispatched via NATS to a `TaoAgent` process;
     /// `tasks.rs` builds a `NatsDispatchConfig` from this provider at task submission time.
     /// Must be set before the server starts accepting requests.
     pub fn with_agent_provider(mut self, provider: Arc<dyn AgentProvider>) -> Self {
@@ -221,6 +271,7 @@ impl AppState {
     /// `Some`, `TaskProfile::Scoring` requests are routed to it instead of the pool,
     /// preventing scoring load from competing with exploration quota.  All other profiles
     /// fall through to `adapter_pool[0]`.
+    #[must_use]
     pub fn registry(&self) -> AdapterRegistry {
         let reg = AdapterRegistry::new(self.adapter_pool[0].clone());
         match &self.scoring_adapter {
@@ -268,10 +319,13 @@ impl AppState {
         use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
         use h2ai_types::events::CalibrationSource;
 
+        let Some(nats) = &self.nats else {
+            return;
+        };
         let ts = self.tenant_state(tenant_id);
 
         // TAO multiplier
-        match self.nats.get_tao_estimator_state(tenant_id).await {
+        match nats.get_tao_estimator_state(tenant_id).await {
             Ok(Some((ema, count))) => {
                 let alpha = self.cfg.tao_estimator_ema_alpha;
                 // serde round-trip: TaoMultiplierEstimator serializes only {ema, count};
@@ -280,32 +334,32 @@ impl AppState {
                 match serde_json::from_value::<TaoMultiplierEstimator>(json) {
                     Ok(est) => *ts.tao_multiplier_estimator.write().await = est.with_alpha(alpha),
                     Err(e) => {
-                        tracing::warn!(error = %e, "tao_estimator deserialize failed; using default")
+                        tracing::warn!(error = %e, "tao_estimator deserialize failed; using default");
                     }
                 }
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "tao_estimator load from NATS failed; using default")
+                tracing::warn!(error = %e, "tao_estimator load from NATS failed; using default");
             }
         }
 
         // Bandit state
-        match self.nats.get_bandit_state(tenant_id).await {
+        match nats.get_bandit_state(tenant_id).await {
             Ok(Some(bytes)) => match serde_json::from_slice::<BanditState>(&bytes) {
                 Ok(state) => *ts.bandit_state.write().await = state,
                 Err(e) => {
-                    tracing::warn!(error = %e, "bandit state deserialize failed; using default")
+                    tracing::warn!(error = %e, "bandit state deserialize failed; using default");
                 }
             },
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "bandit state load from NATS failed; using default")
+                tracing::warn!(error = %e, "bandit state load from NATS failed; using default");
             }
         }
 
         // SRANI adaptive EMA
-        match self.nats.get_srani_state(tenant_id).await {
+        match nats.get_srani_state(tenant_id).await {
             Ok(Some((ema_cfi, count))) => {
                 *ts.srani_state.write().await = (ema_cfi, count);
                 tracing::info!(
@@ -328,7 +382,7 @@ impl AppState {
         // Calibration snapshot
         // Calibration is currently a single global dataset per server — not per-tenant.
         // A per-tenant calibration API is a future enhancement.
-        match self.nats.get_calibration().await {
+        match nats.get_calibration().await {
             Ok(Some(cal)) => {
                 let label = match cal.calibration_source {
                     CalibrationSource::Measured => "measured",
@@ -350,7 +404,7 @@ impl AppState {
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(target: "h2ai.calibration", error = %e, "calibration load from NATS failed")
+                tracing::warn!(target: "h2ai.calibration", error = %e, "calibration load from NATS failed");
             }
         }
     }

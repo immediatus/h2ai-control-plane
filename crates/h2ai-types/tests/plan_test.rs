@@ -24,7 +24,7 @@ fn subtask_plan_serialises_and_round_trips() {
                 role_hint: None,
             },
             Subtask {
-                id: b.clone(),
+                id: b,
                 description: "Implement API endpoints".into(),
                 depends_on: vec![a.clone()],
                 role_hint: None,

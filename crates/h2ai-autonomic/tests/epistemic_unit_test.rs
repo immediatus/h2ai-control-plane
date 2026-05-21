@@ -1,3 +1,4 @@
+#![allow(clippy::doc_markdown, clippy::cast_precision_loss)]
 use h2ai_autonomic::epistemic::{
     classify_failure_mode, compute_n_eff_cosine, synthesize_tombstone,
 };
@@ -163,11 +164,36 @@ fn tombstone_contains_constraint_ids_not_proposal_text() {
 fn yield_ratio_uses_n_requested_not_n_responded() {
     // N_requested = 3, one adapter timed out (N_responded = 2), n_eff_actual = 1.5
     // yield_ratio should be 1.5 / 3 = 0.5, NOT 1.5 / 2 = 0.75
-    let n_requested: usize = 3;
+    let n_requested: f64 = 3.0;
     let n_eff_actual: f64 = 1.5;
-    let yield_ratio = n_eff_actual / n_requested as f64;
+    let yield_ratio = n_eff_actual / n_requested;
     assert!(
         (yield_ratio - 0.5).abs() < 1e-9,
         "yield_ratio must use N_requested=3, got {yield_ratio}"
     );
+}
+
+struct SingleStub;
+impl EmbeddingModel for SingleStub {
+    fn embed(&self, _: &str) -> Vec<f32> {
+        vec![1.0, 0.0]
+    }
+}
+
+#[test]
+fn compute_n_eff_cosine_returns_one_for_single_text() {
+    // Line 14: n < 2 early return → 1.0 (degenerate: only one perspective)
+    let texts = vec!["only one text".to_string()];
+    let n_eff = compute_n_eff_cosine(&texts, &SingleStub, 0.05);
+    assert!(
+        (n_eff - 1.0).abs() < 1e-9,
+        "single text must return 1.0, got {n_eff}"
+    );
+}
+
+#[test]
+fn synthesize_tombstone_returns_none_for_empty_violations() {
+    // Line 60: empty violations → return None
+    let result = synthesize_tombstone(&[]);
+    assert!(result.is_none(), "empty violations must return None");
 }

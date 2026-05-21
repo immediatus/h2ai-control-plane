@@ -1,13 +1,160 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
+use async_trait::async_trait;
 use chrono::Utc;
+use futures::stream::BoxStream;
 use h2ai_orchestrator::session_journal::SessionJournal;
 use h2ai_orchestrator::task_store::{TaskPhase, TaskState};
-use h2ai_types::config::{AdapterKind, ParetoWeights, TopologyKind};
+use h2ai_state::backend::{SnapshotStore, TailEvents};
+use h2ai_state::in_memory::InMemoryStateBackend;
+use h2ai_state::nats::NatsError;
+use h2ai_types::config::{AdapterKind, AuditorConfig, ParetoWeights, TopologyKind};
 use h2ai_types::events::{
-    BranchPrunedEvent, H2AIEvent, MergeResolvedEvent, ProposalEvent, TaskBootstrappedEvent,
-    TaskFailedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
+    BranchPrunedEvent, H2AIEvent, LeaderElectedEvent, MergeResolvedEvent,
+    MultiplicationConditionFailedEvent, ProposalEvent, SelectionResolvedEvent,
+    TaskBootstrappedEvent, TaskComplexityAssessedEvent, TaskFailedEvent, TaskSnapshot,
+    TopologyProvisionedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::{ExplorerId, TaskId, TenantId};
-use h2ai_types::sizing::{RoleErrorCost, TauValue};
+use h2ai_types::sizing::{
+    MergeStrategy, MultiplicationConditionFailure, ProbeSkipReason, RoleErrorCost, TaskQuadrant,
+    TauValue,
+};
+use std::sync::Arc;
+
+// ── Error-injecting backends (generics, no dyn dispatch) ─────────────────────
+
+/// Backend whose `get_snapshot` always returns `Err` (tests snapshot-error fallback path).
+struct SnapshotErrBackend;
+
+#[async_trait]
+impl SnapshotStore for SnapshotErrBackend {
+    async fn put_snapshot(&self, _: &TaskSnapshot) -> Result<(), NatsError> {
+        Err(NatsError::KvError("mock put error".into()))
+    }
+    async fn get_snapshot(&self, _: &TaskId) -> Result<Option<TaskSnapshot>, NatsError> {
+        Err(NatsError::KvError("mock get error".into()))
+    }
+}
+
+#[async_trait]
+impl TailEvents for SnapshotErrBackend {
+    async fn tail_task_events_boxed(
+        &self,
+        _: &TaskId,
+        _: u64,
+    ) -> Result<BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+}
+
+/// Backend whose `tail_task_events_boxed` always returns `Err` (tests stream-error path).
+struct StreamErrBackend;
+
+#[async_trait]
+impl SnapshotStore for StreamErrBackend {
+    async fn put_snapshot(&self, _: &TaskSnapshot) -> Result<(), NatsError> {
+        Ok(())
+    }
+    async fn get_snapshot(&self, _: &TaskId) -> Result<Option<TaskSnapshot>, NatsError> {
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl TailEvents for StreamErrBackend {
+    async fn tail_task_events_boxed(
+        &self,
+        _: &TaskId,
+        _: u64,
+    ) -> Result<BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError> {
+        Err(NatsError::StreamError("mock stream error".into()))
+    }
+}
+
+/// Backend that returns a snapshot with invalid JSON (tests bad-snapshot fallback).
+struct BadSnapshotBackend {
+    task_id: TaskId,
+}
+
+#[async_trait]
+impl SnapshotStore for BadSnapshotBackend {
+    async fn put_snapshot(&self, _: &TaskSnapshot) -> Result<(), NatsError> {
+        Ok(())
+    }
+    async fn get_snapshot(&self, _: &TaskId) -> Result<Option<TaskSnapshot>, NatsError> {
+        Ok(Some(TaskSnapshot {
+            task_id: self.task_id.clone(),
+            last_sequence: 5,
+            task_state_json: "{{{not valid json".into(),
+            taken_at: Utc::now(),
+        }))
+    }
+}
+
+#[async_trait]
+impl TailEvents for BadSnapshotBackend {
+    async fn tail_task_events_boxed(
+        &self,
+        _: &TaskId,
+        _: u64,
+    ) -> Result<BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 fn task_id() -> TaskId {
     TaskId::new()
@@ -27,7 +174,7 @@ fn pareto_weights() -> ParetoWeights {
 fn apply_bootstrapped_sets_pending() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: tid.clone(),
@@ -51,7 +198,7 @@ fn apply_proposal_increments_completed_and_sets_generating() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.explorers_completed, 0);
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::Proposal(ProposalEvent {
             task_id: tid.clone(),
@@ -83,7 +230,7 @@ fn apply_verification_scored_passed_increments_valid() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.proposals_valid, 0);
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::VerificationScored(VerificationScoredEvent {
             task_id: tid.clone(),
@@ -106,7 +253,7 @@ fn apply_verification_scored_failed_increments_pruned() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.proposals_pruned, 0);
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::VerificationScored(VerificationScoredEvent {
             task_id: tid.clone(),
@@ -129,7 +276,7 @@ fn apply_zero_survival_increments_retries() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
     assert_eq!(state.autonomic_retries, 0);
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::ZeroSurvival(ZeroSurvivalEvent {
             task_id: tid.clone(),
@@ -148,7 +295,7 @@ fn apply_zero_survival_increments_retries() {
 fn apply_merge_resolved_sets_resolved() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: tid.clone(),
@@ -156,6 +303,7 @@ fn apply_merge_resolved_sets_resolved() {
             j_eff: None,
             oracle_gate_passed: None,
             timestamp: Utc::now(),
+            zone3_hints: None,
         }),
     );
     assert_eq!(state.status, "resolved");
@@ -172,7 +320,7 @@ fn apply_merge_resolved_sets_resolved() {
 fn apply_task_failed_sets_failed() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::TaskFailed(TaskFailedEvent {
             task_id: tid.clone(),
@@ -186,7 +334,6 @@ fn apply_task_failed_sets_failed() {
     assert_eq!(state.status, "failed");
     assert_eq!(TaskPhase::try_from(state.phase).unwrap(), TaskPhase::Failed);
     assert_eq!(state.phase_name, "Failed");
-    // topologies_tried has 1 entry → autonomic_retries = 1
     assert_eq!(state.autonomic_retries, 1);
 }
 
@@ -194,7 +341,7 @@ fn apply_task_failed_sets_failed() {
 fn apply_branch_pruned_increments_proposals_pruned() {
     let tid = task_id();
     let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
-    SessionJournal::apply_event(
+    SessionJournal::<InMemoryStateBackend>::apply_event(
         &mut state,
         H2AIEvent::BranchPruned(BranchPrunedEvent {
             task_id: tid.clone(),
@@ -233,14 +380,462 @@ fn task_state_serde_roundtrip() {
     assert_eq!(back.autonomic_retries, 1);
 }
 
-// ── integration (ignored — requires live NATS) ────────────────────────────────
+// ── SessionJournal constructors ───────────────────────────────────────────────
+
+#[test]
+fn new_noop_creates_journal_without_nats() {
+    let journal = SessionJournal::new_noop();
+    let tid = task_id();
+    let state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    journal.note_event(&tid, 1, &state);
+}
+
+#[test]
+fn with_snapshot_interval_zero_note_event_noop() {
+    let journal = SessionJournal::new_noop().with_snapshot_interval(0);
+    let tid = task_id();
+    let state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    journal.note_event(&tid, 1, &state);
+}
+
+#[test]
+fn with_snapshot_interval_nonzero_note_event_no_panic_when_no_nats() {
+    let journal = SessionJournal::new_noop().with_snapshot_interval(5);
+    let tid = task_id();
+    let state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    for i in 0u64..10 {
+        journal.note_event(&tid, i, &state);
+    }
+}
 
 #[tokio::test]
-#[ignore]
+async fn replay_noop_returns_none() {
+    let journal = SessionJournal::new_noop();
+    let tid = task_id();
+    let result = journal
+        .replay(&tid)
+        .await
+        .expect("replay on noop must be Ok");
+    assert!(result.is_none(), "noop journal has no NATS → always None");
+}
+
+// ── apply_event — previously uncovered variants ───────────────────────────────
+
+#[test]
+fn apply_topology_provisioned_sets_provisioning() {
+    let tid = task_id();
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
+
+    let event: TopologyProvisionedEvent = serde_json::from_value(serde_json::json!({
+        "task_id": tid.to_string(),
+        "topology_kind": "Ensemble",
+        "explorer_configs": [
+            {
+                "explorer_id": ExplorerId::new().to_string(),
+                "tau": 0.5,
+                "adapter": {"CloudGeneric": {"endpoint": "http://x", "api_key_env": "X", "model": null}},
+                "role": null,
+                "is_reasoning_model": false
+            }
+        ],
+        "auditor_config": serde_json::to_value(AuditorConfig::default()).unwrap(),
+        "n_max": 2.0,
+        "interface_n_max": null,
+        "beta_eff": 0.1,
+        "role_error_costs": [],
+        "merge_strategy": "ScoreOrdered",
+        "coordination_threshold": 0.5,
+        "review_gates": [],
+        "retry_count": 1u32,
+        "timestamp": Utc::now().to_rfc3339(),
+        "constraint_tombstone": null
+    }))
+    .expect("deserialization must succeed");
+
+    SessionJournal::<InMemoryStateBackend>::apply_event(
+        &mut state,
+        H2AIEvent::TopologyProvisioned(event),
+    );
+
+    assert_eq!(state.status, "provisioning");
+    assert_eq!(
+        TaskPhase::try_from(state.phase).unwrap(),
+        TaskPhase::Provisioning
+    );
+    assert_eq!(state.explorers_total, 1);
+    assert_eq!(state.autonomic_retries, 1);
+}
+
+#[test]
+fn apply_multiplication_condition_failed_sets_phase() {
+    let tid = task_id();
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    SessionJournal::<InMemoryStateBackend>::apply_event(
+        &mut state,
+        H2AIEvent::MultiplicationConditionFailed(MultiplicationConditionFailedEvent {
+            task_id: tid.clone(),
+            failure: MultiplicationConditionFailure::InsufficientCompetence {
+                actual: 0.3,
+                required: 0.7,
+            },
+            retry_count: 0,
+            timestamp: Utc::now(),
+        }),
+    );
+    assert_eq!(state.status, "validating");
+    assert_eq!(
+        TaskPhase::try_from(state.phase).unwrap(),
+        TaskPhase::MultiplicationCheck
+    );
+}
+
+#[test]
+fn apply_selection_resolved_sets_merging() {
+    let tid = task_id();
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    SessionJournal::<InMemoryStateBackend>::apply_event(
+        &mut state,
+        H2AIEvent::SelectionResolved(SelectionResolvedEvent {
+            task_id: tid.clone(),
+            valid_proposals: vec![],
+            pruned_proposals: vec![],
+            merge_strategy: MergeStrategy::ScoreOrdered,
+            timestamp: Utc::now(),
+            merge_elapsed_secs: None,
+            n_input_proposals: 0,
+            n_failed_proposals: 0,
+        }),
+    );
+    assert_eq!(state.status, "merging");
+    assert_eq!(
+        TaskPhase::try_from(state.phase).unwrap(),
+        TaskPhase::Merging
+    );
+}
+
+#[test]
+fn apply_task_complexity_assessed_sets_assessing() {
+    let tid = task_id();
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    SessionJournal::<InMemoryStateBackend>::apply_event(
+        &mut state,
+        H2AIEvent::TaskComplexityAssessed(TaskComplexityAssessedEvent {
+            task_id: tid.clone(),
+            tcc_structural: 0.5,
+            tcc_empirical: None,
+            tcc_effective: 0.5,
+            n_eff_pool: None,
+            task_quadrant: TaskQuadrant::Precision,
+            probe_skipped: true,
+            probe_skip_reason: ProbeSkipReason::None,
+            heavy_fraction: 0.0,
+            tcc_mismatch: false,
+            probe_cost_tokens: 0,
+            n_informative_static: 0,
+            timestamp: Utc::now(),
+        }),
+    );
+    assert_eq!(state.status, "assessing");
+    assert_eq!(
+        TaskPhase::try_from(state.phase).unwrap(),
+        TaskPhase::ComplexityAssessed
+    );
+}
+
+#[test]
+fn apply_unhandled_event_leaves_state_unchanged() {
+    let tid = task_id();
+    let mut state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    let before_status = state.status.clone();
+    let before_phase = state.phase;
+    SessionJournal::<InMemoryStateBackend>::apply_event(
+        &mut state,
+        H2AIEvent::LeaderElected(LeaderElectedEvent {
+            task_id: tid.clone(),
+            term: 1,
+            leader_explorer_id: ExplorerId::new(),
+            q_confidence: 0.8,
+            credibility_score: 1.0,
+            rotation_reason: None,
+            timestamp: Utc::now(),
+        }),
+    );
+    assert_eq!(state.status, before_status);
+    assert_eq!(state.phase, before_phase);
+}
+
+// ── replay with InMemoryStateBackend (mocked NATS) ────────────────────────────
+
+#[tokio::test]
 async fn replay_reconstructs_resolved_task_state() {
-    use h2ai_orchestrator::session_journal::SessionJournal;
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let tid = task_id();
+
+    use h2ai_state::backend::EventPublisher;
+    backend
+        .publish_event(
+            &tid,
+            &H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
+                task_id: tid.clone(),
+                system_context: "ctx".into(),
+                pareto_weights: pareto_weights(),
+                timestamp: Utc::now(),
+            }),
+        )
+        .await
+        .unwrap();
+    backend
+        .publish_event(
+            &tid,
+            &H2AIEvent::MergeResolved(MergeResolvedEvent {
+                task_id: tid.clone(),
+                resolved_output: "final".into(),
+                j_eff: None,
+                oracle_gate_passed: None,
+                timestamp: Utc::now(),
+                zone3_hints: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let journal = SessionJournal::new(backend);
+    let state = journal
+        .replay(&tid)
+        .await
+        .expect("replay must succeed")
+        .expect("must have state");
+
+    assert_eq!(state.status, "resolved");
+    assert_eq!(
+        TaskPhase::try_from(state.phase).unwrap(),
+        TaskPhase::Resolved
+    );
+}
+
+#[tokio::test]
+async fn replay_returns_none_when_no_events() {
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let tid = task_id();
+    let journal = SessionJournal::new(backend);
+    let result = journal.replay(&tid).await.expect("replay must not fail");
+    assert!(result.is_none(), "no events → None");
+}
+
+#[tokio::test]
+async fn replay_stops_at_terminal_task_failed_event() {
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let tid = task_id();
+
+    use h2ai_state::backend::EventPublisher;
+    backend
+        .publish_event(
+            &tid,
+            &H2AIEvent::TaskFailed(TaskFailedEvent {
+                task_id: tid.clone(),
+                pruned_events: vec![],
+                topologies_tried: vec![TopologyKind::Ensemble],
+                tau_values_tried: vec![],
+                multiplication_condition_failure: None,
+                timestamp: Utc::now(),
+            }),
+        )
+        .await
+        .unwrap();
+    // This event is after the terminal — must NOT be applied.
+    backend
+        .publish_event(
+            &tid,
+            &H2AIEvent::MergeResolved(MergeResolvedEvent {
+                task_id: tid.clone(),
+                resolved_output: "should not appear".into(),
+                j_eff: None,
+                oracle_gate_passed: None,
+                timestamp: Utc::now(),
+                zone3_hints: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let journal = SessionJournal::new(backend);
+    let state = journal.replay(&tid).await.unwrap().unwrap();
+    assert_eq!(
+        state.status, "failed",
+        "must stop at TaskFailed, not apply MergeResolved"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_restores_state_then_replays_tail() {
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let tid = task_id();
+
+    use h2ai_state::backend::EventPublisher;
+    // Seq 1: bootstrap event
+    let seq = backend
+        .publish_event_seq(
+            &tid,
+            &H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
+                task_id: tid.clone(),
+                system_context: "ctx".into(),
+                pareto_weights: pareto_weights(),
+                timestamp: Utc::now(),
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Store a snapshot after seq 1.
+    let state_snap = TaskState::new(tid.clone(), TenantId::default_tenant());
+    let snap = TaskSnapshot {
+        task_id: tid.clone(),
+        last_sequence: seq,
+        task_state_json: serde_json::to_string(&state_snap).unwrap(),
+        taken_at: Utc::now(),
+    };
+    use h2ai_state::backend::SnapshotStore as SS;
+    backend.put_snapshot(&snap).await.unwrap();
+
+    // Seq 2: resolved event after snapshot.
+    backend
+        .publish_event(
+            &tid,
+            &H2AIEvent::MergeResolved(MergeResolvedEvent {
+                task_id: tid.clone(),
+                resolved_output: "final".into(),
+                j_eff: None,
+                oracle_gate_passed: None,
+                timestamp: Utc::now(),
+                zone3_hints: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let journal = SessionJournal::new(backend);
+    let recovered = journal.replay(&tid).await.unwrap().unwrap();
+    assert_eq!(recovered.status, "resolved");
+}
+
+#[tokio::test]
+async fn note_event_triggers_snapshot_at_interval() {
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let tid = task_id();
+    let journal = SessionJournal::new(backend.clone()).with_snapshot_interval(2);
+    let state = TaskState::new(tid.clone(), TenantId::default_tenant());
+
+    journal.note_event(&tid, 1, &state);
+    journal.note_event(&tid, 2, &state); // interval hit → spawns snapshot write
+
+    // Give the spawned task time to run.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    use h2ai_state::backend::SnapshotStore as SS;
+    let stored = backend.get_snapshot(&tid).await.unwrap();
+    assert!(
+        stored.is_some(),
+        "snapshot must have been written at interval 2"
+    );
+    assert_eq!(stored.unwrap().last_sequence, 2);
+}
+
+// ── error path coverage ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn replay_snapshot_error_falls_back_to_full_replay_and_returns_none() {
+    let backend = Arc::new(SnapshotErrBackend);
+    let journal = SessionJournal::new(backend);
+    let tid = task_id();
+    // No events in stream, snapshot errors → fallback → no events → None
+    let result = journal
+        .replay(&tid)
+        .await
+        .expect("must not propagate snapshot error");
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn replay_stream_error_propagates_as_transport_error() {
+    let backend = Arc::new(StreamErrBackend);
+    let journal = SessionJournal::new(backend);
+    let tid = task_id();
+    let err = journal
+        .replay(&tid)
+        .await
+        .expect_err("stream error must propagate");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("Transport") || msg.contains("stream"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn replay_bad_snapshot_json_falls_back_and_returns_none() {
+    let tid = task_id();
+    let backend = Arc::new(BadSnapshotBackend {
+        task_id: tid.clone(),
+    });
+    let journal = SessionJournal::new(backend);
+    // Bad JSON snapshot → deserialization fails → full replay from seq 0 → no events → None
+    let result = journal
+        .replay(&tid)
+        .await
+        .expect("must not error on bad snapshot JSON");
+    assert!(result.is_none());
+}
+
+// ── snapshot-only recovery (no new events after snapshot) ────────────────────
+
+#[tokio::test]
+async fn replay_snapshot_only_with_no_tail_events_returns_state() {
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let tid = task_id();
+
+    use h2ai_state::backend::EventPublisher;
+    // Publish seq 1.
+    let seq = backend
+        .publish_event_seq(
+            &tid,
+            &H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
+                task_id: tid.clone(),
+                system_context: "ctx".into(),
+                pareto_weights: pareto_weights(),
+                timestamp: Utc::now(),
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Snapshot that covers seq 1 — no events after it.
+    let mut snap_state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    snap_state.status = "pending".into();
+    snap_state.phase = TaskPhase::Bootstrap as u8;
+    let snap = TaskSnapshot {
+        task_id: tid.clone(),
+        last_sequence: seq,
+        task_state_json: serde_json::to_string(&snap_state).unwrap(),
+        taken_at: Utc::now(),
+    };
+    use h2ai_state::backend::SnapshotStore as SS;
+    backend.put_snapshot(&snap).await.unwrap();
+
+    let journal = SessionJournal::new(backend);
+    // from_seq = seq → no events after snapshot → events_seen = 0 but from_seq != 0 → returns Some
+    let recovered = journal.replay(&tid).await.unwrap();
+    assert!(
+        recovered.is_some(),
+        "snapshot alone (from_seq != 0) must return Some"
+    );
+    assert_eq!(recovered.unwrap().status, "pending");
+}
+
+// ── live NATS integration tests (skipped when NATS unavailable) ───────────────
+
+#[tokio::test]
+async fn live_nats_replay_reconstructs_resolved_task_state() {
     use h2ai_state::nats::NatsClient;
-    use std::sync::Arc;
 
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = Arc::new(match NatsClient::connect(&nats_url).await {
@@ -276,12 +871,12 @@ async fn replay_reconstructs_resolved_task_state() {
             j_eff: None,
             oracle_gate_passed: None,
             timestamp: Utc::now(),
+            zone3_hints: None,
         }),
     )
     .await
     .unwrap();
 
-    // Small delay to let JetStream persist messages.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let journal = SessionJournal::new(nats);
@@ -296,81 +891,4 @@ async fn replay_reconstructs_resolved_task_state() {
         TaskPhase::try_from(state.phase).unwrap(),
         TaskPhase::Resolved
     );
-}
-
-#[tokio::test]
-#[ignore]
-async fn snapshot_written_and_recovered_via_replay() {
-    use h2ai_orchestrator::session_journal::SessionJournal;
-    use h2ai_state::nats::NatsClient;
-    use std::sync::Arc;
-
-    let nats_url = h2ai_config::H2AIConfig::default().nats_url;
-    let nats = Arc::new(match NatsClient::connect(&nats_url).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
-            return;
-        }
-    });
-    nats.ensure_infrastructure()
-        .await
-        .expect("infra setup failed");
-
-    let tid = task_id();
-
-    // Publish events and capture the last sequence.
-    let seq = nats
-        .publish_event_seq(
-            &tid,
-            &H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
-                task_id: tid.clone(),
-                system_context: "ctx".into(),
-                pareto_weights: pareto_weights(),
-                timestamp: Utc::now(),
-            }),
-        )
-        .await
-        .expect("publish_event_seq");
-
-    // Manually write a snapshot as if note_event had fired.
-    let state_before = TaskState::new(tid.clone(), TenantId::default_tenant());
-    let snap = h2ai_types::events::TaskSnapshot {
-        task_id: tid.clone(),
-        last_sequence: seq,
-        task_state_json: serde_json::to_string(&state_before).unwrap(),
-        taken_at: Utc::now(),
-    };
-    nats.put_snapshot(&snap).await.expect("put_snapshot");
-
-    // Now publish a MergeResolved event AFTER the snapshot.
-    nats.publish_event(
-        &tid,
-        &H2AIEvent::MergeResolved(MergeResolvedEvent {
-            task_id: tid.clone(),
-            resolved_output: "final".into(),
-            j_eff: None,
-            oracle_gate_passed: None,
-            timestamp: Utc::now(),
-        }),
-    )
-    .await
-    .unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let journal = SessionJournal::new(nats.clone()).with_snapshot_interval(50);
-    let recovered = journal
-        .replay(&tid)
-        .await
-        .expect("replay")
-        .expect("state present");
-
-    // The journal should have loaded the snapshot and then replayed only MergeResolved.
-    assert_eq!(recovered.status, "resolved");
-
-    // Verify get_snapshot round-trips correctly.
-    let loaded = nats.get_snapshot(&tid).await.expect("get_snapshot");
-    assert!(loaded.is_some());
-    assert_eq!(loaded.unwrap().last_sequence, seq);
 }

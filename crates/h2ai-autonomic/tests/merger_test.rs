@@ -1,10 +1,24 @@
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 use chrono::Utc;
 use h2ai_autonomic::merger::{MergeEngine, MergeOutcome};
+use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::semilattice::ProposalSet;
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::{BranchPrunedEvent, ProposalEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::{MergeStrategy, RoleErrorCost, TauValue};
+
+/// Deterministic stub: returns a 3-D vector derived from the byte-sum of `text`.
+struct StubEmbedding;
+impl EmbeddingModel for StubEmbedding {
+    fn embed(&self, text: &str) -> Vec<f32> {
+        let sum: u32 = text.bytes().map(u32::from).sum();
+        let v = (sum % 100) as f32 / 100.0;
+        // L2-normalise so cosine = dot product
+        let norm = (v * v + (1.0 - v) * (1.0 - v) + 0.25_f32).sqrt();
+        vec![v / norm, (1.0 - v) / norm, 0.5 / norm]
+    }
+}
 
 fn adapter() -> AdapterKind {
     AdapterKind::CloudGeneric {
@@ -45,8 +59,18 @@ async fn merge_engine_resolves_crdt_when_valid_proposals_exist() {
     set.insert_scored(proposal(&task_id, ExplorerId::new(), "answer A", 10), 0.5);
     set.insert_scored(proposal(&task_id, ExplorerId::new(), "answer B", 20), 0.5);
 
-    let outcome =
-        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
     assert!(matches!(outcome, MergeOutcome::Resolved { .. }));
 }
 
@@ -65,6 +89,9 @@ async fn merge_engine_emits_zero_survival_when_all_pruned() {
         MergeStrategy::ScoreOrdered,
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     assert!(matches!(outcome, MergeOutcome::ZeroSurvival(_)));
@@ -79,6 +106,9 @@ async fn merge_engine_zero_survival_when_proposal_set_empty() {
         vec![],
         MergeStrategy::ScoreOrdered,
         0,
+        None,
+        None,
+        None,
         None,
     )
     .await;
@@ -99,8 +129,18 @@ async fn merge_engine_zero_survival_when_all_proposals_score_zero() {
         0.0,
     );
 
-    let outcome =
-        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
     assert!(
         matches!(outcome, MergeOutcome::ZeroSurvival(_)),
         "all-zero-score proposals must trigger ZeroSurvival, not contaminate synthesis"
@@ -123,6 +163,9 @@ async fn merge_engine_consensus_median_selects_a_proposal() {
         MergeStrategy::ConsensusMedian,
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -141,8 +184,18 @@ async fn merge_engine_resolved_outcome_carries_selection_resolved_event() {
     let mut set = ProposalSet::new();
     set.insert_scored(proposal(&task_id, ExplorerId::new(), "output", 5), 0.5);
 
-    let outcome =
-        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved {
         selection_resolved, ..
     } = outcome
@@ -211,6 +264,9 @@ async fn merge_engine_krum_selects_honest_proposal() {
         MergeStrategy::OutlierResistant { f: 1 },
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -239,7 +295,7 @@ async fn merge_engine_multi_krum_returns_honest_output() {
     for (text, score) in honest {
         set.insert_scored(
             proposal(&task_id, ExplorerId::new(), text, 10),
-            score as f64,
+            f64::from(score),
         );
     }
     // Byzantine proposals score 0.0 — excluded from valid_proposals by GAP-D8 fix.
@@ -263,6 +319,9 @@ async fn merge_engine_multi_krum_returns_honest_output() {
         vec![],
         MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
         0,
+        None,
+        None,
+        None,
         None,
     )
     .await;
@@ -312,6 +371,9 @@ async fn merge_engine_krum_quorum_violated_falls_back_to_consensus_median() {
         MergeStrategy::OutlierResistant { f: 1 },
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -358,6 +420,9 @@ async fn merge_engine_krum_incoherent_cluster_falls_back_to_consensus_median() {
         MergeStrategy::OutlierResistant { f: 1 },
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -396,6 +461,9 @@ async fn merge_engine_multi_krum_incoherent_cluster_falls_back_to_consensus_medi
         MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -417,6 +485,9 @@ async fn merge_engine_zero_survival_carries_retry_count() {
         vec![],
         MergeStrategy::ScoreOrdered,
         7,
+        None,
+        None,
+        None,
         None,
     )
     .await;
@@ -479,6 +550,9 @@ async fn merge_engine_multi_krum_quorum_violated_falls_back_to_consensus_median(
         MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
         0,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -499,8 +573,18 @@ async fn merge_resolved_event_contains_timing_fields() {
     set.insert_scored(proposal(&task_id, ExplorerId::new(), "answer B", 20), 0.5);
     set.insert_scored(proposal(&task_id, ExplorerId::new(), "answer C", 15), 0.5);
 
-    let outcome =
-        MergeEngine::resolve(task_id, set, vec![], MergeStrategy::ScoreOrdered, 0, None).await;
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
     if let MergeOutcome::Resolved {
         selection_resolved, ..
     } = outcome
@@ -537,6 +621,9 @@ async fn merge_n_input_proposals_includes_pruned_count() {
         pruned_events,
         MergeStrategy::ScoreOrdered,
         0,
+        None,
+        None,
+        None,
         None,
     )
     .await;
@@ -590,4 +677,166 @@ async fn krum_select_semantic_returns_none_without_embedding_model() {
         "krum_select_semantic must return None when no embedding model is provided; \
          callers must fall back to ConsensusMedian"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_outlier_resistant_weiszfeld_fallback_with_embedding_model() {
+    // n=4, f=1: quorum not satisfied (need 5) but embedding model present → Weiszfeld path.
+    let task_id = TaskId::new();
+    let model = StubEmbedding;
+    let mut set = ProposalSet::new();
+    set.insert_scored(
+        proposal(&task_id, ExplorerId::new(), "jwt auth token rotation", 10),
+        0.5,
+    );
+    set.insert_scored(
+        proposal(&task_id, ExplorerId::new(), "stateless jwt bearer auth", 10),
+        0.5,
+    );
+    set.insert_scored(
+        proposal(
+            &task_id,
+            ExplorerId::new(),
+            "jwt stateless authentication",
+            10,
+        ),
+        0.5,
+    );
+    set.insert_scored(
+        proposal(
+            &task_id,
+            ExplorerId::new(),
+            "bearer token jwt stateless",
+            10,
+        ),
+        0.5,
+    );
+
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::OutlierResistant { f: 1 },
+        0,
+        Some(&model),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if let MergeOutcome::Resolved { resolved, .. } = outcome {
+        assert!(
+            !resolved.resolved_output.is_empty(),
+            "Weiszfeld must select a proposal"
+        );
+    } else {
+        panic!("expected Resolved");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_multi_outlier_resistant_weiszfeld_fallback_with_embedding_model() {
+    // n=6, f=2: quorum not satisfied (need 7) but embedding model present → Weiszfeld path.
+    let task_id = TaskId::new();
+    let model = StubEmbedding;
+    let mut set = ProposalSet::new();
+    for text in [
+        "jwt auth a",
+        "jwt auth b",
+        "jwt auth c",
+        "jwt auth d",
+        "jwt auth e",
+        "jwt auth f",
+    ] {
+        set.insert_scored(proposal(&task_id, ExplorerId::new(), text, 10), 0.5);
+    }
+
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
+        0,
+        Some(&model),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if let MergeOutcome::Resolved { resolved, .. } = outcome {
+        assert!(
+            !resolved.resolved_output.is_empty(),
+            "Weiszfeld MultiKrum must select a proposal"
+        );
+    } else {
+        panic!("expected Resolved");
+    }
+}
+
+/// Krum path for `OutlierResistant`: n=5, f=1 satisfies `min_quorum(1)=5`.
+/// All texts "d"×k have byte sum 100k → sum%100=0 → identical `StubEmbedding` vectors →
+/// pairwise distance=0 < `MAX_CLUSTER_DIAMETER` → `cluster_coherent=true` → `krum_select_semantic` path.
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_outlier_resistant_krum_path_with_quorum_and_coherent_cluster() {
+    let task_id = TaskId::new();
+    let model = StubEmbedding;
+    let mut set = ProposalSet::new();
+    for text in ["d", "dd", "ddd", "dddd", "ddddd"] {
+        set.insert_scored(proposal(&task_id, ExplorerId::new(), text, 10), 0.9);
+    }
+
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::OutlierResistant { f: 1 },
+        0,
+        Some(&model),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if let MergeOutcome::Resolved { resolved, .. } = outcome {
+        assert!(
+            !resolved.resolved_output.is_empty(),
+            "krum_select must select a proposal"
+        );
+    } else {
+        panic!("expected Resolved");
+    }
+}
+
+/// Krum path for `MultiOutlierResistant`: n=7, f=2 satisfies `min_quorum(2)=7`.
+/// All texts "d"×k (k=1..7) have byte sum 100k → sum%100=0 → identical embeddings →
+/// `cluster_coherent=true` → `multi_krum_select_semantic` path (lines 173-181).
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_multi_outlier_resistant_krum_path_with_quorum_and_coherent_cluster() {
+    let task_id = TaskId::new();
+    let model = StubEmbedding;
+    let mut set = ProposalSet::new();
+    for text in ["d", "dd", "ddd", "dddd", "ddddd", "dddddd", "ddddddd"] {
+        set.insert_scored(proposal(&task_id, ExplorerId::new(), text, 10), 0.9);
+    }
+
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        vec![],
+        MergeStrategy::MultiOutlierResistant { f: 2, m: 3 },
+        0,
+        Some(&model),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if let MergeOutcome::Resolved { resolved, .. } = outcome {
+        assert!(
+            !resolved.resolved_output.is_empty(),
+            "multi_krum_select must select a proposal"
+        );
+    } else {
+        panic!("expected Resolved");
+    }
 }

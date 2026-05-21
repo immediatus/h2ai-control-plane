@@ -18,7 +18,7 @@ pub enum CompoundError {
     Scheduling(#[from] SchedulerError),
 }
 
-pub struct CompoundTaskInput<'a> {
+pub struct CompoundTaskInput<'a, E: SubtaskExecutor> {
     pub task_id: TaskId,
     pub manifest: TaskManifest,
     /// Adapter used for task decomposition (typically low tau for precision).
@@ -27,7 +27,7 @@ pub struct CompoundTaskInput<'a> {
     pub review_adapter: &'a dyn IComputeAdapter,
     pub planning_tau: TauValue,
     /// Executes individual subtasks (use `EngineExecutor` in production, mock in tests).
-    pub executor: &'a dyn SubtaskExecutor,
+    pub executor: &'a E,
 }
 
 #[derive(Debug)]
@@ -45,7 +45,9 @@ impl CompoundTaskEngine {
     /// 1. Decompose `manifest` into a `SubtaskPlan` via LLM.
     /// 2. Auto-review the plan; return `CompoundError::PlanRejected` if rejected.
     /// 3. Execute approved subtasks in topological order via `executor`.
-    pub async fn run(input: CompoundTaskInput<'_>) -> Result<CompoundTaskOutput, CompoundError> {
+    pub async fn run<E: SubtaskExecutor>(
+        input: CompoundTaskInput<'_, E>,
+    ) -> Result<CompoundTaskOutput, CompoundError> {
         // Step 1: Decompose.
         let mut plan =
             PlanningEngine::decompose(&input.manifest, input.planning_adapter, input.planning_tau)

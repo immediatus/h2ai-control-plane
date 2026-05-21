@@ -16,12 +16,14 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             executors: HashMap::new(),
         }
     }
 
+    #[must_use]
     pub fn default_with_shell() -> Self {
         let mut r = Self::new();
         r.register_shell(ShellExecutor::default());
@@ -29,7 +31,7 @@ impl ToolRegistry {
     }
 
     /// Production constructor. Shell always registered. WASM registered in both modes when
-    /// configured. WebSearch + MCP registered only in Normal mode when configured.
+    /// configured. `WebSearch` + MCP registered only in Normal mode when configured.
     /// Uses live backends — env vars and file paths must be valid at call time.
     pub fn for_wave(cfg: &H2AIConfig, mode: WaveMode) -> Self {
         let allowlist = match mode {
@@ -89,8 +91,9 @@ impl ToolRegistry {
         r
     }
 
-    /// Test-only constructor: identical WaveMode logic but injects mock backends.
+    /// Test-only constructor: identical `WaveMode` logic but injects mock backends.
     /// Does not touch env vars, the filesystem, or spawn subprocesses.
+    #[must_use]
     pub fn for_wave_with_mocks(cfg: &H2AIConfig, mode: WaveMode) -> Self {
         use crate::mcp::MockMcpBackend;
         use crate::wasm::MockWasmBackend;
@@ -147,6 +150,12 @@ impl ToolRegistry {
         self.executors.insert(tool, executor);
     }
 
+    /// Execute a registered tool with the given input.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolError::NotRegistered` if no executor is registered for `tool`, or
+    /// propagates any error returned by the tool executor.
     pub async fn execute(&self, tool: AgentTool, input: &str) -> Result<String, ToolError> {
         match self.executors.get(&tool) {
             Some(exec) => exec.execute(input).await,
@@ -155,6 +164,7 @@ impl ToolRegistry {
     }
 
     /// Returns the schema for every registered tool, in arbitrary order.
+    #[must_use]
     pub fn all_schemas(&self) -> Vec<crate::ToolSchema> {
         self.executors.values().map(|e| e.schema()).collect()
     }

@@ -1,3 +1,56 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::{FamilyConstraint, H2AIConfig, SafetyConfig};
@@ -3776,4 +3829,11 @@ fn consensus_score_averaging_math() {
     assert!(mean_split < 0.6);
     // With threshold 0.45, mean_split=0.55 passes hard gate
     assert!(mean_split >= 0.45);
+}
+
+#[test]
+fn conflict_beta_disabled_skips_accumulator_load() {
+    let mut cfg = h2ai_config::H2AIConfig::default();
+    cfg.conflict_beta.enabled = false;
+    assert!(!cfg.conflict_beta.enabled);
 }

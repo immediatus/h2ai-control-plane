@@ -34,11 +34,13 @@ pub struct Bm25WikiProvider {
 }
 
 impl Bm25WikiProvider {
-    pub fn leaf_count(&self) -> usize {
+    #[must_use]
+    pub const fn leaf_count(&self) -> usize {
         self.leaf_items.len()
     }
 
-    pub fn topic_count(&self) -> usize {
+    #[must_use]
+    pub const fn topic_count(&self) -> usize {
         self.topic_nodes.len()
     }
 
@@ -94,12 +96,12 @@ impl Bm25WikiProvider {
                 .iter()
                 .map(|n| (n.id.clone(), n.synthesis.clone()))
                 .collect();
-            let all: Vec<(&str, &str)> = topic_pairs
-                .iter()
-                .chain(leaf_pairs.iter())
-                .map(|(id, t)| (id.as_str(), t.as_str()))
-                .collect();
-            Bm25PlusRetriever::build(all.into_iter())
+            Bm25PlusRetriever::build(
+                topic_pairs
+                    .iter()
+                    .chain(leaf_pairs.iter())
+                    .map(|(id, t)| (id.as_str(), t.as_str())),
+            )
         };
 
         // Pass 3: PPR graph
@@ -237,6 +239,7 @@ fn boost_leaf_score(base: f32, node: &KnowledgeNode, query_text: &str, id_boost:
 
 #[async_trait]
 impl KnowledgeProvider for Bm25WikiProvider {
+    #[allow(clippy::too_many_lines)]
     async fn query(&self, query: &KnowledgeQuery<'_>) -> KnowledgeResult {
         // 1. Explicit ID bypass: fetch leaf nodes by exact ID + topic nodes by entry_point match.
         // This guarantees constraint-specific wiki articles are always returned regardless of
@@ -386,7 +389,10 @@ impl KnowledgeProvider for Bm25WikiProvider {
                 .map(|(n, _)| n.id.clone())
                 .collect();
             if !leaf_hit_ids.is_empty() {
-                let seed_refs: Vec<&str> = leaf_hit_ids.iter().map(|s| s.as_str()).collect();
+                let seed_refs: Vec<&str> = leaf_hit_ids
+                    .iter()
+                    .map(std::string::String::as_str)
+                    .collect();
                 let ppr_hits = self.graph.ppr(
                     &seed_refs,
                     self.scoring.ppr_alpha,
@@ -439,16 +445,18 @@ impl KnowledgeProvider for Bm25WikiProvider {
         // 6. Dedup by ID (higher score wins) and sort descending
         let mut deduped: HashMap<String, (KnowledgeNode, f32)> = HashMap::new();
         for (node, score) in results {
-            let entry = deduped
+            deduped
                 .entry(node.id.clone())
-                .or_insert((node.clone(), score));
-            if score > entry.1 {
-                *entry = (node, score);
-            }
+                .and_modify(|entry| {
+                    if score > entry.1 {
+                        entry.1 = score;
+                    }
+                })
+                .or_insert((node, score));
         }
         let mut final_results: Vec<(KnowledgeNode, f32)> = deduped.into_values().collect();
         final_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let cap = query.top_k + if global_included { 1 } else { 0 };
+        let cap = query.top_k + usize::from(global_included);
         final_results.truncate(cap);
 
         KnowledgeResult {
@@ -472,17 +480,19 @@ impl KnowledgeProvider for Bm25WikiProvider {
     }
 }
 
-/// Zero-change fallback that delegates to the existing ConstraintResolver.
+/// Zero-change fallback that delegates to the existing `ConstraintResolver`.
 /// Used when `knowledge` is absent from config.
 pub struct PassthroughProvider {
     resolver: ConstraintResolver,
 }
 
 impl PassthroughProvider {
-    pub fn new(resolver: ConstraintResolver) -> Self {
+    #[must_use]
+    pub const fn new(resolver: ConstraintResolver) -> Self {
         Self { resolver }
     }
 
+    #[must_use]
     pub fn new_from_path(path: &std::path::Path) -> Self {
         let (index, store) = FsConstraintStore::load(path).unwrap_or_else(|_| {
             let store = FsConstraintStore::from_docs(vec![]);
@@ -515,7 +525,7 @@ impl KnowledgeProvider for PassthroughProvider {
                     entry_points: vec![],
                     tensions: vec![],
                     cross_references: vec![],
-                    related: doc.related_to.clone(),
+                    related: doc.related_to,
                     source: NodeSource::Synthetic,
                     importance: 0.7,
                 };

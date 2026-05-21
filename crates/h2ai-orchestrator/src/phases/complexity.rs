@@ -24,7 +24,7 @@ pub async fn run(input: &EngineInput<'_>, system_context: &str) -> Result<Output
     )
     .await;
     let assessed_quadrant = complexity_assessment.task_quadrant;
-    let complexity_event = complexity_assessment.clone();
+    let complexity_event = complexity_assessment;
 
     // Degenerate guard (non-shadow mode only): both TCC and pool N_eff are below
     // their thresholds. The pool cannot explore the solution space for this task;
@@ -37,8 +37,7 @@ pub async fn run(input: &EngineInput<'_>, system_context: &str) -> Result<Output
                     .calibration
                     .eigen
                     .as_ref()
-                    .map(|e| e.n_effective)
-                    .unwrap_or(0.0),
+                    .map_or(0.0, |e| e.n_effective),
                 threshold: input.cfg.task_complexity.n_eff_complex_threshold,
             }
             .to_string(),

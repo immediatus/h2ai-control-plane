@@ -3,7 +3,7 @@ use std::collections::HashSet;
 fn tokenize(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
+        .map(str::to_lowercase)
         .filter(|t| t.len() > 1)
         .collect()
 }
@@ -23,6 +23,7 @@ fn token_overlap(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
 ///
 /// Used in the TAO repetition guard to detect stuck output loops: when
 /// successive turns produce nearly identical token sets the loop aborts.
+#[must_use]
 pub fn similarity(a: &str, b: &str) -> f64 {
     token_overlap(&tokenize(a), &tokenize(b))
 }

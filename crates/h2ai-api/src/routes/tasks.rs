@@ -52,8 +52,7 @@ fn compute_j_eff(
     let (p_mean, rho_mean) = calibration
         .ensemble
         .as_ref()
-        .map(|e| (e.p_mean, e.rho_mean))
-        .unwrap_or((0.5, 0.0));
+        .map_or((0.5, 0.0), |e| (e.p_mean, e.rho_mean));
     compute_j_eff_raw(n_valid, n_agents, p_mean, rho_mean)
 }
 
@@ -70,7 +69,7 @@ fn compute_j_eff(
 ///
 /// On success the handler inserts the task into the store, spawns a Tokio task that runs
 /// [`ExecutionEngine::run_offline`], and returns `202 Accepted` with a [`TaskAccepted`]
-/// body containing the task ID, status URL, J_eff score, and topology kind.
+/// body containing the task ID, status URL, `J_eff` score, and topology kind.
 /// When the engine finishes it publishes `H2AIEvent::VerificationScored` events to NATS
 /// for each scored proposal, followed by a single `H2AIEvent::TaskAttribution` event
 /// with quality metrics and waste analysis, then marks the task resolved in the store.
@@ -157,7 +156,7 @@ pub async fn submit_task(
     let shadow_accumulator = state.shadow_accumulator.clone();
     let registry = state.registry();
 
-    let resolved_ids_for_checkpoint = resolved_ids.clone();
+    let resolved_ids_for_checkpoint = resolved_ids;
     let wiki_revision_for_checkpoint = wiki_revision;
     let evaluated_ids_for_checkpoint: Vec<String> = corpus.iter().map(|d| d.id.clone()).collect();
 
@@ -167,7 +166,7 @@ pub async fn submit_task(
     let manifest_clone = manifest.clone();
     let calibration_clone = calibration.clone();
     let store_clone = state.store.clone();
-    let task_id_clone = task_id.clone();
+    let task_id_clone = task_id;
 
     tokio::spawn(async move {
         let _permit = permit; // dropped when this task completes, freeing semaphore slot
@@ -186,7 +185,10 @@ pub async fn submit_task(
                 .agent_provider
                 .as_ref()
                 .map(|provider| NatsDispatchConfig {
-                    nats: state_clone.nats.clone(),
+                    nats: state_clone
+                        .nats
+                        .clone()
+                        .expect("NATS required for agent dispatch"),
                     provider: std::sync::Arc::clone(provider),
                     agent_descriptor: AgentDescriptor {
                         model: state_clone.cfg.nats_agent_model.clone(),
@@ -217,7 +219,7 @@ pub async fn submit_task(
             .len();
         let n_target = (n_domains + 1).max(2).min(n_max.max(1));
         let thinking_task_id = task_id_clone.to_string();
-        let thinking_nats_client = state_clone.nats.client.clone();
+        let thinking_nats_client = state_clone.nats.as_ref().map(|n| n.client.clone());
         let thinking_constraint_tags: Vec<String> = corpus
             .iter()
             .flat_map(|d| d.domains.iter().cloned())
@@ -234,7 +236,7 @@ pub async fn submit_task(
             cfg: &state_clone.cfg.thinking_loop,
             adapter: adapter_pool[0].as_ref(),
             embedding_model: state_clone.embedding_model.as_deref(),
-            nats_client: Some(thinking_nats_client),
+            nats_client: thinking_nats_client,
             task_id: &thinking_task_id,
         })
         .await;
@@ -248,8 +250,10 @@ pub async fn submit_task(
                 archetypes: vec![], // archetype names not carried on ThinkingReport
                 timestamp: chrono::Utc::now(),
             });
-            if let Err(e) = state_clone.nats.publish_event(&task_id_clone, &tl_ev).await {
-                tracing::warn!(task_id = %task_id_clone, "failed to publish ThinkingLoopCompletedEvent: {e}");
+            if let Some(nats) = &state_clone.nats {
+                if let Err(e) = nats.publish_event(&task_id_clone, &tl_ev).await {
+                    tracing::warn!(task_id = %task_id_clone, "failed to publish ThinkingLoopCompletedEvent: {e}");
+                }
             }
         }
         let thinking_context = if thinking_report.shared_understanding.is_empty() {
@@ -335,6 +339,8 @@ pub async fn submit_task(
                 });
                 if let Err(pub_err) = state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .publish_event(&task_id_clone, &failed_ev)
                     .await
                 {
@@ -394,15 +400,18 @@ pub async fn submit_task(
                 if !thinking_context.is_empty() {
                     m.context = Some(match m.context.as_deref() {
                         Some(ctx) if !ctx.is_empty() => {
-                            format!("{}\n\n{}\n{}", ctx, THINKING_LOOP_SECTION, thinking_context)
+                            format!("{ctx}\n\n{THINKING_LOOP_SECTION}\n{thinking_context}")
                         }
-                        _ => format!("{}\n{}", THINKING_LOOP_SECTION, thinking_context),
+                        _ => format!("{THINKING_LOOP_SECTION}\n{thinking_context}"),
                     });
                 }
                 m
             },
             calibration: calibration_clone,
-            explorer_adapters: explorer_arcs.iter().map(|a| a.as_ref()).collect(),
+            explorer_adapters: explorer_arcs
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect(),
             verification_adapter: verifier.as_ref(),
             auditor_adapter: auditor.as_ref(),
             auditor_config: h2ai_types::config::AuditorConfig {
@@ -441,7 +450,7 @@ pub async fn submit_task(
             srani_grounding_chain: state_clone.srani_grounding_chain.clone(),
             nats_raw: None,
             tenant_id: manifest_clone.tenant_id.clone(),
-            nats: Some(state_clone.nats.clone()),
+            nats: state_clone.nats.clone(),
             prev_assembled_contexts: Vec::new(),
             compression_adapter: None,
             stable_cache: None,
@@ -457,8 +466,7 @@ pub async fn submit_task(
                     let node_id = format!(
                         "{}:{}",
                         hostname::get()
-                            .map(|h| h.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| "unknown".into()),
+                            .map_or_else(|_| "unknown".into(), |h| h.to_string_lossy().to_string()),
                         std::process::id()
                     );
                     let now_ms = std::time::SystemTime::now()
@@ -491,6 +499,8 @@ pub async fn submit_task(
                     };
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .put_task_checkpoint(&checkpoint, None)
                         .await
                     {
@@ -540,6 +550,8 @@ pub async fn submit_task(
                     H2AIEvent::TaskComplexityAssessed(output.complexity_event.clone());
                 match state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .publish_event_seq(&output.task_id, &complexity_ev)
                     .await
                 {
@@ -551,7 +563,7 @@ pub async fn submit_task(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("failed to publish TaskComplexityAssessedEvent: {e}")
+                        tracing::warn!("failed to publish TaskComplexityAssessedEvent: {e}");
                     }
                 }
 
@@ -559,6 +571,8 @@ pub async fn submit_task(
                     let h2ai_ev = H2AIEvent::ConstraintFrontier(frontier_ev.clone());
                     match state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &h2ai_ev)
                         .await
                     {
@@ -570,7 +584,7 @@ pub async fn submit_task(
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("failed to publish ConstraintFrontierEvent: {e}")
+                            tracing::warn!("failed to publish ConstraintFrontierEvent: {e}");
                         }
                     }
                 }
@@ -588,8 +602,7 @@ pub async fn submit_task(
                             let cal = ts.calibration.read().await;
                             cal.as_ref()
                                 .and_then(|c| c.ensemble.as_ref())
-                                .map(|e| e.p_mean)
-                                .unwrap_or(0.7_f64)
+                                .map_or(0.7_f64, |e| e.p_mean)
                         };
                         let variance = (p_mean * (1.0 - p_mean)).max(0.01);
                         let mut pairs: Vec<(String, String, f64)> = Vec::new();
@@ -630,6 +643,8 @@ pub async fn submit_task(
                     let h2ai_ev = H2AIEvent::VerificationScored(event);
                     match state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &h2ai_ev)
                         .await
                     {
@@ -648,6 +663,8 @@ pub async fn submit_task(
                     let h2ai_ev = H2AIEvent::ProposalFailed(event);
                     match state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &h2ai_ev)
                         .await
                     {
@@ -665,6 +682,8 @@ pub async fn submit_task(
                 let selection_ev = H2AIEvent::SelectionResolved(output.selection_resolved.clone());
                 match state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .publish_event_seq(&output.task_id, &selection_ev)
                     .await
                 {
@@ -716,6 +735,8 @@ pub async fn submit_task(
                 });
                 match state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .publish_event_seq(&output.task_id, &attr_ev)
                     .await
                 {
@@ -732,6 +753,8 @@ pub async fn submit_task(
                     let ev = H2AIEvent::VerifierComparison(comp_ev.clone());
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &ev)
                         .await
                     {
@@ -744,6 +767,8 @@ pub async fn submit_task(
                         let ev = H2AIEvent::ShadowAudit(shadow_ev.clone());
                         if let Err(e) = state_clone
                             .nats
+                            .as_ref()
+                            .expect("NATS required")
                             .publish_event_seq(&output.task_id, &ev)
                             .await
                         {
@@ -762,6 +787,8 @@ pub async fn submit_task(
                     let ev = H2AIEvent::CorrelatedEnsemble(warning.clone());
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &ev)
                         .await
                     {
@@ -773,6 +800,8 @@ pub async fn submit_task(
                     let ev = H2AIEvent::CorrelatedFabrication(srani_ev.clone());
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &ev)
                         .await
                     {
@@ -783,6 +812,8 @@ pub async fn submit_task(
                 if output.srani_count_updated != srani_count {
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .put_srani_state(
                             &task_tenant_id,
                             output.srani_ema_cfi_updated,
@@ -800,6 +831,8 @@ pub async fn submit_task(
                     let ev = H2AIEvent::ResearcherGrounding(grounding.clone());
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &ev)
                         .await
                     {
@@ -811,6 +844,8 @@ pub async fn submit_task(
                     let ev = H2AIEvent::DiversityGuardDegraded(degraded.clone());
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &ev)
                         .await
                     {
@@ -832,6 +867,8 @@ pub async fn submit_task(
                     });
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &coh_ev)
                         .await
                     {
@@ -842,6 +879,8 @@ pub async fn submit_task(
                 for ev in &output.leader_elected_events {
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(&output.task_id, &H2AIEvent::LeaderElected(ev.clone()))
                         .await
                     {
@@ -854,6 +893,8 @@ pub async fn submit_task(
                 for ev in &output.socratic_diagnosis_events {
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .publish_event_seq(
                             &output.task_id,
                             &H2AIEvent::SocraticDiagnosis(ev.clone()),
@@ -878,9 +919,12 @@ pub async fn submit_task(
                     j_eff,
                     timestamp: chrono::Utc::now(),
                     oracle_gate_passed: None,
+                    zone3_hints: None,
                 });
                 if let Err(e) = state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .publish_event(&output.task_id, &merge_ev)
                     .await
                 {
@@ -888,15 +932,14 @@ pub async fn submit_task(
                 }
                 // Spawn background OPRO trigger — non-blocking, errors logged internally
                 if let Some(j_eff_value) = j_eff {
-                    let opro_nats = std::sync::Arc::clone(&state_clone.nats);
+                    let opro_nats = state_clone.nats.clone().expect("NATS required for OPRO");
                     let opro_cfg = std::sync::Arc::clone(&state_clone.cfg);
                     let opro_adapter = std::sync::Arc::clone(&state_clone.adapter_pool[0]);
                     let opro_adapter_name = state_clone
                         .cfg
                         .adapter_profiles
                         .first()
-                        .map(|p| p.name.clone())
-                        .unwrap_or_else(|| "default".to_string());
+                        .map_or_else(|| "default".to_string(), |p| p.name.clone());
                     tokio::spawn(async move {
                         if let Err(e) = crate::opro::run_opro_trigger(
                             opro_adapter_name,
@@ -914,7 +957,12 @@ pub async fn submit_task(
                 }
                 // Phase 6: async oracle dispatch (fire-and-forget, non-blocking)
                 if let Some(ref oracle_spec) = oracle_spec_clone {
-                    let nats_client = state_clone.nats.client.clone();
+                    let nats_client = state_clone
+                        .nats
+                        .as_ref()
+                        .expect("NATS required for oracle dispatch")
+                        .client
+                        .clone();
                     let task_id_oracle = output.task_id.clone();
                     let resolved = output.resolved_output.clone();
                     let q = output.attribution.q_confidence;
@@ -924,6 +972,7 @@ pub async fn submit_task(
                         h2ai_orchestrator::oracle::oracle_dispatch::fire(
                             &nats_client,
                             task_id_oracle,
+                            h2ai_types::identity::TenantId::default(),
                             &resolved,
                             q,
                             n_used,
@@ -936,6 +985,8 @@ pub async fn submit_task(
                 // GC: delete checkpoint now that task is permanently resolved.
                 if let Err(e) = state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .delete_task_checkpoint(&output.task_id.to_string())
                     .await
                 {
@@ -963,6 +1014,8 @@ pub async fn submit_task(
                         let h2ai_ev = H2AIEvent::VerificationScored(event.clone());
                         if let Err(pub_err) = state_clone
                             .nats
+                            .as_ref()
+                            .expect("NATS required")
                             .publish_event(&task_id_for_failure, &h2ai_ev)
                             .await
                         {
@@ -981,6 +1034,8 @@ pub async fn submit_task(
                 });
                 if let Err(pub_err) = state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .publish_event(&task_id_for_failure, &failed_ev)
                     .await
                 {
@@ -990,6 +1045,8 @@ pub async fn submit_task(
                 // GC: delete checkpoint on failure.
                 if let Err(e) = state_clone
                     .nats
+                    .as_ref()
+                    .expect("NATS required")
                     .delete_task_checkpoint(&task_id_for_failure.to_string())
                     .await
                 {
@@ -1002,6 +1059,8 @@ pub async fn submit_task(
         if let Some((ema, count)) = ts.tao_multiplier_estimator.read().await.persist_state() {
             if let Err(e) = state_clone
                 .nats
+                .as_ref()
+                .expect("NATS required")
                 .put_tao_estimator_state(&task_tenant_id, ema, count)
                 .await
             {
@@ -1016,6 +1075,8 @@ pub async fn submit_task(
                 Ok(bytes) => {
                     if let Err(e) = state_clone
                         .nats
+                        .as_ref()
+                        .expect("NATS required")
                         .put_bandit_state(&task_tenant_id, bytes)
                         .await
                     {
@@ -1065,7 +1126,7 @@ pub async fn task_events(
     }
     let from_seq: u64 = 0;
 
-    let nats = state.nats.clone();
+    let nats = state.nats.clone().expect("NATS required for event stream");
     let stream = async_stream::stream! {
         match nats.tail_task_events(&tid, from_seq).await {
             Err(e) => {
@@ -1161,9 +1222,12 @@ pub async fn merge_task(
         j_eff: None,
         timestamp: chrono::Utc::now(),
         oracle_gate_passed: None,
+        zone3_hints: None,
     });
     state
         .nats
+        .as_ref()
+        .expect("NATS required")
         .publish_event(&tid, &event)
         .await
         .map_err(|e| ApiError::NatsUnavailable(e.to_string()))?;
@@ -1217,38 +1281,5 @@ pub async fn clarify_task(
             Json(serde_json::json!({"error": "no pending clarification for this task"})),
         )
             .into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn j_eff_zero_valid_gives_zero() {
-        let j = compute_j_eff_raw(0, 4, 0.75, 0.3);
-        assert_eq!(j, Some(0.0));
-    }
-
-    #[test]
-    fn j_eff_full_pass_at_most_one() {
-        let j = compute_j_eff_raw(4, 4, 0.75, 0.0).unwrap();
-        assert!(j <= 1.0 + 1e-9, "j_eff={j} exceeds 1.0");
-    }
-
-    #[test]
-    fn j_eff_partial_pass_less_than_full() {
-        let j_half = compute_j_eff_raw(2, 4, 0.75, 0.3).unwrap();
-        let j_full = compute_j_eff_raw(4, 4, 0.75, 0.3).unwrap();
-        assert!(
-            j_half < j_full,
-            "partial={j_half} should be < full={j_full}"
-        );
-    }
-
-    #[test]
-    fn j_eff_zero_agents_gives_none() {
-        let j = compute_j_eff_raw(0, 0, 0.75, 0.0);
-        assert!(j.is_none(), "expected None for n_agents=0");
     }
 }

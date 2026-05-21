@@ -1,11 +1,14 @@
+use std::fmt::Write as _;
+use std::path::Path;
+
+use serde::Deserialize;
+
 use crate::types::{
     CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity, NumericOp,
 };
-use serde::Deserialize;
-use std::path::Path;
 
 /// A single deterministic numeric pre-condition. The regex must contain exactly one capture
-/// group that yields a float-parseable string. Evaluated via `eval_sync` before the LlmJudge.
+/// group that yields a float-parseable string. Evaluated via `eval_sync` before the `LlmJudge`.
 #[derive(Debug, Deserialize)]
 pub struct NumericCheck {
     /// Regex with one capture group matching the numeric value to extract from the proposal.
@@ -17,25 +20,25 @@ pub struct NumericCheck {
 }
 
 /// A declarative structural predicate for binary (pass/fail) gate evaluation.
-/// Evaluated async via majority vote before LlmJudge in the And chain.
+/// Evaluated async via majority vote before `LlmJudge` in the And chain.
 #[derive(Debug, Deserialize)]
 pub struct StructuredPredicate {
     #[serde(rename = "type")]
     pub predicate_type: String,
-    /// Required for semantic_presence
+    /// Required for `semantic_presence`
     pub concept: Option<String>,
-    /// Required for semantic_ordering: the event that must come first
+    /// Required for `semantic_ordering`: the event that must come first
     pub first: Option<String>,
-    /// Required for semantic_ordering: the event that must come after `first`
+    /// Required for `semantic_ordering`: the event that must come after `first`
     pub then: Option<String>,
-    /// Required for semantic_exclusion
+    /// Required for `semantic_exclusion`
     pub pattern: Option<String>,
     /// Number of independent LLM passes for majority vote. Default 3.
     #[serde(default = "default_binary_passes_yaml")]
     pub passes: u8,
 }
 
-fn default_binary_passes_yaml() -> u8 {
+const fn default_binary_passes_yaml() -> u8 {
     3
 }
 
@@ -71,7 +74,8 @@ pub struct OrderingYaml {
     pub passes: u8,
 }
 
-/// A failure mode entry — enriches the LlmJudge rubric with known failure patterns.
+/// A failure mode entry — enriches the `LlmJudge` rubric with known failure patterns.
+///
 /// Accepts both (trigger/consequence) and (name/description/impact) field variants
 /// so the struct is compatible with existing constraint files.
 #[derive(Debug, Deserialize)]
@@ -87,7 +91,7 @@ pub struct FailureModeYaml {
     pub impact: Option<String>,
 }
 
-/// An example entry (positive or negative) — enriches the LlmJudge rubric.
+/// An example entry (positive or negative) — enriches the `LlmJudge` rubric.
 /// Accepts both `scenario` and `description` field names for compatibility with existing files.
 #[derive(Debug, Deserialize)]
 pub struct ExampleYaml {
@@ -115,7 +119,7 @@ impl ExampleYaml {
 /// Structured YAML constraint file — the canonical format for new constraints.
 ///
 /// Replaces the markdown heuristic (## Key Terms / ## Semantic Rules parsing) with
-/// explicit typed fields. The framework assembles the LlmJudge rubric from `criteria`;
+/// explicit typed fields. The framework assembles the `LlmJudge` rubric from `criteria`;
 /// constraint authors never write JSON format instructions.
 ///
 /// Minimal example:
@@ -152,15 +156,15 @@ pub struct ConstraintYaml {
     /// Shown in violation events to guide remediation.
     pub remediation_hint: Option<String>,
 
-    /// Deterministic numeric pre-conditions that run before the LlmJudge rubric.
-    /// When present, generates Composite(And([NumericThreshold..., LlmJudge])).
+    /// Deterministic numeric pre-conditions that run before the `LlmJudge` rubric.
+    /// When present, generates `Composite(And([NumericThreshold..., LlmJudge]))`.
     #[serde(default)]
     pub numeric_checks: Vec<NumericCheck>,
 
     pub criteria: Criteria,
 
-    /// Declarative binary structural predicates — evaluated async before LlmJudge.
-    /// When non-empty, builds Composite(And([...structural, LlmJudge])).
+    /// Declarative binary structural predicates — evaluated async before `LlmJudge`.
+    /// When non-empty, builds `Composite(And([...structural, LlmJudge]))`.
     #[serde(default)]
     pub predicates: Vec<StructuredPredicate>,
 
@@ -168,7 +172,7 @@ pub struct ConstraintYaml {
     #[serde(default)]
     pub semantic: Option<SemanticSectionYaml>,
 
-    /// Failure modes appended to the LlmJudge rubric for richer evaluator context.
+    /// Failure modes appended to the `LlmJudge` rubric for richer evaluator context.
     #[serde(default)]
     pub failure_modes: Vec<FailureModeYaml>,
 
@@ -191,7 +195,7 @@ pub enum SeverityKind {
 }
 
 /// Pass/partial/fail behavioral descriptions — no JSON format boilerplate.
-/// The framework assembles these into the LlmJudge rubric.
+/// The framework assembles these into the `LlmJudge` rubric.
 #[derive(Debug, Deserialize)]
 pub struct Criteria {
     /// What the proposal must do to score 1.0.
@@ -200,22 +204,23 @@ pub struct Criteria {
     pub partial: Option<String>,
     /// What causes a 0.0 score.
     pub fail: String,
-    /// Binary yes/no questions for Anchored CoT scoring.
+    /// Binary yes/no questions for Anchored `CoT` scoring.
     /// Score = count(PRESENT) / count(total). Overrides the 1.0/0.5/0.0 guide.
     #[serde(default)]
     pub checks: Vec<String>,
 }
 
-fn default_severity() -> SeverityKind {
+const fn default_severity() -> SeverityKind {
     SeverityKind::Hard
 }
 
 impl ConstraintYaml {
-    /// Assemble a LlmJudge rubric from structured criteria.
+    /// Assemble a `LlmJudge` rubric from structured criteria.
     ///
-    /// The JSON response format lives in EVALUATOR_SYSTEM_PROMPT — not here.
+    /// The JSON response format lives in `EVALUATOR_SYSTEM_PROMPT` — not here.
     /// Domain context, remediation guidance, failure modes, and examples are appended
     /// so the evaluator can recognise compliant solutions without guessing the intent.
+    #[must_use]
     pub fn build_rubric(&self) -> String {
         let partial = self.criteria.partial.as_deref().unwrap_or(
             "Partially satisfies the pass criteria, or intent is correct but a key detail is missing or unclear.",
@@ -227,20 +232,21 @@ impl ConstraintYaml {
             fail = self.criteria.fail.trim(),
         );
         if !self.domains.is_empty() {
-            rubric.push_str(&format!("\n\nDomain: {}", self.domains.join(", ")));
+            let _ = write!(rubric, "\n\nDomain: {}", self.domains.join(", "));
         }
         if let Some(hint) = &self.remediation_hint {
-            rubric.push_str(&format!("\n\nRemediation hint: {hint}"));
+            let _ = write!(rubric, "\n\nRemediation hint: {hint}");
         }
         if !self.criteria.checks.is_empty() {
             rubric.push_str("\n\nBinary compliance checks — evaluate each in order:");
             for (i, check) in self.criteria.checks.iter().enumerate() {
-                rubric.push_str(&format!("\n{}. {}", i + 1, check));
+                let _ = write!(rubric, "\n{}. {}", i + 1, check);
             }
-            rubric.push_str(&format!(
+            let _ = write!(
+                rubric,
                 "\n\nScore = number of checks marked PRESENT divided by {} (total checks). Ignore the Pass/Partial/Fail guide above when binary checks are listed — compute score arithmetically.",
                 self.criteria.checks.len()
-            ));
+            );
         }
         if !self.failure_modes.is_empty() {
             rubric.push_str("\n\n--- Failure Modes ---");
@@ -252,7 +258,7 @@ impl ConstraintYaml {
                     .as_deref()
                     .map(|i| format!(" Impact: {i}"))
                     .unwrap_or_default();
-                rubric.push_str(&format!("\n{} ({}): {}{}", fm.id, name, desc, impact_str));
+                let _ = write!(rubric, "\n{} ({}): {}{}", fm.id, name, desc, impact_str);
             }
         }
         if !self.negative_examples.is_empty() {
@@ -260,14 +266,14 @@ impl ConstraintYaml {
             for ex in &self.negative_examples {
                 let label = ex.label();
                 if !label.is_empty() {
-                    rubric.push_str(&format!("\nScenario: {label}"));
+                    let _ = write!(rubric, "\nScenario: {label}");
                 }
                 if let Some(code) = &ex.code {
-                    rubric.push_str(&format!("\n```\n{code}\n```"));
+                    let _ = write!(rubric, "\n```\n{code}\n```");
                 }
                 let rationale = ex.rationale();
                 if !rationale.is_empty() {
-                    rubric.push_str(&format!("\nWhy wrong: {rationale}"));
+                    let _ = write!(rubric, "\nWhy wrong: {rationale}");
                 }
             }
         }
@@ -276,20 +282,21 @@ impl ConstraintYaml {
             for ex in &self.positive_examples {
                 let label = ex.label();
                 if !label.is_empty() {
-                    rubric.push_str(&format!("\nScenario: {label}"));
+                    let _ = write!(rubric, "\nScenario: {label}");
                 }
                 if let Some(code) = &ex.code {
-                    rubric.push_str(&format!("\n```\n{code}\n```"));
+                    let _ = write!(rubric, "\n```\n{code}\n```");
                 }
                 let rationale = ex.rationale();
                 if !rationale.is_empty() {
-                    rubric.push_str(&format!("\nWhy correct: {rationale}"));
+                    let _ = write!(rubric, "\nWhy correct: {rationale}");
                 }
             }
         }
         rubric
     }
 
+    #[must_use]
     pub fn into_constraint_doc(self) -> ConstraintDoc {
         let constraint_id = self.id.clone();
         let rubric = self.build_rubric();
@@ -303,9 +310,6 @@ impl ConstraintYaml {
             SeverityKind::Advisory => ConstraintSeverity::Advisory,
         };
 
-        // Build structural predicates from semantic: section OR legacy predicates: array.
-        // Key collision: if both are present, log and skip both — parse_yaml_constraint()
-        // handles this case cleanly via the None return path.
         let structural_predicates: Vec<ConstraintPredicate> =
             if self.semantic.is_some() && !self.predicates.is_empty() {
                 tracing::warn!(
@@ -341,17 +345,16 @@ impl ConstraintYaml {
                 children
             };
 
-        // Numeric pre-conditions run first (cheapest gate).
         let mut children: Vec<ConstraintPredicate> = self
             .numeric_checks
             .iter()
             .map(|nc| {
                 let op = match nc.op.as_str() {
                     "lt" => NumericOp::Lt,
-                    "le" => NumericOp::Le,
                     "eq" => NumericOp::Eq,
                     "ge" => NumericOp::Ge,
                     "gt" => NumericOp::Gt,
+                    "le" => NumericOp::Le,
                     other => {
                         tracing::warn!("unknown numeric_check op '{}'; defaulting to le", other);
                         NumericOp::Le
@@ -365,10 +368,8 @@ impl ConstraintYaml {
             })
             .collect();
         children.extend(structural_predicates);
-        // LlmJudge always last — reached only when all structural gates pass.
         children.push(ConstraintPredicate::LlmJudge { rubric });
 
-        // Always Composite — bytecode homogeneity for 2-arm compiler match.
         let predicate = ConstraintPredicate::Composite {
             op: CompositeOp::And,
             children,
@@ -387,7 +388,10 @@ impl ConstraintYaml {
         }
     }
 
-    /// Convert to SemanticSpec IR. Returns Err(message) on key collision (Fix #4).
+    /// Convert to `SemanticSpec` IR. Returns `Err(message)` on key collision (Fix #4).
+    ///
+    /// # Errors
+    /// Returns an error string when both `semantic:` and the deprecated `predicates:` keys are present.
     pub fn into_semantic_spec(self) -> Result<crate::spec::SemanticSpec, String> {
         use crate::spec::{
             Example, Exclusion, FailureMode, Ordering, QualityRubric, Requirement, SemanticSpec,

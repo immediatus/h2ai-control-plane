@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crate::types::{CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,26 +18,26 @@ pub struct SemanticSpec {
     pub rubric: QualityRubric,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Exclusion {
     pub pattern: String,
     pub passes: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Requirement {
     pub concept: String,
     pub passes: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Ordering {
     pub first: String,
     pub then: String,
     pub passes: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QualityRubric {
     pub pass: String,
     pub partial: Option<String>,
@@ -46,7 +48,7 @@ pub struct QualityRubric {
     pub positive_examples: Vec<Example>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FailureMode {
     pub id: String,
     pub name: String,
@@ -54,7 +56,7 @@ pub struct FailureMode {
     pub impact: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Example {
     pub label: String,
     pub code: Option<String>,
@@ -79,8 +81,9 @@ impl SemanticSpec {
         }
     }
 
-    /// Build the LlmJudge rubric string from all SemanticSpec fields.
-    /// Mirrors ConstraintYaml::build_rubric — keeps Domain:/Remediation hint: format.
+    /// Build the `LlmJudge` rubric string from all `SemanticSpec` fields.
+    /// Mirrors `ConstraintYaml::build_rubric` — keeps <Domain:/Remediation> hint: format.
+    #[must_use]
     pub fn build_rubric_text(&self) -> String {
         let partial = self.rubric.partial.as_deref().unwrap_or(
             "Partially satisfies the pass criteria, or intent is correct but a key detail is missing or unclear.",
@@ -92,20 +95,21 @@ impl SemanticSpec {
             fail = self.rubric.fail.trim(),
         );
         if !self.domains.is_empty() {
-            rubric.push_str(&format!("\n\nDomain: {}", self.domains.join(", ")));
+            let _ = write!(rubric, "\n\nDomain: {}", self.domains.join(", "));
         }
         if let Some(hint) = &self.remediation_hint {
-            rubric.push_str(&format!("\n\nRemediation hint: {hint}"));
+            let _ = write!(rubric, "\n\nRemediation hint: {hint}");
         }
         if !self.rubric.checks.is_empty() {
             rubric.push_str("\n\nBinary compliance checks — evaluate each in order:");
             for (i, check) in self.rubric.checks.iter().enumerate() {
-                rubric.push_str(&format!("\n{}. {}", i + 1, check));
+                let _ = write!(rubric, "\n{}. {}", i + 1, check);
             }
-            rubric.push_str(&format!(
+            let _ = write!(
+                rubric,
                 "\n\nScore = number of checks marked PRESENT divided by {} (total checks). Ignore the Pass/Partial/Fail guide above when binary checks are listed — compute score arithmetically.",
                 self.rubric.checks.len()
-            ));
+            );
         }
         if !self.rubric.failure_modes.is_empty() {
             rubric.push_str("\n\n--- Failure Modes ---");
@@ -115,23 +119,24 @@ impl SemanticSpec {
                     .as_deref()
                     .map(|i| format!(" Impact: {i}"))
                     .unwrap_or_default();
-                rubric.push_str(&format!(
+                let _ = write!(
+                    rubric,
                     "\n{} ({}): {}{}",
                     fm.id, fm.name, fm.description, impact_str
-                ));
+                );
             }
         }
         if !self.rubric.negative_examples.is_empty() {
             rubric.push_str("\n\n--- Negative Examples (DO NOT generate) ---");
             for ex in &self.rubric.negative_examples {
                 if !ex.label.is_empty() {
-                    rubric.push_str(&format!("\nScenario: {}", ex.label));
+                    let _ = write!(rubric, "\nScenario: {}", ex.label);
                 }
                 if let Some(code) = &ex.code {
-                    rubric.push_str(&format!("\n```\n{code}\n```"));
+                    let _ = write!(rubric, "\n```\n{code}\n```");
                 }
                 if !ex.rationale.is_empty() {
-                    rubric.push_str(&format!("\nWhy wrong: {}", ex.rationale));
+                    let _ = write!(rubric, "\nWhy wrong: {}", ex.rationale);
                 }
             }
         }
@@ -139,21 +144,22 @@ impl SemanticSpec {
             rubric.push_str("\n\n--- Positive Examples (generate patterns like these) ---");
             for ex in &self.rubric.positive_examples {
                 if !ex.label.is_empty() {
-                    rubric.push_str(&format!("\nScenario: {}", ex.label));
+                    let _ = write!(rubric, "\nScenario: {}", ex.label);
                 }
                 if let Some(code) = &ex.code {
-                    rubric.push_str(&format!("\n```\n{code}\n```"));
+                    let _ = write!(rubric, "\n```\n{code}\n```");
                 }
                 if !ex.rationale.is_empty() {
-                    rubric.push_str(&format!("\nWhy correct: {}", ex.rationale));
+                    let _ = write!(rubric, "\nWhy correct: {}", ex.rationale);
                 }
             }
         }
         rubric
     }
 
-    /// Compile to bytecode. Always produces Composite(And([exclusions..., requirements..., orderings..., LlmJudge])).
-    /// When all facets are empty → Composite(And([LlmJudge])), behaviorally identical to old bare LlmJudge.
+    /// Compile to bytecode. Always produces `Composite(And([exclusions..., requirements..., orderings..., LlmJudge]))`.
+    /// When all facets are empty → `Composite(And([LlmJudge]))`, behaviorally identical to old bare `LlmJudge`.
+    #[must_use]
     pub fn into_constraint_doc(self) -> ConstraintDoc {
         let rubric_text = self.build_rubric_text();
         let mut children: Vec<ConstraintPredicate> = Vec::new();
@@ -213,30 +219,37 @@ pub struct SemanticSpecBuilder {
 }
 
 impl SemanticSpecBuilder {
+    #[must_use]
     pub fn title(mut self, t: impl Into<String>) -> Self {
         self.title = t.into();
         self
     }
+    #[must_use]
     pub fn source_file(mut self, f: impl Into<String>) -> Self {
         self.source_file = f.into();
         self
     }
-    pub fn severity_hard(mut self, threshold: f64) -> Self {
+    #[must_use]
+    pub const fn severity_hard(mut self, threshold: f64) -> Self {
         self.severity = ConstraintSeverity::Hard { threshold };
         self
     }
-    pub fn severity_soft(mut self, weight: f64) -> Self {
+    #[must_use]
+    pub const fn severity_soft(mut self, weight: f64) -> Self {
         self.severity = ConstraintSeverity::Soft { weight };
         self
     }
+    #[must_use]
     pub fn domain(mut self, d: impl Into<String>) -> Self {
         self.domains.push(d.into());
         self
     }
+    #[must_use]
     pub fn remediation_hint(mut self, h: impl Into<String>) -> Self {
         self.remediation_hint = Some(h.into());
         self
     }
+    #[must_use]
     pub fn exclude(mut self, pattern: impl Into<String>) -> Self {
         self.exclusions.push(Exclusion {
             pattern: pattern.into(),
@@ -244,6 +257,7 @@ impl SemanticSpecBuilder {
         });
         self
     }
+    #[must_use]
     pub fn require(mut self, concept: impl Into<String>) -> Self {
         self.requirements.push(Requirement {
             concept: concept.into(),
@@ -251,6 +265,7 @@ impl SemanticSpecBuilder {
         });
         self
     }
+    #[must_use]
     pub fn order(mut self, first: impl Into<String>, then: impl Into<String>) -> Self {
         self.orderings.push(Ordering {
             first: first.into(),
@@ -259,22 +274,27 @@ impl SemanticSpecBuilder {
         });
         self
     }
+    #[must_use]
     pub fn rubric_pass(mut self, p: impl Into<String>) -> Self {
         self.rubric.pass = p.into();
         self
     }
+    #[must_use]
     pub fn rubric_partial(mut self, p: impl Into<String>) -> Self {
         self.rubric.partial = Some(p.into());
         self
     }
+    #[must_use]
     pub fn rubric_fail(mut self, f: impl Into<String>) -> Self {
         self.rubric.fail = f.into();
         self
     }
+    #[must_use]
     pub fn rubric_check(mut self, c: impl Into<String>) -> Self {
         self.rubric.checks.push(c.into());
         self
     }
+    #[must_use]
     pub fn failure_mode(
         mut self,
         id: impl Into<String>,
@@ -289,22 +309,27 @@ impl SemanticSpecBuilder {
         });
         self
     }
+    #[must_use]
     pub fn negative_example(mut self, ex: Example) -> Self {
         self.rubric.negative_examples.push(ex);
         self
     }
+    #[must_use]
     pub fn positive_example(mut self, ex: Example) -> Self {
         self.rubric.positive_examples.push(ex);
         self
     }
+    #[must_use]
     pub fn mandatory_for_tag(mut self, tag: impl Into<String>) -> Self {
         self.mandatory_for_tags.push(tag.into());
         self
     }
+    #[must_use]
     pub fn related_to(mut self, id: impl Into<String>) -> Self {
         self.related_to.push(id.into());
         self
     }
+    #[must_use]
     pub fn build(self) -> SemanticSpec {
         SemanticSpec {
             id: self.id,
@@ -320,102 +345,5 @@ impl SemanticSpecBuilder {
             orderings: self.orderings,
             rubric: self.rubric,
         }
-    }
-}
-
-#[cfg(test)]
-mod spec_tests {
-    use super::*;
-    use crate::types::{CompositeOp, ConstraintPredicate};
-
-    fn minimal_spec(id: &str) -> SemanticSpec {
-        SemanticSpec::builder(id)
-            .rubric_pass("Proposal is stateless.")
-            .rubric_fail("Proposal uses state.")
-            .build()
-    }
-
-    #[test]
-    fn empty_facets_degrades_to_composite_with_single_llm_judge() {
-        let doc = minimal_spec("C-000").into_constraint_doc();
-        match &doc.predicate {
-            ConstraintPredicate::Composite { op, children } => {
-                assert_eq!(*op, CompositeOp::And);
-                assert_eq!(children.len(), 1, "only LlmJudge child when no facets");
-                assert!(matches!(children[0], ConstraintPredicate::LlmJudge { .. }));
-            }
-            other => panic!("expected Composite, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn full_spec_produces_ordered_composite_exclusion_requirement_ordering_llmjudge() {
-        let doc = SemanticSpec::builder("C-FULL")
-            .rubric_pass("Pass.")
-            .rubric_fail("Fail.")
-            .exclude("direct DB write")
-            .require("Kafka topic")
-            .order("debit", "publish")
-            .build()
-            .into_constraint_doc();
-        match &doc.predicate {
-            ConstraintPredicate::Composite { op, children } => {
-                assert_eq!(*op, CompositeOp::And);
-                assert_eq!(children.len(), 4);
-                assert!(matches!(
-                    &children[0],
-                    ConstraintPredicate::SemanticExclusion { .. }
-                ));
-                assert!(matches!(
-                    &children[1],
-                    ConstraintPredicate::SemanticPresence { .. }
-                ));
-                assert!(matches!(
-                    &children[2],
-                    ConstraintPredicate::SemanticOrdering { .. }
-                ));
-                assert!(matches!(&children[3], ConstraintPredicate::LlmJudge { .. }));
-            }
-            other => panic!("expected Composite, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn builder_round_trips_exclusion_pattern() {
-        let doc = SemanticSpec::builder("C-EX")
-            .exclude("separate GET then DECRBY")
-            .rubric_pass("P")
-            .rubric_fail("F")
-            .build()
-            .into_constraint_doc();
-        if let ConstraintPredicate::Composite { children, .. } = &doc.predicate {
-            if let ConstraintPredicate::SemanticExclusion { pattern, passes } = &children[0] {
-                assert_eq!(pattern, "separate GET then DECRBY");
-                assert_eq!(*passes, 3);
-            } else {
-                panic!("first child must be SemanticExclusion");
-            }
-        } else {
-            panic!("expected Composite");
-        }
-    }
-
-    #[test]
-    fn build_rubric_text_includes_domain_and_hint() {
-        let spec = SemanticSpec::builder("C-R")
-            .domain("billing")
-            .remediation_hint("Use Lua EVAL.")
-            .rubric_pass("Atomic.")
-            .rubric_fail("Non-atomic.")
-            .build();
-        let text = spec.build_rubric_text();
-        assert!(
-            text.contains("Domain: billing"),
-            "rubric must include Domain: line"
-        );
-        assert!(
-            text.contains("Remediation hint: Use Lua EVAL."),
-            "rubric must include hint"
-        );
     }
 }

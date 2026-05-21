@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 /// In-memory wiki index — the hot path for Phase 1 Bootstrap.
 ///
 /// Loaded from NATS KV `H2AI_CONSTRAINT_WIKI` at startup; refreshed via KV watch.
-/// Analogue of `calibration` and `bandit_state` in AppState: small, in-memory, NATS-backed.
+/// Analogue of `calibration` and `bandit_state` in `AppState`: small, in-memory, NATS-backed.
 /// Full corpus is never loaded; only applicable constraint metadata is held.
 ///
 /// ## Constraint resolution pipeline
@@ -43,17 +43,17 @@ use std::collections::{HashMap, HashSet};
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WikiCache {
-    /// tag → Vec<constraint_id>: pre-answered set-intersection query.
-    /// Built from `domains` and `mandatory_for_tags` of each ConstraintMeta.
+    /// tag → Vec<`constraint_id>`: pre-answered set-intersection query.
+    /// Built from `domains` and `mandatory_for_tags` of each `ConstraintMeta`.
     pub context_map: HashMap<String, Vec<String>>,
-    /// id → ConstraintMeta: O(1) point lookup.
+    /// id → `ConstraintMeta`: O(1) point lookup.
     pub metas: HashMap<String, ConstraintMeta>,
-    /// Explicit constraint relation graph: constraint_id → related constraint_ids.
+    /// Explicit constraint relation graph: `constraint_id` → related `constraint_ids`.
     /// Built from the `related_to` field in YAML constraint files.
     /// Edges are unidirectional as declared; callers may traverse both directions
     /// by querying `relations[id]` and all metas where `related_to.contains(id)`.
     pub relations: HashMap<String, Vec<String>>,
-    /// NATS KV revision at load time — stored in ConstraintSnapshot for audit.
+    /// NATS KV revision at load time — stored in `ConstraintSnapshot` for audit.
     pub revision: u64,
     /// BM25 retrieval index for semantic search over the constraint corpus.
     /// Indexed text: constraint id + description + rubric terms.
@@ -62,12 +62,13 @@ pub struct WikiCache {
 }
 
 impl WikiCache {
-    /// Build a WikiCache from a slice of ConstraintDoc (backward compat path).
+    /// Build a `WikiCache` from a slice of `ConstraintDoc` (backward compat path).
     ///
-    /// Used by FsConstraintSource to bootstrap from the flat directory.
+    /// Used by `FsConstraintSource` to bootstrap from the flat directory.
     /// Builds the BM25 retriever alongside the tag index.
+    #[must_use]
     pub fn from_docs(docs: &[ConstraintDoc]) -> Self {
-        let mut cache = WikiCache::default();
+        let mut cache = Self::default();
         for doc in docs {
             let meta = ConstraintMeta::from_doc(doc);
             for domain in &meta.domains {
@@ -96,10 +97,11 @@ impl WikiCache {
         cache
     }
 
-    /// Resolve applicable ConstraintMeta for the given task context.
+    /// Resolve applicable `ConstraintMeta` for the given task context.
     ///
     /// Returns the union of constraints matched by tag lookup and explicit ID override.
     /// Deduplicates: a constraint matched by both tag and explicit ID appears once.
+    #[must_use]
     pub fn resolve(&self, task_tags: &[String], explicit_ids: &[String]) -> Vec<ConstraintMeta> {
         let mut ids: HashSet<String> = explicit_ids.iter().cloned().collect();
         for tag in task_tags {
@@ -120,11 +122,11 @@ impl WikiCache {
     ///
     /// Returns an empty vec if the retriever is not built (e.g. deserialized from NATS KV
     /// without reconstruction — call `rebuild_retriever()` first).
+    #[must_use]
     pub fn search(&self, query_text: &str, top_k: usize) -> Vec<ConstraintCandidate> {
-        match &self.retriever {
-            Some(r) => r.query(query_text, top_k),
-            None => vec![],
-        }
+        self.retriever
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.query(query_text, top_k))
     }
 
     /// Two-stage resolution: exact tag lookup ∪ BM25 semantic search, deduplicated.
@@ -133,6 +135,7 @@ impl WikiCache {
     /// and free-text description. The union ensures:
     /// - Domain-critical constraints (billing, GDPR) are never missed via tags
     /// - Semantically relevant constraints surface even without explicit tagging
+    #[must_use]
     pub fn resolve_with_semantic(
         &self,
         task_tags: &[String],
@@ -173,10 +176,10 @@ impl WikiCache {
     ///
     /// Example: `navigate_related("CONSTRAINT-004")` → constraints referenced in its
     /// `related_to` field (e.g. CONSTRAINT-005, CONSTRAINT-007 for budget pacing).
+    #[must_use]
     pub fn navigate_related(&self, id: &str) -> Vec<ConstraintMeta> {
-        let related_ids = match self.relations.get(id) {
-            Some(ids) => ids,
-            None => return vec![],
+        let Some(related_ids) = self.relations.get(id) else {
+            return vec![];
         };
         related_ids
             .iter()
@@ -188,10 +191,10 @@ impl WikiCache {
     ///
     /// Equivalent to `resolve(tags: [domain], explicit_ids: [])` but returns the metas
     /// directly without the fallback-to-all logic in `FsConstraintSource`.
+    #[must_use]
     pub fn navigate_by_domain(&self, domain: &str) -> Vec<ConstraintMeta> {
-        let ids = match self.context_map.get(domain) {
-            Some(ids) => ids,
-            None => return vec![],
+        let Some(ids) = self.context_map.get(domain) else {
+            return vec![];
         };
         ids.iter()
             .filter_map(|id| self.metas.get(id).cloned())

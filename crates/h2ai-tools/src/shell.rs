@@ -20,6 +20,7 @@ impl Default for ShellExecutor {
 }
 
 impl ShellExecutor {
+    #[must_use]
     pub fn new(allowlist: Vec<String>, timeout_secs: u64) -> Self {
         Self {
             timeout_secs,
@@ -30,7 +31,13 @@ impl ShellExecutor {
     /// Guard 1 – JSON parse.
     /// Guard 2 – path traversal (rejects any `command` containing `/` or `\`).
     /// Guard 3 – allowlist O(1) lookup.
-    /// Then: Command::new(command).args(args) — no shell interpreter.
+    /// Then: `Command::new(command).args(args)` — no shell interpreter.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolError::NotPermitted` if the command contains path separators or is not
+    /// on the allowlist.  Returns `ToolError::Io` or `ToolError::Timeout` if the spawned
+    /// process fails or exceeds the configured timeout.
     pub async fn execute_structured(
         &self,
         command: &str,
@@ -61,6 +68,7 @@ impl ShellExecutor {
             .map_err(ToolError::Io)?;
 
         // Capture PGID before await — child.id() returns None after process completes.
+        #[allow(clippy::cast_possible_wrap)]
         let pgid = child.id().map(|pid| pid as i32);
 
         match timeout(
@@ -170,9 +178,9 @@ impl crate::ToolExecutor for ShellExecutor {
     }
 
     /// Expects JSON input: `{"command": "git", "args": ["log", "--oneline"]}`.
-    /// Guard 1: JSON parse → MalformedInput.
-    /// Guard 2: path traversal in `command` → NotPermitted.
-    /// Guard 3: allowlist lookup → NotPermitted.
+    /// Guard 1: JSON parse → `MalformedInput`.
+    /// Guard 2: path traversal in `command` → `NotPermitted`.
+    /// Guard 3: allowlist lookup → `NotPermitted`.
     async fn execute(&self, input: &str) -> Result<String, ToolError> {
         // Guard 1: JSON parse
         let v: serde_json::Value =

@@ -241,7 +241,7 @@ rho_mean = 1 − CG_mean
 > correlation once 30 task observations exist — this replacement is not yet implemented.
 
 `EnsembleCalibration::from_measured_p` accepts a directly measured baseline accuracy (from the
-oracle accumulator or from `compare.py`) and switches `prediction_basis` from `Heuristic` to
+oracle accumulator) and switches `prediction_basis` from `Heuristic` to
 `Empirical`. This path should be triggered automatically from the oracle accumulator rather than
 requiring manual operator intervention.
 

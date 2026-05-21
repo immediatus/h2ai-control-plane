@@ -11,10 +11,22 @@ use std::sync::Arc;
 pub struct AdapterFactory;
 
 impl AdapterFactory {
+    /// Build a compute adapter from an `AdapterKind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the adapter cannot be constructed (e.g. unsupported variant,
+    /// or `A2aExplorerAdapter::new` fails).
     pub fn build(kind: &AdapterKind) -> Result<Arc<dyn IComputeAdapter>, String> {
         Self::build_with_thinking(kind, true)
     }
 
+    /// Build a compute adapter from an `AdapterKind`, controlling the thinking mode flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the adapter cannot be constructed (e.g. unsupported variant,
+    /// or `A2aExplorerAdapter::new` fails).
     pub fn build_with_thinking(
         kind: &AdapterKind,
         enable_thinking: bool,
@@ -75,6 +87,8 @@ impl AdapterFactory {
 
     /// Build an adapter by looking up `name` in `profiles`.
     ///
+    /// # Errors
+    ///
     /// Returns `Err` if no profile with that name exists or if `build()` fails.
     pub fn build_from_profiles(
         name: &str,
@@ -83,7 +97,7 @@ impl AdapterFactory {
         let profile = profiles
             .iter()
             .find(|p| p.name == name)
-            .ok_or_else(|| format!("adapter profile '{}' not found", name))?;
+            .ok_or_else(|| format!("adapter profile '{name}' not found"))?;
         Self::build(&profile.kind)
     }
 }

@@ -55,7 +55,8 @@ pub struct ThinkingLoopInput<'a> {
 // ─── Pure helpers (pub for unit tests) ───────────────────────────────────────
 
 /// Adaptive archetype count: full exploration in iter 0; contracts by coverage deficit after.
-/// Clamps result to [2, max_n].
+/// Clamps result to [2, `max_n`].
+#[must_use]
 pub fn adaptive_n(iteration: usize, max_n: usize, coverage_score: f64) -> usize {
     if iteration == 0 {
         return max_n;
@@ -64,7 +65,8 @@ pub fn adaptive_n(iteration: usize, max_n: usize, coverage_score: f64) -> usize 
     ((max_n as f64 * deficit).ceil() as usize).max(2)
 }
 
-/// Like `adaptive_n` but gated by quality floor: if filter_ratio < floor, return max_n unchanged.
+/// Like `adaptive_n` but gated by quality floor: if `filter_ratio` < floor, return `max_n` unchanged.
+#[must_use]
 pub fn adaptive_n_guarded(
     iteration: usize,
     max_n: usize,
@@ -78,17 +80,19 @@ pub fn adaptive_n_guarded(
     adaptive_n(iteration, max_n, coverage_score)
 }
 
-/// Linear temperature schedule: tau_max at iter 0, tau_min at iter (max_iterations - 1).
+/// Linear temperature schedule: `tau_max` at iter 0, `tau_min` at iter (`max_iterations` - 1).
+#[must_use]
 pub fn scheduled_tau(iteration: usize, max_iterations: u32, tau_max: f64, tau_min: f64) -> f64 {
     if max_iterations <= 1 {
         return tau_max;
     }
-    let progress = iteration as f64 / (max_iterations - 1) as f64;
+    let progress = iteration as f64 / f64::from(max_iterations - 1);
     (tau_max - progress * (tau_max - tau_min)).clamp(tau_min, tau_max)
 }
 
-/// Extract the candidate_solution field value from structured LLM output text.
+/// Extract the `candidate_solution` field value from structured LLM output text.
 /// Searches for the last occurrence of `"candidate_solution"` and extracts the quoted string after the colon.
+#[must_use]
 pub fn extract_candidate_solution(text: &str) -> Option<String> {
     let marker = "\"candidate_solution\"";
     let pos = text.rfind(marker)?;
@@ -269,10 +273,9 @@ async fn select_archetypes(
                 .collect::<Vec<_>>()
                 .join("\n");
             format!(
-                "{}\n\nUnresolved tensions from the previous pass:\n{}\n\
+                "{base_task}\n\nUnresolved tensions from the previous pass:\n{gaps}\n\
                  Generate archetypes that specifically address these gaps. \
-                 Do not repeat perspectives already covered.",
-                base_task, gaps
+                 Do not repeat perspectives already covered."
             )
         }
     };
@@ -401,8 +404,8 @@ async fn brainstorm_one(
     }
 }
 
-/// Extract problem_analysis, solution_sketch, and self-reported confidence from brainstorm output.
-/// Falls back gracefully: full text → problem_analysis when no structure found.
+/// Extract `problem_analysis`, `solution_sketch`, and self-reported confidence from brainstorm output.
+/// Falls back gracefully: full text → `problem_analysis` when no structure found.
 fn parse_brainstorm_output(text: &str, default_confidence: f64) -> (String, String, f64) {
     // Try to find the trailing {"confidence": N} pattern.
     let confidence = text
@@ -447,12 +450,7 @@ async fn synthesize(
         .iter()
         .map(|o| {
             // Apply oracle confidence bonus if oracle passed
-            let j_eff = if o
-                .oracle_result
-                .as_ref()
-                .map(|r| r.gate_passed)
-                .unwrap_or(false)
-            {
+            let j_eff = if o.oracle_result.as_ref().is_some_and(|r| r.gate_passed) {
                 (o.confidence + input.cfg.oracle_confidence_bonus).min(1.0)
             } else {
                 o.confidence
@@ -523,6 +521,7 @@ fn compute_similarity(a: &str, b: &str, model: Option<&dyn EmbeddingModel>) -> f
 
 /// Parse a JSON array of `ArchetypeSpec` from LLM output.
 /// Returns `None` if the text is not a JSON array.
+#[must_use]
 pub fn parse_archetypes(text: &str) -> Option<Vec<ArchetypeSpec>> {
     // Strip markdown fences if present.
     let stripped = strip_json_fences(text);
@@ -541,6 +540,7 @@ pub fn parse_archetypes(text: &str) -> Option<Vec<ArchetypeSpec>> {
 
 /// Parse a `ThinkingReport` from LLM synthesis output.
 /// Falls back to treating the entire text as `shared_understanding` with `coverage_score = 0.5`.
+#[must_use]
 pub fn parse_thinking_report(text: &str) -> ThinkingReport {
     let stripped = strip_json_fences(text);
 
@@ -582,119 +582,10 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
 fn strip_json_fences(s: &str) -> &str {
     let s = s.trim();
     if s.starts_with("```") {
-        let after_open = s.find('\n').map(|i| &s[i + 1..]).unwrap_or(s);
+        let after_open = s.find('\n').map_or(s, |i| &s[i + 1..]);
         if let Some(close) = after_open.rfind("```") {
             return after_open[..close].trim();
         }
     }
     s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use h2ai_adapters::SequencedMockAdapter;
-    use h2ai_knowledge::factory::ProviderKind;
-    use h2ai_knowledge::types::{KnowledgeQuery, KnowledgeResult};
-    use std::sync::{Arc, Mutex};
-
-    /// Spy provider: records explicit_ids from every query(), returns empty results.
-    struct SpyProvider {
-        captured: Arc<Mutex<Vec<Vec<String>>>>,
-    }
-
-    impl SpyProvider {
-        fn new() -> (Self, Arc<Mutex<Vec<Vec<String>>>>) {
-            let captured = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self {
-                    captured: Arc::clone(&captured),
-                },
-                captured,
-            )
-        }
-    }
-
-    #[async_trait]
-    impl KnowledgeProvider for SpyProvider {
-        async fn query(&self, query: &KnowledgeQuery<'_>) -> KnowledgeResult {
-            self.captured
-                .lock()
-                .unwrap()
-                .push(query.explicit_ids.to_vec());
-            KnowledgeResult {
-                nodes: vec![],
-                global_included: false,
-                surfaced_tensions: vec![],
-                ppr_expanded: false,
-            }
-        }
-
-        async fn global_summary(&self) -> Option<h2ai_knowledge::types::KnowledgeNode> {
-            None
-        }
-
-        fn is_ready(&self) -> bool {
-            true
-        }
-
-        fn kind(&self) -> &ProviderKind {
-            &ProviderKind::Bm25Wiki
-        }
-    }
-
-    /// Regression: run() must forward ThinkingLoopInput::constraint_ids as explicit_ids
-    /// to every knowledge query. Before the fix, explicit_ids was hardcoded to &[] so the
-    /// provider never received the constraint IDs regardless of what the caller passed in.
-    #[tokio::test]
-    async fn run_forwards_constraint_ids_to_knowledge_query() {
-        let (spy, captured) = SpyProvider::new();
-        let cfg = ThinkingLoopConfig {
-            enabled: true,
-            max_iterations: 1,
-            max_archetypes: 1,
-            ..Default::default()
-        };
-
-        // SequencedMockAdapter: archetype select → brainstorm → synthesis (one iteration, one archetype).
-        let archetype_json = r#"[{"name":"audit","persona":"You are an audit engineer.","scope":"compliance","confidence":0.8,"tau":0.3,"model_tier":"capable","cot_style":"first_principles"}]"#;
-        let brainstorm_text = "Use Kafka for audit trail.";
-        let synthesis_json = r#"{"shared_understanding":"publish to Kafka before HTTP 200","tensions":[],"coverage_score":0.85}"#;
-        let adapter = SequencedMockAdapter::new(vec![
-            archetype_json.to_string(),
-            brainstorm_text.to_string(),
-            synthesis_json.to_string(),
-        ]);
-
-        let constraint_ids = vec!["CONSTRAINT-005".to_string(), "CONSTRAINT-004".to_string()];
-        let input = ThinkingLoopInput {
-            task_description: "budget enforcement system",
-            constraint_ids: &constraint_ids,
-            constraint_tags: &[],
-            research_context: "",
-            knowledge_provider: Some(Arc::new(spy)),
-            n_archetypes: 1,
-            cfg: &cfg,
-            adapter: &adapter,
-            embedding_model: None,
-            nats_client: None,
-            task_id: "",
-        };
-
-        run(input).await;
-
-        let queries = captured.lock().unwrap();
-        assert!(
-            !queries.is_empty(),
-            "knowledge provider must have been queried at least once"
-        );
-        for ids in queries.iter() {
-            assert_eq!(
-                ids, &constraint_ids,
-                "explicit_ids passed to provider must equal ThinkingLoopInput::constraint_ids; \
-                 got {ids:?}, want {constraint_ids:?}"
-            );
-        }
-    }
 }

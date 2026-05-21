@@ -53,3 +53,57 @@ async fn yaml_dir_source_global_node_absent() {
     let global = source.global_node().await;
     assert!(global.is_none());
 }
+
+#[tokio::test]
+async fn yaml_dir_source_wiki_node_id_derived_from_stem_when_empty() {
+    // A wiki YAML without an `id` field → id must be derived as "topic:<stem>"
+    let tmp = tempfile::TempDir::new().unwrap();
+    let wiki_dir = tmp.path().join("wiki");
+    std::fs::create_dir(&wiki_dir).unwrap();
+    std::fs::write(
+        wiki_dir.join("my-domain.yaml"),
+        r#"synthesis: "Domain synthesis text for testing"
+domains:
+  - my-domain
+"#,
+    )
+    .unwrap();
+
+    let source = YamlDirSource::new(tmp.path());
+    let nodes = source.wiki_nodes().await;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(
+        nodes[0].id, "topic:my-domain",
+        "node id must be derived from file stem when id field is absent"
+    );
+}
+
+#[tokio::test]
+async fn yaml_dir_source_wiki_nodes_skips_non_yaml_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let wiki_dir = tmp.path().join("wiki");
+    std::fs::create_dir(&wiki_dir).unwrap();
+    std::fs::write(wiki_dir.join("readme.txt"), "not a yaml").unwrap();
+    std::fs::write(
+        wiki_dir.join("real-topic.yaml"),
+        r#"id: topic:real-topic
+synthesis: "Real synthesis"
+domains:
+  - real
+"#,
+    )
+    .unwrap();
+
+    let source = YamlDirSource::new(tmp.path());
+    let nodes = source.wiki_nodes().await;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].id, "topic:real-topic");
+}
+
+#[tokio::test]
+async fn yaml_dir_source_all_items_returns_empty_for_missing_dir() {
+    // Corpus dir does not exist — load_corpus fails, returns empty vec (no panic)
+    let source = YamlDirSource::new("/nonexistent/path/corpus");
+    let items = source.all_items().await;
+    assert!(items.is_empty());
+}

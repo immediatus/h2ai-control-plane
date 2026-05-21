@@ -19,3 +19,4 @@ regex       = "1"
 [dev-dependencies]
 tokio       = { workspace = true }
 chrono      = { workspace = true }
+async-nats  = { workspace = true }

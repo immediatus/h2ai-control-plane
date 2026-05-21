@@ -37,6 +37,7 @@ pub struct LeaderState {
 }
 
 impl LeaderState {
+    #[must_use]
     pub fn to_snapshot(&self, violated_constraints: Vec<String>) -> LeaderContextSnapshot {
         LeaderContextSnapshot {
             term: self.term,
@@ -55,7 +56,7 @@ impl LeaderState {
     }
 }
 
-/// Slim read-only view passed through PipelineParams → generation::Input.
+/// Slim read-only view passed through `PipelineParams` → `generation::Input`.
 #[derive(Debug, Clone)]
 pub struct LeaderContextSnapshot {
     pub term: u32,
@@ -86,17 +87,19 @@ pub struct LeaderElectionPlan {
 
 // ── FNV-1a hash ───────────────────────────────────────────────────────────────
 
+#[must_use]
 pub fn fnv1a(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in s.bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
 }
 
 // ── Helper functions ──────────────────────────────────────────────────────────
 
+#[must_use]
 pub fn should_rotate(state: &LeaderState, threshold: f64, waves: u32) -> bool {
     state.stagnation_count >= waves && state.confidence_history.len() >= 2 && {
         let n = state.confidence_history.len();
@@ -105,6 +108,7 @@ pub fn should_rotate(state: &LeaderState, threshold: f64, waves: u32) -> bool {
     }
 }
 
+#[must_use]
 pub fn update_credibility(current: f64, improved: bool, decay_rate: f64) -> f64 {
     if improved {
         (current + decay_rate).min(1.0)
@@ -117,6 +121,7 @@ pub fn update_credibility(current: f64, improved: bool, decay_rate: f64) -> f64 
 /// and haven't appeared in the belief buffer.
 ///
 /// Returns 0.0 when the question hash exactly matches an existing buffer entry.
+#[must_use]
 pub fn eig_score(question: &str, constraint_ids: &[String], buffer: &[BeliefRecord]) -> f64 {
     let hash = fnv1a(question);
     if buffer.iter().any(|r| r.question_hash == hash) {
@@ -142,10 +147,11 @@ pub fn eig_score(question: &str, constraint_ids: &[String], buffer: &[BeliefReco
                 .count() as f64;
             (similar / buffer.len() as f64).min(1.0)
         };
-    mentioned + 0.5 * diversity_bonus
+    0.5f64.mul_add(diversity_bonus, mentioned)
 }
 
 /// Distribute violated constraint IDs to follower slots round-robin.
+#[must_use]
 pub fn assign_follower_aspects(constraint_ids: &[String], n_followers: usize) -> Vec<String> {
     if constraint_ids.is_empty() {
         return vec!["constraint resolution".to_string(); n_followers];
@@ -157,6 +163,7 @@ pub fn assign_follower_aspects(constraint_ids: &[String], n_followers: usize) ->
 
 /// Find the explorer with the highest verification score and the second-highest.
 /// Returns `None` when `scores` is empty.
+#[must_use]
 pub fn select_best_and_runner_up(
     scores: &[(ExplorerId, f64)],
 ) -> Option<(ExplorerId, Option<ExplorerId>)> {
@@ -239,12 +246,10 @@ pub async fn generate_socratic_question(
     }
 
     if candidates.is_empty() {
-        let fallback = violated_constraints
-            .first()
-            .map(|id| format!("What if the approach to {id} is fundamentally wrong?"))
-            .unwrap_or_else(|| {
-                "What core assumption might be preventing constraint satisfaction?".to_string()
-            });
+        let fallback = violated_constraints.first().map_or_else(
+            || "What core assumption might be preventing constraint satisfaction?".to_string(),
+            |id| format!("What if the approach to {id} is fundamentally wrong?"),
+        );
         return (fallback, 1, dedup_tried);
     }
 
@@ -256,6 +261,7 @@ pub async fn generate_socratic_question(
 // ── Context prefix builders ───────────────────────────────────────────────────
 
 /// Build the per-slot context prefix for the leader slot.
+#[must_use]
 pub fn build_leader_prefix(snapshot: &LeaderContextSnapshot, explorer_id: &ExplorerId) -> String {
     let term = snapshot.term;
     let question = &snapshot.socratic_question;
@@ -307,6 +313,7 @@ pub fn build_leader_prefix(snapshot: &LeaderContextSnapshot, explorer_id: &Explo
 }
 
 /// Build the per-slot prefix with aspect specialisation, given follower slot index.
+#[must_use]
 pub fn build_follower_prefix_with_aspect(
     snapshot: &LeaderContextSnapshot,
     slot_index: usize,
@@ -345,81 +352,4 @@ pub fn build_follower_prefix_with_aspect(
          will cover the remaining dimensions.\n\
          --- END FOLLOWER CONTEXT ---\n"
     )
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn should_rotate_fires_at_threshold() {
-        let state = LeaderState {
-            term: 2,
-            leader_explorer_id: h2ai_types::identity::ExplorerId::new(),
-            prior_proposal: "proposal".into(),
-            socratic_question: "why?".into(),
-            confidence_history: vec![0.5, 0.5],
-            stagnation_count: 1,
-            belief_buffer: vec![],
-            credibility_score: 1.0,
-            follower_aspects: vec![],
-        };
-        assert!(should_rotate(&state, 0.02, 1));
-        assert!(!should_rotate(&state, 0.02, 2));
-    }
-
-    #[test]
-    fn belief_buffer_dedup_skips_hash_collision() {
-        let record = BeliefRecord {
-            question_hash: fnv1a("What if we simplify the design?"),
-            question_text: "What if we simplify the design?".into(),
-            outcome_scores: vec![0.4],
-        };
-        let buffer = vec![record];
-        let score = eig_score(
-            "What if we simplify the design?",
-            &["C1".to_string(), "C2".to_string()],
-            &buffer,
-        );
-        assert_eq!(score, 0.0);
-    }
-
-    #[test]
-    fn credibility_clamps_at_bounds() {
-        let score = update_credibility(0.0, false, 0.2);
-        assert_eq!(score, 0.0);
-        let score = update_credibility(1.0, true, 0.2);
-        assert_eq!(score, 1.0);
-    }
-
-    #[test]
-    fn eig_score_ranks_diverse_question_higher() {
-        let buffer: Vec<BeliefRecord> = vec![];
-        let constraints = vec!["C1".to_string(), "C2".to_string(), "C3".to_string()];
-        let score_diverse = eig_score("What about C1 and C3 interaction?", &constraints, &buffer);
-        let score_narrow = eig_score("What about C1?", &constraints, &buffer);
-        assert!(score_diverse > score_narrow);
-    }
-
-    #[test]
-    fn follower_aspects_round_robin_over_clusters() {
-        let aspects = assign_follower_aspects(&["C1".to_string(), "C2".to_string()], 4);
-        assert_eq!(aspects.len(), 4);
-        assert_eq!(aspects[0], aspects[2]);
-        assert_eq!(aspects[1], aspects[3]);
-    }
-
-    #[test]
-    fn select_best_and_runner_up_returns_ordered_pair() {
-        let scores = vec![
-            (h2ai_types::identity::ExplorerId::new(), 0.6f64),
-            (h2ai_types::identity::ExplorerId::new(), 0.8f64),
-            (h2ai_types::identity::ExplorerId::new(), 0.5f64),
-        ];
-        let (winner, runner_up) = select_best_and_runner_up(&scores).unwrap();
-        assert_eq!(winner, scores[1].0);
-        assert_eq!(runner_up, Some(scores[0].0.clone()));
-    }
 }

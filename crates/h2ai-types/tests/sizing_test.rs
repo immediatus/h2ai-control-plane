@@ -1,7 +1,7 @@
 use h2ai_types::sizing::{
-    n_it_optimal, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
-    EnsembleCalibration, MergeStrategy, MultiplicationCondition, MultiplicationConditionFailure,
-    RoleErrorCost, TauValue,
+    condorcet_quality, n_it_optimal, tau_alignment, CoherencyCoefficients, CoordinationThreshold,
+    EigenCalibration, EnsembleCalibration, MergeStrategy, MultiplicationCondition,
+    MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue, CG_HALFLIFE_SECS,
 };
 
 #[test]
@@ -69,12 +69,14 @@ fn cg_std_dev_uses_sample_variance() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn cg_std_dev_single_sample_is_zero() {
     let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.7]).unwrap();
     assert_eq!(cc.cg_std_dev(), 0.0);
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn coherency_coefficients_serde_round_trip() {
     let cc = CoherencyCoefficients::new(0.10, 0.015, vec![0.55, 0.70, 0.62]).unwrap();
     let json = serde_json::to_string(&cc).unwrap();
@@ -109,6 +111,7 @@ fn coherency_coefficients_invalid_when_beta_base_negative() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn coordination_threshold_serde_round_trip() {
     let cc = CoherencyCoefficients::new(0.12, 0.020, vec![0.6, 0.7, 0.65]).unwrap();
     let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
@@ -131,6 +134,7 @@ fn role_error_cost_invalid_out_of_range() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn role_error_cost_serde_round_trip() {
     let c = RoleErrorCost::new(0.92).unwrap();
     let json = serde_json::to_string(&c).unwrap();
@@ -205,12 +209,14 @@ fn multiplication_condition_fails_when_cg_below_theta() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn tau_value_valid_range() {
     assert!(TauValue::new(0.5).is_ok());
     assert_eq!(TauValue::new(0.5).unwrap().value(), 0.5);
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn tau_value_boundary_one() {
     assert!(TauValue::new(1.0).is_ok());
     assert_eq!(TauValue::new(1.0).unwrap().value(), 1.0);
@@ -486,6 +492,7 @@ fn n_max_ci_range_contains_point_estimate() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn n_max_ci_equal_samples_returns_degenerate_interval() {
     // One sample → std_dev = 0 → both bounds equal point estimate
     let cc = h2ai_types::sizing::CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
@@ -506,4 +513,574 @@ fn eigen_calibration_delta_controls_n_pruned() {
     // With delta=1.5 (very high), increment 1.0 < 1.5 -> n_pruned=1
     let ec_high = h2ai_types::sizing::EigenCalibration::from_cg_matrix(&sigma, 1.5);
     assert_eq!(ec_high.n_pruned, 1, "delta=1.5: only 1 adapter passes");
+}
+
+// ── condorcet_quality and tau_alignment ──────────────────────────────────────
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn condorcet_quality_n0_returns_zero() {
+    assert_eq!(condorcet_quality(0, 0.7, 0.2), 0.0);
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn condorcet_quality_p_zero_returns_zero() {
+    assert_eq!(condorcet_quality(3, 0.0, 0.2), 0.0);
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn condorcet_quality_p_one_returns_one() {
+    assert_eq!(condorcet_quality(3, 1.0, 0.2), 1.0);
+}
+
+#[test]
+fn tau_alignment_same_tau_is_one() {
+    let a = TauValue::new(0.5).unwrap();
+    let b = TauValue::new(0.5).unwrap();
+    let result = tau_alignment(a, b);
+    assert!(
+        (result - 1.0).abs() < 1e-10,
+        "same τ → alignment 1.0, got {result}"
+    );
+}
+
+#[test]
+fn tau_alignment_far_apart_is_small() {
+    let a = TauValue::new(0.0).unwrap();
+    let b = TauValue::new(1.0).unwrap();
+    let result = tau_alignment(a, b);
+    // exp(-3 * 1.0) ≈ 0.0498
+    assert!(
+        result < 0.06,
+        "τ distance 1.0 → small alignment, got {result}"
+    );
+    assert!(result > 0.04, "τ distance 1.0 → ~0.05, got {result}");
+}
+
+#[test]
+fn condorcet_quality_n1_equals_p() {
+    for p in [0.3, 0.5, 0.7, 0.9] {
+        let q = condorcet_quality(1, p, 0.3);
+        assert!((q - p).abs() < 1e-10, "N=1 → Q=p for p={p}, got {q}");
+    }
+}
+
+#[test]
+fn condorcet_quality_full_correlation_equals_p() {
+    for n in [3usize, 5, 7] {
+        let q = condorcet_quality(n, 0.7, 1.0);
+        assert!((q - 0.7).abs() < 1e-10, "ρ=1 → Q=p for N={n}, got {q}");
+    }
+}
+
+#[test]
+fn condorcet_quality_increases_with_n_for_p_above_half() {
+    let qs: Vec<f64> = [1usize, 3, 5, 7, 9]
+        .iter()
+        .map(|&n| condorcet_quality(n, 0.7, 0.2))
+        .collect();
+    for i in 0..qs.len() - 1 {
+        assert!(
+            qs[i + 1] >= qs[i],
+            "Q should be non-decreasing in N for p=0.7, rho=0.2: {qs:?}"
+        );
+    }
+}
+
+#[test]
+fn condorcet_quality_bounded_01() {
+    for n in [1usize, 3, 5, 7, 9] {
+        for p_int in [30i32, 50, 70, 90] {
+            let p = f64::from(p_int) / 100.0;
+            for rho_int in [0i32, 20, 50, 80, 100] {
+                let rho = f64::from(rho_int) / 100.0;
+                let q = condorcet_quality(n, p, rho);
+                assert!(
+                    (0.0..=1.0).contains(&q),
+                    "Q out of [0,1]: N={n} p={p} rho={rho} → {q}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ensemble_calibration_from_cg_mean_n_optimal_at_least_1() {
+    for cg_int in [20i32, 40, 60, 80] {
+        let cg = f64::from(cg_int) / 100.0;
+        let ec = EnsembleCalibration::from_cg_mean(cg, 9);
+        assert!(ec.n_optimal >= 1, "n_optimal >= 1 for cg={cg}");
+        assert!(ec.q_optimal >= ec.p_mean, "q_optimal >= p_mean for cg={cg}");
+    }
+}
+
+#[test]
+fn ensemble_calibration_n_optimal_greater_than_1_for_typical_cg() {
+    let ec = EnsembleCalibration::from_cg_mean(0.7, 9);
+    assert!(
+        ec.n_optimal > 1,
+        "n_optimal should be >1 for cg=0.7, got {}",
+        ec.n_optimal
+    );
+}
+
+#[test]
+fn ensemble_calibration_low_cg_still_recommends_small_ensemble() {
+    let ec = EnsembleCalibration::from_cg_mean(0.001, 9);
+    assert!(
+        ec.n_optimal >= 1,
+        "n_optimal must be >= 1, got {}",
+        ec.n_optimal
+    );
+    assert!(
+        ec.n_optimal <= 5,
+        "very high correlation should give small n_optimal, got {}",
+        ec.n_optimal
+    );
+}
+
+#[test]
+fn ensemble_calibration_quality_at_n1_equals_p() {
+    let ec = EnsembleCalibration::from_cg_mean(0.7, 9);
+    let q = ec.quality_at_n(1);
+    assert!(
+        (q - ec.p_mean).abs() < 1e-10,
+        "quality_at_n(1) == p_mean, got {q} vs {}",
+        ec.p_mean
+    );
+}
+
+#[test]
+fn ensemble_calibration_topology_gain_non_negative() {
+    for cg_int in [20i32, 50, 80] {
+        let cg = f64::from(cg_int) / 100.0;
+        let ec = EnsembleCalibration::from_cg_mean(cg, 9);
+        assert!(ec.topology_gain() >= 0.0, "topology_gain >= 0 for cg={cg}");
+    }
+}
+
+#[test]
+fn ensemble_calibration_from_measured_p_uses_given_p() {
+    let ec = EnsembleCalibration::from_measured_p(0.9, 0.7, 9);
+    assert!(
+        (ec.p_mean - 0.9).abs() < 1e-10,
+        "p_mean should be 0.9, got {}",
+        ec.p_mean
+    );
+}
+
+#[test]
+fn from_empirical_sets_empirical_basis_and_exact_rho() {
+    let ec = EnsembleCalibration::from_empirical(0.75, 0.35, 9);
+    assert_eq!(ec.prediction_basis, PredictionBasis::Empirical);
+    assert!(
+        (ec.rho_mean - 0.35).abs() < 1e-9,
+        "rho_mean must be set directly"
+    );
+    assert!((ec.p_mean - 0.75).abs() < 1e-9, "p_mean must match input");
+    assert!(ec.n_optimal >= 1);
+}
+
+#[test]
+fn from_empirical_clamps_rho_to_valid_range() {
+    let ec_low = EnsembleCalibration::from_empirical(0.7, -0.5, 9);
+    let ec_high = EnsembleCalibration::from_empirical(0.7, 2.0, 9);
+    assert!(ec_low.rho_mean >= 0.0);
+    assert!(ec_high.rho_mean <= 0.99);
+}
+
+#[test]
+fn beta_eff_temporal_fresh_sample_equals_beta_eff() {
+    let now = 1_000_000u64;
+    let cc = CoherencyCoefficients::new_with_timestamps(0.1, 0.02, vec![0.6], vec![now]).unwrap();
+    let result = cc.beta_eff_temporal(now);
+    let expected = cc.beta_eff();
+    assert!(
+        (result - expected).abs() < 1e-9,
+        "fresh sample: {result} vs {expected}"
+    );
+}
+
+#[test]
+fn beta_eff_temporal_stale_sample_approaches_beta_base() {
+    let now = CG_HALFLIFE_SECS * 100;
+    let cc = CoherencyCoefficients::new_with_timestamps(0.1, 0.05, vec![0.8], vec![0]).unwrap();
+    let result = cc.beta_eff_temporal(now);
+    assert!(
+        (result - cc.beta_base).abs() < 0.001,
+        "stale sample must approach beta_base={}, got {result}",
+        cc.beta_base
+    );
+}
+
+#[test]
+fn beta_eff_temporal_no_timestamps_falls_back_to_beta_eff() {
+    let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6, 0.7]).unwrap();
+    let result = cc.beta_eff_temporal(1_000_000);
+    assert!((result - cc.beta_eff()).abs() < 1e-9);
+}
+
+#[test]
+fn beta_eff_temporal_empty_struct_timestamps_falls_back() {
+    let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
+    let result = cc.beta_eff_temporal(1_000_000);
+    assert!((result - cc.beta_eff()).abs() < 1e-9);
+}
+
+#[test]
+fn beta_eff_temporal_recent_low_cg_dominates_old_high_cg() {
+    let now = CG_HALFLIFE_SECS * 10;
+    let cc = CoherencyCoefficients::new_with_timestamps(0.1, 0.05, vec![0.9, 0.2], vec![0u64, now])
+        .unwrap();
+    let result = cc.beta_eff_temporal(now);
+    let fresh_only_beta = cc.beta_base * (1.0 - 0.2_f64);
+    assert!(
+        (result - fresh_only_beta).abs() < 0.005,
+        "recent low-CG sample must dominate: expected ≈{fresh_only_beta:.4}, got {result:.4}"
+    );
+}
+
+#[test]
+fn beta_eff_uses_beta_quality_when_present_no_cg_adjustment() {
+    let mut cc = CoherencyCoefficients::new(0.1, 0.05, vec![0.7]).unwrap();
+    cc.beta_quality = Some(0.3);
+    let eff = cc.beta_eff();
+    assert!((eff - 0.3).abs() < 1e-9, "expected 0.3, got {eff}");
+}
+
+#[test]
+fn beta_eff_falls_back_to_proxy_when_beta_quality_none() {
+    let cc = CoherencyCoefficients::new(0.1, 0.05, vec![0.6]).unwrap();
+    assert!(cc.beta_quality.is_none());
+    let eff = cc.beta_eff();
+    assert!((eff - 0.02).abs() < 1e-9, "expected 0.02, got {eff}");
+}
+
+#[test]
+fn n_max_increases_with_lower_beta_quality() {
+    let mut cc_high = CoherencyCoefficients::new(0.1, 0.05, vec![0.5]).unwrap();
+    cc_high.beta_quality = Some(0.4);
+
+    let mut cc_low = CoherencyCoefficients::new(0.1, 0.05, vec![0.5]).unwrap();
+    cc_low.beta_quality = Some(0.05);
+
+    assert!(cc_low.n_max() > cc_high.n_max());
+}
+
+// ── EigenCalibration::from_cosine_matrix ─────────────────────────────────────
+
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn from_cosine_matrix_full_collapse_n_eff_is_one() {
+    use nalgebra::DMatrix;
+    let n = 3usize;
+    let k = DMatrix::from_element(n, n, 1.0 / n as f64);
+    let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+    assert!(
+        (ec.n_effective - 1.0).abs() < 1e-6,
+        "all-same embeddings → N_eff=1, got {}",
+        ec.n_effective
+    );
+}
+
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn from_cosine_matrix_full_diversity_n_eff_equals_n() {
+    use nalgebra::DMatrix;
+    let n = 3usize;
+    let k = DMatrix::identity(n, n) / n as f64;
+    let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+    assert!(
+        (ec.n_effective - n as f64).abs() < 1e-6,
+        "orthogonal embeddings → N_eff={n}, got {}",
+        ec.n_effective
+    );
+}
+
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn from_cosine_matrix_partial_collapse_n_eff_approx_1_8() {
+    use nalgebra::DMatrix;
+    let n = 3usize;
+    let raw = DMatrix::from_row_slice(n, n, &[1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    let k = raw / n as f64;
+    let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+    assert!(
+        (ec.n_effective - 1.8).abs() < 0.01,
+        "partial collapse → N_eff≈1.8, got {}",
+        ec.n_effective
+    );
+}
+
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn from_cosine_matrix_n2_full_diversity() {
+    use nalgebra::DMatrix;
+    let n = 2usize;
+    let k = DMatrix::identity(n, n) / n as f64;
+    let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+    assert!(
+        (ec.n_effective - 2.0).abs() < 1e-6,
+        "N=2 orthogonal → N_eff=2, got {}",
+        ec.n_effective
+    );
+}
+
+// ── n_max_context_aware ───────────────────────────────────────────────────────
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn n_max_context_aware_returns_n_max_when_tokens_below_one() {
+    let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
+    // proposal_tokens < 1.0 → fallback to n_max()
+    assert_eq!(cc.n_max_context_aware(0.5, 4096.0, 1.0), cc.n_max());
+    // max_tokens < 1.0 → fallback to n_max()
+    assert_eq!(cc.n_max_context_aware(200.0, 0.0, 1.0), cc.n_max());
+}
+
+#[test]
+fn n_max_context_aware_reduces_n_max_under_context_pressure() {
+    // High context pressure (large gamma) should reduce N_max vs unconstrained.
+    let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
+    let unconstrained = cc.n_max();
+    let constrained = cc.n_max_context_aware(1000.0, 2000.0, 5.0);
+    assert!(
+        constrained <= unconstrained,
+        "context pressure must reduce or equal n_max: constrained={constrained}, unconstrained={unconstrained}"
+    );
+    assert!(constrained >= 1.0, "n_max_context_aware must be >= 1");
+}
+
+#[test]
+fn n_max_context_aware_zero_gamma_equals_n_max() {
+    // gamma=0: no attention degradation → result equals n_max() (fixed-point at initial value)
+    let cc = CoherencyCoefficients::new(0.1, 0.02, vec![0.6]).unwrap();
+    let result = cc.n_max_context_aware(200.0, 8192.0, 0.0);
+    assert!(
+        (result - cc.n_max()).abs() < 1.0,
+        "gamma=0 → n_max_context_aware ≈ n_max, got {result} vs {}",
+        cc.n_max()
+    );
+}
+
+#[test]
+fn n_max_context_aware_result_at_least_one() {
+    // Even with extreme pressure the result is clamped to >= 1
+    let cc = CoherencyCoefficients::new(0.5, 0.5, vec![0.01]).unwrap();
+    let result = cc.n_max_context_aware(10000.0, 100.0, 100.0);
+    assert!(
+        result >= 1.0,
+        "n_max_context_aware must be >= 1, got {result}"
+    );
+}
+
+// ── MergeStrategy::min_krum_quorum ────────────────────────────────────────────
+
+#[test]
+fn min_krum_quorum_matches_formula() {
+    assert_eq!(MergeStrategy::min_krum_quorum(0), 3);
+    assert_eq!(MergeStrategy::min_krum_quorum(1), 5);
+    assert_eq!(MergeStrategy::min_krum_quorum(2), 7);
+}
+
+// ── OspConfig::default ────────────────────────────────────────────────────────
+
+#[test]
+fn osp_config_default_values() {
+    use h2ai_types::sizing::OspConfig;
+    let cfg = OspConfig::default();
+    assert!((cfg.t_v - 0.125).abs() < 1e-10);
+    assert!((cfg.concordance_alpha - 0.1).abs() < 1e-10);
+    assert_eq!(cfg.max_n_v_for_zone3, 4);
+    assert!((cfg.accumulation_decay - 0.7).abs() < 1e-10);
+}
+
+#[test]
+fn osp_config_serde_round_trip() {
+    use h2ai_types::sizing::OspConfig;
+    let cfg = OspConfig::default();
+    let json = serde_json::to_string(&cfg).unwrap();
+    let back: OspConfig = serde_json::from_str(&json).unwrap();
+    assert!((cfg.t_v - back.t_v).abs() < 1e-10);
+    assert_eq!(cfg.max_n_v_for_zone3, back.max_n_v_for_zone3);
+}
+
+// ── JeffectiveGap ─────────────────────────────────────────────────────────────
+
+#[test]
+fn jeffective_gap_valid_range() {
+    use h2ai_types::sizing::JeffectiveGap;
+    assert!(JeffectiveGap::new(0.0).is_ok());
+    assert!(JeffectiveGap::new(0.5).is_ok());
+    assert!(JeffectiveGap::new(1.0).is_ok());
+}
+
+#[test]
+fn jeffective_gap_invalid_out_of_range() {
+    use h2ai_types::sizing::JeffectiveGap;
+    assert!(JeffectiveGap::new(-0.1).is_err());
+    assert!(JeffectiveGap::new(1.1).is_err());
+}
+
+#[test]
+fn jeffective_gap_value_accessor() {
+    use h2ai_types::sizing::JeffectiveGap;
+    let j = JeffectiveGap::new(0.7).unwrap();
+    assert!((j.value() - 0.7).abs() < 1e-10);
+}
+
+#[test]
+fn jeffective_gap_is_below_threshold() {
+    use h2ai_types::sizing::JeffectiveGap;
+    let j = JeffectiveGap::new(0.4).unwrap();
+    assert!(j.is_below_threshold(0.5));
+    assert!(!j.is_below_threshold(0.3));
+    assert!(!j.is_below_threshold(0.4), "strictly less than, not <=");
+}
+
+#[test]
+fn jeffective_gap_error_message_contains_value() {
+    use h2ai_types::sizing::JeffectiveGap;
+    let err = JeffectiveGap::new(1.5).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("1.5"),
+        "error message must contain bad value: {msg}"
+    );
+}
+
+// ── PhysicsError display messages ─────────────────────────────────────────────
+
+#[test]
+fn physics_error_display_messages() {
+    use h2ai_types::sizing::PhysicsError;
+    assert!(PhysicsError::InvalidAlpha(1.5).to_string().contains("1.5"));
+    assert!(PhysicsError::InvalidErrorCost(-0.1)
+        .to_string()
+        .contains("-0.1"));
+    assert!(PhysicsError::InvalidJeff(2.0).to_string().contains('2'));
+    assert!(PhysicsError::InvalidTau(1.5).to_string().contains("1.5"));
+    assert!(PhysicsError::EmptyCgSamples.to_string().contains("empty"));
+    assert!(PhysicsError::InvalidBetaBase(-1.0)
+        .to_string()
+        .contains("-1"));
+}
+
+// ── EigenCalibration::rho_eff ─────────────────────────────────────────────────
+
+#[test]
+fn eigen_calibration_rho_eff_full_independence() {
+    use nalgebra::DMatrix;
+    let sigma = DMatrix::<f64>::identity(4, 4);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
+    // N_eff = 4, n = 4 → rho_eff = 1 - 4/4 = 0.0
+    let rho = ec.rho_eff(4);
+    assert!(
+        (rho - 0.0).abs() < 0.1,
+        "full independence → rho_eff ≈ 0, got {rho}"
+    );
+}
+
+#[test]
+fn eigen_calibration_rho_eff_full_correlation() {
+    use nalgebra::DMatrix;
+    let n = 4usize;
+    let sigma = DMatrix::<f64>::from_element(n, n, 1.0);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
+    // N_eff ≈ 1, n = 4 → rho_eff = 1 - 1/4 = 0.75
+    let rho = ec.rho_eff(n);
+    assert!(rho > 0.5, "full correlation → high rho_eff, got {rho}");
+    assert!(rho <= 1.0, "rho_eff must be in [0,1], got {rho}");
+}
+
+#[test]
+fn eigen_calibration_rho_eff_clamps_to_zero() {
+    use nalgebra::DMatrix;
+    // n_effective = 4, n passed = 3 → 1 - 4/3 < 0 → clamp to 0
+    let sigma = DMatrix::<f64>::identity(4, 4);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
+    let rho = ec.rho_eff(3);
+    assert!(rho >= 0.0, "rho_eff must clamp to >= 0, got {rho}");
+}
+
+// ── from_cg_matrix single-element path ───────────────────────────────────────
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn eigen_calibration_single_element_matrix() {
+    use nalgebra::DMatrix;
+    // 1x1 matrix: h_norm takes the `else 0.0` branch (evs.len() == 1)
+    let sigma = DMatrix::<f64>::from_element(1, 1, 1.0);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
+    assert!((ec.n_effective - 1.0).abs() < 1e-6);
+    assert_eq!(ec.h_diversity, 0.0);
+    assert_eq!(ec.n_pruned, 1);
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn from_cosine_matrix_single_element() {
+    use nalgebra::DMatrix;
+    // 1x1 cosine matrix: evs.len()==1 → h_norm=0.0
+    let k = DMatrix::<f64>::from_element(1, 1, 1.0);
+    let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+    assert!((ec.n_effective - 1.0).abs() < 1e-6);
+    assert_eq!(ec.h_diversity, 0.0);
+}
+
+// ── from_cosine_matrix delta controls n_pruned ────────────────────────────────
+
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn from_cosine_matrix_delta_controls_n_pruned() {
+    use nalgebra::DMatrix;
+    // 4x4 identity normalized by N: orthogonal → each increment = 1/4 of full
+    let n = 4usize;
+    let k = DMatrix::identity(n, n) / n as f64;
+    // With tiny delta → all adapters pass
+    let ec_small = EigenCalibration::from_cosine_matrix(&k, 0.01);
+    assert_eq!(
+        ec_small.n_pruned, 4,
+        "small delta → 4 adapters, got {}",
+        ec_small.n_pruned
+    );
+    // With large delta → pruned to 1
+    let ec_large = EigenCalibration::from_cosine_matrix(&k, 10.0);
+    assert_eq!(
+        ec_large.n_pruned, 1,
+        "large delta → 1 adapter, got {}",
+        ec_large.n_pruned
+    );
+}
+
+// ── Zero/near-zero matrix edge cases ─────────────────────────────────────────
+// These hit the `else { 1.0 }` branches inside from_cg_matrix / from_cosine_matrix
+// when sum_sq (or partial_sum_sq) is <= 1e-12, i.e. all eigenvalues are ~0.
+
+#[test]
+fn from_cg_matrix_zero_matrix_n_eff_is_one() {
+    use nalgebra::DMatrix;
+    // A zero matrix has all zero eigenvalues → sum_sq ≤ 1e-12 → n_eff = 1 (fallback).
+    let sigma = DMatrix::<f64>::zeros(4, 4);
+    let ec = EigenCalibration::from_cg_matrix(&sigma, 0.05);
+    assert!(
+        (ec.n_effective - 1.0).abs() < 1e-6,
+        "zero matrix → n_eff=1 (underflow branch), got {}",
+        ec.n_effective
+    );
+}
+
+#[test]
+fn from_cosine_matrix_zero_matrix_n_eff_is_one() {
+    use nalgebra::DMatrix;
+    // A zero cosine kernel → all eigenvalues zero → sum_sq ≤ 1e-12 → n_eff = 1.
+    let k = DMatrix::<f64>::zeros(4, 4);
+    let ec = EigenCalibration::from_cosine_matrix(&k, 0.05);
+    assert!(
+        (ec.n_effective - 1.0).abs() < 1e-6,
+        "zero cosine matrix → n_eff=1 (underflow branch), got {}",
+        ec.n_effective
+    );
 }

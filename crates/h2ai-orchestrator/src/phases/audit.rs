@@ -45,7 +45,7 @@ pub struct Output {
 /// optionally a shadow auditor concurrently.  Builds `ProposalSet` and
 /// `synthesis_candidates` for the merge / synthesis phases.
 ///
-/// Always returns `StepResult::Done` — ZeroSurvival detection after audit is
+/// Always returns `StepResult::Done` — `ZeroSurvival` detection after audit is
 /// handled by the merge phase (Task 8).
 pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Output> {
     let engine_input = input.engine_input;
@@ -72,20 +72,18 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
     let majority_vote_active = engine_input
         .shadow_audit_ctx
         .as_ref()
-        .map(|ctx| ctx.promoted_domains.contains(&task_domain))
-        .unwrap_or(false);
+        .is_some_and(|ctx| ctx.promoted_domains.contains(&task_domain));
     let mut shadow_events_this_wave: Vec<ShadowAuditorResultEvent> = Vec::new();
 
     // In single-family mode the auditor is the same model as the explorer.
     // Adversarial self-evaluation produces systematic rejection bias — skip the
     // audit phase entirely and let all proposals through to the verifier.
-    let auditor_addr =
-        engine_input.auditor_adapter as *const dyn IComputeAdapter as *const () as usize;
+    let auditor_addr = std::ptr::from_ref::<dyn IComputeAdapter>(engine_input.auditor_adapter)
+        .cast::<()>() as usize;
     let skip_audit = !engine_input.explorer_adapters.is_empty()
-        && engine_input
-            .explorer_adapters
-            .iter()
-            .all(|a| *a as *const dyn IComputeAdapter as *const () as usize == auditor_addr);
+        && engine_input.explorer_adapters.iter().all(|a| {
+            std::ptr::from_ref::<dyn IComputeAdapter>(*a).cast::<()>() as usize == auditor_addr
+        });
     if skip_audit {
         tracing::info!(
             target: "h2ai.engine",
@@ -136,16 +134,15 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
             };
 
             let (approved, reason, violated) =
-                match extract_json_object::<AuditResponse>(&audit_result.output) {
-                    Some(r) => (r.approved, r.reason, r.violated),
-                    None => {
-                        tracing::warn!(
-                            task_id = %task_id,
-                            output = %audit_result.output,
-                            "auditor returned non-JSON; failing safe (treating as rejected)"
-                        );
-                        (false, "auditor parse failure".to_string(), vec![])
-                    }
+                if let Some(r) = extract_json_object::<AuditResponse>(&audit_result.output) {
+                    (r.approved, r.reason, r.violated)
+                } else {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        output = %audit_result.output,
+                        "auditor returned non-JSON; failing safe (treating as rejected)"
+                    );
+                    (false, "auditor parse failure".to_string(), vec![])
                 };
             (approved, reason, violated, shadow_opt)
         };
@@ -217,8 +214,7 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
                 .iteration_verification_events
                 .iter()
                 .find(|e| e.explorer_id == proposal.explorer_id)
-                .map(|e| e.score)
-                .unwrap_or(0.0);
+                .map_or(0.0, |e| e.score);
             synthesis_candidates.push(proposal.clone());
             proposal_set.insert_scored(proposal, ver_score);
         }

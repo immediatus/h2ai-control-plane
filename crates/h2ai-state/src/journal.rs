@@ -22,6 +22,7 @@ pub struct InMemoryBackend {
 }
 
 impl InMemoryBackend {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             log: Arc::new(Mutex::new(Vec::new())),
@@ -53,14 +54,24 @@ pub struct EventJournal<B: JournalBackend> {
 }
 
 impl<B: JournalBackend> EventJournal<B> {
-    pub fn new(backend: B) -> Self {
+    pub const fn new(backend: B) -> Self {
         Self { backend }
     }
 
+    /// Append an event to the journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JournalError` if the backend fails to persist the event.
     pub async fn append(&self, event: H2AIEvent) -> Result<(), JournalError> {
         self.backend.append(event).await
     }
 
+    /// Replay events from the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JournalError` if the backend fails to read events.
     pub async fn replay(&self, from_offset: usize) -> Result<Vec<H2AIEvent>, JournalError> {
         self.backend.read_from(from_offset).await
     }

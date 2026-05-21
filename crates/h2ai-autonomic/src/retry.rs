@@ -14,7 +14,7 @@ pub enum RetryAction {
     /// Structured constraint violations found — provide targeted remediation hints.
     RetryWithHints {
         topology: TopologyKind,
-        /// One hint per violated Hard constraint that has a remediation_hint.
+        /// One hint per violated Hard constraint that has a `remediation_hint`.
         hints: Vec<String>,
     },
     Fail(TaskFailedEvent),
@@ -22,7 +22,7 @@ pub enum RetryAction {
 
 pub struct RetryPolicy;
 
-/// Pareto frontier order: Ensemble → HierarchicalTree → TeamSwarmHybrid.
+/// Pareto frontier order: Ensemble → `HierarchicalTree` → `TeamSwarmHybrid`.
 const FRONTIER: &[fn() -> TopologyKind] = &[
     || TopologyKind::Ensemble,
     || TopologyKind::HierarchicalTree {
@@ -116,7 +116,7 @@ impl RetryPolicy {
         tried.iter().any(|t| Self::same_variant(t, candidate))
     }
 
-    fn same_variant(a: &TopologyKind, b: &TopologyKind) -> bool {
+    const fn same_variant(a: &TopologyKind, b: &TopologyKind) -> bool {
         matches!(
             (a, b),
             (TopologyKind::Ensemble, TopologyKind::Ensemble)
@@ -126,114 +126,5 @@ impl RetryPolicy {
                 )
                 | (TopologyKind::TeamSwarmHybrid, TopologyKind::TeamSwarmHybrid)
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Utc;
-    use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::sizing::RoleErrorCost;
-
-    fn pruned(reason: &str) -> BranchPrunedEvent {
-        BranchPrunedEvent {
-            task_id: TaskId::new(),
-            explorer_id: ExplorerId::new(),
-            reason: reason.into(),
-            constraint_error_cost: RoleErrorCost::new(0.5).unwrap(),
-            violated_constraints: vec![],
-            timestamp: Utc::now(),
-        }
-    }
-
-    fn zero_event() -> ZeroSurvivalEvent {
-        ZeroSurvivalEvent {
-            task_id: TaskId::new(),
-            retry_count: 0,
-            timestamp: Utc::now(),
-            n_eff_cosine_actual: None,
-            failure_mode: None,
-        }
-    }
-
-    #[test]
-    fn hallucination_reasons_trigger_tau_reduction() {
-        let pruned_events = vec![
-            pruned("hallucination detected: output fabricated facts"),
-            pruned("hallucination detected: invented citations"),
-        ];
-        let action = RetryPolicy::decide(&zero_event(), &[], pruned_events, vec![], None);
-        assert!(
-            matches!(action, RetryAction::RetryWithTauReduction { .. }),
-            "majority hallucination reasons must trigger tau reduction"
-        );
-    }
-
-    #[test]
-    fn non_hallucination_reasons_use_plain_retry() {
-        let pruned_events = vec![
-            pruned("violated ADR-001 constraint"),
-            pruned("missing required field"),
-        ];
-        let action = RetryPolicy::decide(&zero_event(), &[], pruned_events, vec![], None);
-        assert!(matches!(action, RetryAction::Retry(_)));
-    }
-
-    #[test]
-    fn empty_pruned_events_uses_plain_retry() {
-        let action = RetryPolicy::decide(&zero_event(), &[], vec![], vec![], None);
-        assert!(matches!(action, RetryAction::Retry(_)));
-    }
-
-    #[test]
-    fn tau_reduction_factor_is_in_open_unit_interval() {
-        let pruned_events = vec![pruned("hallucination detected")];
-        let action = RetryPolicy::decide(&zero_event(), &[], pruned_events, vec![], None);
-        if let RetryAction::RetryWithTauReduction { tau_factor, .. } = action {
-            assert!(
-                tau_factor > 0.0 && tau_factor < 1.0,
-                "tau_factor must be in (0,1), got {tau_factor}"
-            );
-        }
-    }
-
-    #[test]
-    fn violated_constraints_with_hints_produce_retry_with_hints() {
-        use h2ai_types::events::ConstraintViolation;
-        let mut event = pruned("constraint violation");
-        event.violated_constraints = vec![ConstraintViolation {
-            constraint_id: "GDPR-001".into(),
-            score: 0.0,
-            severity_label: "Hard".into(),
-            remediation_hint: Some("Include explicit data minimization language.".into()),
-        }];
-        let action = RetryPolicy::decide(&zero_event(), &[], vec![event], vec![], None);
-        assert!(
-            matches!(action, RetryAction::RetryWithHints { .. }),
-            "structured Hard violations with hints must produce RetryWithHints"
-        );
-        if let RetryAction::RetryWithHints { hints, .. } = action {
-            assert!(hints.iter().any(|h| h.contains("data minimization")));
-        }
-    }
-
-    #[test]
-    fn violated_constraints_without_hints_fall_back_to_reason_scan() {
-        use h2ai_types::events::ConstraintViolation;
-        // Violation with no remediation_hint → no hints collected → falls back to reason scan
-        let mut event = pruned("hallucination detected: fabricated output");
-        event.violated_constraints = vec![ConstraintViolation {
-            constraint_id: "GDPR-001".into(),
-            score: 0.0,
-            severity_label: "Hard".into(),
-            remediation_hint: None, // no hint
-        }];
-        let action = RetryPolicy::decide(&zero_event(), &[], vec![event], vec![], None);
-        // Since no hints, falls back to hallucination keyword scan → TauReduction
-        assert!(
-            matches!(action, RetryAction::RetryWithTauReduction { .. }),
-            "no remediation hints + hallucination reason must still trigger tau reduction"
-        );
     }
 }

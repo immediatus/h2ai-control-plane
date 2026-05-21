@@ -58,6 +58,7 @@ fn topology_kind_team_swarm_hybrid_serde_round_trip() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn agent_role_default_tau_and_ci() {
     assert_eq!(AgentRole::Coordinator.default_tau(), 0.05);
     assert_eq!(AgentRole::Executor.default_tau(), 0.40);
@@ -205,4 +206,102 @@ fn adapter_kind_ollama_serde_round_trip() {
     let json = serde_json::to_string(&k).unwrap();
     let back: AdapterKind = serde_json::from_str(&json).unwrap();
     assert_eq!(k, back);
+}
+
+// ── AgentRole::default_role_error_cost for all variants ──────────────────────
+
+#[test]
+fn agent_role_default_role_error_cost_all_variants() {
+    assert!((AgentRole::Coordinator.default_role_error_cost() - 0.1).abs() < 1e-10);
+    assert!((AgentRole::Executor.default_role_error_cost() - 0.5).abs() < 1e-10);
+    assert!((AgentRole::Synthesizer.default_role_error_cost() - 0.1).abs() < 1e-10);
+}
+
+// ── AdapterFamily::Display ────────────────────────────────────────────────────
+
+#[test]
+fn adapter_family_display_all_variants() {
+    use h2ai_types::config::AdapterFamily;
+    assert_eq!(AdapterFamily::Anthropic.to_string(), "anthropic");
+    assert_eq!(AdapterFamily::OpenAI.to_string(), "openai");
+    assert_eq!(AdapterFamily::Local.to_string(), "local");
+    assert_eq!(AdapterFamily::Cloud.to_string(), "cloud");
+}
+
+// ── TaoConfig::default ────────────────────────────────────────────────────────
+
+#[test]
+fn tao_config_default_values() {
+    use h2ai_types::config::TaoConfig;
+    let cfg = TaoConfig::default();
+    assert_eq!(cfg.max_turns, 3);
+    assert!(cfg.verify_pattern.is_none());
+    assert!((cfg.repetition_threshold - 0.92).abs() < 1e-10);
+    assert_eq!(cfg.per_turn_timeout_secs, 600);
+    assert!(!cfg.observation_pass.is_empty());
+    assert!(!cfg.observation_fail_pattern.is_empty());
+    assert!(!cfg.observation_fail_schema.is_empty());
+    assert!(!cfg.retry_instruction.is_empty());
+}
+
+// ── VerificationConfig::default ───────────────────────────────────────────────
+
+#[test]
+fn verification_config_default_values() {
+    use h2ai_types::config::VerificationConfig;
+    let cfg = VerificationConfig::default();
+    assert!((cfg.threshold - 0.45).abs() < 1e-10);
+    assert_eq!(cfg.evaluator_max_tokens, 32768);
+    assert!(!cfg.record_adversarial_comparison);
+    assert!(!cfg.rubric.is_empty());
+    assert!(!cfg.evaluator_system_prompt.is_empty());
+}
+
+// ── ConfigError display messages ──────────────────────────────────────────────
+
+#[test]
+fn config_error_display_messages() {
+    use h2ai_types::config::ConfigError;
+    let msg = ConfigError::InvalidWeightSum(1.5).to_string();
+    assert!(msg.contains("1.5"), "message must contain bad sum: {msg}");
+    let neg = ConfigError::NegativeWeight.to_string();
+    assert!(
+        !neg.is_empty(),
+        "NegativeWeight error message must not be empty: {neg}"
+    );
+}
+
+// ── AdapterKind::A2a serde round-trip ─────────────────────────────────────────
+
+#[test]
+fn adapter_kind_a2a_serde_round_trip() {
+    let k = AdapterKind::A2a {
+        endpoint: "https://agent.example.com".into(),
+        auth_scheme: "bearer".into(),
+        auth_token_env: "A2A_TOKEN".into(),
+        timeout_minutes: 5,
+        poll_interval_ms: 500,
+        max_poll_interval_ms: 5000,
+        agent_card_cache_ttl_s: 300,
+    };
+    let json = serde_json::to_string(&k).unwrap();
+    let back: AdapterKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(k, back);
+}
+
+// ── AdapterFamily::from_kind covers A2a → Cloud ───────────────────────────────
+
+#[test]
+fn adapter_family_from_kind_a2a_is_cloud() {
+    use h2ai_types::config::AdapterFamily;
+    let kind = AdapterKind::A2a {
+        endpoint: "http://svc".into(),
+        auth_scheme: "none".into(),
+        auth_token_env: String::new(),
+        timeout_minutes: 1,
+        poll_interval_ms: 100,
+        max_poll_interval_ms: 1000,
+        agent_card_cache_ttl_s: 60,
+    };
+    assert_eq!(AdapterFamily::from_kind(&kind), AdapterFamily::Cloud);
 }

@@ -20,11 +20,13 @@ use std::time::Duration;
 
 use crate::judge_panel::{aggregate_votes, ConstraintVerdict, JudgePanel};
 
-/// Per-task evaluation cache: maps constraint_id → Vec<(proposal_text, score)>.
-/// Shared across concurrent explorer evaluations via DashMap (no blocking mutex).
+/// Per-task evaluation cache: maps `constraint_id` → Vec<(`proposal_text`, score)>.
+///
+/// Shared across concurrent explorer evaluations via `DashMap` (no blocking mutex).
 /// Created fresh per task; dropped when the task's verification phase completes.
 pub type EvalCache = Arc<DashMap<String, Vec<(String, f64)>>>;
 
+#[must_use]
 pub fn new_eval_cache() -> EvalCache {
     Arc::new(DashMap::new())
 }
@@ -42,14 +44,14 @@ pub struct VerificationInput<'a> {
     pub config: VerificationConfig,
     /// Per-task eval cache. Pass the same `Arc` across retry rounds to share hits within a task.
     pub eval_cache: EvalCache,
-    /// Number of LLM judge passes for Hard LlmJudge constraints. Averaged. Default 1.
+    /// Number of LLM judge passes for Hard `LlmJudge` constraints. Averaged. Default 1.
     pub consensus_passes: u8,
 }
 
 pub struct VerificationOutput {
-    /// (proposal, per_constraint_results, any_cache_hit)
+    /// (proposal, `per_constraint_results`, `any_cache_hit`)
     pub passed: Vec<(ProposalEvent, Vec<ComplianceResult>, bool)>,
-    /// (proposal, per_constraint_results, violations, any_cache_hit)
+    /// (proposal, `per_constraint_results`, violations, `any_cache_hit`)
     pub failed: Vec<(
         ProposalEvent,
         Vec<ComplianceResult>,
@@ -113,7 +115,9 @@ impl VerificationPhase {
         let mut failed = Vec::new();
 
         for (proposal, results, any_cache_hit) in all {
-            let hard_gate = results.iter().all(|r| r.hard_passes());
+            let hard_gate = results
+                .iter()
+                .all(h2ai_constraints::types::ComplianceResult::hard_passes);
             let soft_score = aggregate_compliance_score(&results);
             let overall = if hard_gate { soft_score } else { 0.0 };
 
@@ -156,7 +160,7 @@ impl VerificationPhase {
                 .chain(output.failed.iter().map(|(p, _, _, _)| p.clone()))
                 .collect();
 
-            let adv_output = Box::pin(VerificationPhase::run(VerificationInput {
+            let adv_output = Box::pin(Self::run(VerificationInput {
                 proposals: all_proposals.clone(),
                 constraint_corpus: corpus,
                 evaluator,
@@ -302,7 +306,7 @@ impl VerificationPhase {
                 .collect();
 
             // For each constraint index, aggregate votes across variants.
-            let n_constraints = variant_results.first().map(|r| r.len()).unwrap_or(0);
+            let n_constraints = variant_results.first().map_or(0, std::vec::Vec::len);
             let mut final_results: Vec<ComplianceResult> = Vec::with_capacity(n_constraints);
             let mut uncertain_ids: Vec<String> = Vec::new();
             let mut hard_fail = false;
@@ -371,7 +375,10 @@ impl VerificationPhase {
 
             // Route proposal: hard non-uncertain Fail → failed; otherwise apply threshold check.
             let soft_score = aggregate_compliance_score(&final_results);
-            let hard_gate = !hard_fail && final_results.iter().all(|r| r.hard_passes());
+            let hard_gate = !hard_fail
+                && final_results
+                    .iter()
+                    .all(h2ai_constraints::types::ComplianceResult::hard_passes);
             let overall = if hard_gate { soft_score } else { 0.0 };
 
             if overall >= threshold {
@@ -549,12 +556,12 @@ impl VerificationPhase {
         (results.into_iter().map(|(r, _)| r).collect(), hit_flag)
     }
 
-    /// Evaluate any predicate, including Composite trees that contain LlmJudge children.
-    /// Returns a score in [0.0, 1.0]. Uses Box::pin for recursive async support.
+    /// Evaluate any predicate, including Composite trees that contain `LlmJudge` children.
+    /// Returns a score in [0.0, 1.0]. Uses `Box::pin` for recursive async support.
     ///
     /// For `Composite { And, children }`, static children are evaluated first. If any
-    /// returns 0.0 (hard failure — e.g. NegativeKeyword found a prohibited term), heavy
-    /// children (LlmJudge, Oracle) are skipped entirely. This avoids spurious LLM calls
+    /// returns 0.0 (hard failure — e.g. `NegativeKeyword` found a prohibited term), heavy
+    /// children (`LlmJudge`, Oracle) are skipped entirely. This avoids spurious LLM calls
     /// when a proposal already fails on fast deterministic checks.
     fn eval_predicate_async<'a>(
         pred: &'a ConstraintPredicate,
@@ -571,20 +578,19 @@ impl VerificationPhase {
                     let passes = consensus_passes.max(1) as usize;
                     let mut scores = Vec::with_capacity(passes);
                     for _ in 0..passes {
-                        let s = match tokio::time::timeout(
-                            std::time::Duration::from_secs(600),
+                        let s = if let Ok(score) = tokio::time::timeout(
+                            std::time::Duration::from_mins(10),
                             Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens),
                         )
                         .await
                         {
-                            Ok(score) => score,
-                            Err(_) => {
-                                tracing::warn!(
-                                    target: "h2ai.verification",
-                                    "LlmJudge timed out (600s); skipping — score defaults to 0.5"
-                                );
-                                0.5
-                            }
+                            score
+                        } else {
+                            tracing::warn!(
+                                target: "h2ai.verification",
+                                "LlmJudge timed out (600s); skipping — score defaults to 0.5"
+                            );
+                            0.5
                         };
                         scores.push(s);
                     }

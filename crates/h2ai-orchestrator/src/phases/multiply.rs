@@ -18,8 +18,8 @@ pub struct Output {
 /// Run Phase 2.5: Multiplication Condition Gate.
 ///
 /// Calls `MultiplicationChecker::check` with the pre-derived `baseline_competence`
-/// and `error_correlation` values (caller derives these from EnsembleCalibration or
-/// cg_mean heuristic — they are needed elsewhere in engine.rs so we take them as input
+/// and `error_correlation` values (caller derives these from `EnsembleCalibration` or
+/// `cg_mean` heuristic — they are needed elsewhere in engine.rs so we take them as input
 /// rather than re-deriving here).
 ///
 /// Returns `StepResult::Done(Output { tau_values })` on success.
@@ -28,6 +28,7 @@ pub struct Output {
 /// `last_multiplication_failure` / `tau_values_tried` and invoking `RetryPolicy::decide`.
 ///
 /// Never returns `StepResult::Fatal`.
+#[must_use]
 pub fn run(input: Input<'_>) -> StepResult<Output> {
     let engine_input = input.engine_input;
     let provisioned = input.provisioned;

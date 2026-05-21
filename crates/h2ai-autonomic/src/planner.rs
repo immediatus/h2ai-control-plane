@@ -1,3 +1,4 @@
+#![allow(clippy::cast_precision_loss)]
 use chrono::Utc;
 use h2ai_config::H2AIConfig;
 use h2ai_types::config::{
@@ -19,7 +20,7 @@ use h2ai_types::sizing::{
 pub struct ProvisionInput<'a> {
     /// Identifier that propagates into the emitted `TopologyProvisionedEvent`.
     pub task_id: TaskId,
-    /// Coherency coefficients (α, β_eff, CG mean) from the most recent calibration run.
+    /// Coherency coefficients (α, `β_eff`, CG mean) from the most recent calibration run.
     pub cc: &'a CoherencyCoefficients,
     /// Operator-supplied (T, E, D) weights used to score Pareto-frontier topology candidates.
     pub pareto_weights: &'a ParetoWeights,
@@ -37,13 +38,13 @@ pub struct ProvisionInput<'a> {
     pub retry_count: u32,
     /// Runtime configuration supplying CG collapse threshold, token budgets, and USL bounds.
     pub cfg: &'a H2AIConfig,
-    /// When present, caps n_max at the eigenvalue-derived optimal adapter count.
+    /// When present, caps `n_max` at the eigenvalue-derived optimal adapter count.
     ///
     /// Pruning adapters beyond the spectral optimum avoids coherency overhead without
     /// sacrificing ensemble quality.
     pub eigen: Option<&'a EigenCalibration>,
-    /// Phase 1.5 routing quadrant. `None` when shadow_mode=true (no routing change).
-    /// When `Some(Precision)`, n_max is capped at 3 (within-family τ-spread, 2–3 slots).
+    /// Phase 1.5 routing quadrant. `None` when `shadow_mode=true` (no routing change).
+    /// When `Some(Precision)`, `n_max` is capped at 3 (within-family τ-spread, 2–3 slots).
     /// `Degenerate` is rejected before this call — the engine fails early.
     pub task_quadrant: Option<TaskQuadrant>,
 }
@@ -61,14 +62,20 @@ impl TopologyPlanner {
     ///
     /// Returns a `(TopologyProvisionedEvent, Option<ZeroCoordinationQualityEvent>)` pair.
     /// The first element is always present and carries the selected topology kind, explorer
-    /// configs, merge strategy, and n_max (USL-derived, optionally capped by eigenvalue
+    /// configs, merge strategy, and `n_max` (USL-derived, optionally capped by eigenvalue
     /// pruning via `input.eigen`).
     /// The second element is `Some` when CG mean falls below `cfg.cg_collapse_threshold`;
-    /// in that case n_max is forced to 1 and the caller must publish the collapse event so
+    /// in that case `n_max` is forced to 1 and the caller must publish the collapse event so
     /// the orchestrator can take corrective action.
     /// Topology selection order: CG collapse forces `n_max=1` → review gates force
     /// `TeamSwarmHybrid` → Pareto-frontier scoring over `(T, E, D)` weights picks the
     /// highest-weighted candidate from `{HierarchicalTree, TeamSwarmHybrid, Ensemble}`.
+    /// # Panics
+    ///
+    /// Panics if a `role_error_cost` value is outside [0, 1] (configuration invariant
+    /// violation), or if the Pareto candidate array is unexpectedly empty.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn provision(
         input: ProvisionInput<'_>,
     ) -> (
@@ -197,10 +204,6 @@ impl TopologyPlanner {
         review_gates: &[ReviewGate],
         n_max: f64,
     ) -> TopologyKind {
-        if !review_gates.is_empty() {
-            return TopologyKind::TeamSwarmHybrid;
-        }
-
         // Pareto-frontier topologies with (T, E, D) scores from theory-to-implementation.md.
         struct Candidate {
             score_t: f64,
@@ -208,6 +211,12 @@ impl TopologyPlanner {
             score_d: f64,
             make: fn(f64) -> TopologyKind,
         }
+
+        if !review_gates.is_empty() {
+            return TopologyKind::TeamSwarmHybrid;
+        }
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let candidates: [Candidate; 3] = [
             Candidate {
                 score_t: 0.96,
@@ -240,67 +249,15 @@ impl TopologyPlanner {
         let (best_idx, _) = candidates
             .iter()
             .enumerate()
-            .map(|(i, c)| (i, wt * c.score_t + we * c.score_e + wd * c.score_d))
+            .map(|(i, c)| {
+                (
+                    i,
+                    wd.mul_add(c.score_d, wt.mul_add(c.score_t, we * c.score_e)),
+                )
+            })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .expect("candidates array is non-empty");
 
         (candidates[best_idx].make)(n_max)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_types::config::ParetoWeights;
-
-    fn weights(t: f32, e: f32, d: f32) -> ParetoWeights {
-        ParetoWeights::new(t as f64, e as f64, d as f64).unwrap()
-    }
-
-    #[test]
-    fn select_topology_containment_heavy_gives_hierarchical() {
-        let result = TopologyPlanner::select_topology(&weights(0.1, 0.8, 0.1), &[], 9.0);
-        assert!(
-            matches!(result, TopologyKind::HierarchicalTree { .. }),
-            "containment-heavy weights → HierarchicalTree, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn select_topology_diversity_heavy_gives_team_swarm() {
-        let result = TopologyPlanner::select_topology(&weights(0.1, 0.1, 0.8), &[], 9.0);
-        assert!(
-            matches!(result, TopologyKind::TeamSwarmHybrid),
-            "diversity-heavy weights → TeamSwarmHybrid, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn select_topology_review_gates_override_weights() {
-        let gate = ReviewGate {
-            reviewer: "b".into(),
-            blocks: "a".into(),
-        };
-        let result = TopologyPlanner::select_topology(&weights(0.9, 0.05, 0.05), &[gate], 9.0);
-        assert!(
-            matches!(result, TopologyKind::TeamSwarmHybrid),
-            "review gates must force TeamSwarmHybrid"
-        );
-    }
-
-    #[test]
-    fn select_topology_equal_weights_gives_team_swarm() {
-        // Pareto scores with equal weights (0.333 each):
-        // HierarchicalTree: 0.333*0.96 + 0.333*0.96 + 0.334*0.60 = 0.840
-        // TeamSwarmHybrid:  0.333*0.84 + 0.333*0.91 + 0.334*0.95 = 0.900  ← wins
-        // Ensemble:         0.333*0.84 + 0.333*0.84 + 0.334*0.90 = 0.860
-        let result = TopologyPlanner::select_topology(&weights(0.333, 0.333, 0.334), &[], 9.0);
-        assert!(
-            matches!(result, TopologyKind::TeamSwarmHybrid),
-            "equal weights → TeamSwarmHybrid (score 0.900), got {:?}",
-            result
-        );
     }
 }

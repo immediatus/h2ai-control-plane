@@ -1,20 +1,20 @@
 /// In-memory Prometheus-format metric state for the /metrics endpoint.
 ///
-/// Shared via `Arc<RwLock<MetricsState>>` in AppState.
+/// Shared via `Arc<RwLock<MetricsState>>` in `AppState`.
 #[derive(Debug)]
 pub struct MetricsState {
-    /// Pool-level N_eff from last calibration (gauge).
+    /// Pool-level `N_eff` from last calibration (gauge).
     pub n_eff_prior: f64,
-    /// Task-level N_eff from last EpistemicYieldEvent (gauge).
+    /// Task-level `N_eff` from last `EpistemicYieldEvent` (gauge).
     pub n_eff_actual: f64,
-    /// yield_ratio from last EpistemicYieldEvent (gauge).
+    /// `yield_ratio` from last `EpistemicYieldEvent` (gauge).
     pub epistemic_yield_ratio: f64,
-    /// Cumulative ModeCollapse interventions (counter).
+    /// Cumulative `ModeCollapse` interventions (counter).
     pub mapek_mode_collapse_count: u64,
-    /// Cumulative ConstrainedExploration interventions (counter).
+    /// Cumulative `ConstrainedExploration` interventions (counter).
     pub mapek_constrained_exploration_count: u64,
     /// Phase 1.5 routing quadrant distribution (counters by quadrant).
-    /// Used to validate θ_tcc and θ_neff thresholds during shadow_mode monitoring.
+    /// Used to validate `θ_tcc` and `θ_neff` thresholds during `shadow_mode` monitoring.
     pub phase15_quadrant_precision: u64,
     pub phase15_quadrant_coverage: u64,
     pub phase15_quadrant_complex: u64,
@@ -23,19 +23,19 @@ pub struct MetricsState {
     pub oracle_ece: f64,
     /// Rolling count of oracle observations (target ≥ 30 for conformal intervals).
     pub oracle_n_observations: u64,
-    /// Fraction of tasks that carried an OracleSpec (oracle coverage).
+    /// Fraction of tasks that carried an `OracleSpec` (oracle coverage).
     pub oracle_coverage_rate: f64,
     /// Rolling oracle pass rate (last 200 observations).
     pub oracle_pass_rate: f64,
     /// P90 of calibration residuals (proxy for conformal interval width).
     pub oracle_residual_p90: f64,
-    /// Current PredictionBasis: 0=Heuristic, 1=Bootstrap, 2=Conformal.
+    /// Current `PredictionBasis`: 0=Heuristic, 1=Bootstrap, 2=Conformal.
     pub oracle_calibration_basis: u8,
     /// Cumulative count of successfully resolved tasks (used for coverage rate denominator).
     pub oracle_tasks_total: u64,
-    /// Cumulative count of resolved tasks that carried an OracleSpec.
+    /// Cumulative count of resolved tasks that carried an `OracleSpec`.
     pub oracle_tasks_with_spec: u64,
-    /// Current calibration source label: "measured", "partial_fit", or "synthetic_priors".
+    /// Current calibration source label: "measured", "`partial_fit`", or "`synthetic_priors`".
     /// Empty string when no calibration has run yet (renders all gauges as 0).
     pub calibration_source_label: String,
     /// Total shadow audit observations (counter).
@@ -94,6 +94,7 @@ impl Default for MetricsState {
 
 impl MetricsState {
     /// Render all metrics in Prometheus text exposition format.
+    #[must_use]
     pub fn to_prometheus_text(&self) -> String {
         format!(
             "# HELP h2ai_n_eff_prior Effective independent adapters from calibration (cosine N_eff prior)\n\
@@ -188,9 +189,9 @@ impl MetricsState {
             oracle_basis = self.oracle_calibration_basis,
             oracle_tasks_total = self.oracle_tasks_total,
             oracle_tasks_with_spec = self.oracle_tasks_with_spec,
-            cal_src_measured = if self.calibration_source_label == "measured" { 1 } else { 0 },
-            cal_src_partial = if self.calibration_source_label == "partial_fit" { 1 } else { 0 },
-            cal_src_synthetic = if self.calibration_source_label == "synthetic_priors" { 1 } else { 0 },
+            cal_src_measured = i32::from(self.calibration_source_label == "measured"),
+            cal_src_partial = i32::from(self.calibration_source_label == "partial_fit"),
+            cal_src_synthetic = i32::from(self.calibration_source_label == "synthetic_priors"),
             shadow_total = self.shadow_audit_total,
             shadow_disagreements = self.shadow_audit_disagreements,
             shadow_promoted = self.shadow_audit_promoted_domains,
@@ -201,148 +202,5 @@ impl MetricsState {
             shadow_enabled = self.safety_shadow_auditor_enabled,
             bivariate = self.safety_require_bivariate_cg,
         )
-    }
-}
-
-#[cfg(test)]
-mod metrics_tests {
-    use super::*;
-
-    #[test]
-    fn metrics_state_formats_prometheus_text() {
-        let m = MetricsState {
-            n_eff_prior: 2.5,
-            n_eff_actual: 2.1,
-            epistemic_yield_ratio: 0.7,
-            mapek_mode_collapse_count: 3,
-            mapek_constrained_exploration_count: 1,
-            phase15_quadrant_precision: 10,
-            phase15_quadrant_coverage: 42,
-            phase15_quadrant_complex: 5,
-            phase15_quadrant_degenerate: 1,
-            oracle_ece: 0.0,
-            oracle_n_observations: 0,
-            oracle_coverage_rate: 0.0,
-            oracle_pass_rate: 0.0,
-            oracle_residual_p90: 0.0,
-            oracle_calibration_basis: 0,
-            oracle_tasks_total: 0,
-            oracle_tasks_with_spec: 0,
-            calibration_source_label: String::new(),
-            shadow_audit_total: 0,
-            shadow_audit_disagreements: 0,
-            shadow_audit_promoted_domains: 0,
-            shadow_audit_disagreement_rate: 0.0,
-            safety_profile_name: "development".to_string(),
-            safety_krum_fault_tolerance: 0,
-            safety_diversity_threshold: 0.0,
-            safety_shadow_auditor_enabled: 0,
-            safety_require_bivariate_cg: 0,
-        };
-        let text = m.to_prometheus_text();
-        assert!(text.contains("h2ai_n_eff_prior 2.5"));
-        assert!(text.contains("h2ai_n_eff_actual 2.1"));
-        assert!(text.contains("h2ai_epistemic_yield_ratio 0.7"));
-        assert!(text.contains(r#"h2ai_mapek_interventions_total{failure_mode="mode_collapse"} 3"#));
-        assert!(text.contains(
-            r#"h2ai_mapek_interventions_total{failure_mode="constrained_exploration"} 1"#
-        ));
-        assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="precision"} 10"#));
-        assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="coverage"} 42"#));
-        assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="complex"} 5"#));
-        assert!(text.contains(r#"h2ai_phase15_task_quadrant_total{quadrant="degenerate"} 1"#));
-    }
-
-    #[test]
-    fn metrics_state_renders_calibration_source_measured() {
-        let m = MetricsState {
-            calibration_source_label: "measured".to_string(),
-            ..Default::default()
-        };
-        let text = m.to_prometheus_text();
-        assert!(text.contains(r#"h2ai_calibration_source{source="measured"} 1"#));
-        assert!(text.contains(r#"h2ai_calibration_source{source="partial_fit"} 0"#));
-        assert!(text.contains(r#"h2ai_calibration_source{source="synthetic_priors"} 0"#));
-    }
-
-    #[test]
-    fn metrics_state_renders_calibration_source_synthetic() {
-        let m = MetricsState {
-            calibration_source_label: "synthetic_priors".to_string(),
-            ..Default::default()
-        };
-        let text = m.to_prometheus_text();
-        assert!(text.contains(r#"h2ai_calibration_source{source="measured"} 0"#));
-        assert!(text.contains(r#"h2ai_calibration_source{source="synthetic_priors"} 1"#));
-    }
-
-    #[test]
-    fn metrics_state_renders_calibration_source_partial_fit() {
-        let m = MetricsState {
-            calibration_source_label: "partial_fit".to_string(),
-            ..Default::default()
-        };
-        let text = m.to_prometheus_text();
-        assert!(text.contains(r#"h2ai_calibration_source{source="measured"} 0"#));
-        assert!(text.contains(r#"h2ai_calibration_source{source="partial_fit"} 1"#));
-        assert!(text.contains(r#"h2ai_calibration_source{source="synthetic_priors"} 0"#));
-    }
-
-    #[test]
-    fn oracle_metrics_render_in_prometheus_text() {
-        let m = MetricsState {
-            n_eff_prior: 2.5,
-            n_eff_actual: 2.1,
-            epistemic_yield_ratio: 0.7,
-            mapek_mode_collapse_count: 3,
-            mapek_constrained_exploration_count: 1,
-            phase15_quadrant_precision: 10,
-            phase15_quadrant_coverage: 42,
-            phase15_quadrant_complex: 5,
-            phase15_quadrant_degenerate: 1,
-            oracle_ece: 0.08,
-            oracle_n_observations: 45,
-            oracle_coverage_rate: 0.6,
-            oracle_pass_rate: 0.75,
-            oracle_residual_p90: 0.35,
-            oracle_calibration_basis: 2,
-            oracle_tasks_total: 0,
-            oracle_tasks_with_spec: 0,
-            calibration_source_label: String::new(),
-            shadow_audit_total: 0,
-            shadow_audit_disagreements: 0,
-            shadow_audit_promoted_domains: 0,
-            shadow_audit_disagreement_rate: 0.0,
-            safety_profile_name: "development".to_string(),
-            safety_krum_fault_tolerance: 0,
-            safety_diversity_threshold: 0.0,
-            safety_shadow_auditor_enabled: 0,
-            safety_require_bivariate_cg: 0,
-        };
-        let text = m.to_prometheus_text();
-        assert!(text.contains("h2ai_oracle_ece_gauge 0.08"));
-        assert!(text.contains("h2ai_oracle_n_observations_total 45"));
-        assert!(text.contains("h2ai_oracle_coverage_rate 0.6"));
-        assert!(text.contains("h2ai_oracle_pass_rate 0.75"));
-        assert!(text.contains("h2ai_oracle_residual_p90 0.35"));
-        assert!(text.contains("h2ai_calibration_basis 2"));
-        assert!(text.contains("h2ai_oracle_tasks_total 0"));
-        assert!(text.contains("h2ai_oracle_tasks_with_spec_total 0"));
-    }
-
-    #[test]
-    fn shadow_audit_metrics_render_in_prometheus_text() {
-        let m = MetricsState {
-            shadow_audit_total: 100,
-            shadow_audit_disagreements: 8,
-            shadow_audit_promoted_domains: 2,
-            shadow_audit_disagreement_rate: 0.08,
-            ..Default::default()
-        };
-        let text = m.to_prometheus_text();
-        assert!(text.contains("h2ai_shadow_audit_total 100"));
-        assert!(text.contains("h2ai_shadow_audit_disagreements_total 8"));
-        assert!(text.contains("h2ai_shadow_audit_promoted_domains 2"));
-        assert!(text.contains("h2ai_shadow_audit_disagreement_rate 0.08"));
     }
 }

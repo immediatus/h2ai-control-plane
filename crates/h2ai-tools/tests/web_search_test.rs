@@ -15,7 +15,7 @@ struct RecordingBackend {
 #[async_trait]
 impl WebSearchBackend for RecordingBackend {
     async fn search(&self, query: &str, _max_results: usize) -> Result<String, ToolError> {
-        *self.received_query.lock().unwrap() = query.to_owned();
+        query.clone_into(&mut self.received_query.lock().unwrap());
         Ok("recorded".into())
     }
 }
@@ -104,7 +104,7 @@ async fn live_wikipedia_search_returns_real_text() {
 }
 
 /// Live: Gemini backend with Google Search grounding.
-/// Reads GEMINI_API_KEY from env; soft-skips if absent or quota exhausted.
+/// Reads `GEMINI_API_KEY` from env; soft-skips if absent or quota exhausted.
 #[tokio::test]
 async fn live_gemini_search_returns_real_grounded_text() {
     let api_key = match std::env::var("GEMINI_API_KEY") {

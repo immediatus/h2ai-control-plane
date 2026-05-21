@@ -6,9 +6,9 @@ pub enum ErrorClass {
     Transient,
     /// Recoverable — bad output shape, validation failure. MAPE-K retry with topology change.
     Recoverable,
-    /// UserFixable — context underflow, invalid config. No automatic retry; surface to human.
+    /// `UserFixable` — context underflow, invalid config. No automatic retry; surface to human.
     UserFixable,
-    /// Unexpected — internal logic error, impossible state. Emit TaskFailedEvent, no retry.
+    /// Unexpected — internal logic error, impossible state. Emit `TaskFailedEvent`, no retry.
     Unexpected,
 }
 
@@ -19,7 +19,8 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    pub fn for_class(class: &ErrorClass) -> Self {
+    #[must_use]
+    pub const fn for_class(class: &ErrorClass) -> Self {
         match class {
             ErrorClass::Transient => Self {
                 max_attempts: 3,
@@ -47,6 +48,7 @@ impl RetryPolicy {
 
 /// Classify an error message string into one of the four canonical error classes.
 /// Matching is keyword-based and case-insensitive.
+#[must_use]
 pub fn classify_error(msg: &str) -> ErrorClass {
     let lower = msg.to_lowercase();
     if lower.contains("timeout") || lower.contains("rate limit") || lower.contains("connection") {

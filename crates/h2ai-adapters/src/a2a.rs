@@ -26,11 +26,12 @@ pub enum AuthScheme {
 }
 
 impl AuthScheme {
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
-            "bearer" => AuthScheme::Bearer,
-            "api_key" => AuthScheme::ApiKey,
-            _ => AuthScheme::None,
+            "bearer" => Self::Bearer,
+            "api_key" => Self::ApiKey,
+            _ => Self::None,
         }
     }
 }
@@ -45,7 +46,8 @@ pub struct BackoffState {
 }
 
 impl BackoffState {
-    pub fn new(initial_ms: u64, max_ms: u64) -> Self {
+    #[must_use]
+    pub const fn new(initial_ms: u64, max_ms: u64) -> Self {
         Self {
             current_ms: initial_ms,
             max_ms,
@@ -53,8 +55,13 @@ impl BackoffState {
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn next_backoff_interval(state: &mut BackoffState) -> Duration {
-    let jitter_factor = 1.0 + (rand::random::<f64>() - 0.5) * 0.4; // ±20%
+    let jitter_factor = (rand::random::<f64>() - 0.5).mul_add(0.4, 1.0); // ±20%
     let ms = ((state.current_ms as f64) * jitter_factor) as u64;
     let ms = ms.min(state.max_ms);
     state.current_ms = ((state.current_ms as f64) * 1.5) as u64;
@@ -67,8 +74,13 @@ pub fn next_backoff_interval(state: &mut BackoffState) -> Duration {
 // ---------------------------------------------------------------------------
 
 /// Returns `(header_name, header_value)` or `None` for `AuthScheme::None`.
+///
+/// # Errors
+///
+/// Currently infallible — always returns `Ok`. The `Result` wrapper is kept for
+/// forward-compatibility with future auth schemes that may require validation.
 pub fn build_auth_header(
-    scheme: AuthScheme,
+    scheme: &AuthScheme,
     token: &str,
 ) -> Result<Option<(String, String)>, String> {
     match scheme {
@@ -85,6 +97,17 @@ pub fn build_auth_header(
 // Proposal extraction pipeline
 // ---------------------------------------------------------------------------
 
+/// Extract a clean proposal string from raw LLM output.
+///
+/// # Errors
+///
+/// Returns `Err` if the input text is empty after trimming (all stages produce no content).
+///
+/// # Panics
+///
+/// Panics if the embedded regex literals are invalid (this cannot happen with the
+/// hard-coded patterns in this function).
+#[allow(clippy::needless_pass_by_value)]
 pub fn extract_proposal(text: &str, format: OutputFormat) -> Result<String, String> {
     let trimmed = text.trim();
 
@@ -155,6 +178,13 @@ pub struct A2aExplorerAdapter {
 }
 
 impl A2aExplorerAdapter {
+    /// Construct a new `A2aExplorerAdapter`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `auth_scheme` is not `"none"` and `auth_token_env` is non-empty but
+    /// the named environment variable is not set.  Also returns `Err` if the underlying
+    /// `reqwest::Client` cannot be built.
     pub fn new(
         endpoint: String,
         auth_scheme: String,
@@ -176,8 +206,8 @@ impl A2aExplorerAdapter {
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
-            .tcp_keepalive(Duration::from_secs(60))
-            .pool_idle_timeout(Duration::from_secs(300))
+            .tcp_keepalive(Duration::from_mins(1))
+            .pool_idle_timeout(Duration::from_mins(5))
             .build()
             .map_err(|e| format!("failed to build reqwest client: {e}"))?;
 
@@ -227,7 +257,7 @@ impl A2aExplorerAdapter {
     fn auth_header(&self) -> Option<(String, String)> {
         let (auth_scheme, ..) = self.config();
         let token = self.auth_token.as_deref().unwrap_or("");
-        build_auth_header(AuthScheme::parse(auth_scheme), token).unwrap_or(None)
+        build_auth_header(&AuthScheme::parse(auth_scheme), token).unwrap_or(None)
     }
 
     async fn get_agent_card(&self) -> Result<serde_json::Value, AdapterError> {
@@ -275,6 +305,7 @@ impl A2aExplorerAdapter {
             fetched_at: Instant::now(),
             ttl_secs: ttl_s,
         });
+        drop(guard);
 
         Ok(card_json)
     }
@@ -301,7 +332,7 @@ impl A2aExplorerAdapter {
 
                 match self.poll_task(&task_id).await {
                     Ok(PollResult::Completed(text)) => return Ok(text),
-                    Ok(PollResult::Pending) => continue,
+                    Ok(PollResult::Pending) => {}
                     Ok(PollResult::Failed(reason)) => {
                         self.invalidate_card_cache_sync();
                         return Err(AdapterError::Remote(reason));
@@ -314,7 +345,6 @@ impl A2aExplorerAdapter {
                     Ok(PollResult::InputRequired) => return Err(AdapterError::Timeout),
                     Err(AdapterError::Timeout) => {
                         tracing::warn!("A2A poll timed out (15s), retrying");
-                        continue;
                     }
                     Err(e) => return Err(e),
                 }
@@ -368,7 +398,7 @@ impl A2aExplorerAdapter {
 
         json["result"]["id"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or_else(|| AdapterError::NetworkError("missing task id in send response".into()))
     }
 
@@ -409,7 +439,6 @@ impl A2aExplorerAdapter {
                     .to_string();
                 Ok(PollResult::Completed(text))
             }
-            "working" | "submitted" => Ok(PollResult::Pending),
             "failed" => {
                 let reason = task["status"]["message"]
                     .as_str()
@@ -420,6 +449,7 @@ impl A2aExplorerAdapter {
             "canceled" => Ok(PollResult::Cancelled),
             "rejected" | "auth_required" => Ok(PollResult::Rejected),
             "input_required" => Ok(PollResult::InputRequired),
+            // "working" | "submitted" and all unknown states → poll again
             _ => Ok(PollResult::Pending),
         }
     }

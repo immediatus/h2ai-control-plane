@@ -1,3 +1,38 @@
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::option_if_let_else,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::needless_pass_by_value,
+    clippy::doc_markdown,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::literal_string_with_formatting_args,
+    clippy::missing_fields_in_debug,
+    clippy::redundant_else,
+    clippy::map_unwrap_or,
+    clippy::type_complexity,
+    clippy::float_cmp,
+    clippy::large_futures,
+    clippy::suboptimal_flops,
+    clippy::needless_type_cast,
+    clippy::elidable_lifetime_names
+)]
 mod bootstrap;
 mod debug_record;
 mod error;
@@ -35,7 +70,7 @@ fn build_adapter(kind: &AdapterKind, enable_thinking: bool) -> Arc<dyn IComputeA
     }
 }
 
-/// Resolve the config file path: H2AI_CONFIG env var takes priority (test/task override),
+/// Resolve the config file path: `H2AI_CONFIG` env var takes priority (test/task override),
 /// then /etc/h2ai/h2ai.toml (deployment default), then None (embedded reference.toml).
 fn resolve_config_path() -> Option<String> {
     if let Ok(path) = std::env::var("H2AI_CONFIG") {
@@ -51,7 +86,10 @@ fn resolve_config_path() -> Option<String> {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     // --validate-config: load config, print startup report, exit without starting servers.
@@ -71,16 +109,13 @@ async fn main() {
 
     let cfg = {
         let config_path = resolve_config_path();
-        match &config_path {
-            Some(path) => {
-                tracing::info!(target: "h2ai.startup", config_path = %path, "loading config");
-                H2AIConfig::load_layered(Some(std::path::Path::new(path)))
-                    .unwrap_or_else(|e| panic!("config {path} failed to load: {e}"))
-            }
-            None => {
-                tracing::info!(target: "h2ai.startup", "no config file found — using embedded reference defaults");
-                H2AIConfig::load_layered(None).expect("embedded reference.toml is always valid")
-            }
+        if let Some(path) = &config_path {
+            tracing::info!(target: "h2ai.startup", config_path = %path, "loading config");
+            H2AIConfig::load_layered(Some(std::path::Path::new(path)))
+                .unwrap_or_else(|e| panic!("config {path} failed to load: {e}"))
+        } else {
+            tracing::info!(target: "h2ai.startup", "no config file found — using embedded reference defaults");
+            H2AIConfig::load_layered(None).expect("embedded reference.toml is always valid")
         }
     };
 
@@ -126,12 +161,14 @@ async fn main() {
         .iter()
         .find(|p| p.name == "auditor")
         .or_else(|| profiles.first())
-        .map(|p| p.kind.clone())
-        .unwrap_or_else(|| AdapterKind::CloudGeneric {
-            endpoint: "mock://localhost".into(),
-            api_key_env: "MOCK".into(),
-            model: None,
-        });
+        .map_or_else(
+            || AdapterKind::CloudGeneric {
+                endpoint: "mock://localhost".into(),
+                api_key_env: "MOCK".into(),
+                model: None,
+            },
+            |p| p.kind.clone(),
+        );
     // Reuse the pool Arc when the auditor kind matches every explorer's kind so that
     // the pointer-based skip_audit check in phases/audit.rs fires correctly.
     let auditor_adapter: Arc<dyn IComputeAdapter> =
@@ -192,8 +229,8 @@ async fn main() {
         m.safety_profile_name = app_state.cfg.safety.profile.as_str().to_string();
         m.safety_krum_fault_tolerance = app_state.cfg.safety.krum_fault_tolerance as u64;
         m.safety_diversity_threshold = app_state.cfg.safety.diversity_threshold;
-        m.safety_shadow_auditor_enabled = app_state.cfg.safety.shadow_auditor.enabled as u8;
-        m.safety_require_bivariate_cg = app_state.cfg.safety.require_bivariate_cg as u8;
+        m.safety_shadow_auditor_enabled = u8::from(app_state.cfg.safety.shadow_auditor.enabled);
+        m.safety_require_bivariate_cg = u8::from(app_state.cfg.safety.require_bivariate_cg);
     }
 
     {
@@ -233,49 +270,43 @@ async fn main() {
         use h2ai_config::ConstraintWikiConfig;
         use h2ai_knowledge::factory::KnowledgeProviderFactory;
         use h2ai_knowledge::provider::PassthroughProvider;
-        match &app_state.cfg.knowledge {
-            Some(k_cfg) => {
-                tracing::info!(target: "h2ai.startup", "building knowledge provider (Bm25Wiki)");
-                KnowledgeProviderFactory::build_provider(k_cfg).await
-            }
-            None => {
-                // When [knowledge] is absent, check if [constraint_wiki] corpus has a wiki/
-                // subdirectory. If so, build a Bm25WikiProvider from it so the thinking loop
-                // can surface domain articles during brainstorm iterations.
-                let constraint_wiki_path = if let ConstraintWikiConfig::Fs { corpus_path, .. } =
-                    &app_state.cfg.constraint_wiki
-                {
-                    let wiki_sub = std::path::Path::new(corpus_path).join("wiki");
-                    if wiki_sub.exists() {
-                        Some(corpus_path.clone())
-                    } else {
-                        None
-                    }
+        if let Some(k_cfg) = &app_state.cfg.knowledge {
+            tracing::info!(target: "h2ai.startup", "building knowledge provider (Bm25Wiki)");
+            KnowledgeProviderFactory::build_provider(k_cfg).await
+        } else {
+            // When [knowledge] is absent, check if [constraint_wiki] corpus has a wiki/
+            // subdirectory. If so, build a Bm25WikiProvider from it so the thinking loop
+            // can surface domain articles during brainstorm iterations.
+            let constraint_wiki_path = if let ConstraintWikiConfig::Fs { corpus_path, .. } =
+                &app_state.cfg.constraint_wiki
+            {
+                let wiki_sub = std::path::Path::new(corpus_path).join("wiki");
+                if wiki_sub.exists() {
+                    Some(corpus_path.clone())
                 } else {
                     None
-                };
-                match constraint_wiki_path {
-                    Some(corpus_path) => {
-                        tracing::info!(
-                            target: "h2ai.startup",
-                            corpus_path = %corpus_path,
-                            "building knowledge provider from constraint wiki (no [knowledge] config)"
-                        );
-                        KnowledgeProviderFactory::build_from_constraint_corpus(
-                            std::path::Path::new(&corpus_path),
-                        )
-                        .await
-                    }
-                    None => {
-                        tracing::info!(
-                            target: "h2ai.startup",
-                            "knowledge provider: passthrough (no [knowledge] config, no wiki dir)"
-                        );
-                        Arc::new(PassthroughProvider::new(
-                            (*app_state.constraint_resolver).clone(),
-                        ))
-                    }
                 }
+            } else {
+                None
+            };
+            if let Some(corpus_path) = constraint_wiki_path {
+                tracing::info!(
+                    target: "h2ai.startup",
+                    corpus_path = %corpus_path,
+                    "building knowledge provider from constraint wiki (no [knowledge] config)"
+                );
+                KnowledgeProviderFactory::build_from_constraint_corpus(std::path::Path::new(
+                    &corpus_path,
+                ))
+                .await
+            } else {
+                tracing::info!(
+                    target: "h2ai.startup",
+                    "knowledge provider: passthrough (no [knowledge] config, no wiki dir)"
+                );
+                Arc::new(PassthroughProvider::new(
+                    (*app_state.constraint_resolver).clone(),
+                ))
             }
         }
     };
@@ -286,7 +317,13 @@ async fn main() {
 
     // Restore promoted shadow-audit domains persisted before last restart.
     {
-        match app_state.nats.get_shadow_promoted_domains().await {
+        match app_state
+            .nats
+            .as_ref()
+            .expect("NATS required in production")
+            .get_shadow_promoted_domains()
+            .await
+        {
             Ok(domains) if !domains.is_empty() => {
                 *app_state.promoted_audit_domains.write().await = domains;
                 tracing::info!(target: "h2ai.shadow_auditor", "restored promoted domains from NATS KV");
@@ -358,7 +395,17 @@ async fn main() {
     // rather than calling the in-process LLM adapter.
     if app_state.cfg.nats_dispatch_enabled {
         let ttl = Duration::from_secs(app_state.cfg.nats_agent_ttl_secs);
-        match NatsAgentProvider::new(app_state.nats.client.clone(), ttl).await {
+        match NatsAgentProvider::new(
+            app_state
+                .nats
+                .as_ref()
+                .expect("NATS required in production")
+                .client
+                .clone(),
+            ttl,
+        )
+        .await
+        {
             Ok(provider) => {
                 tracing::info!(target: "h2ai.startup", ttl = ?ttl, "NATS agent dispatch enabled");
                 app_state = app_state.with_agent_provider(Arc::new(provider));
@@ -377,9 +424,13 @@ async fn main() {
     {
         let default_oracle_ts =
             app_state.tenant_state(&h2ai_types::identity::TenantId::default_tenant());
+        let nats_ref = app_state
+            .nats
+            .as_ref()
+            .expect("NATS required in production");
         let accumulator = crate::oracle::OracleAccumulator {
-            nats_raw: app_state.nats.client.clone(),
-            nats_state: app_state.nats.clone(),
+            nats_raw: nats_ref.client.clone(),
+            nats_state: nats_ref.clone(),
             bandit: default_oracle_ts.bandit_state.clone(),
             metrics: app_state.metrics.clone(),
             oracle_window_size: app_state.cfg.oracle_window_size,
@@ -394,7 +445,14 @@ async fn main() {
     // Spawn oracle worker — subscribes to h2ai.oracle.pending, runs tests via
     // ShellExecutor, and publishes OracleResultEvent to h2ai.oracle.results.
     {
-        let oracle_worker = crate::oracle_worker::OracleWorker::new(app_state.nats.client.clone());
+        let oracle_worker = crate::oracle_worker::OracleWorker::new(
+            app_state
+                .nats
+                .as_ref()
+                .expect("NATS required in production")
+                .client
+                .clone(),
+        );
         tokio::spawn(oracle_worker.run());
     }
 

@@ -159,17 +159,17 @@ pub fn prune_by_orthogonality(
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)
-            .unwrap_or(n - 1);
+            .map_or(n - 1, |(i, _)| i);
 
         slots.remove(drop_idx);
     }
     slots
 }
 
-/// Compute `n_eff_cosine` for a set of `ExplorerSlotConfig` role_frames.
+/// Compute `n_eff_cosine` for a set of `ExplorerSlotConfig` `role_frames`.
 ///
 /// Returns 1.0 when fewer than 2 slots or no embedding model is available.
+#[must_use]
 pub fn compute_role_diversity(
     slots: &[ExplorerSlotConfig],
     model: Option<&dyn EmbeddingModel>,
@@ -189,6 +189,7 @@ pub fn compute_role_diversity(
 /// Prunes to `n_max` by truncating alphabetically-sorted domain list.
 /// Returns a single default slot when the corpus is empty or all constraints
 /// have no domain tags.
+#[must_use]
 pub fn corpus_fallback(
     corpus: &[ConstraintDoc],
     _pareto_weights: &ParetoWeights,
@@ -325,11 +326,11 @@ fn default_slot() -> ExplorerSlotConfig {
             .into(),
         constraint_domains: vec![],
         search_enabled: false,
-        agent_role: Default::default(),
+        agent_role: AgentRole::default(),
     }
 }
 
-/// Extract the rubric text from a predicate tree (LlmJudge rubrics only).
+/// Extract the rubric text from a predicate tree (`LlmJudge` rubrics only).
 fn extract_rubric(pred: &ConstraintPredicate) -> String {
     match pred {
         ConstraintPredicate::LlmJudge { rubric } => rubric.clone(),
@@ -375,7 +376,7 @@ fn step1_analyze_task(
     let context_block = if thinking_context.is_empty() {
         String::new()
     } else {
-        format!("PRIOR THINKING CONTEXT:\n{}\n\n", thinking_context)
+        format!("PRIOR THINKING CONTEXT:\n{thinking_context}\n\n")
     };
     DECOMPOSITION_STEP1_TASK.render(&[
         ("thinking_context", &context_block),
@@ -389,11 +390,15 @@ fn step1_analyze_task(
 /// Each domain gets exactly one role; an integration slot is appended.
 /// Passing domain names explicitly prevents the LLM from over-expanding one domain.
 fn step2_design_roles_task(step1_analysis: &str, constraint_domains: &[String]) -> String {
-    let domain_assignments: String = constraint_domains
-        .iter()
-        .enumerate()
-        .map(|(i, d)| format!("  Role {}: covers the \"{}\" domain.\n", i + 1, d))
-        .collect();
+    let domain_assignments: String =
+        constraint_domains
+            .iter()
+            .enumerate()
+            .fold(String::new(), |mut acc, (i, d)| {
+                use std::fmt::Write as _;
+                writeln!(acc, "  Role {}: covers the \"{}\" domain.", i + 1, d).unwrap();
+                acc
+            });
     let integration_idx = (constraint_domains.len() + 1).to_string();
     let n_total = integration_idx.clone();
     DECOMPOSITION_STEP2_TASK.render(&[
@@ -413,10 +418,7 @@ fn step3_assemble_json_task(step2_roles: &str, n_max: usize, corpus_domains: &[S
     let domains_str = if corpus_domains.is_empty() {
         "[] — no corpus domains defined, always use empty array".to_string()
     } else {
-        let quoted: Vec<String> = corpus_domains
-            .iter()
-            .map(|d| format!("\"{}\"", d))
-            .collect();
+        let quoted: Vec<String> = corpus_domains.iter().map(|d| format!("\"{d}\"")).collect();
         format!("[{}]", quoted.join(", "))
     };
     DECOMPOSITION_STEP3_TASK.render(&[
@@ -426,7 +428,7 @@ fn step3_assemble_json_task(step2_roles: &str, n_max: usize, corpus_domains: &[S
     ])
 }
 
-/// Run one adapter call, returning the output text or a DecompositionError.
+/// Run one adapter call, returning the output text or a `DecompositionError`.
 async fn call_step(
     adapter: &dyn IComputeAdapter,
     system: &str,

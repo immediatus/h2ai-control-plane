@@ -17,31 +17,23 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
         ConstraintPredicate::RegexMatch {
             pattern,
             must_match,
-        } => match regex::Regex::new(pattern) {
-            Ok(re) => {
-                let matched = re.is_match(output);
-                if matched == *must_match {
-                    1.0
-                } else {
-                    0.0
-                }
+        } => regex::Regex::new(pattern).map_or(0.0, |re| {
+            if re.is_match(output) == *must_match {
+                1.0
+            } else {
+                0.0
             }
-            Err(_) => 0.0,
-        },
+        }),
         ConstraintPredicate::NumericThreshold {
             field_pattern,
             op,
             value,
         } => eval_numeric(field_pattern, op, *value, output),
-        ConstraintPredicate::LlmJudge { .. } => {
-            // Must be evaluated via async path; sync path is a pass-through.
-            1.0
-        }
-        ConstraintPredicate::SemanticPresence { .. }
+        ConstraintPredicate::LlmJudge { .. }
+        | ConstraintPredicate::SemanticPresence { .. }
         | ConstraintPredicate::SemanticOrdering { .. }
         | ConstraintPredicate::SemanticExclusion { .. } => {
-            // Async-only binary predicates. Returning 1.0 causes the Composite And engine
-            // to place them in the deferred list alongside LlmJudge.
+            // Async-only predicates; sync path returns 1.0 (pass-through / deferred).
             1.0
         }
         ConstraintPredicate::OracleExecution { .. } => {
@@ -50,20 +42,16 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
             0.0
         }
         ConstraintPredicate::JsonSchema { schema } => {
-            let instance = match serde_json::from_str::<serde_json::Value>(output) {
-                Ok(v) => v,
-                Err(_) => return 0.0,
+            let Ok(instance) = serde_json::from_str::<serde_json::Value>(output) else {
+                return 0.0;
             };
-            match jsonschema::validator_for(schema) {
-                Ok(validator) => {
-                    if validator.is_valid(&instance) {
-                        1.0
-                    } else {
-                        0.0
-                    }
+            jsonschema::validator_for(schema).map_or(0.0, |validator| {
+                if validator.is_valid(&instance) {
+                    1.0
+                } else {
+                    0.0
                 }
-                Err(_) => 0.0,
-            }
+            })
         }
         ConstraintPredicate::LengthRange {
             min_chars,
@@ -80,8 +68,8 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
         ConstraintPredicate::Composite { op, children } => {
             let scores: Vec<f64> = children.iter().map(|c| eval_sync(c, output)).collect();
             match op {
-                CompositeOp::And => scores.iter().cloned().fold(1.0_f64, f64::min),
-                CompositeOp::Or => scores.iter().cloned().fold(0.0_f64, f64::max),
+                CompositeOp::And => scores.iter().copied().fold(1.0_f64, f64::min),
+                CompositeOp::Or => scores.iter().copied().fold(0.0_f64, f64::max),
                 CompositeOp::Not => {
                     let child_score = scores.first().copied().unwrap_or(0.0);
                     1.0 - child_score
@@ -91,6 +79,7 @@ pub fn eval_sync(pred: &ConstraintPredicate, output: &str) -> f64 {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn eval_vocabulary(mode: &VocabularyMode, terms: &[String], lower_output: &str) -> f64 {
     if terms.is_empty() {
         return 1.0;

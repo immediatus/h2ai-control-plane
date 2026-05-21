@@ -1,3 +1,4 @@
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 use async_nats::jetstream::{self, kv, stream};
 use async_nats::Client;
 use h2ai_config::StateConfig;
@@ -43,7 +44,7 @@ pub struct NatsClient {
     pub client: Client,
     jetstream: jetstream::Context,
     state_cfg: StateConfig,
-    /// LRU cache of reconstructed checkpoints, keyed by task_id string.
+    /// LRU cache of reconstructed checkpoints, keyed by `task_id` string.
     delta_cache: Arc<RwLock<LruCache<String, CachedCheckpoint>>>,
 }
 
@@ -64,8 +65,9 @@ impl NatsClient {
         })
     }
 
-    /// Create all required JetStream streams and KV buckets.
-    /// Safe to call multiple times — uses get_or_create semantics.
+    /// Create all required `JetStream` streams and KV buckets.
+    /// Safe to call multiple times — uses `get_or_create` semantics.
+    #[allow(clippy::too_many_lines)]
     pub async fn ensure_infrastructure(&self) -> Result<(), NatsError> {
         // Stream 1: all task orchestration events (durable, file-backed)
         self.jetstream
@@ -170,7 +172,7 @@ impl NatsClient {
                 .to_owned(),
             history: 1,
             storage: stream::StorageType::File,
-            max_age: std::time::Duration::from_secs(86400), // 24h TTL
+            max_age: std::time::Duration::from_hours(24), // 24h TTL
             ..Default::default()
         })
         .await?;
@@ -192,7 +194,7 @@ impl NatsClient {
             description: "HITL approval records awaiting human decision".to_owned(),
             history: 1,
             storage: stream::StorageType::File,
-            max_age: std::time::Duration::from_secs(3600), // 1h TTL — longer than max review timeout
+            max_age: std::time::Duration::from_hours(1), // 1h TTL — longer than max review timeout
             ..Default::default()
         })
         .await?;
@@ -231,10 +233,13 @@ impl NatsClient {
         })
         .await?;
 
+        // Stream 4: HITL resume signals (durable, per-task pull consumers)
+        self.provision_signals_stream().await?;
+
         Ok(())
     }
 
-    /// Publish a typed H2AIEvent to the task's JetStream subject.
+    /// Publish a typed `H2AIEvent` to the task's `JetStream` subject.
     pub async fn publish_event(
         &self,
         task_id: &TaskId,
@@ -244,7 +249,7 @@ impl NatsClient {
         self.publish_to(&subject, event).await
     }
 
-    /// Publish a typed H2AIEvent to an arbitrary subject.
+    /// Publish a typed `H2AIEvent` to an arbitrary subject.
     pub async fn publish_to(&self, subject: &str, event: &H2AIEvent) -> Result<(), NatsError> {
         let payload = serde_json::to_vec(event).map_err(|e| NatsError::Serialize(e.to_string()))?;
         self.jetstream
@@ -254,7 +259,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Like `publish_event` but awaits the `PubAck` and returns the JetStream sequence number.
+    /// Like `publish_event` but awaits the `PubAck` and returns the `JetStream` sequence number.
     /// Use when the caller needs the sequence for snapshot tracking.
     pub async fn publish_event_seq(
         &self,
@@ -344,7 +349,7 @@ impl NatsClient {
         }
     }
 
-    /// Persist a CalibrationRecord for an adapter profile.
+    /// Persist a `CalibrationRecord` for an adapter profile.
     ///
     /// Key: `adapter_profile` field of the record.
     pub async fn put_calibration_record(
@@ -364,7 +369,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Retrieve a CalibrationRecord for an adapter profile, or None if absent.
+    /// Retrieve a `CalibrationRecord` for an adapter profile, or None if absent.
     pub async fn get_calibration_record(
         &self,
         adapter_profile: &str,
@@ -385,7 +390,7 @@ impl NatsClient {
         }
     }
 
-    /// Persist AuditorHealth for an adapter profile.
+    /// Persist `AuditorHealth` for an adapter profile.
     pub async fn put_auditor_health(
         &self,
         adapter_profile: &str,
@@ -404,7 +409,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Retrieve AuditorHealth for an adapter profile, or None if absent.
+    /// Retrieve `AuditorHealth` for an adapter profile, or None if absent.
     pub async fn get_auditor_health(
         &self,
         adapter_profile: &str,
@@ -425,7 +430,7 @@ impl NatsClient {
         }
     }
 
-    /// Attempt to acquire a probe lease for an adapter profile (HalfOpen CAS).
+    /// Attempt to acquire a probe lease for an adapter profile (`HalfOpen` CAS).
     ///
     /// Uses NATS KV `create` (atomic create-if-not-exists): only one caller wins per
     /// `ttl_secs` window. Returns `true` if this caller won the lease, `false` if another
@@ -556,7 +561,7 @@ impl NatsClient {
         }
     }
 
-    /// Persist the TaoMultiplierEstimator EMA state so it survives process restarts.
+    /// Persist the `TaoMultiplierEstimator` EMA state so it survives process restarts.
     pub async fn put_tao_estimator_state(
         &self,
         tenant_id: &TenantId,
@@ -582,7 +587,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Retrieve the persisted TaoMultiplierEstimator EMA state, or `None` if absent.
+    /// Retrieve the persisted `TaoMultiplierEstimator` EMA state, or `None` if absent.
     pub async fn get_tao_estimator_state(
         &self,
         tenant_id: &TenantId,
@@ -723,6 +728,7 @@ impl NatsClient {
             diversity_threshold: cfg.diversity_threshold,
             shadow_auditor_enabled: cfg.shadow_auditor.enabled,
             require_bivariate_cg: cfg.require_bivariate_cg,
+            #[allow(clippy::cast_possible_truncation)]
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -780,7 +786,7 @@ impl NatsClient {
             .map_err(|e| NatsError::StreamError(e.to_string()))?;
         let mapped = messages.map(|msg| {
             let msg = msg.map_err(|e| NatsError::StreamError(e.to_string()))?;
-            let seq = msg.info().map(|i| i.stream_sequence).unwrap_or(0);
+            let seq = msg.info().map_or(0, |i| i.stream_sequence);
             let event: H2AIEvent = serde_json::from_slice(&msg.payload)
                 .map_err(|e| NatsError::Serialize(e.to_string()))?;
             Ok((seq, event))
@@ -788,8 +794,8 @@ impl NatsClient {
         Ok(Box::pin(mapped))
     }
 
-    /// Publish a TaskPayload to the ephemeral task subject for an edge agent.
-    /// Subject: h2ai.tasks.ephemeral.{task_id}  (core NATS, not JetStream)
+    /// Publish a `TaskPayload` to the ephemeral task subject for an edge agent.
+    /// Subject: `h2ai.tasks.ephemeral.{task_id`}  (core NATS, not `JetStream`)
     pub async fn publish_task_payload(
         &self,
         payload: &h2ai_types::agent::TaskPayload,
@@ -803,10 +809,10 @@ impl NatsClient {
             .map_err(|e| NatsError::PublishError(e.to_string()))
     }
 
-    /// Subscribe to H2AI_RESULTS JetStream and return the first TaskResult
-    /// for the given task_id within the given timeout.
+    /// Subscribe to `H2AI_RESULTS` `JetStream` and return the first `TaskResult`
+    /// for the given `task_id` within the given timeout.
     ///
-    /// IMPORTANT: Call this BEFORE publish_task_payload to avoid the race
+    /// IMPORTANT: Call this BEFORE `publish_task_payload` to avoid the race
     /// where the result message arrives before the consumer is created.
     pub async fn await_task_result_once(
         &self,
@@ -862,7 +868,7 @@ impl NatsClient {
 
     // ── prompt variants / OPRO state ────────────────────────────────────────
 
-    /// Store a PromptVariant at key `{adapter_name}/{prompt_key}/{variant_id}`.
+    /// Store a `PromptVariant` at key `{adapter_name}/{prompt_key}/{variant_id}`.
     pub async fn put_prompt_variant(&self, variant: &PromptVariant) -> Result<(), NatsError> {
         let kv = self
             .jetstream
@@ -880,7 +886,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Fetch a PromptVariant by adapter_name, prompt_key, variant_id.
+    /// Fetch a `PromptVariant` by `adapter_name`, `prompt_key`, `variant_id`.
     /// Returns `None` if the key does not exist.
     pub async fn get_prompt_variant(
         &self,
@@ -893,7 +899,7 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.prompt_variants_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/{}/{}", adapter_name, prompt_key, variant_id);
+        let key = format!("{adapter_name}/{prompt_key}/{variant_id}");
         match kv
             .get(&key)
             .await
@@ -908,7 +914,7 @@ impl NatsClient {
         }
     }
 
-    /// Get the active variant ID pointer for an adapter+prompt_key.
+    /// Get the active variant ID pointer for an `adapter+prompt_key`.
     /// Key: `{adapter_name}/{prompt_key}/_active`.
     pub async fn get_active_variant_ptr(
         &self,
@@ -920,18 +926,15 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.prompt_variants_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/{}/_active", adapter_name, prompt_key);
-        match kv
+        let key = format!("{adapter_name}/{prompt_key}/_active");
+        Ok(kv
             .get(&key)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?
-        {
-            Some(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
-            None => Ok(None),
-        }
+            .map(|bytes| String::from_utf8_lossy(&bytes).to_string()))
     }
 
-    /// Set the active variant ID pointer for an adapter+prompt_key.
+    /// Set the active variant ID pointer for an `adapter+prompt_key`.
     /// Key: `{adapter_name}/{prompt_key}/_active`.
     pub async fn set_active_variant_ptr(
         &self,
@@ -944,7 +947,7 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.prompt_variants_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/{}/_active", adapter_name, prompt_key);
+        let key = format!("{adapter_name}/{prompt_key}/_active");
         kv.put(&key, variant_id.as_bytes().to_vec().into())
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
@@ -962,7 +965,7 @@ impl NatsClient {
             .get_key_value(&self.state_cfg.prompt_variants_bucket)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/_opro_state", adapter_name);
+        let key = format!("{adapter_name}/_opro_state");
         match kv
             .get(&key)
             .await
@@ -1066,7 +1069,7 @@ impl NatsClient {
         Ok(revision)
     }
 
-    /// Load and decompress a checkpoint by task_id. Returns `None` if not found.
+    /// Load and decompress a checkpoint by `task_id`. Returns `None` if not found.
     pub async fn get_task_checkpoint(
         &self,
         task_id: &str,
@@ -1145,7 +1148,7 @@ impl NatsClient {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(bucket = %self.state_cfg.checkpoint_payloads_bucket, "failed to open checkpoint payloads object store: {e}")
+                        tracing::warn!(bucket = %self.state_cfg.checkpoint_payloads_bucket, "failed to open checkpoint payloads object store: {e}");
                     }
                 }
             }
@@ -1164,13 +1167,13 @@ impl NatsClient {
 
     // ── JetStream signal delivery ────────────────────────────────────────────────
 
-    /// Provision the H2AI_SIGNALS JetStream stream (idempotent).
+    /// Provision the `H2AI_SIGNALS` `JetStream` stream (idempotent).
     pub async fn provision_signals_stream(&self) -> Result<(), NatsError> {
         let cfg = stream::Config {
             name: self.state_cfg.signals_stream.clone(),
             subjects: vec![format!("{}.>", self.state_cfg.signals_subject_prefix)],
             retention: stream::RetentionPolicy::Limits,
-            max_age: std::time::Duration::from_secs(86_400),
+            max_age: std::time::Duration::from_hours(24),
             storage: stream::StorageType::File,
             num_replicas: 1,
             ..Default::default()
@@ -1253,17 +1256,16 @@ impl NatsClient {
             ack_policy: AckPolicy::Explicit,
             ..Default::default()
         };
-        let consumer = match stream.create_consumer(pull_cfg.clone()).await {
-            Ok(c) => c,
-            Err(_) => {
-                // A stale push consumer with the same durable name may exist from a
-                // previous run.  Delete it and retry once.
-                let _ = stream.delete_consumer(&consumer_name).await;
-                stream
-                    .create_consumer(pull_cfg)
-                    .await
-                    .map_err(|e| NatsError::KvError(e.to_string()))?
-            }
+        let consumer = if let Ok(c) = stream.create_consumer(pull_cfg.clone()).await {
+            c
+        } else {
+            // A stale push consumer with the same durable name may exist from a
+            // previous run.  Delete it and retry once.
+            let _ = stream.delete_consumer(&consumer_name).await;
+            stream
+                .create_consumer(pull_cfg)
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?
         };
 
         let messages = consumer
@@ -1304,7 +1306,7 @@ impl NatsClient {
 
     // ── delta checkpoint write/read path ─────────────────────────────────────
 
-    /// Update the `{task_id}/seq/latest` pointer in the task_checkpoints bucket using
+    /// Update the `{task_id}/seq/latest` pointer in the `task_checkpoints` bucket using
     /// optimistic CAS (up to 3 attempts). Value is the seq number as little-endian u32 bytes.
     async fn update_latest_seq(&self, task_id: &str, seq: u32) -> Result<(), NatsError> {
         let kv = self
@@ -1316,30 +1318,26 @@ impl NatsClient {
         let seq_bytes: Vec<u8> = seq.to_le_bytes().to_vec();
 
         for attempt in 0..3u32 {
-            match kv
+            if let Some(entry) = kv
                 .entry(&key)
                 .await
                 .map_err(|e| NatsError::KvError(e.to_string()))?
             {
-                Some(entry) => {
-                    let revision = entry.revision;
-                    match kv.update(&key, seq_bytes.clone().into(), revision).await {
-                        Ok(_) => return Ok(()),
-                        Err(_) if attempt < 2 => continue,
-                        Err(e) => {
-                            return Err(NatsError::KvError(format!(
-                                "update_latest_seq CAS failed after 3 attempts: {e}"
-                            )))
-                        }
+                let revision = entry.revision;
+                match kv.update(&key, seq_bytes.clone().into(), revision).await {
+                    Ok(_) => return Ok(()),
+                    Err(_) if attempt < 2 => continue,
+                    Err(e) => {
+                        return Err(NatsError::KvError(format!(
+                            "update_latest_seq CAS failed after 3 attempts: {e}"
+                        )))
                     }
                 }
-                None => {
-                    kv.put(&key, seq_bytes.clone().into())
-                        .await
-                        .map_err(|e| NatsError::KvError(e.to_string()))?;
-                    return Ok(());
-                }
             }
+            kv.put(&key, seq_bytes.clone().into())
+                .await
+                .map_err(|e| NatsError::KvError(e.to_string()))?;
+            return Ok(());
         }
         Err(NatsError::KvError(
             "update_latest_seq: max CAS retries exceeded".into(),
@@ -1492,13 +1490,12 @@ impl NatsClient {
         kv: &async_nats::jetstream::kv::Store,
     ) -> Result<Option<TaskCheckpoint>, NatsError> {
         let key = format!("{task_id}/seq/{seq:08}");
-        let bytes = match kv
+        let Some(bytes) = kv
             .get(&key)
             .await
             .map_err(|e| NatsError::KvError(e.to_string()))?
-        {
-            Some(b) => b,
-            None => return Ok(None),
+        else {
+            return Ok(None);
         };
         let entry: TaskCheckpointEntry =
             serde_json::from_slice(&bytes).map_err(|e| NatsError::Serialize(e.to_string()))?;
@@ -1559,7 +1556,7 @@ impl NatsClient {
     // ── per-tenant reasoning memory ─────────────────────────────────────────
 
     /// Create per-tenant reasoning checkpoint and meta-state KV buckets if they
-    /// do not already exist. Safe to call multiple times (get_or_create semantics).
+    /// do not already exist. Safe to call multiple times (`get_or_create` semantics).
     pub async fn ensure_tenant_reasoning_buckets(
         &self,
         tenant_id: &TenantId,
@@ -1574,7 +1571,7 @@ impl NatsClient {
             description: format!("Reasoning checkpoints for tenant {tenant_id}"),
             history: 1,
             storage: stream::StorageType::File,
-            max_age: std::time::Duration::from_secs(7 * 86_400),
+            max_age: std::time::Duration::from_hours(168),
             ..Default::default()
         })
         .await?;
@@ -1592,7 +1589,7 @@ impl NatsClient {
     }
 
     /// Write (or overwrite) a `TaskReasoningCheckpoint` to the tenant-scoped bucket.
-    /// Key: task_id string. Compressed with zstd level 3.
+    /// Key: `task_id` string. Compressed with zstd level 3.
     pub async fn put_reasoning_checkpoint(
         &self,
         checkpoint: &TaskReasoningCheckpoint,
@@ -1614,7 +1611,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Load a `TaskReasoningCheckpoint` by task_id. Returns `None` if not found.
+    /// Load a `TaskReasoningCheckpoint` by `task_id`. Returns `None` if not found.
     pub async fn get_reasoning_checkpoint(
         &self,
         task_id: &TaskId,
@@ -1641,7 +1638,7 @@ impl NatsClient {
     }
 
     /// Write an immutable `TaskMetaState` projection to the tenant-scoped meta-state bucket.
-    /// Key: task_id string. Not compressed (small records, queried frequently).
+    /// Key: `task_id` string. Not compressed (small records, queried frequently).
     pub async fn put_task_meta_state(
         &self,
         meta: &TaskMetaState,
@@ -1660,7 +1657,7 @@ impl NatsClient {
         Ok(())
     }
 
-    /// Load a `TaskMetaState` by task_id. Returns `None` if not found.
+    /// Load a `TaskMetaState` by `task_id`. Returns `None` if not found.
     pub async fn get_task_meta_state(
         &self,
         task_id: &TaskId,
@@ -1715,7 +1712,7 @@ impl NatsClient {
                 Ok(Some(bytes)) => match serde_json::from_slice::<TaskMetaState>(&bytes) {
                     Ok(meta) => result.push(meta),
                     Err(e) => {
-                        tracing::warn!("list_task_meta_states: deserialize failed for {key}: {e}")
+                        tracing::warn!("list_task_meta_states: deserialize failed for {key}: {e}");
                     }
                 },
                 Ok(None) => {}
@@ -1791,7 +1788,8 @@ impl NatsClient {
 
 // ── tenant-scoped bucket helpers ────────────────────────────────────────────
 
-fn tenant_bucket_name(prefix: &str, tenant_id: &TenantId) -> String {
+#[must_use]
+pub fn tenant_bucket_name(prefix: &str, tenant_id: &TenantId) -> String {
     format!("{}_{}", prefix, tenant_id.bucket_safe())
 }
 
@@ -1801,7 +1799,8 @@ fn tenant_bucket_name(prefix: &str, tenant_id: &TenantId) -> String {
 ///
 /// Sequence 0 is always a base. Thereafter, every `base_interval`-th checkpoint
 /// is stored as a base so that patch chains never grow unbounded.
-pub fn should_store_base(seq: u32, base_interval: u32) -> bool {
+#[must_use]
+pub const fn should_store_base(seq: u32, base_interval: u32) -> bool {
     seq == 0 || seq.is_multiple_of(base_interval)
 }
 
@@ -1837,376 +1836,157 @@ pub fn apply_patches(
     serde_json::from_value(val).map_err(|e| NatsError::Serialize(e.to_string()))
 }
 
-#[cfg(test)]
-mod wire_protocol_tests {
-    // These tests require a running NATS server.
-    // Run with: H2AI_INTEGRATION_TEST=1 cargo test -p h2ai-state -- --ignored
-    use super::*;
-    use h2ai_types::agent::{AgentDescriptor, ContextPayload, TaskPayload, TaskResult};
-    use h2ai_types::identity::{AgentId, TaskId};
-    use h2ai_types::sizing::TauValue;
-    use std::time::Duration;
+// ── Trait impls delegating to existing NatsClient methods ───────────────────
 
-    #[tokio::test]
-    #[ignore]
-    async fn publish_and_receive_task_payload() {
-        let nats_url = h2ai_config::H2AIConfig::default().nats_url;
-        let nats = match NatsClient::connect(&nats_url).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
-                return;
-            }
-        };
-        nats.ensure_infrastructure().await.expect("infra");
+#[async_trait::async_trait]
+impl crate::backend::EventPublisher for NatsClient {
+    async fn publish_event(&self, task_id: &TaskId, event: &H2AIEvent) -> Result<(), NatsError> {
+        self.publish_event(task_id, event).await
+    }
+    async fn publish_to(&self, subject: &str, event: &H2AIEvent) -> Result<(), NatsError> {
+        self.publish_to(subject, event).await
+    }
+    async fn publish_event_seq(
+        &self,
+        task_id: &TaskId,
+        event: &H2AIEvent,
+    ) -> Result<u64, NatsError> {
+        self.publish_event_seq(task_id, event).await
+    }
+}
 
-        let task_id = TaskId::new();
-        let agent_id = AgentId::from("test-agent");
+#[async_trait::async_trait]
+impl crate::backend::SnapshotStore for NatsClient {
+    async fn put_snapshot(&self, snap: &TaskSnapshot) -> Result<(), NatsError> {
+        self.put_snapshot(snap).await
+    }
+    async fn get_snapshot(&self, task_id: &TaskId) -> Result<Option<TaskSnapshot>, NatsError> {
+        self.get_snapshot(task_id).await
+    }
+}
 
-        // Subscriber must be set up before publish
-        let subject = h2ai_nats::subjects::ephemeral_task_subject(&task_id);
-        let mut sub = nats.client.subscribe(subject.clone()).await.unwrap();
+#[async_trait::async_trait]
+impl crate::backend::CalibrationStore for NatsClient {
+    async fn put_calibration(&self, cal: &CalibrationCompletedEvent) -> Result<(), NatsError> {
+        self.put_calibration(cal).await
+    }
+    async fn get_calibration(&self) -> Result<Option<CalibrationCompletedEvent>, NatsError> {
+        self.get_calibration().await
+    }
+    async fn get_calibration_record(
+        &self,
+        adapter_profile: &str,
+    ) -> Result<Option<CalibrationRecord>, NatsError> {
+        self.get_calibration_record(adapter_profile).await
+    }
+    async fn put_calibration_record(&self, record: &CalibrationRecord) -> Result<(), NatsError> {
+        self.put_calibration_record(record).await
+    }
+}
 
-        let payload = TaskPayload {
-            task_id: task_id.clone(),
-            agent_id: agent_id.clone(),
-            agent: AgentDescriptor {
-                model: "mock".into(),
-                tools: vec![],
-                cost_tier: h2ai_types::agent::CostTier::Mid,
-            },
-            instructions: "test".into(),
-            context: ContextPayload::Inline("ctx".into()),
-            tau: TauValue::new(0.5).unwrap(),
-            max_tokens: 256,
-            wave_mode: h2ai_types::agent::WaveMode::Normal,
-        };
-        nats.publish_task_payload(&payload).await.expect("publish");
+#[async_trait::async_trait]
+impl crate::backend::SignalPublisher for NatsClient {
+    async fn publish_signal(
+        &self,
+        signal: &h2ai_types::signal::ResumeSignal,
+    ) -> Result<(), NatsError> {
+        self.publish_signal(signal).await
+    }
+}
 
-        use futures::StreamExt;
-        let msg = tokio::time::timeout(Duration::from_secs(2), sub.next())
+#[async_trait::async_trait]
+impl crate::backend::TailEvents for NatsClient {
+    async fn tail_task_events_boxed(
+        &self,
+        task_id: &TaskId,
+        from_seq: u64,
+    ) -> Result<futures::stream::BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError>
+    {
+        self.tail_task_events(task_id, from_seq)
             .await
-            .expect("timeout")
-            .expect("msg");
-        let decoded: TaskPayload = serde_json::from_slice(&msg.payload).unwrap();
-        assert_eq!(decoded.task_id, task_id);
-        assert_eq!(decoded.agent_id, agent_id);
+            .map(futures::StreamExt::boxed)
     }
+}
 
-    #[tokio::test]
-    #[ignore]
-    async fn await_task_result_round_trip() {
-        let nats_url = h2ai_config::H2AIConfig::default().nats_url;
-        let nats = match NatsClient::connect(&nats_url).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("NATS unavailable at {nats_url} — skipping: {e}");
-                return;
-            }
-        };
-        nats.ensure_infrastructure().await.expect("infra");
-
-        let task_id = TaskId::new();
-        let agent_id = AgentId::from("test-agent");
-
-        // Consumer MUST be set up before publish
-        let nats2 = NatsClient::connect(&nats_url).await.unwrap();
-        let tid = task_id.clone();
-        let waiter = tokio::spawn(async move {
-            nats2
-                .await_task_result_once(&tid, Duration::from_secs(5))
-                .await
-        });
-        // Small yield to let consumer set up
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Publish result as if an edge agent did it
-        let result = TaskResult {
-            task_id: task_id.clone(),
-            agent_id: agent_id.clone(),
-            output: "hello".into(),
-            token_cost: 10,
-            error: None,
-            tool_calls: vec![],
-        };
-        let js = async_nats::jetstream::new(nats.client.clone());
-        let result_subject = h2ai_nats::subjects::task_result_subject(&task_id);
-        js.publish(result_subject, serde_json::to_vec(&result).unwrap().into())
+#[async_trait::async_trait]
+impl crate::backend::OproStore for NatsClient {
+    async fn put_prompt_variant(&self, variant: &PromptVariant) -> Result<(), NatsError> {
+        self.put_prompt_variant(variant).await
+    }
+    async fn get_prompt_variant(
+        &self,
+        adapter_name: &str,
+        prompt_key: &str,
+        variant_id: &str,
+    ) -> Result<Option<PromptVariant>, NatsError> {
+        self.get_prompt_variant(adapter_name, prompt_key, variant_id)
             .await
-            .unwrap()
+    }
+    async fn get_active_variant_ptr(
+        &self,
+        adapter_name: &str,
+        prompt_key: &str,
+    ) -> Result<Option<String>, NatsError> {
+        self.get_active_variant_ptr(adapter_name, prompt_key).await
+    }
+    async fn set_active_variant_ptr(
+        &self,
+        adapter_name: &str,
+        prompt_key: &str,
+        variant_id: &str,
+    ) -> Result<(), NatsError> {
+        self.set_active_variant_ptr(adapter_name, prompt_key, variant_id)
             .await
-            .unwrap();
-
-        let received = waiter.await.unwrap().expect("result");
-        assert_eq!(received.output, "hello");
-        assert_eq!(received.task_id, task_id);
+    }
+    async fn get_adapter_opro_state(
+        &self,
+        adapter_name: &str,
+    ) -> Result<Option<AdapterOproState>, NatsError> {
+        self.get_adapter_opro_state(adapter_name).await
+    }
+    async fn put_adapter_opro_state(&self, state: &AdapterOproState) -> Result<(), NatsError> {
+        self.put_adapter_opro_state(state).await
     }
 }
 
-#[cfg(test)]
-mod delta_encoding_tests {
-    use super::*;
-    use h2ai_types::checkpoint::TaskCheckpoint;
-
-    fn minimal_checkpoint() -> TaskCheckpoint {
-        TaskCheckpoint {
-            task_id: "task-001".into(),
-            phase: "ParallelGeneration".into(),
-            node_id: "node-1".into(),
-            lease_seq: 1,
-            proposals: vec!["proposal A".into()],
-            auditor_survivors: vec![],
-            resolved_output: None,
-            manifest_json: "{}".into(),
-            object_store_ref: None,
-            created_at_ms: 1_000_000,
-            updated_at_ms: 1_000_000,
-            constraint_snapshot: None,
-            j_eff: None,
-        }
+#[async_trait::async_trait]
+impl crate::backend::EstimatorStore for NatsClient {
+    async fn get_tao_estimator_state(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<(f64, usize)>, NatsError> {
+        self.get_tao_estimator_state(tenant_id).await
     }
-
-    #[test]
-    fn should_store_base_seq_zero() {
-        assert!(should_store_base(0, 10));
+    async fn put_tao_estimator_state(
+        &self,
+        tenant_id: &TenantId,
+        ema: f64,
+        count: usize,
+    ) -> Result<(), NatsError> {
+        self.put_tao_estimator_state(tenant_id, ema, count).await
     }
-
-    #[test]
-    fn should_store_base_at_interval() {
-        assert!(should_store_base(10, 10));
-        assert!(should_store_base(20, 10));
-        assert!(should_store_base(100, 10));
+    async fn get_srani_state(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Option<(f64, usize)>, NatsError> {
+        self.get_srani_state(tenant_id).await
     }
-
-    #[test]
-    fn should_store_base_not_at_interval() {
-        assert!(!should_store_base(5, 10));
-        assert!(!should_store_base(1, 10));
-        assert!(!should_store_base(9, 10));
+    async fn put_srani_state(
+        &self,
+        tenant_id: &TenantId,
+        ema_cfi: f64,
+        count: usize,
+    ) -> Result<(), NatsError> {
+        self.put_srani_state(tenant_id, ema_cfi, count).await
     }
-
-    #[test]
-    fn generate_delta_no_change() {
-        let cp = minimal_checkpoint();
-        let patch = generate_delta(&cp, &cp).expect("generate_delta");
-        // Patch wraps Vec<PatchOperation> in field .0
-        assert_eq!(
-            patch.0.len(),
-            0,
-            "identical checkpoints should produce empty patch"
-        );
+    async fn get_bandit_state(&self, tenant_id: &TenantId) -> Result<Option<Vec<u8>>, NatsError> {
+        self.get_bandit_state(tenant_id).await
     }
-
-    #[test]
-    fn generate_delta_single_field_changed() {
-        let base = minimal_checkpoint();
-        let mut modified = base.clone();
-        modified.phase = "AuditorGate".into();
-
-        let patch = generate_delta(&base, &modified).expect("generate_delta");
-        assert_eq!(patch.0.len(), 1, "one field changed → one patch operation");
-
-        // The operation should be a Replace at /phase
-        let op = &patch.0[0];
-        let op_json = serde_json::to_value(op).unwrap();
-        assert_eq!(op_json["op"], "replace");
-        assert_eq!(op_json["path"], "/phase");
-        assert_eq!(op_json["value"], "AuditorGate");
-    }
-
-    #[test]
-    fn apply_patches_roundtrip() {
-        let base = minimal_checkpoint();
-        let mut modified = base.clone();
-        modified.phase = "Merging".into();
-        modified.resolved_output = Some("final answer".into());
-        modified.updated_at_ms = 2_000_000;
-
-        let patch = generate_delta(&base, &modified).expect("generate_delta");
-        let reconstructed = apply_patches(&base, &[patch]).expect("apply_patches");
-
-        assert_eq!(reconstructed.phase, "Merging");
-        assert_eq!(reconstructed.resolved_output, Some("final answer".into()));
-        assert_eq!(reconstructed.updated_at_ms, 2_000_000);
-        // Unchanged fields remain intact
-        assert_eq!(reconstructed.task_id, base.task_id);
-        assert_eq!(reconstructed.proposals, base.proposals);
-    }
-
-    #[test]
-    fn apply_patches_empty_patch() {
-        let base = minimal_checkpoint();
-        let empty_patch = json_patch::Patch(vec![]);
-        let result = apply_patches(&base, &[empty_patch]).expect("apply_patches");
-        assert_eq!(result, base);
-    }
-}
-
-#[cfg(test)]
-mod delta_cache_unit_tests {
-    use super::*;
-    use h2ai_types::checkpoint::TaskCheckpoint;
-    use lru::LruCache;
-    use std::num::NonZeroUsize;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-
-    fn make_checkpoint(task_id: &str) -> TaskCheckpoint {
-        TaskCheckpoint {
-            task_id: task_id.into(),
-            phase: "Merging".into(),
-            node_id: "node-1".into(),
-            lease_seq: 0,
-            proposals: vec!["prop".into()],
-            auditor_survivors: vec![],
-            resolved_output: None,
-            manifest_json: "{}".into(),
-            object_store_ref: None,
-            created_at_ms: 1000,
-            updated_at_ms: 1000,
-            constraint_snapshot: None,
-            j_eff: None,
-        }
-    }
-
-    /// Directly manipulate the LRU cache to verify the invalidation logic used by
-    /// `put_checkpoint_delta` (which calls `delta_cache.write().await.pop(task_id)`).
-    #[tokio::test]
-    async fn cache_invalidated_on_write() {
-        let cache: Arc<RwLock<LruCache<String, CachedCheckpoint>>> =
-            Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(10).unwrap())));
-
-        let cp = make_checkpoint("task-cache-test");
-
-        // Populate the cache
-        cache.write().await.put(
-            "task-cache-test".to_string(),
-            CachedCheckpoint {
-                checkpoint: cp.clone(),
-                seq: 5,
-                cached_at: std::time::Instant::now(),
-            },
-        );
-        assert!(
-            cache.write().await.get("task-cache-test").is_some(),
-            "cache should be populated after put"
-        );
-
-        // Simulate the invalidation done by put_checkpoint_delta
-        cache.write().await.pop("task-cache-test");
-        assert!(
-            cache.write().await.get("task-cache-test").is_none(),
-            "cache should be empty after pop (invalidation)"
-        );
-    }
-
-    /// Verify that an entry past TTL is treated as a miss.
-    #[tokio::test]
-    async fn cache_ttl_expired_entry_treated_as_miss() {
-        let cache: Arc<RwLock<LruCache<String, CachedCheckpoint>>> =
-            Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(10).unwrap())));
-        let cp = make_checkpoint("task-ttl-test");
-
-        // Insert with a cached_at in the past (1 hour ago → well past any TTL)
-        let past = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(3600))
-            .unwrap_or_else(std::time::Instant::now);
-        cache.write().await.put(
-            "task-ttl-test".to_string(),
-            CachedCheckpoint {
-                checkpoint: cp,
-                seq: 3,
-                cached_at: past,
-            },
-        );
-
-        // Simulate the TTL check from get_latest_checkpoint
-        let ttl = std::time::Duration::from_secs(60);
-        let expired = {
-            let mut guard = cache.write().await;
-            if let Some(cached) = guard.get("task-ttl-test") {
-                cached.cached_at.elapsed() >= ttl
-            } else {
-                false
-            }
-        };
-        assert!(
-            expired,
-            "entry older than TTL should be detected as expired"
-        );
-    }
-
-    /// LRU eviction respects capacity: inserting beyond capacity drops the LRU entry.
-    #[test]
-    fn lru_evicts_oldest_entry_at_capacity() {
-        let mut lru: LruCache<String, u32> = LruCache::new(NonZeroUsize::new(2).unwrap());
-        lru.put("a".to_string(), 1);
-        lru.put("b".to_string(), 2);
-        // Access "a" so "b" becomes the LRU
-        lru.get("a");
-        // Insert "c" → evicts "b"
-        lru.put("c".to_string(), 3);
-        assert!(lru.get("a").is_some(), "'a' should survive (recently used)");
-        assert!(lru.get("b").is_none(), "'b' should be evicted (LRU)");
-        assert!(
-            lru.get("c").is_some(),
-            "'c' should be present (just inserted)"
-        );
-    }
-}
-
-#[cfg(test)]
-mod tenant_key_tests {
-    use h2ai_types::identity::TenantId;
-
-    fn kv_key(tenant: &TenantId, suffix: &str) -> String {
-        format!("{}/{}", tenant.bucket_safe(), suffix)
-    }
-
-    #[test]
-    fn hyphen_sanitized_to_underscore() {
-        assert_eq!(
-            kv_key(&TenantId::from("acme-corp"), "srani"),
-            "acme_corp/srani"
-        );
-    }
-
-    #[test]
-    fn default_tenant_key() {
-        assert_eq!(
-            kv_key(&TenantId::default_tenant(), "bandit"),
-            "default/bandit"
-        );
-    }
-
-    #[test]
-    fn approval_key_includes_task_id() {
-        let tenant = TenantId::from("acme");
-        assert_eq!(kv_key(&tenant, "abc-123"), "acme/abc-123");
-    }
-}
-
-#[cfg(test)]
-mod reasoning_checkpoint_tests {
-    use super::*;
-    use h2ai_types::identity::TenantId;
-
-    #[test]
-    fn tenant_bucket_name_default() {
-        let name = tenant_bucket_name("H2AI_CHECKPOINT", &TenantId::default_tenant());
-        assert_eq!(name, "H2AI_CHECKPOINT_default");
-    }
-
-    #[test]
-    fn tenant_bucket_name_sanitizes_hyphens() {
-        let t = TenantId::from("acme-corp");
-        let name = tenant_bucket_name("H2AI_META", &t);
-        assert_eq!(name, "H2AI_META_acme_corp");
-    }
-
-    #[test]
-    fn tenant_bucket_name_conflict_default() {
-        let name = tenant_bucket_name("H2AI_CONFLICT", &TenantId::default_tenant());
-        assert_eq!(name, "H2AI_CONFLICT_default");
+    async fn put_bandit_state(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError> {
+        self.put_bandit_state(tenant_id, json_bytes).await
     }
 }

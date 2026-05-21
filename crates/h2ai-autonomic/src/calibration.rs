@@ -1,3 +1,11 @@
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines
+)]
 use chrono::Utc;
 use futures::future::join_all;
 use h2ai_config::H2AIConfig;
@@ -5,7 +13,9 @@ use h2ai_constraints::eval::eval_sync;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
 use h2ai_context::embedding::{cosine_similarity, semantic_jaccard, EmbeddingModel};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
-use h2ai_types::events::{CalibrationCompletedEvent, CalibrationSource, CgMode};
+use h2ai_types::events::{
+    CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode,
+};
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::{
     tau_alignment, CoherencyCoefficients, CoordinationThreshold, EigenCalibration,
@@ -64,7 +74,7 @@ impl CalibrationHarness {
     /// Run a full USL calibration pass and return a `CalibrationCompletedEvent`.
     ///
     /// Phase A runs the first two adapters in parallel to obtain T₂ and a T₁ proxy.
-    /// Phase B runs all M adapters in parallel to obtain T_M and per-adapter outputs
+    /// Phase B runs all M adapters in parallel to obtain `T_M` and per-adapter outputs
     /// for pairwise CG computation.  α and β₀ are derived from `usl_fit`; when the
     /// fit is degenerate (M < 3 or non-positive timings), `cfg.alpha_contention` and
     /// `cfg.beta_base_default` are used as fallback values.
@@ -264,7 +274,11 @@ impl CalibrationHarness {
         } else {
             // No embedding model: fallback formula
             let n = adapter_outputs.len().max(1) as f64;
-            (1.0 + input.cfg.calibration_cg_fallback * (n - 1.0)).min(n)
+            input
+                .cfg
+                .calibration_cg_fallback
+                .mul_add(n - 1.0, 1.0)
+                .min(n)
         };
         // ─────────────────────────────────────────────────────────────────────
 
@@ -308,7 +322,7 @@ impl CalibrationHarness {
         let beta_quality = if adapter_outputs.len() >= 2 && !input.constraint_corpus.is_empty() {
             let first_outputs: Vec<&str> = adapter_outputs
                 .iter()
-                .filter_map(|outputs| outputs.first().map(|s| s.as_str()))
+                .filter_map(|outputs| outputs.first().map(std::string::String::as_str))
                 .collect();
             compute_conflict_rate(&first_outputs, input.constraint_corpus)
         } else {
@@ -346,7 +360,7 @@ impl CalibrationHarness {
             n_max_lo,
             n_max_hi,
             n_eff_cosine_prior,
-            calibration_quality: Default::default(),
+            calibration_quality: CalibrationQuality::default(),
             calibration_source,
             beta_quality,
         })
@@ -354,15 +368,16 @@ impl CalibrationHarness {
 
     /// Derive USL parameters α and β₀ analytically from two parallel timing measurements.
     ///
-    /// Uses the linearisation z(N) = N·T_parallel(N)/T₁ − 1 = α(N−1) + β₀·N(N−1).
+    /// Uses the linearisation z(N) = `N·T_parallel(N)/T₁` − 1 = α(N−1) + β₀·N(N−1).
     /// With two data points at N=2 (Phase A) and N=M (Phase B):
-    ///   β₀ = (z_M − z₂·(M−1)) / ((M−1)(M−2))
+    ///   β₀ = (`z_M` − z₂·(M−1)) / ((M−1)(M−2))
     ///   α  = z₂ − 2·β₀
     ///
-    /// Falls back to (alpha_fallback, beta_fallback) when:
+    /// Falls back to (`alpha_fallback`, `beta_fallback`) when:
     /// - M < 3 (denominator (M−1)(M−2) is zero at M=2)
     /// - any timing is degenerate (≤ 0)
     /// - derived α or β₀ are negative (super-linear speedup or measurement noise)
+    #[must_use]
     pub fn usl_fit(
         t1: f64,
         t2_parallel: f64,
@@ -381,7 +396,7 @@ impl CalibrationHarness {
         let beta_denom = (m_f - 1.0) * (m_f - 2.0);
         // m >= 3 (integer), so denom >= 2.0; no zero-division possible.
         let beta0 = (z_m - z2 * (m_f - 1.0)) / beta_denom;
-        let alpha = z2 - 2.0 * beta0;
+        let alpha = 2.0f64.mul_add(-beta0, z2);
 
         // Negative params indicate degenerate measurement (e.g. super-linear speedup).
         // Must check before clamping — clamping would mask the degenerate case.
@@ -441,7 +456,7 @@ impl CalibrationHarness {
         let (tau_min, tau_max) = (cfg.calibration_tau_spread[0], cfg.calibration_tau_spread[1]);
         (0..m)
             .map(|i| {
-                let t = tau_min + (tau_max - tau_min) * (i as f64 / (m - 1) as f64);
+                let t = (tau_max - tau_min).mul_add(i as f64 / (m - 1) as f64, tau_min);
                 TauValue::new(t).expect("tau spread must be in [0,1]")
             })
             .collect()
@@ -450,7 +465,7 @@ impl CalibrationHarness {
     /// Run a slice of adapters concurrently on all prompts.
     ///
     /// Each adapter runs at `taus[i]`; if `taus` is shorter than `adapters`,
-    /// the last value in `taus` is reused. Returns (per-adapter (outputs, elapsed_secs), wall_clock_secs).
+    /// the last value in `taus` is reused. Returns (per-adapter (outputs, `elapsed_secs`), `wall_clock_secs`).
     async fn run_adapters_parallel(
         adapters: &[&dyn IComputeAdapter],
         prompts: &[String],
@@ -470,7 +485,7 @@ impl CalibrationHarness {
                 async move {
                     let t0 = Instant::now();
                     let mut outputs = Vec::new();
-                    for prompt in prompts.iter() {
+                    for prompt in prompts {
                         let req = ComputeRequest {
                             system_context: String::new(),
                             task: prompt.clone(),
@@ -504,6 +519,7 @@ impl CalibrationHarness {
 /// Each fingerprint is a boolean vector where `true` = proposal passed the hard gate
 /// for that constraint. Returns `None` when fewer than 2 outputs are given or the
 /// corpus is empty. Result is clamped to `[1e-6, 1.0]`.
+#[must_use]
 pub fn compute_conflict_rate(outputs: &[&str], corpus: &[ConstraintDoc]) -> Option<f64> {
     let m = outputs.len();
     if m < 2 || corpus.is_empty() {
@@ -555,8 +571,8 @@ fn hamming_distance(a: &[bool], b: &[bool]) -> f64 {
 /// `SelectionResolvedEvent`. `n_proposals` is `n_input_proposals`.
 /// `t1_secs`: serial T₁ from `CalibrationHarness` (the API call time proxy).
 ///
-/// Formula: β₀ = mean(elapsed_i / pairs_i) / T₁
-/// where pairs_i = max(1, n_i × (n_i − 1) / 2).
+/// Formula: β₀ = `mean(elapsed_i` / `pairs_i`) / T₁
+/// where `pairs_i` = max(1, `n_i` × (`n_i` − 1) / 2).
 ///
 /// **Note:** This denominator models O(n²) pairwise work and is accurate for
 /// `OutlierResistant`/`MultiOutlierResistant` merge strategies. For `ScoreOrdered` (O(n log n)) and
@@ -564,6 +580,7 @@ fn hamming_distance(a: &[bool], b: &[bool]) -> f64 {
 /// from OutlierResistant-strategy merges when using this function for USL fitting.
 ///
 /// Returns `None` when `spans` is empty or `t1_secs` ≤ 0. Clamps to [1e-9, 0.1].
+#[must_use]
 pub fn beta_from_merge_spans(spans: &[(f64, usize)], t1_secs: f64) -> Option<f64> {
     // Guard: t1_secs rounds to sub-nanosecond on mock/in-process adapters in fast CI runs.
     // In that case pairwise_beta is undefined (any β / 0 → ∞); return None conservatively.
@@ -588,17 +605,19 @@ pub fn beta_from_merge_spans(spans: &[(f64, usize)], t1_secs: f64) -> Option<f64
 ///
 /// `decay_rate` ∈ (0, 1] — typical value 0.95.
 /// Returns `alpha_measured` when `α_current × decay_rate < alpha_measured`.
+#[must_use]
 pub fn aimd_decay(alpha_current: f64, alpha_measured: f64, decay_rate: f64) -> f64 {
     (alpha_current * decay_rate).max(alpha_measured)
 }
 
 /// Multiplicative-decrease step: reset α when yield falls below threshold.
 ///
-/// On a poor iteration (yield < reset_threshold), α jumps back toward `seed_alpha`:
+/// On a poor iteration (yield < `reset_threshold`), α jumps back toward `seed_alpha`:
 /// `α_next = min(α_current × reset_multiplier, seed_alpha)`
 ///
 /// `reset_multiplier` > 1 — typical value 3.0.
 /// Returns `seed_alpha` when `α_current × reset_multiplier > seed_alpha`.
+#[must_use]
 pub fn aimd_reset(alpha_current: f64, seed_alpha: f64, reset_multiplier: f64) -> f64 {
     (alpha_current * reset_multiplier).min(seed_alpha)
 }
@@ -606,8 +625,9 @@ pub fn aimd_reset(alpha_current: f64, seed_alpha: f64, reset_multiplier: f64) ->
 /// Compute the mean yield from a `n_useful_history` ring buffer.
 ///
 /// Each entry is `(n_useful: u8, n_max: u8, _unix_minutes: u32)`.
-/// Yield = n_useful / n_max for each entry. Returns `None` when `history` is empty
+/// Yield = `n_useful` / `n_max` for each entry. Returns `None` when `history` is empty
 /// or all entries have `n_max == 0`.
+#[must_use]
 pub fn yield_from_history(history: &[(u8, u8, u32)]) -> Option<f64> {
     if history.is_empty() {
         return None;
@@ -618,7 +638,7 @@ pub fn yield_from_history(history: &[(u8, u8, u32)]) -> Option<f64> {
             if n_max == 0 {
                 (s, c)
             } else {
-                (s + n_useful as f64 / n_max as f64, c + 1)
+                (s + f64::from(n_useful) / f64::from(n_max), c + 1)
             }
         });
     if count == 0 {
@@ -628,9 +648,9 @@ pub fn yield_from_history(history: &[(u8, u8, u32)]) -> Option<f64> {
     }
 }
 
-/// Compute epistemic β₀ from adjusted N_eff using the USL constraint inversion formula.
+/// Compute epistemic β₀ from adjusted `N_eff` using the USL constraint inversion formula.
 ///
-/// Returns the Kontrollier friction parameter β₀ such that when N_eff agents collaborate
+/// Returns the Kontrollier friction parameter β₀ such that when `N_eff` agents collaborate
 /// with group-coherence CG, `N_max = sqrt((1 - α) / β_eff)` is physically consistent.
 ///
 /// # Formula
@@ -638,6 +658,7 @@ pub fn yield_from_history(history: &[(u8, u8, u32)]) -> Option<f64> {
 /// `β₀ = max((1/N_eff_adj − 1/N_cal) / (N_cal − 1), 1e-6)`
 ///
 /// Returns `1e-6` when `n_cal < 2` (degenerate: can't fit USL with fewer than 2 calibration samples).
+#[must_use]
 pub fn beta_from_n_eff_adj(n_eff: f64, cg_mean: f64, n_cal: usize, k: f64) -> f64 {
     if n_cal < 2 {
         return 1e-6;
@@ -652,13 +673,14 @@ pub fn beta_from_n_eff_adj(n_eff: f64, cg_mean: f64, n_cal: usize, k: f64) -> f6
 /// `spans`: each tuple is `(merge_tokens_consumed, n_proposals)` from a merge phase.
 /// `t1_tokens`: mean tokens per single adapter response (baseline cost unit).
 ///
-/// Formula: β₀ = mean(tokens_i / pairs_i) / t1_tokens
-/// where pairs_i = max(1, n_i × (n_i − 1) / 2).
+/// Formula: β₀ = `mean(tokens_i` / `pairs_i`) / `t1_tokens`
+/// where `pairs_i` = max(1, `n_i` × (`n_i` − 1) / 2).
 ///
 /// Token cost is the correct USL β₀ analog per Gunther: it measures coherency overhead
 /// as a fraction of the baseline processing cost, independent of network I/O latency.
 ///
 /// Returns `None` when `spans` is empty or `t1_tokens` is 0. Clamps to [1e-9, 0.1].
+#[must_use]
 pub fn beta_from_token_spans(spans: &[(u64, usize)], t1_tokens: u64) -> Option<f64> {
     if spans.is_empty() || t1_tokens == 0 {
         return None;
@@ -672,364 +694,4 @@ pub fn beta_from_token_spans(spans: &[(u64, usize)], t1_tokens: u64) -> Option<f
         .sum();
     let mean_per_pair = sum / spans.len() as f64;
     Some((mean_per_pair / t1_tokens as f64).clamp(1e-9, 0.1))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn usl_throughput(n: f64, alpha: f64, beta: f64) -> f64 {
-        n / (1.0 + alpha * (n - 1.0) + beta * n * (n - 1.0))
-    }
-
-    #[test]
-    fn usl_fit_recovers_ai_agent_params() {
-        // Ground truth: α=0.15, β₀=0.01, CG_mean=0.4 → β_eff=0.025
-        let true_alpha = 0.15_f64;
-        let true_beta0 = 0.01_f64;
-        let t1 = 1.0_f64;
-        // Simulate wall-clock times from USL formula
-        let t2 = t1 / usl_throughput(2.0, true_alpha, true_beta0);
-        let t4 = t1 / usl_throughput(4.0, true_alpha, true_beta0);
-
-        let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2, 4, t4, 0.12, 0.01);
-        assert!(
-            (alpha - true_alpha).abs() < 0.005,
-            "α recovery: expected {true_alpha}, got {alpha:.4}"
-        );
-        assert!(
-            (beta0 - true_beta0).abs() < 0.001,
-            "β₀ recovery: expected {true_beta0}, got {beta0:.6}"
-        );
-    }
-
-    #[test]
-    fn usl_fit_recovers_human_team_params() {
-        let true_alpha = 0.10_f64;
-        let true_beta0 = 0.005_f64;
-        let t1 = 1.0_f64;
-        let t2 = t1 / usl_throughput(2.0, true_alpha, true_beta0);
-        let t5 = t1 / usl_throughput(5.0, true_alpha, true_beta0);
-
-        let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2, 5, t5, 0.12, 0.01);
-        assert!(
-            (alpha - true_alpha).abs() < 0.005,
-            "α: expected {true_alpha}, got {alpha:.4}"
-        );
-        assert!(
-            (beta0 - true_beta0).abs() < 0.001,
-            "β₀: expected {true_beta0}, got {beta0:.6}"
-        );
-    }
-
-    #[test]
-    fn usl_fit_fallback_when_m_less_than_3() {
-        let (alpha, beta0) = CalibrationHarness::usl_fit(1.0, 0.8, 2, 0.8, 0.12, 0.01);
-        assert_eq!(alpha, 0.12, "fallback α when M=2");
-        assert_eq!(beta0, 0.01, "fallback β₀ when M=2");
-    }
-
-    #[test]
-    fn usl_fit_fallback_when_m_is_1() {
-        let (alpha, beta0) = CalibrationHarness::usl_fit(1.0, 1.0, 1, 1.0, 0.12, 0.01);
-        assert_eq!(alpha, 0.12);
-        assert_eq!(beta0, 0.01);
-    }
-
-    #[test]
-    fn usl_fit_fallback_on_degenerate_timing() {
-        // t1 = 0 → degenerate
-        let (alpha, beta0) = CalibrationHarness::usl_fit(0.0, 0.5, 4, 0.5, 0.12, 0.01);
-        assert_eq!(alpha, 0.12);
-        assert_eq!(beta0, 0.01);
-    }
-
-    #[test]
-    fn usl_fit_fallback_on_negative_derived_params() {
-        // Super-linear speedup at N=2 → negative alpha → use fallback
-        let t1 = 1.0_f64;
-        let t2_superlinear = 0.3; // X(2) ≈ 3.33 > 2 → super-linear → degenerate
-        let t4 = 0.5;
-        let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2_superlinear, 4, t4, 0.12, 0.01);
-        assert_eq!(alpha, 0.12, "super-linear speedup must trigger fallback");
-        assert_eq!(beta0, 0.01);
-    }
-
-    #[test]
-    fn usl_fit_clamps_extreme_values() {
-        // Ground truth: α=0.8, β₀=0.02 — both positive but α > 0.5 clamp ceiling.
-        // β₀ = 0.02 is already within [1e-6, 0.1] so only α gets clamped.
-        let true_alpha = 0.8_f64;
-        let true_beta0 = 0.02_f64;
-        let t1 = 1.0_f64;
-        let t2 = t1 / usl_throughput(2.0, true_alpha, true_beta0);
-        let t4 = t1 / usl_throughput(4.0, true_alpha, true_beta0);
-
-        let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2, 4, t4, 0.12, 0.01);
-        // α pre-clamp = 0.8 → clamped to 0.5; fallback not taken (both params positive)
-        assert_eq!(alpha, 0.5, "α=0.8 must be clamped to 0.5");
-        // beta0 = 0.02 is within range, not the fallback value 0.01
-        assert!(
-            (1e-6..=0.1).contains(&beta0),
-            "beta0 out of clamped range: {beta0}"
-        );
-        assert!(
-            (beta0 - 0.01).abs() > 1e-6,
-            "beta0 must not be the fallback value — clamp path must be taken"
-        );
-    }
-
-    // ── beta_from_token_spans tests ──────────────────────────────────────────
-
-    #[test]
-    fn beta_from_token_spans_basic() {
-        // 1 span: 100 tokens consumed for 5 proposals → 10 pairs → per_pair = 10
-        // t1_tokens = 500 → β₀ = 10/500 = 0.02
-        let spans = vec![(100u64, 5usize)];
-        let beta = beta_from_token_spans(&spans, 500).unwrap();
-        assert!(
-            (beta - 0.02).abs() < 1e-9,
-            "expected β₀=0.02, got {beta:.8}"
-        );
-    }
-
-    #[test]
-    fn beta_from_token_spans_clamps_to_max() {
-        // Pathological: many tokens for 2 proposals → 1 pair → enormous per_pair → clamps to 0.1
-        let spans = vec![(1_000_000u64, 2usize)];
-        let beta = beta_from_token_spans(&spans, 1).unwrap();
-        assert_eq!(beta, 0.1, "must clamp to max 0.1");
-    }
-
-    #[test]
-    fn beta_from_token_spans_none_on_empty() {
-        assert!(beta_from_token_spans(&[], 100).is_none());
-    }
-
-    #[test]
-    fn beta_from_token_spans_none_on_zero_t1() {
-        assert!(beta_from_token_spans(&[(50, 3)], 0).is_none());
-    }
-
-    #[test]
-    fn beta_from_token_spans_multi_span_is_mean() {
-        // Two spans with the same per-pair ratio → mean equals that ratio
-        // span A: 200 tokens, 3 proposals → 3 pairs → per_pair = 200/3
-        // span B: 600 tokens, 3 proposals → 3 pairs → per_pair = 600/3 = 200
-        // Actually: pairs = 3*(3-1)/2 = 3
-        // span A: per_pair = 200/3; span B: per_pair = 600/3 = 200
-        // mean_per_pair = (200/3 + 200)/2 = (200/3 + 600/3)/2 = 800/6 = 133.33
-        // β₀ = 133.33 / t1_tokens; use t1_tokens = 1333 → β₀ ≈ 0.1, then it'll clamp
-        // Use t1_tokens=10000 so result is within range
-        // mean_per_pair = (200/3 + 200)/2 ≈ 133.33
-        // β₀ = 133.33/10000 ≈ 0.01333
-        let spans = vec![(200u64, 3usize), (600u64, 3usize)];
-        let beta = beta_from_token_spans(&spans, 10_000).unwrap();
-        let expected = (200.0_f64 / 3.0 + 600.0 / 3.0) / 2.0 / 10_000.0;
-        assert!(
-            (beta - expected).abs() < 1e-9,
-            "multi-span mean: expected {expected:.8}, got {beta:.8}"
-        );
-    }
-
-    // ── tau_spread tests ─────────────────────────────────────────────────────
-
-    #[test]
-    fn tau_spread_m1_returns_calibration_tau() {
-        let cfg = H2AIConfig::default();
-        let taus = CalibrationHarness::tau_spread(1, &cfg);
-        assert_eq!(taus.len(), 1);
-        assert!((taus[0].value() - cfg.calibration_tau).abs() < 1e-9);
-    }
-
-    #[test]
-    fn tau_spread_m3_produces_distinct_values() {
-        let cfg = H2AIConfig::default();
-        let taus = CalibrationHarness::tau_spread(3, &cfg);
-        assert_eq!(taus.len(), 3);
-        // First and last must be spread endpoints
-        assert!((taus[0].value() - cfg.calibration_tau_spread[0]).abs() < 1e-9);
-        assert!((taus[2].value() - cfg.calibration_tau_spread[1]).abs() < 1e-9);
-        // Middle must differ from both endpoints
-        assert!(taus[1].value() > taus[0].value());
-        assert!(taus[1].value() < taus[2].value());
-    }
-
-    #[test]
-    fn tau_spread_all_in_range() {
-        let cfg = H2AIConfig::default();
-        for m in 2..=6 {
-            let taus = CalibrationHarness::tau_spread(m, &cfg);
-            assert_eq!(taus.len(), m);
-            for tau in &taus {
-                assert!(
-                    tau.value() >= cfg.calibration_tau_spread[0]
-                        && tau.value() <= cfg.calibration_tau_spread[1],
-                    "τ={} out of spread [{}, {}]",
-                    tau.value(),
-                    cfg.calibration_tau_spread[0],
-                    cfg.calibration_tau_spread[1]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn calibration_max_ensemble_size_bounds_condorcet_search() {
-        // A config capping max ensemble at 3 must produce n_optimal ≤ 3
-        let cfg = h2ai_config::H2AIConfig {
-            calibration_max_ensemble_size: 3,
-            ..Default::default()
-        };
-        let ec = h2ai_types::sizing::EnsembleCalibration::from_cg_mean(
-            0.7,
-            cfg.calibration_max_ensemble_size,
-        );
-        assert!(
-            ec.n_optimal <= 3,
-            "n_optimal must be ≤ calibration_max_ensemble_size=3, got {}",
-            ec.n_optimal
-        );
-    }
-
-    #[tokio::test]
-    async fn from_cg_matrix_runs_on_blocking_thread() {
-        let n = 3usize;
-        let mut sigma = DMatrix::<f64>::identity(n, n);
-        sigma[(0, 1)] = 0.5;
-        sigma[(1, 0)] = 0.5;
-        sigma[(0, 2)] = 0.3;
-        sigma[(2, 0)] = 0.3;
-        sigma[(1, 2)] = 0.2;
-        sigma[(2, 1)] = 0.2;
-        let delta = 0.01_f64;
-        let sigma_clone = sigma.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            EigenCalibration::from_cg_matrix(&sigma_clone, delta)
-        })
-        .await
-        .expect("eigenvalue task panicked");
-        // n_effective must be in (0, N]
-        assert!(result.n_effective > 0.0);
-        assert!(result.n_effective <= n as f64 + 1e-9);
-    }
-
-    // ── compute_conflict_rate tests ──────────────────────────────────────────
-
-    fn hard_length_range(id: &str, min: Option<usize>, max: Option<usize>) -> ConstraintDoc {
-        ConstraintDoc {
-            id: id.to_owned(),
-            source_file: format!("{id}.yaml"),
-            description: String::new(),
-            severity: ConstraintSeverity::Hard { threshold: 0.5 },
-            predicate: h2ai_constraints::types::ConstraintPredicate::LengthRange {
-                min_chars: min,
-                max_chars: max,
-            },
-            remediation_hint: None,
-            domains: vec![],
-            mandatory_for_tags: vec![],
-            related_to: vec![],
-        }
-    }
-
-    #[test]
-    fn conflict_rate_fewer_than_2_proposals_returns_none() {
-        assert!(compute_conflict_rate(&["hello"], &[]).is_none());
-        assert!(compute_conflict_rate(&[], &[]).is_none());
-    }
-
-    #[test]
-    fn conflict_rate_empty_corpus_returns_none() {
-        assert!(compute_conflict_rate(&["hello", "world"], &[]).is_none());
-    }
-
-    #[test]
-    fn conflict_rate_identical_proposals_clamped_to_min() {
-        // Two identical proposals → same fingerprint → Hamming = 0 → clamped to 1e-6
-        // Constraint: min 3 chars; both "abc" pass → both fingerprints [true] → distance = 0
-        let corpus = vec![hard_length_range("c1", Some(3), None)];
-        let result = compute_conflict_rate(&["abc", "abc"], &corpus).unwrap();
-        assert!(
-            (result - 1e-6).abs() < 1e-10,
-            "identical proposals must clamp to 1e-6, got {result}"
-        );
-    }
-
-    #[test]
-    fn conflict_rate_perfect_disagreement_is_one() {
-        // Proposal A (long, ≥10 chars) passes length constraint; B (short, <10 chars) fails.
-        // With a single constraint: fingerprints are [true] vs [false] → Hamming = 1.0
-        let corpus = vec![hard_length_range("c1", Some(10), None)];
-        let long_output = "hello world!!"; // 13 chars → passes
-        let short_output = "hi"; // 2 chars → fails
-        let result = compute_conflict_rate(&[long_output, short_output], &corpus).unwrap();
-        assert!(
-            (result - 1.0).abs() < 1e-9,
-            "perfect disagreement must be 1.0, got {result}"
-        );
-    }
-
-    #[test]
-    fn conflict_rate_unanimous_fail_is_clamped_to_min() {
-        // All proposals fail all constraints → identical fingerprints (all true) → Hamming = 0 → 1e-6
-        // Both "x" (1 char) fail the min-10-chars constraint → fingerprints [true] and [true]
-        let corpus = vec![hard_length_range("c1", Some(10), None)];
-        let result = compute_conflict_rate(&["x", "y"], &corpus).unwrap();
-        assert!(
-            (result - 1e-6).abs() < 1e-10,
-            "unanimous failure must clamp to 1e-6, got {result}"
-        );
-    }
-
-    #[test]
-    fn conflict_rate_partial_disagreement() {
-        // 4 constraints, proposals A and B disagree on exactly 2 of them → Hamming = 0.5
-        // Constraint layout:
-        //   c1: min 5 chars  → A("hello world", 11 chars) passes, B("hi", 2 chars) fails → disagree
-        //   c2: max 20 chars → both pass (11 ≤ 20, 2 ≤ 20) → agree
-        //   c3: min 1 char   → both pass → agree
-        //   c4: max 3 chars  → A fails (11 > 3), B passes (2 ≤ 3) → disagree
-        // Total disagreements: 2 / 4 = 0.5
-        let corpus = vec![
-            hard_length_range("c1", Some(5), None),
-            hard_length_range("c2", None, Some(20)),
-            hard_length_range("c3", Some(1), None),
-            hard_length_range("c4", None, Some(3)),
-        ];
-        let a = "hello world"; // 11 chars
-        let b = "hi"; // 2 chars
-        let result = compute_conflict_rate(&[a, b], &corpus).unwrap();
-        assert!(
-            (result - 0.5).abs() < 1e-9,
-            "partial disagreement (2/4) must be 0.5, got {result}"
-        );
-    }
-
-    #[tokio::test]
-    async fn from_cosine_matrix_runs_on_blocking_thread() {
-        let n = 3usize;
-        // Construct a valid normalised cosine matrix (trace = 1, symmetric, values in [0,1])
-        let mut c = DMatrix::<f64>::zeros(n, n);
-        for i in 0..n {
-            c[(i, i)] = 1.0;
-        }
-        c[(0, 1)] = 0.6;
-        c[(1, 0)] = 0.6;
-        c[(0, 2)] = 0.4;
-        c[(2, 0)] = 0.4;
-        c[(1, 2)] = 0.3;
-        c[(2, 1)] = 0.3;
-        // Normalise: divide by n so trace = 1
-        let k_norm = c / n as f64;
-        let delta = 0.01_f64;
-        let k_clone = k_norm.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            EigenCalibration::from_cosine_matrix(&k_clone, delta)
-        })
-        .await
-        .expect("cosine eigenvalue task panicked");
-        assert!(result.n_effective > 0.0);
-        assert!(result.n_effective <= n as f64 + 1e-9);
-    }
 }

@@ -12,10 +12,12 @@ pub struct OpenAIAdapter {
 }
 
 impl OpenAIAdapter {
+    #[must_use]
     pub fn new(endpoint: String, api_key_env: String, model: String) -> Self {
         Self::with_thinking(endpoint, api_key_env, model, true)
     }
 
+    #[must_use]
     pub fn with_thinking(
         endpoint: String,
         api_key_env: String,
@@ -31,9 +33,12 @@ impl OpenAIAdapter {
     }
 
     fn api_key(&self) -> Result<String, AdapterError> {
-        let env_name = match &self.kind {
-            AdapterKind::OpenAI { api_key_env, .. } => api_key_env,
-            _ => unreachable!(),
+        let AdapterKind::OpenAI {
+            api_key_env: env_name,
+            ..
+        } = &self.kind
+        else {
+            unreachable!()
         };
         std::env::var(env_name)
             .map_err(|_| AdapterError::NetworkError(format!("env var {env_name} not set")))
@@ -56,7 +61,7 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct Choice {
     message: Message,
-    /// "stop" = natural finish; "length" = max_tokens reached mid-generation.
+    /// "stop" = natural finish; "length" = `max_tokens` reached mid-generation.
     #[serde(default)]
     finish_reason: String,
 }
@@ -65,7 +70,7 @@ struct Choice {
 struct Message {
     #[serde(default)]
     content: String,
-    /// Reasoning-only models (DeepSeek R1) put their entire answer here and always
+    /// Reasoning-only models (`DeepSeek` R1) put their entire answer here and always
     /// leave `content` empty — use as fallback when `finish_reason == "stop"`.
     /// When `finish_reason == "length"`, the answer was never generated; return error.
     #[serde(default)]
@@ -74,7 +79,7 @@ struct Message {
 
 /// Extract the answer and optional reasoning trace from a completed choice.
 ///
-/// - Two-phase models (e.g. future OpenAI o-series with separate reasoning field):
+/// - Two-phase models (e.g. future `OpenAI` o-series with separate reasoning field):
 ///   `content` holds the answer; `reasoning_content` is returned as the trace.
 /// - Reasoning-only models: `content` is empty; `reasoning_content` is the full output.
 ///   The trace is promoted to `output`; no separate trace is returned.
@@ -129,10 +134,7 @@ impl IComputeAdapter for OpenAIAdapter {
         if !http_resp.status().is_success() {
             let status = http_resp.status();
             let body = http_resp.text().await.unwrap_or_default();
-            return Err(AdapterError::NetworkError(format!(
-                "HTTP {}: {}",
-                status, body
-            )));
+            return Err(AdapterError::NetworkError(format!("HTTP {status}: {body}")));
         }
 
         let chat: ChatResponse = http_resp

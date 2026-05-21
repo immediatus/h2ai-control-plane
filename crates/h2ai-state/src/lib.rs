@@ -1,6 +1,6 @@
 //! # h2ai-state
 //!
-//! CRDT semilattice merge engine and NATS JetStream event log.
+//! CRDT semilattice merge engine and NATS `JetStream` event log.
 //!
 //! This is the **only** crate in the workspace that talks to NATS.
 //!
@@ -14,11 +14,21 @@
 //! - [`nats`] — `NatsClient` connection + stream bootstrap
 //! - [`weiszfeld`] — Weiszfeld geometric median BFT selection (breakdown point 50%)
 
+pub mod backend;
 pub mod bft;
+pub mod in_memory;
 pub mod journal;
 pub mod krum;
 pub mod nats;
 pub mod semilattice;
 pub mod weiszfeld;
 
+pub use backend::{
+    CalibrationStore, EstimatorStore, EventPublisher, OproStore, SignalPublisher, SnapshotStore,
+    StateBackend,
+};
+pub use in_memory::{CapturedEvent, InMemoryStateBackend};
 pub use nats::NatsClient;
+pub use nats::{
+    apply_patches, generate_delta, should_store_base, tenant_bucket_name, CachedCheckpoint,
+};

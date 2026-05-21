@@ -55,8 +55,7 @@ fn corpus_all_constraints_have_composite_predicate_ending_in_llm_judge() {
                 assert!(
                     children
                         .last()
-                        .map(|c| matches!(c, ConstraintPredicate::LlmJudge { .. }))
-                        .unwrap_or(false),
+                        .is_some_and(|c| matches!(c, ConstraintPredicate::LlmJudge { .. })),
                     "constraint {} Composite must end with LlmJudge",
                     doc.id
                 );

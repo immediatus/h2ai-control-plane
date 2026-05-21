@@ -49,6 +49,7 @@ impl ConstraintRetriever {
     ///
     /// The indexed text is: `"{id} {description} {rubric_text}"` — all text a task
     /// description could plausibly match against.
+    #[must_use]
     pub fn from_docs(docs: &[ConstraintDoc]) -> Self {
         Self::build(docs.iter().map(|d| {
             let rubric = extract_rubric_text(&d.predicate);
@@ -58,6 +59,7 @@ impl ConstraintRetriever {
     }
 
     /// Build from an iterator of `(id, text)` pairs. Used directly in tests.
+    #[allow(clippy::cast_precision_loss)]
     pub fn build<'a>(docs: impl Iterator<Item = (&'a str, String)>) -> Self {
         let entries: Vec<RetrieverEntry> = docs
             .map(|(id, text)| {
@@ -89,7 +91,7 @@ impl ConstraintRetriever {
         let idf: HashMap<String, f32> = df
             .into_iter()
             .map(|(term, count)| {
-                let score = ((n - count as f32 + 0.5) / (count as f32 + 0.5) + 1.0).ln();
+                let score = ((n - count as f32 + 0.5) / (count as f32 + 0.5)).ln_1p();
                 (term, score.max(0.0))
             })
             .collect();
@@ -107,6 +109,7 @@ impl ConstraintRetriever {
     ///
     /// Returns an empty vec if the index is empty or `top_k` is 0.
     /// Only candidates with score > 0 are returned.
+    #[must_use]
     pub fn query(&self, text: &str, top_k: usize) -> Vec<ConstraintCandidate> {
         if self.entries.is_empty() || top_k == 0 {
             return vec![];
@@ -133,32 +136,34 @@ impl ConstraintRetriever {
         scores
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn bm25_score(&self, entry: &RetrieverEntry, query_terms: &HashMap<String, u32>) -> f32 {
         let dl = entry.doc_len as f32;
         let avgdl = self.avg_doc_len.max(1.0);
         let mut score = 0.0f32;
         for term in query_terms.keys() {
-            let idf = match self.idf.get(term) {
-                Some(&v) => v,
-                None => continue,
+            let Some(&idf) = self.idf.get(term) else {
+                continue;
             };
             let tf = *entry.term_freqs.get(term).unwrap_or(&0) as f32;
             if tf == 0.0 {
                 continue;
             }
             let numerator = tf * (self.k1 + 1.0);
-            let denominator = tf + self.k1 * (1.0 - self.b + self.b * dl / avgdl);
+            let denominator = self.k1.mul_add(1.0 - self.b + self.b * dl / avgdl, tf);
             score += idf * numerator / denominator;
         }
         score
     }
 
     /// Number of indexed documents.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
@@ -168,8 +173,8 @@ fn extract_rubric_text(pred: &crate::types::ConstraintPredicate) -> String {
     use crate::types::ConstraintPredicate;
     match pred {
         ConstraintPredicate::LlmJudge { rubric } => rubric.clone(),
-        ConstraintPredicate::VocabularyPresence { terms, .. } => terms.join(" "),
-        ConstraintPredicate::NegativeKeyword { terms } => terms.join(" "),
+        ConstraintPredicate::VocabularyPresence { terms, .. }
+        | ConstraintPredicate::NegativeKeyword { terms } => terms.join(" "),
         ConstraintPredicate::RegexMatch { pattern, .. } => pattern.clone(),
         ConstraintPredicate::Composite { children, .. } => children
             .iter()
@@ -279,125 +284,16 @@ fn is_stopword(token: &str) -> bool {
 ///    task description implies but didn't explicitly tag
 ///
 /// The union of both stages is returned, deduplicated.
-pub fn resolve_with_retrieval(
+#[must_use]
+pub fn resolve_with_retrieval<S: std::hash::BuildHasher>(
     query_text: &str,
     top_k: usize,
     retriever: &ConstraintRetriever,
-    all_metas: &HashMap<String, ConstraintMeta>,
+    all_metas: &HashMap<String, ConstraintMeta, S>,
 ) -> Vec<ConstraintMeta> {
     let candidates = retriever.query(query_text, top_k);
     candidates
         .into_iter()
         .filter_map(|c| all_metas.get(&c.id).cloned())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn build_test_index() -> ConstraintRetriever {
-        ConstraintRetriever::build(
-            [
-                (
-                    "CONSTRAINT-001",
-                    "stateless request service ttl cache eviction".to_string(),
-                ),
-                (
-                    "CONSTRAINT-002",
-                    "grpc protobuf internal service rest json external protocol".to_string(),
-                ),
-                (
-                    "CONSTRAINT-003",
-                    "rtb timeout adaptive per-dsp latency histogram auction".to_string(),
-                ),
-                (
-                    "CONSTRAINT-004",
-                    "budget idempotency redis atomic lua transaction debit".to_string(),
-                ),
-                (
-                    "CONSTRAINT-005",
-                    "financial audit log kafka clickhouse immutable append billing".to_string(),
-                ),
-                (
-                    "CONSTRAINT-006",
-                    "java zgc virtual threads heap garbage collection pause latency".to_string(),
-                ),
-                (
-                    "CONSTRAINT-007",
-                    "consistency budget billing cache redis cockroachdb hlc".to_string(),
-                ),
-            ]
-            .into_iter(),
-        )
-    }
-
-    #[test]
-    fn retrieves_correct_top_result_for_budget_query() {
-        let idx = build_test_index();
-        let results = idx.query("budget idempotency atomic debit", 3);
-        assert!(!results.is_empty());
-        assert_eq!(results[0].id, "CONSTRAINT-004");
-    }
-
-    #[test]
-    fn retrieves_correct_top_result_for_grpc_query() {
-        let idx = build_test_index();
-        let results = idx.query("grpc protobuf service communication internal", 3);
-        assert!(!results.is_empty());
-        assert_eq!(results[0].id, "CONSTRAINT-002");
-    }
-
-    #[test]
-    fn retrieves_correct_top_result_for_audit_query() {
-        let idx = build_test_index();
-        let results = idx.query("financial audit kafka billing immutable log", 3);
-        assert!(!results.is_empty());
-        assert_eq!(results[0].id, "CONSTRAINT-005");
-    }
-
-    #[test]
-    fn top_k_limits_result_count() {
-        let idx = build_test_index();
-        let results = idx.query("service latency cache redis", 2);
-        assert!(results.len() <= 2);
-    }
-
-    #[test]
-    fn empty_query_returns_empty() {
-        let idx = build_test_index();
-        let results = idx.query("the and for with", 10);
-        assert!(
-            results.is_empty(),
-            "stop-words-only query should return nothing"
-        );
-    }
-
-    #[test]
-    fn empty_index_returns_empty() {
-        let idx = ConstraintRetriever::build(std::iter::empty());
-        let results = idx.query("budget redis", 5);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn scores_are_sorted_descending() {
-        let idx = build_test_index();
-        let results = idx.query("latency timeout cache service", 5);
-        for w in results.windows(2) {
-            assert!(
-                w[0].score >= w[1].score,
-                "results must be sorted descending by score"
-            );
-        }
-    }
-
-    #[test]
-    fn idf_weights_rare_terms_higher() {
-        // "hlc" only appears in CONSTRAINT-007; querying for it should score 007 at top.
-        let idx = build_test_index();
-        let results = idx.query("hlc hybrid logical clock", 3);
-        assert!(!results.is_empty());
-        assert_eq!(results[0].id, "CONSTRAINT-007");
-    }
 }

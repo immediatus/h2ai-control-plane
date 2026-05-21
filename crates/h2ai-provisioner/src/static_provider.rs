@@ -9,7 +9,8 @@ pub struct StaticProvider {
 }
 
 impl StaticProvider {
-    pub fn new(max_task_load: usize) -> Self {
+    #[must_use]
+    pub const fn new(max_task_load: usize) -> Self {
         Self { max_task_load }
     }
 }

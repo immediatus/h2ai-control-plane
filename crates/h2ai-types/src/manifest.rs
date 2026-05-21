@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// the correlated-hallucination failure mode: when N slots all receive the same
 /// prompt, correlated errors propagate to all proposals; style diversity breaks
 /// that correlation by forcing different cognitive paths through the same problem.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CotStyle {
     /// No prefix — standard model behavior.
@@ -28,21 +28,22 @@ pub enum CotStyle {
 }
 
 impl CotStyle {
-    pub fn instruction(&self) -> &'static str {
+    #[must_use]
+    pub const fn instruction(&self) -> &'static str {
         match self {
-            CotStyle::None => "",
-            CotStyle::StepByStep => {
+            Self::None => "",
+            Self::StepByStep => {
                 "Think step by step before giving your final answer. Show your reasoning explicitly."
             }
-            CotStyle::BackwardChaining => {
+            Self::BackwardChaining => {
                 "Start from the desired outcome and work backward: what conditions, \
                  steps, and preconditions are required to achieve it?"
             }
-            CotStyle::FirstPrinciples => {
+            Self::FirstPrinciples => {
                 "Break this problem down to its fundamental principles. Do not rely on \
                  analogies, conventions, or prior patterns. Reason from first principles."
             }
-            CotStyle::DevilsAdvocate => {
+            Self::DevilsAdvocate => {
                 "Before proposing a solution, identify the strongest objections and \
                  most likely failure modes. Build your answer to address these directly."
             }
@@ -60,15 +61,15 @@ pub struct ExplorerSlotConfig {
     /// Role framing injected at the start of the system context for this slot.
     #[serde(default)]
     pub role_frame: String,
-    /// CoT instruction style prepended to the task description.
+    /// `CoT` instruction style prepended to the task description.
     #[serde(default)]
     pub cot_style: CotStyle,
     /// What constraint domains this slot is responsible for covering.
-    /// Injected as "[MANDATE]: ..." after role_frame when non-empty.
+    /// Injected as "[MANDATE]: ..." after `role_frame` when non-empty.
     #[serde(default)]
     pub focus_mandate: String,
     /// The specific failure mode this slot should actively try to find.
-    /// Injected as "[FIND]: ..." after role_frame when non-empty.
+    /// Injected as "[FIND]: ..." after `role_frame` when non-empty.
     #[serde(default)]
     pub rejection_criteria: String,
     /// Constraint corpus domain tags this slot covers.
@@ -102,7 +103,7 @@ pub struct TaskManifest {
     #[serde(default)]
     pub oracle: Option<OracleSpec>,
     /// When `true`, operator requires human review before output is delivered,
-    /// regardless of q_confidence. Defaults to `false`.
+    /// regardless of `q_confidence`. Defaults to `false`.
     #[serde(default)]
     pub require_approval: bool,
     /// Domain tags for automatic constraint routing via the wiki context map.
@@ -125,7 +126,7 @@ pub struct TaskManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopologyRequest {
-    /// "auto" | "ensemble" | "hierarchical_tree" | "team_swarm_hybrid"
+    /// "auto" | "ensemble" | "`hierarchical_tree`" | "`team_swarm_hybrid`"
     #[serde(default = "default_topology_kind")]
     pub kind: String,
     pub branching_factor: Option<u8>,
@@ -155,13 +156,13 @@ pub struct ExplorerRequest {
     pub review_gates: Vec<ReviewGate>,
     /// Additional slots appended to the LLM-derived decomposition result.
     /// When non-empty, these slots are merged with the decomposition output and the
-    /// combined set is pruned by orthogonality to N_max. They add operator context —
+    /// combined set is pruned by orthogonality to `N_max`. They add operator context —
     /// they do NOT bypass decomposition. Leave empty unless adding task-specific experts.
     #[serde(default)]
     pub slot_configs: Vec<ExplorerSlotConfig>,
     /// Adapter diversity IDs for this task. Each element maps to `pool[id % pool.len()]`.
     /// When empty, defaults to `[0, 1, ..., count-1]` (one distinct slot per explorer).
-    /// Example: `[1, 2, 3]` → 3 explorers, each on a different pool adapter (if pool.len() ≥ 3).
+    /// Example: `[1, 2, 3]` → 3 explorers, each on a different pool adapter (if `pool.len()` ≥ 3).
     /// Example: `[1, 1, 2, 2, 3]` → 5 explorers, IDs 1 and 2 run twice.
     #[serde(default)]
     pub diversity_ids: Vec<u32>,
@@ -202,7 +203,7 @@ pub struct MergeRequest {
     pub final_output: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeResolution {
     Select,

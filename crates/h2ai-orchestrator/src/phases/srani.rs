@@ -13,7 +13,7 @@ pub struct Input<'a> {
     pub srani_tier: usize,
     /// Whether SRANI fired in the previous wave (used to escalate tier).
     pub srani_last_wave_fired: bool,
-    /// The current MAPE-K retry_context (may have been set by hallucination or prior SRANI).
+    /// The current MAPE-K `retry_context` (may have been set by hallucination or prior SRANI).
     pub retry_context: Option<String>,
 }
 
@@ -27,11 +27,11 @@ pub struct Output {
     pub srani_tier_updated: usize,
     /// Updated last-wave-fired flag.
     pub srani_last_wave_fired_updated: bool,
-    /// Fabrication events emitted this wave (extend all_srani_events in caller).
+    /// Fabrication events emitted this wave (extend `all_srani_events` in caller).
     pub srani_events: Vec<CorrelatedFabricationEvent>,
-    /// Researcher grounding events emitted this wave (extend all_researcher_grounding_events).
+    /// Researcher grounding events emitted this wave (extend `all_researcher_grounding_events`).
     pub researcher_grounding_events: Vec<ResearcherGroundingEvent>,
-    /// Updated retry_context — may have been extended with SRANI hint.
+    /// Updated `retry_context` — may have been extended with SRANI hint.
     pub retry_context: Option<String>,
 }
 

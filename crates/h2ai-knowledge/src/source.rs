@@ -98,7 +98,7 @@ impl KnowledgeSource for YamlDirSource {
         }
 
         let mut entries = match std::fs::read_dir(&wiki_dir) {
-            Ok(e) => e.filter_map(|r| r.ok()).collect::<Vec<_>>(),
+            Ok(e) => e.filter_map(std::result::Result::ok).collect::<Vec<_>>(),
             Err(e) => {
                 tracing::warn!(
                     wiki_dir = %wiki_dir.display(),
@@ -108,7 +108,7 @@ impl KnowledgeSource for YamlDirSource {
                 return vec![];
             }
         };
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
 
         let mut nodes = Vec::new();
         for entry in entries {
@@ -140,14 +140,14 @@ impl KnowledgeSource for YamlDirSource {
             };
 
             // Derive ID: use yaml.id if non-empty, else derive from stem
-            let id = if !yaml.id.is_empty() {
-                yaml.id.clone()
-            } else {
+            let id = if yaml.id.is_empty() {
                 let stem = path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
                 format!("topic:{stem}")
+            } else {
+                yaml.id.clone()
             };
 
             let tensions = yaml

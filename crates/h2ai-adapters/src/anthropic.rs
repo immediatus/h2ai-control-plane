@@ -11,6 +11,7 @@ pub struct AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
+    #[must_use]
     pub fn new(endpoint: String, api_key_env: String, model: String) -> Self {
         Self {
             endpoint,
@@ -20,9 +21,12 @@ impl AnthropicAdapter {
     }
 
     fn api_key(&self) -> Result<String, AdapterError> {
-        let env_name = match &self.kind {
-            AdapterKind::Anthropic { api_key_env, .. } => api_key_env,
-            _ => unreachable!(),
+        let AdapterKind::Anthropic {
+            api_key_env: env_name,
+            ..
+        } = &self.kind
+        else {
+            unreachable!()
         };
         std::env::var(env_name)
             .map_err(|_| AdapterError::NetworkError(format!("env var {env_name} not set")))
@@ -84,10 +88,7 @@ impl IComputeAdapter for AnthropicAdapter {
         if !http_resp.status().is_success() {
             let status = http_resp.status();
             let body = http_resp.text().await.unwrap_or_default();
-            return Err(AdapterError::NetworkError(format!(
-                "HTTP {}: {}",
-                status, body
-            )));
+            return Err(AdapterError::NetworkError(format!("HTTP {status}: {body}")));
         }
 
         let parsed: AnthropicResponse = http_resp

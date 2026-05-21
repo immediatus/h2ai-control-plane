@@ -76,6 +76,71 @@ async fn anthropic_adapter_network_error_when_key_env_missing() {
     assert!(matches!(result, Err(AdapterError::NetworkError(_))));
 }
 
+/// Connection refused — exercises the `send()` `map_err(NetworkError)` path (line 82)
+#[tokio::test]
+async fn anthropic_adapter_network_error_on_connection_refused() {
+    unsafe { std::env::set_var("ANT_TEST_KEY_CONN", "sk-ant-conn") };
+    let adapter = AnthropicAdapter::new(
+        "http://127.0.0.1:1".into(),
+        "ANT_TEST_KEY_CONN".into(),
+        "claude-3-5-sonnet-20241022".into(),
+    );
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "expected NetworkError on connection refused, got: {result:?}"
+    );
+}
+
+/// Malformed JSON response body — exercises the `json()` parse error path (line 96)
+#[tokio::test]
+async fn anthropic_adapter_network_error_on_malformed_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("not json", "application/json"))
+        .mount(&server)
+        .await;
+
+    unsafe { std::env::set_var("ANT_TEST_KEY_JSON", "sk-ant-json") };
+    let adapter = AnthropicAdapter::new(
+        server.uri(),
+        "ANT_TEST_KEY_JSON".into(),
+        "claude-3-5-haiku-20241022".into(),
+    );
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "expected NetworkError on malformed JSON, got: {result:?}"
+    );
+}
+
+/// Response with no text content blocks → `NetworkError`
+#[tokio::test]
+async fn anthropic_adapter_errors_when_no_text_blocks() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "content": [{"type": "tool_use", "text": ""}],
+            "usage": {"input_tokens": 5, "output_tokens": 5}
+        })))
+        .mount(&server)
+        .await;
+
+    unsafe { std::env::set_var("ANT_TEST_KEY_NOTEXT", "sk-ant-notext") };
+    let adapter = AnthropicAdapter::new(
+        server.uri(),
+        "ANT_TEST_KEY_NOTEXT".into(),
+        "claude-3-5-sonnet-20241022".into(),
+    );
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "no text blocks must return NetworkError, got: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn anthropic_adapter_kind_reflects_constructor_args() {
     let adapter = AnthropicAdapter::new(

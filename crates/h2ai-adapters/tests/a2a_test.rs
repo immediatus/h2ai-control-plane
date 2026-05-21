@@ -73,7 +73,7 @@ fn backoff_grows_and_caps_at_max() {
 #[test]
 fn auth_bearer_header_value() {
     use h2ai_adapters::a2a::{build_auth_header, AuthScheme};
-    let hdr = build_auth_header(AuthScheme::Bearer, "mytoken123").unwrap();
+    let hdr = build_auth_header(&AuthScheme::Bearer, "mytoken123").unwrap();
     assert_eq!(
         hdr,
         Some(("Authorization".to_string(), "Bearer mytoken123".to_string()))
@@ -83,7 +83,7 @@ fn auth_bearer_header_value() {
 #[test]
 fn auth_api_key_header_value() {
     use h2ai_adapters::a2a::{build_auth_header, AuthScheme};
-    let hdr = build_auth_header(AuthScheme::ApiKey, "mytoken123").unwrap();
+    let hdr = build_auth_header(&AuthScheme::ApiKey, "mytoken123").unwrap();
     assert_eq!(
         hdr,
         Some(("X-API-Key".to_string(), "mytoken123".to_string()))
@@ -93,12 +93,84 @@ fn auth_api_key_header_value() {
 #[test]
 fn auth_none_returns_no_header() {
     use h2ai_adapters::a2a::{build_auth_header, AuthScheme};
-    let result = build_auth_header(AuthScheme::None, "").unwrap();
+    let result = build_auth_header(&AuthScheme::None, "").unwrap();
     assert!(result.is_none());
 }
 
 #[test]
 fn a2a_adapter_implements_debug() {
-    fn _assert_debug<T: std::fmt::Debug>() {}
-    _assert_debug::<h2ai_adapters::a2a::A2aExplorerAdapter>();
+    fn assert_debug<T: std::fmt::Debug>() {}
+    assert_debug::<h2ai_adapters::a2a::A2aExplorerAdapter>();
+}
+
+/// `extract_proposal` with empty text → Err("empty artifact text")  (line 121-122)
+#[test]
+fn extract_proposal_returns_error_on_empty_text() {
+    let result = extract_proposal("   ", OutputFormat::Text);
+    assert!(result.is_err(), "empty text should return Err");
+    assert_eq!(result.unwrap_err(), "empty artifact text");
+}
+
+/// `extract_proposal` with empty text in Json mode → Err
+#[test]
+fn extract_proposal_returns_error_on_empty_json_text() {
+    let result = extract_proposal("", OutputFormat::Json);
+    assert!(result.is_err(), "empty JSON text should return Err");
+}
+
+/// `extract_proposal`: JSON fences that contain non-JSON → falls through to preamble check (line 103-107)
+#[test]
+fn extract_proposal_json_with_non_json_fences_falls_through_to_raw() {
+    let text = "```\nnot valid json at all\n```";
+    // Format=Json, fences contain non-JSON → falls through to preamble, then raw
+    let result = extract_proposal(text, OutputFormat::Json);
+    // Should succeed and return the non-JSON content via preamble/raw path
+    assert!(
+        result.is_ok(),
+        "non-JSON fenced content should not error: {result:?}"
+    );
+}
+
+/// `extract_proposal` with preamble "output:" (lines 113-118)
+#[test]
+fn extract_proposal_strips_output_preamble() {
+    let text = "output: some title\nThe actual content.";
+    let result = extract_proposal(text, OutputFormat::Text).unwrap();
+    assert_eq!(result, "The actual content.");
+}
+
+/// `extract_proposal` with preamble "result:" (lines 113-118)
+#[test]
+fn extract_proposal_strips_result_preamble() {
+    let text = "result: something\nThe real result.";
+    let result = extract_proposal(text, OutputFormat::Text).unwrap();
+    assert_eq!(result, "The real result.");
+}
+
+/// `AuthScheme::parse` with unknown string → None
+#[test]
+fn auth_scheme_parse_unknown_returns_none() {
+    use h2ai_adapters::a2a::AuthScheme;
+    assert_eq!(AuthScheme::parse("unknown"), AuthScheme::None);
+    assert_eq!(AuthScheme::parse(""), AuthScheme::None);
+}
+
+/// `extract_proposal`: preamble strips whole content leaving empty stripped — raw fallback (line 124).
+/// The preamble regex matches the entire text (a preamble line + only whitespace after),
+/// leaving `stripped` empty but `trimmed` non-empty → falls through to `Ok(trimmed.to_owned())`.
+#[test]
+fn extract_proposal_raw_fallback_when_preamble_consumes_all_content() {
+    // Text has no fences, no direct JSON, and after preamble removal it becomes empty
+    // but trimmed is non-empty. We trigger this via a non-preamble plain string where
+    // stripped == trimmed (preamble regex doesn't match) and stripped is non-empty.
+    // Actually line 124 is reached when stripped is EMPTY and trimmed is NOT empty.
+    // That happens when preamble regex matches but the replacement yields only whitespace.
+    // e.g. "Here is the solution:\n   " → stripped = "".trim() = "" but trimmed = "Here is..."
+    let text = "Here is the solution:\n   ";
+    let result = extract_proposal(text, OutputFormat::Text).unwrap();
+    // trimmed = "Here is the solution:" (non-empty), stripped = "" → line 124
+    assert!(
+        !result.is_empty(),
+        "should return raw trimmed text: {result}"
+    );
 }

@@ -12,6 +12,7 @@ pub struct OllamaAdapter {
 }
 
 impl OllamaAdapter {
+    #[must_use]
     pub fn new(endpoint: String, model: String) -> Self {
         Self {
             kind: AdapterKind::Ollama {
@@ -27,7 +28,7 @@ impl OllamaAdapter {
 
 /// Translate tau into Ollama `options` sampling parameters.
 ///
-/// Mirrors the OpenAI adapter's three-regime strategy; Ollama uses the same
+/// Mirrors the `OpenAI` adapter's three-regime strategy; Ollama uses the same
 /// parameter names inside its `options` block.
 fn sampling_options(tau: f64) -> serde_json::Value {
     if tau < 0.35 {
@@ -92,10 +93,7 @@ impl IComputeAdapter for OllamaAdapter {
         if !http_resp.status().is_success() {
             let status = http_resp.status();
             let body = http_resp.text().await.unwrap_or_default();
-            return Err(AdapterError::NetworkError(format!(
-                "HTTP {}: {}",
-                status, body
-            )));
+            return Err(AdapterError::NetworkError(format!("HTTP {status}: {body}")));
         }
 
         let parsed: OllamaResponse = http_resp

@@ -38,11 +38,11 @@ impl SchedulingEngine {
     /// via `join_all`. Results from completed subtasks are injected as `context`
     /// into the manifests of their dependents.
     ///
-    /// Results are returned in unspecified order (HashMap iteration order).
+    /// Results are returned in unspecified order (`HashMap` iteration order).
     pub async fn execute(
         plan: SubtaskPlan,
         parent_manifest: &TaskManifest,
-        executor: &dyn SubtaskExecutor,
+        executor: &impl SubtaskExecutor,
     ) -> Result<Vec<SubtaskResult>, SchedulerError> {
         let waves = topo_waves(&plan.subtasks)?;
         let mut completed: HashMap<SubtaskId, SubtaskResult> = HashMap::new();

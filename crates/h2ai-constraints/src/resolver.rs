@@ -38,7 +38,9 @@ impl ConstraintResolver {
             self.index.find_by_ids(explicit_ids).await
         } else if !tags.is_empty() {
             let tag_ids = self.index.find_by_tags(tags).await;
-            if !query.is_empty() {
+            if query.is_empty() {
+                tag_ids
+            } else {
                 // Union: structural (tag) + semantic (BM25) retrieval.
                 let bm25_ids = self.index.search(query, 20).await;
                 let mut seen: HashSet<String> = tag_ids.iter().cloned().collect();
@@ -49,8 +51,6 @@ impl ConstraintResolver {
                     }
                 }
                 union
-            } else {
-                tag_ids
             }
         } else if !query.is_empty() {
             self.index.search(query, 20).await

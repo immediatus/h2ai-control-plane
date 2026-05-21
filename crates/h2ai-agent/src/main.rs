@@ -2,17 +2,14 @@ use h2ai_adapters::factory::AdapterFactory;
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_agent::dispatch;
 use h2ai_agent::heartbeat::HeartbeatTask;
+use h2ai_agent::tools::agent_tools;
 use h2ai_config::H2AIConfig;
 use h2ai_types::adapter::IComputeAdapter;
-use h2ai_types::agent::{AgentDescriptor, AgentTool, CostTier};
+use h2ai_types::agent::{AgentDescriptor, CostTier};
 use h2ai_types::identity::AgentId;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
-
-pub fn agent_tools() -> Vec<AgentTool> {
-    vec![AgentTool::Shell, AgentTool::FileSystem]
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,8 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let model = cfg
         .adapter_profiles
         .first()
-        .map(|p| p.name.clone())
-        .unwrap_or_else(|| "local".into());
+        .map_or_else(|| "local".into(), |p| p.name.clone());
     let descriptor = AgentDescriptor {
         model: model.clone(),
         tools: agent_tools(),
@@ -56,31 +52,16 @@ async fn main() -> anyhow::Result<()> {
     let _hb_handle = hb_task.start();
 
     let thinking = cfg.adapter_enable_thinking;
-    let adapter: Arc<dyn IComputeAdapter> = cfg
-        .adapter_profiles
-        .first()
-        .map(
-            |p| match AdapterFactory::build_with_thinking(&p.kind, thinking) {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::warn!("adapter build failed ({e}) — falling back to MockAdapter");
-                    Arc::new(MockAdapter::new(String::new()))
-                }
-            },
-        )
-        .unwrap_or_else(|| Arc::new(MockAdapter::new(String::new())));
+    let adapter: Arc<dyn IComputeAdapter> = cfg.adapter_profiles.first().map_or_else(
+        || Arc::new(MockAdapter::new(String::new())) as Arc<dyn IComputeAdapter>,
+        |p| match AdapterFactory::build_with_thinking(&p.kind, thinking) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("adapter build failed ({e}) — falling back to MockAdapter");
+                Arc::new(MockAdapter::new(String::new()))
+            }
+        },
+    );
 
     dispatch::run(client, agent_id, adapter, active_tasks, cfg).await
-}
-
-#[cfg(test)]
-mod tests {
-    use h2ai_types::agent::AgentTool;
-
-    #[test]
-    fn agent_tools_list_is_complete() {
-        let tools = crate::agent_tools();
-        assert!(tools.contains(&AgentTool::Shell));
-        assert!(tools.contains(&AgentTool::FileSystem));
-    }
 }

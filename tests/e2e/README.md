@@ -70,9 +70,39 @@ H2AI_E2E_MULTIFAMILY=1 python3 tests/e2e/replay.py
 
 ```
 tests/e2e/results/<scenario>/<timestamp>/
-  events.jsonl   — raw SSE event stream
-  output.txt     — merged output from MergeResolved event
-  summary.json   — j_eff, verification scores, SRANI signals, assertion results
+  events.jsonl          — raw SSE event stream
+  output.txt            — merged output from MergeResolved event
+  summary.json          — j_eff, verification scores, SRANI signals, assertion results
+  _server_logs/h2ai.log — server logs (always present; INFO level by default)
 ```
 
 Compare `summary.json` across runs to track regressions or improvements.
+
+## Debug Logging
+
+Server logs are written at INFO level by default. To capture full debug traces
+(oracle calibration, bandit updates, SRANI signals):
+
+```bash
+RUST_LOG=debug python3 tests/e2e/replay.py dsp-onboarding
+```
+
+Logs are saved to `tests/e2e/results/<scenario>/<timestamp>/_server_logs/h2ai.log`
+regardless of `RUST_LOG`.
+
+## Oracle
+
+The oracle evaluates whether the winning output is correct. It is configured per task
+in `oracle_spec.test_suite`. Six oracle types are supported:
+
+| Prefix | What it checks |
+|---|---|
+| `schema:` | JSON Schema validation |
+| `multiple-choice` / `free-form` | LlmJudge semantic match against a reference answer |
+| `z3:` | Z3 SMT symbolic verification |
+| `human:<channel>` | Human rater via NATS gateway |
+| `staged-code:` | Staged code test harness |
+| `test-suite:` or bare name | Forks a local binary; passes winning output as a temp file |
+
+See `docs/architecture/oracle.md` for the full reference including calibration loop,
+FUSE semantic dominance, and Prometheus metrics.

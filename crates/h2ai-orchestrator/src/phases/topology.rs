@@ -19,7 +19,7 @@ pub struct Input<'a> {
     pub explorer_adapter_kind: &'a AdapterKind,
     /// Pending constraint tombstone to attach to provisioned topology.
     pub pending_tombstone: Option<String>,
-    /// Current n_agents value from MAPE-K optimizer params (used when roles not specified).
+    /// Current `n_agents` value from MAPE-K optimizer params (used when roles not specified).
     pub n_agents: u32,
 }
 
@@ -34,14 +34,15 @@ pub struct Output {
 /// Run Phase 2: Topology Provisioning.
 ///
 /// Builds role specs with τ-spread expansion, calls `TopologyPlanner::provision`,
-/// applies the constraint tombstone, and checks the OutlierResistant quorum guard.
+/// applies the constraint tombstone, and checks the `OutlierResistant` quorum guard.
 /// Also derives `p_mean`, `rho_mean`, and `attribution_basis` from ensemble calibration
-/// (or cg_mean heuristic when absent).
+/// (or `cg_mean` heuristic when absent).
 ///
 /// Returns `StepResult::Done(Output)` on success.
 /// Returns `StepResult::Fatal(EngineError::InsufficientQuorum { ... })` when the
 /// Krum quorum guard fails.
 /// Never returns `StepResult::EarlyExit`.
+#[must_use]
 pub fn run(input: Input<'_>) -> StepResult<Output> {
     let engine_input = input.engine_input;
     let retry_count = input.retry_count;
@@ -80,14 +81,14 @@ pub fn run(input: Input<'_>) -> StepResult<Output> {
             )
         };
         // Apply τ-spread expansion (Talagrand U-curve feedback) around the manifest centre.
-        let tau_center = (tau_max_manifest + tau_min_manifest) / 2.0;
+        let tau_center = f64::midpoint(tau_max_manifest, tau_min_manifest);
         let half_spread = (tau_max_manifest - tau_min_manifest) / 2.0;
         let max_half = tau_center.min(1.0 - tau_center); // can't exceed [0,1]
         let expanded_half = (half_spread * input.tau_spread_factor).min(max_half);
         let tau_min = tau_center - expanded_half;
         let tau_max = tau_center + expanded_half;
         let step = if count > 1 {
-            (tau_max - tau_min) / (count - 1) as f64
+            (tau_max - tau_min) / f64::from(count - 1)
         } else {
             0.0
         };
@@ -97,7 +98,7 @@ pub fn run(input: Input<'_>) -> StepResult<Output> {
                 role: AgentRole::Executor,
                 tau: Some(
                     TauValue::new(
-                        ((tau_min + step * i as f64) * input.tau_reduction_factor)
+                        ((tau_min + step * f64::from(i)) * input.tau_reduction_factor)
                             .clamp(0.05, 0.95),
                     )
                     .unwrap_or_else(|_| TauValue::new(0.05).unwrap()),
@@ -123,7 +124,7 @@ pub fn run(input: Input<'_>) -> StepResult<Output> {
     };
 
     let (mut provisioned, _cg_collapse) = TopologyPlanner::provision(ProvisionInput {
-        task_id: task_id.clone(),
+        task_id,
         cc: &engine_input.calibration.coefficients,
         pareto_weights: &engine_input.manifest.pareto_weights,
         role_specs: &role_specs,

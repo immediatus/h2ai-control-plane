@@ -52,11 +52,10 @@ pub async fn run(input: &EngineInput<'_>) -> Result<Output, EngineError> {
         timestamp: Utc::now(),
     };
 
-    let explorer_adapter_kind = input
-        .explorer_adapters
-        .first()
-        .map(|a| a.kind().clone())
-        .unwrap_or_else(|| input.auditor_config.adapter.clone());
+    let explorer_adapter_kind = input.explorer_adapters.first().map_or_else(
+        || input.auditor_config.adapter.clone(),
+        |a| a.kind().clone(),
+    );
 
     // ── Verifier/Explorer Family Conflict Gate ──────────────────────────
     if input.calibration.explorer_verification_family_match {
@@ -65,7 +64,7 @@ pub async fn run(input: &EngineInput<'_>) -> Result<Output, EngineError> {
                 let distinct: std::collections::HashSet<usize> = input
                     .explorer_adapters
                     .iter()
-                    .map(|a| *a as *const dyn IComputeAdapter as *const () as usize)
+                    .map(|a| std::ptr::from_ref::<dyn IComputeAdapter>(*a).cast::<()>() as usize)
                     .collect();
                 if distinct.len() == 1 && input.explorer_adapters.len() > 1 {
                     input.store.mark_failed(&task_id);

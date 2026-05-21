@@ -5,6 +5,7 @@
 //! - [`merger::MergeEngine`] — semilattice + BFT proposal resolution
 //! - [`retry::RetryPolicy`] — Pareto-frontier topology retry on zero survival
 
+pub mod audit_channel;
 pub mod calibration;
 pub mod checker;
 pub mod epistemic;
@@ -12,3 +13,4 @@ pub mod merger;
 pub mod planner;
 pub mod repair;
 pub mod retry;
+pub mod retry_accumulator;

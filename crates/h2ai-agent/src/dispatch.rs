@@ -34,6 +34,12 @@ impl DispatchLoop {
         }
     }
 
+    /// Run the dispatch loop until a terminate signal is received.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if subscribing to the NATS task subject or terminate
+    /// subject fails.
     pub async fn run(self) -> anyhow::Result<()> {
         let mut sub = self
             .client
@@ -133,7 +139,12 @@ impl DispatchLoop {
     }
 }
 
-/// Convenience entry point called from main.rs
+/// Convenience entry point called from main.rs.
+///
+/// # Errors
+///
+/// Returns an error if subscribing to the NATS task subject or terminate
+/// subject fails.
 pub async fn run(
     client: Client,
     agent_id: AgentId,

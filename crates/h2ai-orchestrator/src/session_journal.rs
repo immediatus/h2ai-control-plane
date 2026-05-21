@@ -2,6 +2,7 @@ use crate::error::OrchestratorError;
 use crate::task_store::{TaskPhase, TaskState};
 use dashmap::DashMap;
 use futures::StreamExt;
+use h2ai_state::backend::SessionJournalBackend;
 use h2ai_state::nats::NatsClient;
 use h2ai_types::events::{H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::TaskId;
@@ -14,27 +15,30 @@ struct EventCounter {
 }
 
 impl EventCounter {
-    fn new(interval: usize) -> Self {
+    const fn new(interval: usize) -> Self {
         Self { interval, count: 0 }
     }
 
     /// Increments the counter and returns `true` when a snapshot should be taken.
-    fn tick(&mut self) -> bool {
+    const fn tick(&mut self) -> bool {
         self.count += 1;
         self.interval > 0 && self.count.is_multiple_of(self.interval)
     }
 }
 
-pub struct SessionJournal {
-    nats: Arc<NatsClient>,
+pub struct SessionJournal<B = NatsClient>
+where
+    B: SessionJournalBackend + 'static,
+{
+    nats: Option<Arc<B>>,
     snapshot_interval: usize,
     counters: Arc<DashMap<TaskId, EventCounter>>,
 }
 
-impl SessionJournal {
-    pub fn new(nats: Arc<NatsClient>) -> Self {
+impl<B: SessionJournalBackend + 'static> SessionJournal<B> {
+    pub fn new(nats: Arc<B>) -> Self {
         Self {
-            nats,
+            nats: Some(nats),
             snapshot_interval: 0,
             counters: Arc::new(DashMap::new()),
         }
@@ -42,7 +46,8 @@ impl SessionJournal {
 
     /// Enable periodic snapshotting: write a snapshot every `interval` events per task.
     /// `interval = 0` disables snapshotting (default).
-    pub fn with_snapshot_interval(mut self, interval: usize) -> Self {
+    #[must_use]
+    pub const fn with_snapshot_interval(mut self, interval: usize) -> Self {
         self.snapshot_interval = interval;
         self
     }
@@ -51,6 +56,9 @@ impl SessionJournal {
     /// When the per-task event count hits the snapshot interval, fires a fire-and-forget
     /// background task to write the current state to NATS KV.
     pub fn note_event(&self, task_id: &TaskId, seq: u64, state: &TaskState) {
+        let Some(nats) = &self.nats else {
+            return;
+        };
         if self.snapshot_interval == 0 {
             return;
         }
@@ -65,7 +73,7 @@ impl SessionJournal {
                 task_state_json: serde_json::to_string(state).unwrap_or_default(),
                 taken_at: chrono::Utc::now(),
             };
-            let nats = self.nats.clone();
+            let nats = nats.clone();
             tokio::spawn(async move {
                 if let Err(e) = nats.put_snapshot(&snapshot).await {
                     tracing::warn!(
@@ -79,13 +87,15 @@ impl SessionJournal {
         }
     }
 
-    /// Replay all stored H2AIEvents for `task_id` from JetStream, reconstructing `TaskState`.
+    /// Replay all stored `H2AIEvents` for `task_id`, reconstructing `TaskState`.
     /// If a snapshot exists, restores state from it and replays only events after the snapshot
     /// sequence number. Falls back to full replay (from sequence 0) when no snapshot is found.
-    /// Stops on the first terminal event (MergeResolved / TaskFailed) or after 200 ms of inactivity.
+    /// Stops on the first terminal event (`MergeResolved` / `TaskFailed`) or after 200 ms of inactivity.
     pub async fn replay(&self, task_id: &TaskId) -> Result<Option<TaskState>, OrchestratorError> {
-        // Try to load the latest snapshot to short-circuit full history replay.
-        let (mut state, from_seq) = match self.nats.get_snapshot(task_id).await {
+        let Some(nats) = &self.nats else {
+            return Ok(None);
+        };
+        let (mut state, from_seq) = match nats.get_snapshot(task_id).await {
             Ok(Some(snapshot)) => {
                 match serde_json::from_str::<TaskState>(&snapshot.task_state_json) {
                     Ok(restored) => (restored, snapshot.last_sequence),
@@ -130,9 +140,8 @@ impl SessionJournal {
             }
         };
 
-        let stream = self
-            .nats
-            .tail_task_events(task_id, from_seq)
+        let stream = nats
+            .tail_task_events_boxed(task_id, from_seq)
             .await
             .map_err(|e| OrchestratorError::Transport(e.to_string()))?;
 
@@ -233,6 +242,19 @@ impl SessionJournal {
                 state.autonomic_retries = e.topologies_tried.len() as u32;
             }
             _ => {}
+        }
+    }
+}
+
+impl SessionJournal<NatsClient> {
+    /// Construct a no-op journal that never writes snapshots or replays events.
+    /// For use in unit tests that do not have a live NATS connection.
+    #[must_use]
+    pub fn new_noop() -> Self {
+        Self {
+            nats: None,
+            snapshot_interval: 0,
+            counters: Arc::new(DashMap::new()),
         }
     }
 }

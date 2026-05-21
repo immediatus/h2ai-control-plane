@@ -66,7 +66,7 @@ fn factory_builds_a2a_adapter() {
     let kind = AdapterKind::A2a {
         endpoint: "https://example.com".to_string(),
         auth_scheme: "none".to_string(),
-        auth_token_env: "".to_string(),
+        auth_token_env: String::new(),
         timeout_minutes: 5,
         poll_interval_ms: 2000,
         max_poll_interval_ms: 30_000,

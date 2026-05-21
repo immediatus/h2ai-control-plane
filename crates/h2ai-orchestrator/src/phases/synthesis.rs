@@ -160,11 +160,9 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
         .fold(f64::NEG_INFINITY, f64::max)
         .max(0.0);
 
-    let synth_score = re_ver
-        .passed
-        .first()
-        .map(|(_, results, _)| h2ai_constraints::types::aggregate_compliance_score(results))
-        .unwrap_or(0.0);
+    let synth_score = re_ver.passed.first().map_or(0.0, |(_, results, _)| {
+        h2ai_constraints::types::aggregate_compliance_score(results)
+    });
 
     let synthesis_gain = synth_score - max_indiv;
 

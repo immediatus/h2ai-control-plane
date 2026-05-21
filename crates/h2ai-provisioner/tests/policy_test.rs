@@ -1,5 +1,5 @@
-//! Direct unit tests for SchedulingPolicy implementations.
-//! Tests the policy logic in isolation from NatsAgentProvider filtering.
+//! Direct unit tests for `SchedulingPolicy` implementations.
+//! Tests the policy logic in isolation from `NatsAgentProvider` filtering.
 
 use h2ai_provisioner::scheduling::{
     AgentCandidate, CostAwareSpilloverPolicy, LeastLoadedPolicy, RoundRobinPolicy, SchedulingPolicy,
@@ -122,7 +122,7 @@ fn round_robin_returns_none_for_empty_candidates() {
 
 // CostAwareSpilloverPolicy tests
 
-fn spillover(threshold: usize) -> CostAwareSpilloverPolicy {
+const fn spillover(threshold: usize) -> CostAwareSpilloverPolicy {
     CostAwareSpilloverPolicy {
         spillover_threshold: threshold,
     }

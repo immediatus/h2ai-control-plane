@@ -284,9 +284,15 @@ fn make_doc(
             rubric: format!("{id} rubric text for retrieval"),
         },
         remediation_hint: None,
-        domains: domains.iter().map(|s| s.to_string()).collect(),
+        domains: domains
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
         mandatory_for_tags: vec![],
-        related_to: related_to.iter().map(|s| s.to_string()).collect(),
+        related_to: related_to
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
     }
 }
 
@@ -343,6 +349,153 @@ fn navigate_by_domain_unknown_returns_empty() {
     let docs = vec![make_doc("C-001", &["billing"], &[])];
     let cache = WikiCache::from_docs(&docs);
     assert!(cache.navigate_by_domain("nonexistent").is_empty());
+}
+
+// ── Lines 126, 147-148, 161, 205-207: WikiCache coverage ─────────────────────
+
+#[test]
+fn wiki_cache_search_returns_empty_when_retriever_is_none() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    // Simulate a deserialized WikiCache (retriever is #[serde(skip)] → None)
+    let mut cache = WikiCache::default();
+    cache.metas.insert(
+        "C-001".into(),
+        ConstraintMeta {
+            id: "C-001".into(),
+            summary: "budget idempotency atomic redis".into(),
+            severity: ConstraintSeverity::Advisory,
+            predicate_kind: PredicateKind::LlmJudge,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+            payload_version: "v1".into(),
+            inline_predicate: None,
+            source: None,
+            last_updated_ms: None,
+        },
+    );
+    // retriever is None (default) — search must return empty vec
+    let hits = cache.search("budget atomic redis", 5);
+    assert!(
+        hits.is_empty(),
+        "search with no retriever must return empty"
+    );
+}
+
+#[test]
+fn wiki_cache_rebuild_retriever_enables_search() {
+    use h2ai_constraints::types::ConstraintDoc;
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![h2ai_constraints::types::ConstraintDoc {
+        id: "C-REBUILD".into(),
+        source_file: "c-rebuild.yaml".into(),
+        description: "atomic idempotency budget redis lua debit".into(),
+        severity: ConstraintSeverity::Advisory,
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "idempotency key atomic budget deduction".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    }];
+
+    // Build normally (retriever present)
+    let mut cache = WikiCache::from_docs(&docs);
+    // Simulate losing the retriever (as if deserialized from NATS KV)
+    cache.retriever = None;
+    assert!(
+        cache.search("atomic idempotency", 5).is_empty(),
+        "no retriever → no results"
+    );
+
+    // Rebuild
+    cache.rebuild_retriever(&docs);
+    let hits = cache.search("atomic idempotency budget", 5);
+    assert!(
+        !hits.is_empty(),
+        "after rebuild_retriever, search must work"
+    );
+    // Suppress unused warning for ConstraintDoc
+    let _ = ConstraintDoc::new_llm_judge("x", "y");
+}
+
+#[test]
+fn wiki_resolve_with_semantic_explicit_ids_and_tags() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![
+        h2ai_constraints::types::ConstraintDoc {
+            id: "C-EXPLICIT".into(),
+            source_file: "c-explicit.yaml".into(),
+            description: "Explicitly requested constraint".into(),
+            severity: ConstraintSeverity::Hard { threshold: 0.45 },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "explicit".into(),
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+        h2ai_constraints::types::ConstraintDoc {
+            id: "C-TAGGED".into(),
+            source_file: "c-tagged.yaml".into(),
+            description: "Tag-matched constraint".into(),
+            severity: ConstraintSeverity::Advisory,
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "tagged billing".into(),
+            },
+            remediation_hint: None,
+            domains: vec!["billing".into()],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+        },
+    ];
+    let cache = WikiCache::from_docs(&docs);
+
+    // Stage 1 only: explicit_ids + tags, empty query_text
+    let resolved = cache.resolve_with_semantic(
+        &["billing".to_string()],
+        &["C-EXPLICIT".to_string()],
+        "", // empty query → no BM25 stage
+        5,
+    );
+    let ids: std::collections::HashSet<&str> = resolved.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.contains("C-EXPLICIT"), "explicit id must be included");
+    assert!(
+        ids.contains("C-TAGGED"),
+        "tagged constraint must be included"
+    );
+}
+
+#[test]
+fn wiki_resolve_with_semantic_query_only() {
+    use h2ai_constraints::wiki::WikiCache;
+
+    let docs = vec![h2ai_constraints::types::ConstraintDoc {
+        id: "C-QUERY-ONLY".into(),
+        source_file: "c-query.yaml".into(),
+        description: "stateless service cache eviction ttl".into(),
+        severity: ConstraintSeverity::Advisory,
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "stateless request service ttl cache eviction sticky session".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    }];
+    let cache = WikiCache::from_docs(&docs);
+
+    // No tags, no explicit_ids — only BM25 semantic search
+    let resolved = cache.resolve_with_semantic(&[], &[], "stateless service cache eviction", 5);
+    assert!(
+        resolved.iter().any(|m| m.id == "C-QUERY-ONLY"),
+        "BM25-only path must surface C-QUERY-ONLY"
+    );
 }
 
 // ── New tests: BM25 semantic search ─────────────────────────────────────────

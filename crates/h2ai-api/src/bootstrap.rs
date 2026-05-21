@@ -1,9 +1,10 @@
 use h2ai_config::{AdapterProfile, CalibrationBootstrapConfig, ProfileTier};
-use h2ai_state::nats::{NatsClient, NatsError};
+use h2ai_state::backend::OproStore;
+use h2ai_state::nats::NatsError;
 use h2ai_types::prompt_variant::AdapterOproState;
 use std::collections::HashMap;
 
-/// Seed the OPRO state with synthetic j_eff observations for a new adapter.
+/// Seed the OPRO state with synthetic `j_eff` observations for a new adapter.
 /// Uses capability-tier Bayesian priors from published benchmark medians:
 /// - Capable: 0.78 (e.g. GPT-4o, Claude Sonnet)
 /// - Standard: 0.62 (e.g. GPT-4o-mini, Mistral Large)
@@ -11,11 +12,11 @@ use std::collections::HashMap;
 ///
 /// Called once per adapter profile at startup. Idempotent — skips if OPRO
 /// state already exists in NATS KV (don't re-seed after the first run).
-pub async fn seed_bootstrap_prior(
+pub async fn seed_bootstrap_prior<S: OproStore>(
     adapter_name: &str,
     tier: &ProfileTier,
     prior_weight: u32,
-    nats: &NatsClient,
+    nats: &S,
 ) -> Result<(), NatsError> {
     // Idempotency: don't re-seed if OPRO state already exists.
     if nats.get_adapter_opro_state(adapter_name).await?.is_some() {
@@ -37,8 +38,8 @@ pub async fn seed_bootstrap_prior(
     // at prior_j_eff success rate:
     //   alpha = prior_j_eff * prior_weight + 1  (Beta prior: +1 to avoid zero)
     //   beta  = (1 - prior_j_eff) * prior_weight + 1
-    let _alpha = prior_j_eff * prior_weight as f64 + 1.0;
-    let _beta = (1.0 - prior_j_eff) * prior_weight as f64 + 1.0;
+    let _alpha = prior_j_eff * f64::from(prior_weight) + 1.0;
+    let _beta = (1.0 - prior_j_eff).mul_add(f64::from(prior_weight), 1.0);
 
     let state = AdapterOproState {
         adapter_name: adapter_name.to_string(),
@@ -65,13 +66,14 @@ pub async fn seed_bootstrap_prior(
 }
 
 /// Seed bootstrap priors for all configured adapter profiles.
+///
 /// Iterates profiles and calls `seed_bootstrap_prior` for each.
 /// Logs warnings for failures but does not abort — missing priors
 /// degrade to cold-start Thompson sampling, not a hard failure.
-pub async fn seed_all_bootstrap_priors(
+pub async fn seed_all_bootstrap_priors<S: OproStore>(
     profiles: &[AdapterProfile],
     bootstrap_cfg: &CalibrationBootstrapConfig,
-    nats: &NatsClient,
+    nats: &S,
 ) {
     for profile in profiles {
         if let Err(e) = seed_bootstrap_prior(

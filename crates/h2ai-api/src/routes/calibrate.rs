@@ -16,7 +16,7 @@ use std::convert::Infallible;
 ///
 /// Runs `CalibrationHarness`, stores the result in `state.calibration` and NATS, and
 /// optionally publishes a NATS SSE event when `notify_cal_id` is `Some` (HTTP path only).
-pub(crate) async fn run_calibration_core(
+pub async fn run_calibration_core(
     state: AppState,
     single_family_warning: bool,
     explorer_verification_family_match: bool,
@@ -33,8 +33,8 @@ pub(crate) async fn run_calibration_core(
         use std::collections::HashSet;
         let mut seen: HashSet<*const dyn h2ai_types::adapter::IComputeAdapter> = HashSet::new();
         let mut distinct = Vec::new();
-        for a in state.adapter_pool.iter().map(|arc| arc.as_ref()) {
-            let ptr = a as *const dyn h2ai_types::adapter::IComputeAdapter;
+        for a in state.adapter_pool.iter().map(std::convert::AsRef::as_ref) {
+            let ptr = std::ptr::from_ref::<dyn h2ai_types::adapter::IComputeAdapter>(a);
             if seen.insert(ptr) {
                 distinct.push(a);
             }
@@ -82,14 +82,18 @@ pub(crate) async fn run_calibration_core(
                 }
                 .to_string();
             }
-            if let Err(e) = state.nats.put_calibration(&event).await {
-                tracing::error!("failed to persist calibration: {e}");
+            if let Some(nats) = &state.nats {
+                if let Err(e) = nats.put_calibration(&event).await {
+                    tracing::error!("failed to persist calibration: {e}");
+                }
             }
             if notify_cal_id.is_some() {
                 let ev = H2AIEvent::CalibrationCompleted(event);
                 let subject = format!("h2ai.calibration.{cal_id}");
-                if let Err(e) = state.nats.publish_to(&subject, &ev).await {
-                    tracing::error!("failed to publish calibration event: {e}");
+                if let Some(nats) = &state.nats {
+                    if let Err(e) = nats.publish_to(&subject, &ev).await {
+                        tracing::error!("failed to publish calibration event: {e}");
+                    }
                 }
             }
         }
@@ -104,16 +108,17 @@ pub(crate) async fn run_calibration_core(
             }
             if let Some(cid) = notify_cal_id {
                 let subject = format!("h2ai.calibration.{cid}");
-                let _ = state
-                    .nats
-                    .publish_to(
-                        &subject,
-                        &H2AIEvent::CalibrationFailed {
-                            calibration_id: cid.to_string(),
-                            reason: e.to_string(),
-                        },
-                    )
-                    .await;
+                if let Some(nats) = &state.nats {
+                    let _ = nats
+                        .publish_to(
+                            &subject,
+                            &H2AIEvent::CalibrationFailed {
+                                calibration_id: cid.to_string(),
+                                reason: e.to_string(),
+                            },
+                        )
+                        .await;
+                }
             }
         }
     }
@@ -141,7 +146,8 @@ pub async fn start_calibration(
             .adapter_pool
             .iter()
             .map(|a| {
-                a.as_ref() as *const dyn h2ai_types::adapter::IComputeAdapter as *const () as usize
+                std::ptr::from_ref::<dyn h2ai_types::adapter::IComputeAdapter>(a.as_ref())
+                    .cast::<()>() as usize
             })
             .collect();
         ptrs.len() == 1
@@ -176,11 +182,11 @@ pub async fn start_calibration(
                                                     // ──────────────────────────────────────────────────────────────────────────
 
     tokio::spawn(run_calibration_core(
-        state.clone(),
+        state,
         single_family_warning,
         explorer_verification_family_match,
         adapter_families,
-        Some(cal_id.clone()),
+        Some(cal_id),
     ));
 
     let response = CalibrationAccepted {

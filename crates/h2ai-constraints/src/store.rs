@@ -2,7 +2,7 @@ use crate::source::ConstraintError;
 use crate::types::ConstraintDoc;
 use async_trait::async_trait;
 
-/// Content store — loads full ConstraintDoc by ID, on demand.
+/// Content store — loads full `ConstraintDoc` by ID, on demand.
 ///
 /// Never bulk-loads. Implementations may cache at the call-site level
 /// but must not hold the full corpus in memory.

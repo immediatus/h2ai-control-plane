@@ -48,6 +48,9 @@ async-stream      = { workspace = true }
 hostname          = { workspace = true }
 rand              = { workspace = true }
 regex             = { workspace = true }
+jsonschema        = { workspace = true }
+tempfile          = "3"
+reqwest           = { workspace = true, features = ["json"] }
 
 [features]
 # Enables FastEmbedModel for semantic CG measurement. Requires ORT (ONNX Runtime) on the host.
@@ -57,7 +60,5 @@ fastembed-embed = ["h2ai-context/fastembed-embed"]
 axum          = { workspace = true, features = ["macros"] }
 tokio         = { workspace = true, features = ["macros", "rt"] }
 tower         = { workspace = true, features = ["util"] }
-reqwest       = { workspace = true, features = ["json"] }
 uuid          = { workspace = true }
 h2ai-adapters = { path = "../h2ai-adapters" }
-tempfile      = "3"

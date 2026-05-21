@@ -40,6 +40,7 @@ const DELTA: f32 = 1.0;
 
 impl Bm25PlusRetriever {
     /// Build a BM25+ index from an iterator of `(id, text)` pairs.
+    #[allow(clippy::cast_precision_loss)]
     pub fn build<'a>(docs: impl Iterator<Item = (&'a str, &'a str)>) -> Self {
         let entries: Vec<BM25Entry> = docs
             .map(|(id, text)| {
@@ -71,7 +72,7 @@ impl Bm25PlusRetriever {
         let idf: HashMap<String, f32> = df
             .into_iter()
             .map(|(term, count)| {
-                let score = ((n - count as f32 + 0.5) / (count as f32 + 0.5) + 1.0).ln();
+                let score = ((n - count as f32 + 0.5) / (count as f32 + 0.5)).ln_1p();
                 (term, score.max(0.0))
             })
             .collect();
@@ -87,6 +88,7 @@ impl Bm25PlusRetriever {
     ///
     /// Only candidates with score > 0 are returned. Returns empty if corpus is empty,
     /// `top_k` is 0, or no query terms match any document.
+    #[must_use]
     pub fn query(&self, text: &str, top_k: usize) -> Vec<Candidate> {
         if self.entries.is_empty() || top_k == 0 {
             return vec![];
@@ -115,21 +117,21 @@ impl Bm25PlusRetriever {
         scores
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn bm25plus_score(&self, entry: &BM25Entry, query_terms: &HashMap<String, u32>) -> f32 {
         let dl = entry.doc_len as f32;
         let avgdl = self.avg_doc_len.max(1.0);
         let mut score = 0.0f32;
         for term in query_terms.keys() {
-            let idf = match self.idf.get(term) {
-                Some(&v) => v,
-                None => continue,
+            let Some(&idf) = self.idf.get(term) else {
+                continue;
             };
             let tf = *entry.term_freqs.get(term).unwrap_or(&0) as f32;
             if tf == 0.0 {
                 continue;
             }
             // BM25+ tf normalization
-            let tf_norm = tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avgdl));
+            let tf_norm = tf * (K1 + 1.0) / K1.mul_add(1.0 - B + B * dl / avgdl, tf);
             // BM25+ score: IDF × (δ + tf_norm)  — the δ floor is the key upgrade
             score += idf * (DELTA + tf_norm);
         }
@@ -137,11 +139,13 @@ impl Bm25PlusRetriever {
     }
 
     /// Number of indexed documents.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }

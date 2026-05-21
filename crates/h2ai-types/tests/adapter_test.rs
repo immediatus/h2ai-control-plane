@@ -1,6 +1,8 @@
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::sizing::TauValue;
+#[allow(unused_imports)]
+use std::sync::Arc;
 
 #[test]
 fn compute_request_serde_round_trip() {
@@ -95,8 +97,8 @@ fn label(name: &str) -> std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>
 fn registry_scoring_falls_back_to_reasoning_when_not_set() {
     let reasoning = label("reasoning");
     let reg = h2ai_types::adapter::AdapterRegistry::new(reasoning.clone());
-    let resolved = reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring) as *const _;
-    let expected = reasoning.as_ref() as *const _;
+    let resolved = std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring));
+    let expected = std::ptr::from_ref(reasoning.as_ref());
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
     assert_eq!(
@@ -110,8 +112,8 @@ fn registry_scoring_uses_dedicated_adapter_when_set() {
     let scoring = label("scoring");
     let reg =
         h2ai_types::adapter::AdapterRegistry::new(label("reasoning")).with_scoring(scoring.clone());
-    let resolved = reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring) as *const _;
-    let expected = scoring.as_ref() as *const _;
+    let resolved = std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring));
+    let expected = std::ptr::from_ref(scoring.as_ref());
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
     assert_eq!(
@@ -124,8 +126,8 @@ fn registry_scoring_uses_dedicated_adapter_when_set() {
 fn registry_structural_falls_back_to_reasoning_when_not_set() {
     let reasoning = label("reasoning");
     let reg = h2ai_types::adapter::AdapterRegistry::new(reasoning.clone());
-    let resolved = reg.resolve(&h2ai_types::adapter::TaskProfile::Structural) as *const _;
-    let expected = reasoning.as_ref() as *const _;
+    let resolved = std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Structural));
+    let expected = std::ptr::from_ref(reasoning.as_ref());
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
     assert_eq!(
@@ -139,8 +141,8 @@ fn registry_structural_uses_dedicated_adapter_when_set() {
     let structural = label("structural");
     let reg = h2ai_types::adapter::AdapterRegistry::new(label("reasoning"))
         .with_structural(structural.clone());
-    let resolved = reg.resolve(&h2ai_types::adapter::TaskProfile::Structural) as *const _;
-    let expected = structural.as_ref() as *const _;
+    let resolved = std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Structural));
+    let expected = std::ptr::from_ref(structural.as_ref());
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
     assert_eq!(
@@ -153,8 +155,8 @@ fn registry_structural_uses_dedicated_adapter_when_set() {
 fn registry_reasoning_resolves_to_reasoning_adapter() {
     let reasoning = label("reasoning");
     let reg = h2ai_types::adapter::AdapterRegistry::new(reasoning.clone());
-    let resolved = reg.resolve(&h2ai_types::adapter::TaskProfile::Reasoning) as *const _;
-    let expected = reasoning.as_ref() as *const _;
+    let resolved = std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Reasoning));
+    let expected = std::ptr::from_ref(reasoning.as_ref());
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
     assert_eq!(resolved, expected);
@@ -171,15 +173,105 @@ fn registry_all_three_resolve_independently() {
     // Raw pointer comparison is valid here: Arc::as_ref() and resolve() both produce
     // a reference into the same Arc allocation, so data pointers are identical.
     assert_eq!(
-        reg.resolve(&h2ai_types::adapter::TaskProfile::Reasoning) as *const _,
-        r.as_ref() as *const _
+        std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Reasoning)),
+        std::ptr::from_ref(r.as_ref())
     );
     assert_eq!(
-        reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring) as *const _,
-        sc.as_ref() as *const _
+        std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Scoring)),
+        std::ptr::from_ref(sc.as_ref())
     );
     assert_eq!(
-        reg.resolve(&h2ai_types::adapter::TaskProfile::Structural) as *const _,
-        st.as_ref() as *const _
+        std::ptr::from_ref(reg.resolve(&h2ai_types::adapter::TaskProfile::Structural)),
+        std::ptr::from_ref(st.as_ref())
     );
+}
+
+// ── AdapterError display — remaining variants ─────────────────────────────────
+
+#[test]
+fn adapter_error_ffi_display() {
+    let err = AdapterError::FfiError("segfault at 0x0".into());
+    assert!(err.to_string().contains("segfault at 0x0"));
+}
+
+#[test]
+fn adapter_error_remote_display() {
+    let err = AdapterError::Remote("downstream agent returned 503".into());
+    assert!(err.to_string().contains("downstream agent returned 503"));
+}
+
+#[test]
+fn adapter_error_cancelled_display() {
+    let err = AdapterError::Cancelled;
+    assert!(err.to_string().contains("cancelled"));
+}
+
+#[test]
+fn adapter_error_unavailable_display() {
+    let err = AdapterError::Unavailable;
+    assert!(err.to_string().contains("unavailable"));
+}
+
+#[test]
+fn adapter_error_empty_output_display() {
+    let err = AdapterError::EmptyOutput;
+    assert!(err.to_string().contains("empty output"));
+}
+
+// ── ComputeResponse with optional fields populated ────────────────────────────
+
+#[test]
+fn compute_response_with_tokens_used_and_reasoning_trace() {
+    let resp = ComputeResponse {
+        output: "result".into(),
+        token_cost: 100,
+        adapter_kind: AdapterKind::CloudGeneric {
+            endpoint: "https://api.example.com".into(),
+            api_key_env: "KEY".into(),
+            model: Some("gpt-4".into()),
+        },
+        tokens_used: Some(200),
+        reasoning_trace: Some("step 1: ...\nstep 2: ...".into()),
+    };
+    let json = serde_json::to_string(&resp).unwrap();
+    let back: ComputeResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.tokens_used, Some(200));
+    assert_eq!(back.reasoning_trace.unwrap(), "step 1: ...\nstep 2: ...");
+}
+
+// ── AdapterRegistry Debug formatting ─────────────────────────────────────────
+
+#[test]
+fn registry_debug_includes_adapter_kind() {
+    let reg = h2ai_types::adapter::AdapterRegistry::new(label("r"))
+        .with_scoring(label("sc"))
+        .with_structural(label("st"));
+    let dbg = format!("{reg:?}");
+    assert!(dbg.contains("AdapterRegistry"));
+}
+
+#[test]
+fn registry_debug_without_optional_adapters() {
+    let reg = h2ai_types::adapter::AdapterRegistry::new(label("r"));
+    let dbg = format!("{reg:?}");
+    assert!(dbg.contains("AdapterRegistry"));
+}
+
+// ── TaskProfile clone / debug / eq ───────────────────────────────────────────
+
+#[test]
+fn task_profile_clone_and_eq() {
+    use h2ai_types::adapter::TaskProfile;
+    let a = TaskProfile::Reasoning;
+    let b = a.clone();
+    assert_eq!(a, b);
+    assert_ne!(TaskProfile::Scoring, TaskProfile::Structural);
+}
+
+#[test]
+fn task_profile_debug() {
+    use h2ai_types::adapter::TaskProfile;
+    assert!(format!("{:?}", TaskProfile::Scoring).contains("Scoring"));
+    assert!(format!("{:?}", TaskProfile::Structural).contains("Structural"));
+    assert!(format!("{:?}", TaskProfile::Reasoning).contains("Reasoning"));
 }

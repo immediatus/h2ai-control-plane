@@ -1,23 +1,71 @@
-//! Real-LLM integration tests — prove N_max bounds the engine and
-//! that calibration + engine produce theoretically consistent results.
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
+//! Engine + calibration theory tests — all LLM calls replaced with mock adapters.
 //!
-//! Run with llama.server on port 8080:
-//! ```bash
-//! LLAMACPP_BASE_URL=http://host.docker.internal:8080/v1 \
-//!   cargo nextest run -p h2ai-orchestrator --test llm_integration_test --run-ignored all --nocapture
-//! ```
+//! These tests prove that:
+//!   - CalibrationHarness produces coefficients satisfying β_eff = β₀×(1−CG) and
+//!     N_max = √((1−α)/β_eff)
+//!   - The engine respects N_max as a hard ceiling on agent count
+//!   - The full engine pipeline (calibration → exploration → verification → synthesis)
+//!     runs end-to-end without panicking
 
-use h2ai_adapters::mock::MockAdapter;
-use h2ai_adapters::openai::OpenAIAdapter;
+use h2ai_adapters::mock::{DecompositionMockAdapter, MockAdapter};
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
-use h2ai_orchestrator::srani_grounding::{
-    LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
-};
-use h2ai_tools::web_search::WebGroundingBackend;
-
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
+use h2ai_orchestrator::srani_grounding::{SpecAnchorGrounder, SraniGroundingChain};
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::{TaskState, TaskStore};
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
@@ -28,83 +76,39 @@ use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
 
-fn llamacpp_endpoint() -> String {
-    std::env::var("LLAMACPP_BASE_URL")
-        .unwrap_or_else(|_| "http://host.docker.internal:8080/v1".into())
-}
-
-fn make_adapter() -> OpenAIAdapter {
-    std::env::set_var("LLAMACPP_API_KEY", "local");
-    OpenAIAdapter::new(
-        llamacpp_endpoint(),
-        "LLAMACPP_API_KEY".into(),
-        std::env::var("LLAMACPP_MODEL").unwrap_or_else(|_| "local".into()),
-    )
-}
-
-async fn is_reachable() -> bool {
-    let a = make_adapter();
-    let probe = h2ai_types::adapter::ComputeRequest {
-        system_context: "You are a helpful assistant.".into(),
-        task: "Reply: ready".into(),
-        tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
-        max_tokens: 8,
-    };
-    a.execute(probe).await.is_ok()
-}
-
 /// Proves:
-///   1. CalibrationHarness with real LLM → valid α, β₀, CG, β_eff, N_max
+///   1. CalibrationHarness with mock adapters → valid α, β₀, CG, β_eff, N_max
 ///   2. β_eff = β₀ × (1−CG) holds exactly
 ///   3. N_max = √((1−α)/β_eff) holds exactly
 ///   4. Engine respects N_max as a hard ceiling: never runs more agents than N_max
 #[tokio::test]
-#[ignore = "requires llama.server at LLAMACPP_BASE_URL"]
 async fn calibrate_then_engine_respects_n_max_ceiling() {
-    if !is_reachable().await {
-        eprintln!(
-            "SKIP: llama.server not reachable at {}",
-            llamacpp_endpoint()
-        );
-        return;
-    }
-
     let cfg = H2AIConfig::default();
     let corpus = vec![ConstraintDoc::new_llm_judge(
         "stateless",
-        "The solution must be stateless. No server-side sessions permitted. Authentication must not rely on any per-request mutable state.",
+        "The solution must be stateless. No server-side sessions permitted.",
     )];
 
-    // ── Step 1: Calibrate with real LLM ─────────────────────────────────────
-    let a1 = make_adapter();
-    let a2 = make_adapter();
+    // Calibrate with 2 mock adapters (identical output → CG=0.0 from Hamming)
+    let cal_a1 = MockAdapter::new("JWT is a stateless token.".into());
+    let cal_a2 = MockAdapter::new("JWT is a stateless token.".into());
 
-    let cal_event = match CalibrationHarness::run(CalibrationInput {
+    let cal_event = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec![
             "Explain stateless auth for APIs in one sentence.".into(),
             "What is a JWT token? One sentence.".into(),
         ],
-        adapters: vec![&a1 as &dyn IComputeAdapter, &a2 as &dyn IComputeAdapter],
+        adapters: vec![
+            &cal_a1 as &dyn IComputeAdapter,
+            &cal_a2 as &dyn IComputeAdapter,
+        ],
         cfg: &cfg,
         constraint_corpus: &corpus,
         embedding_model: None,
     })
     .await
-    {
-        Ok(ev) => ev,
-        Err(e) => {
-            let s = e.to_string();
-            if s.contains("network error")
-                || s.contains("connection refused")
-                || s.contains("timed out")
-            {
-                eprintln!("SKIP: LLM became unreachable mid-calibration: {e}");
-                return;
-            }
-            panic!("calibration failed with non-network error: {e}");
-        }
-    };
+    .expect("calibration must succeed with mock adapters");
 
     let coeff = &cal_event.coefficients;
     let alpha = coeff.alpha;
@@ -113,14 +117,13 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
     let beta_eff = coeff.beta_eff();
     let n_max = coeff.n_max();
 
-    eprintln!("\n── Calibration (real LLM) ──");
+    eprintln!("\n── Calibration (mock adapters) ──");
     eprintln!("  α       = {alpha:.4}");
     eprintln!("  β₀      = {beta_base:.4}");
     eprintln!("  CG      = {cg:.4}");
     eprintln!("  β_eff   = {beta_eff:.4}");
     eprintln!("  N_max   = {n_max:.2}");
 
-    // Theory invariants
     assert!((0.0..1.0).contains(&alpha), "α out of range: {alpha}");
     assert!(beta_base > 0.0, "β₀ must be > 0");
     assert!(beta_eff > 0.0, "β_eff must be > 0");
@@ -143,9 +146,9 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
     eprintln!("  ✓ β_eff = β₀×(1−CG) holds");
     eprintln!("  ✓ N_max = √((1−α)/β_eff) holds");
 
-    // ── Step 2: Submit task requesting N >> N_max; engine must clamp ─────────
+    // Submit task requesting N >> N_max; engine must clamp
     let n_max_floor = n_max.floor() as u32;
-    let requested_n = n_max_floor + 5; // deliberately exceeds N_max
+    let requested_n = n_max_floor + 5;
     eprintln!("\n── Engine N_max bound test ──");
     eprintln!("  N_max ceiling = {n_max_floor}");
     eprintln!("  Requested N   = {requested_n} (over by 5)");
@@ -157,7 +160,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         TaskState::new(task_id.clone(), TenantId::default_tenant()),
     );
 
-    let explorer = make_adapter();
+    let explorer = DecompositionMockAdapter::new("Stateless JWT auth is recommended.".into());
     let mock_verifier = MockAdapter::new(r#"{"score": 0.8, "reason": "compliant"}"#.into());
     let mock_auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
     let registry =
@@ -185,7 +188,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
+        tenant_id: TenantId::default_tenant(),
     };
 
     let input = EngineInput {
@@ -247,10 +250,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
             eprintln!("  ✓ N_max ceiling enforced by engine");
         }
         Err(e) => {
-            // Engine may fail (mock verifier scores may not cross threshold).
-            // N_max bound test still valid — no panic = bound respected.
-            eprintln!("  Engine returned err (expected with mock verifier): {e}");
-            // Check store: task marked failed, not stuck in pending
+            eprintln!("  Engine returned err (expected with mock outputs): {e}");
             let ts = store.get(&task_id);
             assert!(ts.is_some(), "task must exist in store after engine error");
             let status = ts.unwrap().status;
@@ -261,54 +261,37 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
     }
 }
 
-/// Comprehensive debug e2e analysis — real LLM, SRANI grounding chain wired, traces every
-/// engine decision: calibration, proposals, verification scores, SRANI events, grounding hints,
-/// retries, final output, and waste/yield metrics.
+/// Proves the full engine pipeline (calibration → exploration → verification → synthesis)
+/// runs end-to-end with mock adapters and SRANI grounding chain (SpecAnchor only).
 ///
-/// Run with:
-/// ```bash
-/// LLAMACPP_BASE_URL=http://host.docker.internal:8080/v1 \
-///   cargo nextest run -p h2ai-orchestrator --test llm_integration_test \
-///   engine_full_pipeline_debug_trace --run-ignored all --nocapture
-/// ```
+/// With mock adapters: SRANI may or may not fire depending on CFI thresholds.
+/// The core invariant is that the engine completes without panicking and either
+/// produces output or marks the task as failed in the store.
 #[tokio::test]
-#[ignore = "requires llama.server at LLAMACPP_BASE_URL"]
-async fn engine_full_pipeline_debug_trace() {
-    if !is_reachable().await {
-        eprintln!("SKIP: LLM not reachable at {}", llamacpp_endpoint());
-        return;
-    }
-
-    eprintln!("\n╔══════════════════════════════════════════════════════════════╗");
-    eprintln!("║          H2AI ENGINE FULL PIPELINE DEBUG TRACE               ║");
-    eprintln!("╚══════════════════════════════════════════════════════════════╝");
-
-    // Cap explorer tokens to 512 — the default 65536 causes multi-minute calls on a 26.9B model.
+async fn engine_full_pipeline_with_mock_adapters() {
     let cfg = H2AIConfig {
         explorer_max_tokens: 512,
         calibration_max_tokens: 256,
         ..H2AIConfig::default()
     };
 
-    // ── Phase 0: Calibration ─────────────────────────────────────────────────
-    eprintln!("\n── Phase 0: Calibration ────────────────────────────────────────");
-    // Minimal calibration: 1 prompt × 1 adapter — limits LLM calls to keep runtime under ~5 min.
-    let a1 = make_adapter();
+    eprintln!("\n── Phase 0: Calibration (mock) ──────────────────────────────────");
+    let cal_a1 = MockAdapter::new("Stateless rate limiting with Redis sliding windows.".into());
     let corpus = vec![ConstraintDoc::new_llm_judge(
         "stateless",
-        "The solution must be stateless. No server-side sessions. Authentication must use tokens only.",
+        "The solution must be stateless. No server-side sessions.",
     )];
 
     let cal_event = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["Design a stateless rate limiter using Redis sliding windows.".into()],
-        adapters: vec![&a1 as &dyn IComputeAdapter],
+        adapters: vec![&cal_a1 as &dyn IComputeAdapter],
         cfg: &cfg,
         constraint_corpus: &corpus,
         embedding_model: None,
     })
     .await
-    .expect("calibration must succeed");
+    .expect("calibration must succeed with mock adapter");
 
     let coeff = &cal_event.coefficients;
     eprintln!("  α       = {:.4}", coeff.alpha);
@@ -317,15 +300,28 @@ async fn engine_full_pipeline_debug_trace() {
     eprintln!("  β_eff   = {:.4}", coeff.beta_eff());
     eprintln!("  N_max   = {:.2}", coeff.n_max());
 
-    // ── Phase 1: Task designed to trigger SRANI (Redis is spec, LLM may hallucinate others) ──
-    eprintln!("\n── Phase 1: Task setup ──────────────────────────────────────────");
-    let task_desc = "Build a rate-limiting service using Redis sliding windows for HTTP APIs. \
-        Use a fixed-capacity token bucket backed by Redis ZADD/ZRANGEBYSCORE. \
-        The service must be stateless and horizontally scalable.";
-    eprintln!("  Task: {task_desc}");
+    eprintln!("\n── Phase 1: Engine run (mock explorer + verifier + auditor) ─────");
+    let task_id = TaskId::new();
+    let store = TaskStore::new();
+    store.insert(
+        task_id.clone(),
+        TaskState::new(task_id.clone(), TenantId::default_tenant()),
+    );
+
+    let explorer = DecompositionMockAdapter::new("Use Redis ZADD for rate limiting.".into());
+    let verifier = MockAdapter::new(r#"{"score": 0.85, "reason": "compliant"}"#.into());
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let researcher: Arc<dyn IComputeAdapter> = Arc::new(MockAdapter::new(
+        "Redis is the authoritative source.".into(),
+    ));
+    let registry =
+        AdapterRegistry::new(Arc::new(MockAdapter::new("reg".into())) as Arc<dyn IComputeAdapter>);
+
+    let chain = Arc::new(SraniGroundingChain::new(vec![Box::new(SpecAnchorGrounder)]));
 
     let manifest = TaskManifest {
-        description: task_desc.into(),
+        description: "Build a rate-limiting service using Redis sliding windows for HTTP APIs."
+            .into(),
         pareto_weights: ParetoWeights::new(0.3, 0.4, 0.3).unwrap(),
         topology: TopologyRequest {
             kind: "ensemble".into(),
@@ -346,35 +342,8 @@ async fn engine_full_pipeline_debug_trace() {
         require_approval: false,
         constraint_tags: vec![],
         measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
+        tenant_id: TenantId::default_tenant(),
     };
-
-    // ── Phase 2: SRANI grounding chain ──────────────────────────────────────
-    eprintln!("\n── Phase 2: SRANI grounding chain ───────────────────────────────");
-    let llm_arc: Arc<dyn IComputeAdapter> = Arc::new(make_adapter());
-    let web_backend = Arc::new(WebGroundingBackend::new());
-    let chain = Arc::new(SraniGroundingChain::new(vec![
-        Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::clone(&llm_arc))),
-        Box::new(WebSearchGrounder::new(web_backend, 3)),
-    ]));
-    eprintln!("  Chain: SpecAnchor → LlmResearcher → WebGrounding (3 queries)");
-
-    // ── Phase 3: Engine run ──────────────────────────────────────────────────
-    eprintln!("\n── Phase 3: Engine run ──────────────────────────────────────────");
-    let task_id = TaskId::new();
-    let store = TaskStore::new();
-    store.insert(
-        task_id.clone(),
-        TaskState::new(task_id.clone(), TenantId::default_tenant()),
-    );
-
-    // Real LLM for exploration only. Mock verifier/auditor keep LLM call count low.
-    let explorer = make_adapter();
-    let verifier = MockAdapter::new(r#"{"score": 0.85, "reason": "compliant"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("reg".into())) as Arc<dyn IComputeAdapter>);
 
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -399,7 +368,7 @@ async fn engine_full_pipeline_debug_trace() {
         synthesis_adapter: None,
         bandit_state: None,
         shadow_audit_ctx: None,
-        researcher_adapter: Some(Arc::clone(&llm_arc)),
+        researcher_adapter: Some(Arc::clone(&researcher)),
         srani_ema_cfi: 0.45,
         srani_count: 5,
         srani_grounding_chain: Some(chain),
@@ -413,197 +382,25 @@ async fn engine_full_pipeline_debug_trace() {
         induction_store: None,
     };
 
-    let output = match ExecutionEngine::run_offline(input).await {
-        Ok(o) => o,
+    match ExecutionEngine::run_offline(input).await {
+        Ok(output) => {
+            eprintln!(
+                "  Proposals evaluated: {}",
+                output.verification_events.len()
+            );
+            eprintln!("  EMA CFI: {:.4}", output.srani_ema_cfi_updated);
+            assert!(
+                !output.resolved_output.is_empty(),
+                "resolved output must not be empty"
+            );
+            eprintln!("  ✓ Full pipeline completed — output is non-empty");
+        }
         Err(e) => {
-            eprintln!("\n  ✗ Engine failed: {e}");
-            eprintln!("  → Common causes: LLM returned non-JSON for verifier/auditor,");
-            eprintln!("    all proposals scored below threshold, or task timed out.");
-            return;
-        }
-    };
-
-    // ── Decision trace: Verification ─────────────────────────────────────────
-    eprintln!("\n── Decision trace: Verification ─────────────────────────────────");
-    eprintln!(
-        "  Total proposals evaluated: {}",
-        output.verification_events.len()
-    );
-    for (i, ev) in output.verification_events.iter().enumerate() {
-        eprintln!(
-            "  [{}] slot={} score={:.3} pass={} cache_hit={}",
-            i, ev.explorer_id, ev.score, ev.passed, ev.cache_hit,
-        );
-    }
-    let passing = output
-        .verification_events
-        .iter()
-        .filter(|e| e.passed)
-        .count();
-    eprintln!(
-        "  Passing: {passing} / {}",
-        output.verification_events.len()
-    );
-
-    eprintln!("\n── Decision trace: SRANI fabrication events ─────────────────────");
-    if output.srani_events.is_empty() {
-        eprintln!("  (no SRANI events — CFI below warn_threshold or srani disabled)");
-    }
-    for ev in &output.srani_events {
-        eprintln!(
-            "  CFI={:.3}  entities={:?}  proposals={}  pressure={:.3}",
-            ev.cfi, ev.shared_ungrounded_entities, ev.proposal_count, ev.injection_pressure
-        );
-    }
-    eprintln!(
-        "  EMA CFI after this task: {:.4}",
-        output.srani_ema_cfi_updated
-    );
-    eprintln!("  SRANI count after: {}", output.srani_count_updated);
-
-    eprintln!("\n── Decision trace: Grounding events ─────────────────────────────");
-    if output.researcher_grounding_events.is_empty() {
-        eprintln!("  (no grounding events — SRANI did not reach inject_threshold or chain absent)");
-    }
-    for ev in &output.researcher_grounding_events {
-        eprintln!(
-            "  slot={:?}  source={:?}  assumption_len={}",
-            ev.slot,
-            ev.source,
-            ev.shared_assumption.len()
-        );
-        if !ev.shared_assumption.is_empty() {
-            let preview = &ev.shared_assumption[..ev.shared_assumption.len().min(300)];
-            eprintln!("  preview: {preview}…");
+            eprintln!("  Engine returned err (expected with mock verifier scores): {e}");
+            let ts = store.get(&task_id);
+            assert!(ts.is_some(), "task must exist in store after engine error");
+            assert_eq!(ts.unwrap().status, "failed");
+            eprintln!("  ✓ Task correctly marked 'failed' in store");
         }
     }
-
-    eprintln!("\n── Decision trace: Retry waves ──────────────────────────────────");
-    if output.topology_retry_events.is_empty() {
-        eprintln!("  No retries — first wave succeeded");
-    }
-    for (i, ev) in output.topology_retry_events.iter().enumerate() {
-        eprintln!(
-            "  Retry wave {}: n_explorers={}",
-            i + 1,
-            ev.explorer_configs.len()
-        );
-    }
-    eprintln!("  Mode collapse rotations: {}", output.mode_collapse_count);
-
-    eprintln!("\n── Decision trace: C1 correlated ensemble warnings ───────────────");
-    if output.correlated_warnings.is_empty() {
-        eprintln!("  No C1 warnings (CV above threshold — ensemble is diverse)");
-    }
-    for w in &output.correlated_warnings {
-        eprintln!(
-            "  cv={:.3}  mean_jaccard={:.3}  retry={}",
-            w.cv, w.mean_jaccard_distance, w.retry_count
-        );
-    }
-
-    eprintln!("\n── Decision trace: Task complexity / quadrant ───────────────────");
-    eprintln!("  Quadrant: {:?}", output.task_quadrant);
-    eprintln!(
-        "  Complexity event: tcc_eff={:.3} quadrant={:?} probe_skipped={}",
-        output.complexity_event.tcc_effective,
-        output.complexity_event.task_quadrant,
-        output.complexity_event.probe_skipped
-    );
-
-    eprintln!("\n── Final metrics ────────────────────────────────────────────────");
-    // waste_ratio = survivors/total (1.0 = no waste, 0.0 = all pruned)
-    let wasted_pct = (1.0 - output.waste_ratio) * 100.0;
-    eprintln!(
-        "  Waste ratio:      {:.4}  ({:.1}% proposals pruned, {:.1}% survived)",
-        output.waste_ratio,
-        wasted_pct,
-        output.waste_ratio * 100.0
-    );
-    eprintln!("  Epistemic yield:  {:?}", output.epistemic_yield);
-    eprintln!(
-        "  Attribution q_confidence: {:.4}",
-        output.attribution.q_confidence
-    );
-    if let Some(interval) = &output.attribution_interval {
-        eprintln!(
-            "  Bootstrap CI: [{:.4}, {:.4}]",
-            interval.q_confidence_lo, interval.q_confidence_hi
-        );
-    }
-
-    eprintln!("\n── Resolved output (first 600 chars) ────────────────────────────");
-    let preview_len = output.resolved_output.len().min(600);
-    eprintln!("{}", &output.resolved_output[..preview_len]);
-
-    // ── Analysis summary ─────────────────────────────────────────────────────
-    eprintln!("\n╔══════════════════════════════════════════════════════════════╗");
-    eprintln!("║                    ANALYSIS SUMMARY                          ║");
-    eprintln!("╚══════════════════════════════════════════════════════════════╝");
-    let srani_fired = !output.srani_events.is_empty();
-    let grounding_injected = !output.researcher_grounding_events.is_empty();
-    let retried = !output.topology_retry_events.is_empty();
-    let c1_warning = !output.correlated_warnings.is_empty();
-    eprintln!(
-        "  SRANI fired:         {}",
-        if srani_fired { "YES ✓" } else { "no" }
-    );
-    eprintln!(
-        "  Grounding injected:  {}",
-        if grounding_injected { "YES ✓" } else { "no" }
-    );
-    eprintln!(
-        "  Retry occurred:      {}",
-        if retried {
-            "YES"
-        } else {
-            "no (first wave succeeded)"
-        }
-    );
-    eprintln!(
-        "  C1 corr. warning:    {}",
-        if c1_warning {
-            "YES (low diversity)"
-        } else {
-            "no (diverse ensemble)"
-        }
-    );
-    let survived_pct = output.waste_ratio * 100.0;
-    eprintln!(
-        "  Waste ratio:         {:.1}% survived ({:.1}% pruned)",
-        survived_pct,
-        100.0 - survived_pct
-    );
-
-    if output.waste_ratio < 0.5 {
-        eprintln!("  ⚠ High waste — most proposals pruned; consider tighter tau range or stronger constraints");
-    } else {
-        eprintln!("  ✓ Proposal survival rate acceptable");
-    }
-    if !srani_fired {
-        eprintln!(
-            "  ℹ SRANI did not fire — LLM stayed on-spec or CFI below warn_threshold ({:.2})",
-            cfg.srani.warn_threshold
-        );
-    }
-    if !grounding_injected && srani_fired {
-        eprintln!(
-            "  ⚠ SRANI fired but no grounding injected — CFI < inject_threshold ({:.2})",
-            cfg.srani.inject_threshold
-        );
-    }
-    if grounding_injected {
-        let web_hits = output
-            .researcher_grounding_events
-            .iter()
-            .filter(|e| matches!(e.source, h2ai_types::events::GroundingSource::WebSearch))
-            .count();
-        eprintln!("  ✓ Web grounding activations: {web_hits}");
-    }
-
-    assert!(
-        !output.resolved_output.is_empty(),
-        "resolved output must not be empty"
-    );
-    eprintln!("\n  ✓ Full pipeline completed — output is non-empty");
 }

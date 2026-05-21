@@ -8,18 +8,19 @@ use serde::{Deserialize, Serialize};
 pub enum ReasoningCheckpointPhase {
     /// Checkpoint written at task start — manifest and tags captured.
     Created,
-    /// Thinking loop completed — shared_understanding, tensions, archetype_selection written.
+    /// Thinking loop completed — `shared_understanding`, tensions, `archetype_selection` written.
     ThinkingDone,
     /// Adapter wave `k` (0-based) completed — wave outputs appended.
     WaveCompleted(u32),
     /// Merge phase completed — synthesis output available.
     MergeDone,
-    /// Task fully resolved — TaskMetaState has been projected and written.
+    /// Task fully resolved — `TaskMetaState` has been projected and written.
     Resolved,
 }
 
 impl ReasoningCheckpointPhase {
     /// Returns `true` when the phase is at least as advanced as `other`.
+    #[must_use]
     pub fn is_at_least(&self, other: &Self) -> bool {
         self.rank() >= other.rank()
     }
@@ -89,6 +90,7 @@ pub struct TaskReasoningCheckpoint {
 
 impl TaskReasoningCheckpoint {
     /// Construct the initial checkpoint written at task start.
+    #[must_use]
     pub fn new_created(
         task_id: TaskId,
         tenant_id: TenantId,
@@ -127,6 +129,7 @@ impl TaskReasoningCheckpoint {
 
     /// Project into an immutable `TaskMetaState` after resolution.
     /// Returns `None` when thinking artifacts are missing (pre-thinking-loop tasks).
+    #[must_use]
     pub fn into_meta_state(self) -> Option<TaskMetaState> {
         let shared_understanding = self.shared_understanding?;
         let tensions = self.tensions.unwrap_or_default();
@@ -222,103 +225,4 @@ pub struct TaskMetaState {
 pub struct ArchetypeResult {
     pub name: String,
     pub confidence: f64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::identity::TaskId;
-
-    fn make_checkpoint() -> TaskReasoningCheckpoint {
-        TaskReasoningCheckpoint::new_created(
-            TaskId::new(),
-            TenantId::default_tenant(),
-            vec!["api-security".into()],
-            Some("security".into()),
-        )
-    }
-
-    #[test]
-    fn new_checkpoint_phase_is_created() {
-        let cp = make_checkpoint();
-        assert_eq!(cp.phase, ReasoningCheckpointPhase::Created);
-    }
-
-    #[test]
-    fn phase_ordering_created_lt_thinking_done() {
-        assert!(
-            !ReasoningCheckpointPhase::Created.is_at_least(&ReasoningCheckpointPhase::ThinkingDone)
-        );
-        assert!(
-            ReasoningCheckpointPhase::ThinkingDone.is_at_least(&ReasoningCheckpointPhase::Created)
-        );
-    }
-
-    #[test]
-    fn phase_ordering_wave0_lt_wave1() {
-        let w0 = ReasoningCheckpointPhase::WaveCompleted(0);
-        let w1 = ReasoningCheckpointPhase::WaveCompleted(1);
-        assert!(w1.is_at_least(&w0));
-        assert!(!w0.is_at_least(&w1));
-    }
-
-    #[test]
-    fn phase_ordering_merge_done_gt_wave5() {
-        let w5 = ReasoningCheckpointPhase::WaveCompleted(5);
-        assert!(ReasoningCheckpointPhase::MergeDone.is_at_least(&w5));
-    }
-
-    #[test]
-    fn into_meta_state_returns_none_without_thinking() {
-        let cp = make_checkpoint();
-        assert!(cp.into_meta_state().is_none());
-    }
-
-    #[test]
-    fn phase_ordering_resolved_gt_merge_done() {
-        assert!(
-            ReasoningCheckpointPhase::Resolved.is_at_least(&ReasoningCheckpointPhase::MergeDone)
-        );
-        assert!(
-            !ReasoningCheckpointPhase::MergeDone.is_at_least(&ReasoningCheckpointPhase::Resolved)
-        );
-    }
-
-    #[test]
-    fn into_meta_state_maps_archetype_selection() {
-        let mut cp = make_checkpoint();
-        cp.shared_understanding = Some("test understanding".into());
-        cp.archetype_selection = Some(vec![ArchetypeSelection {
-            name: "socratic".into(),
-            confidence: 0.9,
-        }]);
-        cp.phase = ReasoningCheckpointPhase::Resolved;
-        let meta = cp.into_meta_state().unwrap();
-        assert_eq!(meta.archetype_results.len(), 1);
-        assert_eq!(meta.archetype_results[0].name, "socratic");
-        assert!((meta.archetype_results[0].confidence - 0.9).abs() < 1e-10);
-    }
-
-    #[test]
-    fn into_meta_state_task_quadrant_none_when_not_set() {
-        let mut cp = make_checkpoint();
-        cp.shared_understanding = Some("test".into());
-        cp.phase = ReasoningCheckpointPhase::Resolved;
-        // task_quadrant was not set — should be None in projection
-        let meta = cp.into_meta_state().unwrap();
-        assert!(meta.task_quadrant.is_none());
-    }
-
-    #[test]
-    fn into_meta_state_with_thinking_artifacts() {
-        let mut cp = make_checkpoint();
-        cp.shared_understanding = Some("The task requires…".into());
-        cp.tensions = Some(vec!["security vs usability".into()]);
-        cp.phase = ReasoningCheckpointPhase::Resolved;
-        let meta = cp.into_meta_state();
-        assert!(meta.is_some());
-        let m = meta.unwrap();
-        assert_eq!(m.tensions.len(), 1);
-        assert_eq!(m.constraint_tags, vec!["api-security"]);
-    }
 }

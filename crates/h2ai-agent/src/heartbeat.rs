@@ -17,7 +17,7 @@ pub struct HeartbeatTask {
 }
 
 impl HeartbeatTask {
-    pub fn new(
+    pub const fn new(
         client: Client,
         agent_id: AgentId,
         descriptor: AgentDescriptor,
@@ -33,6 +33,7 @@ impl HeartbeatTask {
         }
     }
 
+    #[must_use]
     pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             let subject = format!("{HEARTBEAT_PREFIX}.{}", self.agent_id);

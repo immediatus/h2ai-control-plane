@@ -14,10 +14,10 @@ fn task_id() -> TaskId {
 
 #[test]
 fn agent_state_variants_exist() {
-    let _idle = AgentState::Idle;
-    let _exec = AgentState::Executing;
-    let _wait = AgentState::AwaitingApproval;
-    let _fail = AgentState::Failed("timeout".into());
+    let _ = AgentState::Idle;
+    let _ = AgentState::Executing;
+    let _ = AgentState::AwaitingApproval;
+    let _ = AgentState::Failed("timeout".into());
 }
 
 #[test]
@@ -71,6 +71,7 @@ fn agent_state_json_shape_failed_has_message_key() {
 
 // --- TaskPayload ---
 
+#[allow(clippy::float_cmp)]
 #[test]
 fn task_payload_serde_roundtrip() {
     let id = task_id();
@@ -134,7 +135,7 @@ fn task_result_serde_roundtrip_success() {
 fn task_result_serde_roundtrip_failure() {
     let id = task_id();
     let result = TaskResult {
-        task_id: id.clone(),
+        task_id: id,
         agent_id: "agent-7".into(),
         output: String::new(),
         token_cost: 0,
@@ -310,4 +311,44 @@ fn tool_call_record_roundtrips_through_json() {
     assert_eq!(back.iteration, 1);
     assert_eq!(back.output, "hi\n");
     assert_eq!(back.input_json, r#"{"command":"echo","args":["hi"]}"#);
+}
+
+#[test]
+fn context_payload_as_inline_returns_str_for_inline_variant() {
+    let cp = ContextPayload::Inline("hello context".into());
+    assert_eq!(cp.as_inline(), Some("hello context"));
+}
+
+#[test]
+fn context_payload_as_inline_returns_none_for_ref_variant() {
+    let cp = ContextPayload::Ref {
+        hash: "abc123".into(),
+        byte_len: 1024,
+    };
+    assert!(cp.as_inline().is_none());
+}
+
+#[test]
+fn context_payload_ref_serde_roundtrip() {
+    let cp = ContextPayload::Ref {
+        hash: "deadbeef01234567".into(),
+        byte_len: 8192,
+    };
+    let json = serde_json::to_string(&cp).unwrap();
+    assert!(json.contains("\"kind\":\"Ref\""));
+    let back: ContextPayload = serde_json::from_str(&json).unwrap();
+    match back {
+        ContextPayload::Ref { hash, byte_len } => {
+            assert_eq!(hash, "deadbeef01234567");
+            assert_eq!(byte_len, 8192);
+        }
+        ContextPayload::Inline(_) => panic!("unexpected Inline variant"),
+    }
+}
+
+#[test]
+fn cost_tier_ordering() {
+    assert!(CostTier::Low < CostTier::Mid);
+    assert!(CostTier::Mid < CostTier::High);
+    assert!(CostTier::Low < CostTier::High);
 }

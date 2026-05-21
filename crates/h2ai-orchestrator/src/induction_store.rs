@@ -39,7 +39,7 @@ impl InductionStore {
         Ok(Self { kv: store })
     }
 
-    fn role_str(role: &AgentRole) -> &'static str {
+    const fn role_str(role: &AgentRole) -> &'static str {
         match role {
             AgentRole::Coordinator => "coordinator",
             AgentRole::Executor | AgentRole::Custom { .. } => "executor",
@@ -49,9 +49,9 @@ impl InductionStore {
     }
 
     /// Key format: `knowledge.{node_id}.{role_str}`
-    /// Uses dots as NATS JetStream KV hierarchy separator (not slashes — dots are the
+    /// Uses dots as NATS `JetStream` KV hierarchy separator (not slashes — dots are the
     /// canonical separator for KV prefix/watch operations in async-nats).
-    /// node_id slashes are replaced with hyphens as a safety measure.
+    /// `node_id` slashes are replaced with hyphens as a safety measure.
     fn key(node_id: &str, role: &AgentRole) -> String {
         format!(
             "knowledge.{}.{}",
@@ -60,9 +60,9 @@ impl InductionStore {
         )
     }
 
-    /// Record a successful retrieval: increment hit_rate for each node_id under this role.
+    /// Record a successful retrieval: increment `hit_rate` for each `node_id` under this role.
     /// Non-fatal — errors are returned to the caller; task execution is never gated on this.
-    /// No CAS — hit_rate loss under concurrent writes is acceptable (additive best-effort).
+    /// No CAS — `hit_rate` loss under concurrent writes is acceptable (additive best-effort).
     pub async fn record(
         &self,
         node_ids: &[String],
@@ -71,15 +71,15 @@ impl InductionStore {
     ) -> Result<(), InductionStoreError> {
         for node_id in node_ids {
             let key = Self::key(node_id, role);
-            let mut pattern = self
-                .get_pattern(&key)
-                .await
-                .unwrap_or(KnowledgeNodePattern {
-                    node_id: node_id.clone(),
-                    role: role.clone(),
-                    domain_tags: domain_tags.to_vec(),
-                    hit_rate: 0.0,
-                });
+            let mut pattern =
+                self.get_pattern(&key)
+                    .await
+                    .unwrap_or_else(|| KnowledgeNodePattern {
+                        node_id: node_id.clone(),
+                        role: role.clone(),
+                        domain_tags: domain_tags.to_vec(),
+                        hit_rate: 0.0,
+                    });
             pattern.hit_rate += 1.0;
             for tag in domain_tags {
                 if !pattern.domain_tags.contains(tag) {
@@ -97,8 +97,8 @@ impl InductionStore {
         Ok(())
     }
 
-    /// Load patterns matching role + any domain_tag overlap. Returns top-10 by hit_rate.
-    /// Empty domain_tags returns nothing (no overlap is possible).
+    /// Load patterns matching role + any `domain_tag` overlap. Returns top-10 by `hit_rate`.
+    /// Empty `domain_tags` returns nothing (no overlap is possible).
     pub async fn load_patterns(
         &self,
         domain_tags: &[String],

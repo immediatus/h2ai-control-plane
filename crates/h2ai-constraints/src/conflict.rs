@@ -4,13 +4,14 @@ use std::collections::{HashMap, HashSet};
 /// Static conflict graph built once from a constraint corpus.
 ///
 /// A conflict pair (A, B) means satisfying A and B simultaneously may be impossible
-/// under the detected predicate structure. CSPR-v2 uses this to emit MetaRepair
+/// under the detected predicate structure. CSPR-v2 uses this to emit `MetaRepair`
 /// instructions instead of contradictory per-constraint hints.
 pub struct ConstraintConflictGraph {
     conflict_pairs: HashSet<(String, String)>,
 }
 
 impl ConstraintConflictGraph {
+    #[must_use]
     pub fn build(docs: &[ConstraintDoc]) -> Self {
         let mut conflict_pairs = HashSet::new();
 
@@ -54,10 +55,12 @@ impl ConstraintConflictGraph {
         Self { conflict_pairs }
     }
 
+    #[must_use]
     pub fn are_conflicting(&self, id_a: &str, id_b: &str) -> bool {
         self.conflict_pairs.contains(&canonical_pair(id_a, id_b))
     }
 
+    #[must_use]
     pub fn conflicts_for(&self, id: &str) -> Vec<&str> {
         self.conflict_pairs
             .iter()
@@ -73,6 +76,7 @@ impl ConstraintConflictGraph {
             .collect()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.conflict_pairs.is_empty()
     }

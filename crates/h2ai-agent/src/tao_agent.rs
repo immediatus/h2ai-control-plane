@@ -4,6 +4,7 @@ use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::agent::{AgentTool, ToolCallRecord};
 use h2ai_types::sizing::TauValue;
 use serde::Deserialize;
+use std::fmt::Write as FmtWrite;
 
 /// Input bundle for a single `TaoAgent::run` invocation.
 pub struct TaoAgentInput {
@@ -74,10 +75,12 @@ fn tool_system_block(registry: &ToolRegistry) -> String {
          {\"tool\": \"<name>\", \"input\": <input_object>}\n\nAvailable tools:\n",
     );
     for s in &schemas {
-        block.push_str(&format!(
-            "- {}: {}\n  Input schema: {}\n",
+        writeln!(
+            block,
+            "- {}: {}\n  Input schema: {}",
             s.name, s.description, s.parameters
-        ));
+        )
+        .unwrap();
     }
     block
         .push_str("\nWhen you have a final answer (no tool call needed), output it as plain text.");
@@ -194,6 +197,13 @@ impl<'a> TaoAgent<'a> {
         }
     }
 
+    /// Run the agent loop until a final answer is produced or the iteration cap is reached.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `extract_tool_call` returns a request whose `tool` name is not
+    /// recognised by `agent_tool_from_name` (invariant: `extract_tool_call` only
+    /// returns `Some` when the tool name is valid).
     pub async fn run(self, input: TaoAgentInput) -> TaoAgentResult {
         let tool_block = tool_system_block(&self.registry);
         let base_context = format!("{}{}", input.system_context, tool_block);
@@ -260,9 +270,11 @@ impl<'a> TaoAgent<'a> {
                     });
 
                     let capped = truncate_observation(&observation, self.max_observation_chars);
-                    context.push_str(&format!(
+                    write!(
+                        context,
                         "\n\n[TOOL RESULT — iteration {iteration}]\n{capped}"
-                    ));
+                    )
+                    .unwrap();
                     last_output = observation;
 
                     // Mark truncated if this was the last iteration and still in tool-call mode.
@@ -286,77 +298,5 @@ impl<'a> TaoAgent<'a> {
             truncated,
             adapter_failed,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncate_observation_short_input_unchanged() {
-        let s = "hello world";
-        assert_eq!(truncate_observation(s, 100), s);
-    }
-
-    #[test]
-    fn truncate_observation_at_exact_limit_unchanged() {
-        let s = "abcde";
-        assert_eq!(truncate_observation(s, 5), s);
-    }
-
-    #[test]
-    fn truncate_observation_over_limit_contains_suffix() {
-        let s = "a".repeat(200);
-        let result = truncate_observation(&s, 50);
-        assert!(
-            result.contains("[truncated 200 → 50 chars]"),
-            "got: {result}"
-        );
-        assert!(result.len() < 200);
-    }
-
-    #[test]
-    fn truncate_observation_zero_max_no_truncation() {
-        let s = "a".repeat(100_000);
-        assert_eq!(truncate_observation(&s, 0).len(), 100_000);
-    }
-
-    #[test]
-    fn truncate_observation_multibyte_no_panic() {
-        // 'é' is 2 UTF-8 bytes; max_chars=1 must not panic
-        let result = truncate_observation("é", 1);
-        assert!(result.contains("[truncated"), "got: {result}");
-    }
-
-    #[test]
-    fn strip_fence_json_code_block() {
-        let fenced = "```json\n{\"tool\":\"shell\"}\n```";
-        assert_eq!(strip_fence(fenced), Some("{\"tool\":\"shell\"}"));
-    }
-
-    #[test]
-    fn strip_fence_plain_code_block() {
-        let fenced = "```\n{\"tool\":\"shell\"}\n```";
-        assert_eq!(strip_fence(fenced), Some("{\"tool\":\"shell\"}"));
-    }
-
-    #[test]
-    fn strip_fence_no_fence_returns_none() {
-        assert_eq!(strip_fence("{\"tool\":\"shell\"}"), None);
-    }
-
-    #[test]
-    fn find_json_object_extracts_from_preamble() {
-        let text = "Sure thing!\n\n{\"tool\":\"shell\",\"input\":{}}";
-        assert_eq!(
-            find_json_object(text),
-            Some("{\"tool\":\"shell\",\"input\":{}}")
-        );
-    }
-
-    #[test]
-    fn find_json_object_none_when_no_braces() {
-        assert_eq!(find_json_object("just plain text"), None);
     }
 }

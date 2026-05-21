@@ -16,6 +16,8 @@ pub struct ScopedAgentCredentials {
     pub allowed_subscribe: Vec<String>,
 }
 
+/// # Errors
+/// Returns `NKeyError` if key generation or signing fails.
 pub fn generate_agent_credentials(
     agent_id: &AgentId,
     task_id: &TaskId,

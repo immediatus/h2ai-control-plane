@@ -5,14 +5,15 @@ use crate::mape_k::MergeOutput;
 use crate::phases::{ExitReason, StepResult};
 use crate::self_optimizer::{OptimizerParams, QualityMeasurement, SelfOptimizer, SuggestInput};
 use h2ai_autonomic::merger::{MergeEngine, MergeOutcome};
+use h2ai_autonomic::retry_accumulator::RetryAccumulator;
 use h2ai_state::semilattice::ProposalSet;
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{
-    AppliedOptimization, BranchPrunedEvent, ConstraintFrontierEvent, OptimizationKind,
-    VerificationScoredEvent,
+    AppliedOptimization, BranchPrunedEvent, ConstraintFrontierEvent, ConstraintViolation,
+    OptimizationKind, VerificationScoredEvent,
 };
 use h2ai_types::identity::{ExplorerId, TaskId};
-use h2ai_types::sizing::{PredictionBasis, TaskQuadrant};
+use h2ai_types::sizing::{OspConfig, PredictionBasis, TaskQuadrant};
 
 /// Parameters needed by the merge phase that come from per-wave computation.
 pub struct Input<'a> {
@@ -27,7 +28,7 @@ pub struct Input<'a> {
     pub attribution_basis: PredictionBasis,
     pub tau_values: Vec<f64>,
     pub all_raw_texts_this_wave: Vec<String>,
-    /// Surviving proposal texts (synthesis_candidates) for epistemic yield.
+    /// Surviving proposal texts (`synthesis_candidates`) for epistemic yield.
     pub surviving_texts: Vec<String>,
     pub iteration_verification_events: &'a [VerificationScoredEvent],
     pub frontier_event: &'a Option<ConstraintFrontierEvent>,
@@ -43,6 +44,12 @@ pub struct Input<'a> {
     pub all_pruned: &'a [BranchPrunedEvent],
     pub synthesis_candidates_len: usize,
     pub provisioned_merge_strategy: h2ai_types::sizing::MergeStrategy,
+    /// Flat violations from all failed proposals this wave. Passed to OSP Zone 3 builder.
+    pub wave_violations: Vec<ConstraintViolation>,
+    /// Task-scoped retry accumulator. `None` when OSP is disabled.
+    pub retry_accumulator: Option<&'a mut RetryAccumulator>,
+    /// OSP configuration. `None` disables OSP (uses legacy strategy dispatch).
+    pub osp_config: Option<&'a OspConfig>,
 }
 
 /// Run Phase 5: Merge.
@@ -52,7 +59,7 @@ pub struct Input<'a> {
 /// returns `(Done(merge_output), tau_expansion_hint)`.
 /// On `ZeroSurvival`: classifies the failure mode and returns
 /// `(EarlyExit(ExitReason::ZeroSurvival { ... }), tau_expansion_hint)` so engine.rs can
-/// perform MAPE-K state mutations (topology forcing, tombstone, mode_collapse_count, etc.).
+/// perform MAPE-K state mutations (topology forcing, tombstone, `mode_collapse_count`, etc.).
 ///
 /// The second return value is the Talagrand τ expansion factor suggestion for this wave,
 /// computed regardless of outcome so engine.rs can always update `tau_spread_factor`.
@@ -129,6 +136,13 @@ pub async fn run(
         input.provisioned_merge_strategy.clone(),
         retry_count,
         engine_input.embedding_model,
+        if input.wave_violations.is_empty() {
+            None
+        } else {
+            Some(&input.wave_violations)
+        },
+        input.retry_accumulator,
+        input.osp_config,
     )
     .await;
 
@@ -200,10 +214,12 @@ pub async fn run(
                     );
                     Some(yield_ratio.clamp(0.0, 1.0))
                 } else if surviving_texts.len() >= 2 {
-                    let refs: Vec<&str> = surviving_texts.iter().map(|s| s.as_str()).collect();
+                    let refs: Vec<&str> = surviving_texts
+                        .iter()
+                        .map(std::string::String::as_str)
+                        .collect();
                     let mean_jaccard = crate::correlated_hallucination::compute_cv(&refs)
-                        .map(|s| s.mean_jaccard_distance)
-                        .unwrap_or(0.0);
+                        .map_or(0.0, |s| s.mean_jaccard_distance);
                     let survival_rate = surviving_texts.len() as f64 / n_requested as f64;
                     let yield_approx = mean_jaccard * survival_rate;
                     tracing::debug!(

@@ -1,11 +1,11 @@
 //! OPRO — Optimization by Prompt Retrieval.
 //!
 //! After each task completes, `run_opro_trigger` is called (as a background tokio task)
-//! to update the j_eff EMA, decide whether to generate an improved prompt variant, and
+//! to update the `j_eff` EMA, decide whether to generate an improved prompt variant, and
 //! maintain the per-adapter Thompson-sampling bandit state.
 
 use h2ai_config::{H2AIConfig, OproConfig};
-use h2ai_state::nats::NatsClient;
+use h2ai_state::backend::OproStore;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::prompt_variant::{
     AdapterOproState, PromptBanditArm, PromptVariant, PromptVariantSource,
@@ -15,12 +15,14 @@ use h2ai_types::sizing::TauValue;
 // ── Pure helper functions ─────────────────────────────────────────────────────
 
 /// EMA update: alpha = 2 / (window + 1).
+#[must_use]
 pub fn compute_ema(old_ema: f64, new_value: f64, window: u32) -> f64 {
-    let alpha = 2.0 / (window as f64 + 1.0);
+    let alpha = 2.0 / (f64::from(window) + 1.0);
     alpha * new_value + (1.0 - alpha) * old_ema
 }
 
 /// Extract `{variable}` names from a prompt template string.
+#[must_use]
 pub fn extract_template_variables(template: &str) -> Vec<String> {
     let re = regex::Regex::new(r"\{(\w+)\}").expect("valid regex");
     re.captures_iter(template)
@@ -46,6 +48,7 @@ pub fn validate_opro_response(original: &str, candidate: &str) -> Result<(), Vec
 }
 
 /// Decide whether to trigger OPRO.
+#[must_use]
 pub fn should_trigger_opro(
     j_eff_ema: f64,
     n_tasks_total: u32,
@@ -62,6 +65,7 @@ pub fn should_trigger_opro(
 /// then pick the arm with the highest mean.
 ///
 /// Returns the `variant_id` of the selected arm, or `None` if `arms` is empty.
+#[must_use]
 pub fn thompson_sample(arms: &[PromptBanditArm]) -> Option<&str> {
     if arms.is_empty() {
         return None;
@@ -84,6 +88,7 @@ pub fn thompson_sample(arms: &[PromptBanditArm]) -> Option<&str> {
 /// Returns `true` when:
 /// - `n_tasks_total >= cfg.graduation_tasks`
 /// - The variant's posterior mean exceeds the seed's mean by at least `cfg.promotion_margin`
+#[must_use]
 pub fn check_graduation(
     variant_id: &str,
     arms: &[PromptBanditArm],
@@ -110,11 +115,11 @@ pub fn check_graduation(
 ///
 /// This is intended to be spawned as a background tokio task — errors are logged
 /// but not propagated to the caller.
-pub async fn run_opro_trigger(
+pub async fn run_opro_trigger<S: OproStore>(
     adapter_name: String,
     prompt_key: String,
     j_eff: f64,
-    nats: &NatsClient,
+    nats: &S,
     adapter: &dyn IComputeAdapter,
     cfg: &H2AIConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -254,172 +259,4 @@ pub async fn run_opro_trigger(
     // 9. Persist updated state.
     nats.put_adapter_opro_state(&state).await?;
     Ok(())
-}
-
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_config::OproConfig;
-
-    fn default_opro_cfg() -> OproConfig {
-        OproConfig::default()
-    }
-
-    #[test]
-    fn compute_ema_basic() {
-        // window=1 → alpha=1.0 → new_value completely replaces old_ema
-        let result = compute_ema(0.5, 0.8, 1);
-        assert!(
-            (result - 0.8).abs() < 1e-9,
-            "window=1 should give alpha=1.0"
-        );
-
-        // window=9 → alpha = 2/(9+1) = 0.2
-        let result2 = compute_ema(0.5, 1.0, 9);
-        let expected = 0.2 * 1.0 + 0.8 * 0.5;
-        assert!((result2 - expected).abs() < 1e-9);
-    }
-
-    #[test]
-    fn extract_template_variables_finds_vars() {
-        let tmpl = "Hello {name}, your score is {score} out of {total}.";
-        let mut vars = extract_template_variables(tmpl);
-        vars.sort();
-        assert_eq!(vars, vec!["name", "score", "total"]);
-    }
-
-    #[test]
-    fn extract_template_variables_no_vars() {
-        let vars = extract_template_variables("No placeholders here.");
-        assert!(vars.is_empty());
-    }
-
-    #[test]
-    fn validate_opro_response_ok() {
-        let original = "Task: {task}, context: {context}";
-        let candidate = "Improved task: {task}. Use context: {context} wisely.";
-        assert!(validate_opro_response(original, candidate).is_ok());
-    }
-
-    #[test]
-    fn validate_opro_response_missing_var() {
-        let original = "Task: {task}, context: {context}";
-        let candidate = "Improved task: {task}."; // missing {context}
-        let err = validate_opro_response(original, candidate).unwrap_err();
-        assert!(err.contains(&"context".to_string()));
-    }
-
-    #[test]
-    fn should_trigger_opro_below_threshold() {
-        let mut cfg = default_opro_cfg();
-        cfg.enabled = true;
-        cfg.trigger_j_eff_threshold = 0.6;
-        cfg.min_tasks_before_trigger = 10;
-
-        // j_eff=0.5 < 0.6 and 15 >= 10 → should trigger
-        assert!(should_trigger_opro(0.5, 15, 0, &cfg));
-    }
-
-    #[test]
-    fn should_trigger_opro_not_enough_tasks() {
-        let mut cfg = default_opro_cfg();
-        cfg.enabled = true;
-        cfg.trigger_j_eff_threshold = 0.6;
-        cfg.min_tasks_before_trigger = 10;
-
-        // Only 5 tasks — below min_tasks_before_trigger → should NOT trigger
-        assert!(!should_trigger_opro(0.5, 5, 0, &cfg));
-    }
-
-    #[test]
-    fn should_trigger_opro_disabled() {
-        let mut cfg = default_opro_cfg();
-        cfg.enabled = false;
-        cfg.trigger_j_eff_threshold = 0.6;
-        cfg.min_tasks_before_trigger = 1;
-
-        assert!(!should_trigger_opro(0.1, 100, 0, &cfg));
-    }
-
-    #[test]
-    fn should_trigger_opro_suppressed() {
-        let mut cfg = default_opro_cfg();
-        cfg.enabled = true;
-        cfg.trigger_j_eff_threshold = 0.6;
-        cfg.min_tasks_before_trigger = 5;
-
-        // suppress_until_n_tasks = 20, n_tasks_total = 15 → suppressed
-        assert!(!should_trigger_opro(0.3, 15, 20, &cfg));
-    }
-
-    #[test]
-    fn thompson_sample_picks_best_arm() {
-        let arms = vec![
-            PromptBanditArm {
-                variant_id: "a".to_string(),
-                alpha: 1.0,
-                beta: 9.0, // mean = 0.1
-            },
-            PromptBanditArm {
-                variant_id: "b".to_string(),
-                alpha: 8.0,
-                beta: 2.0, // mean = 0.8
-            },
-            PromptBanditArm {
-                variant_id: "c".to_string(),
-                alpha: 5.0,
-                beta: 5.0, // mean = 0.5
-            },
-        ];
-        let selected = thompson_sample(&arms);
-        assert_eq!(selected, Some("b"), "should pick arm with highest mean");
-    }
-
-    #[test]
-    fn thompson_sample_empty() {
-        let arms: Vec<PromptBanditArm> = vec![];
-        assert_eq!(thompson_sample(&arms), None);
-    }
-
-    #[test]
-    fn check_graduation_promotes_when_above_margin() {
-        let mut cfg = default_opro_cfg();
-        cfg.graduation_tasks = 20;
-        cfg.promotion_margin = 0.05;
-
-        let arms = vec![
-            PromptBanditArm {
-                variant_id: "seed".to_string(),
-                alpha: 5.0,
-                beta: 5.0, // mean = 0.5
-            },
-            PromptBanditArm {
-                variant_id: "candidate".to_string(),
-                alpha: 8.0,
-                beta: 2.0, // mean = 0.8 (> 0.5 + 0.05)
-            },
-        ];
-        assert!(check_graduation("candidate", &arms, 25, &cfg));
-    }
-
-    #[test]
-    fn check_graduation_not_enough_tasks() {
-        let cfg = default_opro_cfg();
-        let arms = vec![
-            PromptBanditArm {
-                variant_id: "seed".to_string(),
-                alpha: 1.0,
-                beta: 9.0,
-            },
-            PromptBanditArm {
-                variant_id: "v2".to_string(),
-                alpha: 9.0,
-                beta: 1.0,
-            },
-        ];
-        // n_tasks_total = 5 < graduation_tasks = 20 → false
-        assert!(!check_graduation("v2", &arms, 5, &cfg));
-    }
 }

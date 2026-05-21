@@ -35,11 +35,13 @@ impl AsRef<str> for AgentId {
 pub struct TaskId(Uuid);
 
 impl TaskId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 
-    pub fn from_uuid(u: Uuid) -> Self {
+    #[must_use]
+    pub const fn from_uuid(u: Uuid) -> Self {
         Self(u)
     }
 }
@@ -60,6 +62,7 @@ impl fmt::Display for TaskId {
 pub struct ExplorerId(Uuid);
 
 impl ExplorerId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -81,6 +84,7 @@ impl fmt::Display for ExplorerId {
 pub struct SubtaskId(Uuid);
 
 impl SubtaskId {
+    #[must_use]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -107,12 +111,14 @@ impl fmt::Display for SubtaskId {
 pub struct TenantId(pub String);
 
 impl TenantId {
+    #[must_use]
     pub fn default_tenant() -> Self {
         Self("default".into())
     }
 
     /// Returns the tenant id sanitized for use in NATS KV bucket names.
     /// Replaces hyphens, dots, and spaces with underscores.
+    #[must_use]
     pub fn bucket_safe(&self) -> String {
         self.0
             .chars()
@@ -154,33 +160,5 @@ impl From<String> for TenantId {
 impl AsRef<str> for TenantId {
     fn as_ref(&self) -> &str {
         self.0.as_str()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tenant_id_default_is_default() {
-        assert_eq!(TenantId::default_tenant().0, "default");
-    }
-
-    #[test]
-    fn tenant_id_bucket_safe_replaces_hyphens() {
-        let t = TenantId::from("acme-corp.eu");
-        assert_eq!(t.bucket_safe(), "acme_corp_eu");
-    }
-
-    #[test]
-    fn tenant_id_bucket_safe_alphanumeric_unchanged() {
-        let t = TenantId::from("tenant123");
-        assert_eq!(t.bucket_safe(), "tenant123");
-    }
-
-    #[test]
-    fn tenant_id_display() {
-        let t = TenantId::from("acme");
-        assert_eq!(format!("{t}"), "acme");
     }
 }

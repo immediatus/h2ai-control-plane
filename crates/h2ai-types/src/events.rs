@@ -4,8 +4,8 @@ use crate::config::{
 use crate::identity::{ExplorerId, SubtaskId, TaskId};
 use crate::sizing::{
     CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
-    MergeStrategy, MultiplicationConditionFailure, OracleDomain, OracleSpec, OracleType,
-    PredictionBasis, ProbeSkipReason, RoleErrorCost, TaskQuadrant, TauValue,
+    MergeStrategy, MultiplicationConditionFailure, OracleDomain, OracleSpec, PredictionBasis,
+    ProbeSkipReason, RoleErrorCost, TaskQuadrant, TauValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -23,14 +23,14 @@ pub enum CalibrationQuality {
     Bootstrap,
 }
 
-/// How CG(i,j) was computed during calibration.
+/// How `CG(i,j)` was computed during calibration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CgMode {
     /// CG is mean pairwise Hamming distance between constraint satisfaction profiles.
     /// Falls back to `cfg.calibration_cg_fallback` when no constraint corpus is provided.
     #[default]
     ConstraintProfile,
-    /// CG is the fraction of calibration prompts where cosine(embed_i, embed_j) > θ_agree.
+    /// CG is the fraction of calibration prompts where `cosine(embed_i, embed_j)` > `θ_agree`.
     /// Semantically robust: paraphrase-insensitive, matches the theoretical specification.
     /// Requires the `fastembed-embed` feature and an `EmbeddingModel` in `AppState`.
     EmbeddingCosine,
@@ -55,16 +55,16 @@ pub enum CalibrationSource {
 
 /// Classifies why all proposals were pruned in a MAPE-K zero-survival wave.
 ///
-/// Computed synchronously from cosine N_eff before re-provisioning.
-/// Drives retry routing: ConstrainedExploration injects a tombstone;
-/// ModeCollapse rotates the adapter selection.
+/// Computed synchronously from cosine `N_eff` before re-provisioning.
+/// Drives retry routing: `ConstrainedExploration` injects a tombstone;
+/// `ModeCollapse` rotates the adapter selection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FailureMode {
     /// Agents explored diverse solution areas but none satisfied constraints.
     /// Retry: same topology, inject Constraint Violation Tombstone.
     ConstrainedExploration,
-    /// Agents converged on a shared hallucination (N_eff ≈ 1).
-    /// Retry: rotate adapter selection or widen τ_spread.
+    /// Agents converged on a shared hallucination (`N_eff` ≈ 1).
+    /// Retry: rotate adapter selection or widen `τ_spread`.
     ModeCollapse,
     /// Proposals share a correlated assumption (low Jaccard CV).
     /// Retry: inject contradiction hint + researcher grounding.
@@ -81,7 +81,7 @@ pub struct EpistemicYieldEvent {
     pub task_id: TaskId,
     pub n_eff_cosine_actual: f64,
     pub n_eff_prior: f64,
-    /// n_eff_actual / N_requested
+    /// `n_eff_actual` / `N_requested`
     pub yield_ratio: f64,
     pub adapters: Vec<String>,
 }
@@ -119,17 +119,17 @@ pub struct CalibrationCompletedEvent {
     /// Weiszfeld BFT correlated hallucination protection is degraded.
     #[serde(default)]
     pub single_family_warning: bool,
-    /// Lower bound of N_max one-σ confidence interval (CG_mean − cg_std_dev).
+    /// Lower bound of `N_max` one-σ confidence interval (`CG_mean` − `cg_std_dev`).
     /// Equals `n_max()` when only one CG sample exists.
     #[serde(default)]
     pub n_max_lo: f64,
-    /// Upper bound of N_max one-σ confidence interval (CG_mean + cg_std_dev).
+    /// Upper bound of `N_max` one-σ confidence interval (`CG_mean` + `cg_std_dev`).
     /// `n_max_lo ≤ n_max() ≤ n_max_hi`. Wide interval = high CG measurement variance.
     #[serde(default)]
     pub n_max_hi: f64,
-    /// Pool-level semantic independence measured at calibration time via cosine N_eff.
-    /// Used as the Bayesian prior at task provisioning. `0.0` when no EmbeddingModel
-    /// is present (fallback formula: 1.0 + cg_fallback × (N − 1) is computed in the harness).
+    /// Pool-level semantic independence measured at calibration time via cosine `N_eff`.
+    /// Used as the Bayesian prior at task provisioning. `0.0` when no `EmbeddingModel`
+    /// is present (fallback formula: 1.0 + `cg_fallback` × (N − 1) is computed in the harness).
     #[serde(default)]
     pub n_eff_cosine_prior: f64,
     /// Whether this calibration is empirically grounded (`Domain`) or synthetic-prior only
@@ -149,12 +149,13 @@ pub struct CalibrationCompletedEvent {
 }
 
 /// Point-in-time snapshot of a task's in-memory state for crash-recovery replay optimization.
+///
 /// Stored in NATS KV at key `snapshots/{task_id}/latest`.
 /// Recovery loads this snapshot then replays only events with sequence > `last_sequence`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSnapshot {
     pub task_id: TaskId,
-    /// NATS JetStream sequence number of the last event included in this snapshot.
+    /// NATS `JetStream` sequence number of the last event included in this snapshot.
     pub last_sequence: u64,
     /// Serialized `TaskState` as JSON — stored as a string to avoid a circular crate dependency.
     pub task_state_json: String,
@@ -188,7 +189,7 @@ pub struct TopologyProvisionedEvent {
     pub retry_count: u32,
     pub timestamp: DateTime<Utc>,
     /// Dense constraint violation summary injected on `ConstrainedExploration` retries.
-    /// Contains constraint IDs and c_i weights only — never raw proposal text.
+    /// Contains constraint IDs and `c_i` weights only — never raw proposal text.
     /// `None` on wave 1 and on `ModeCollapse` retries.
     #[serde(default)]
     pub constraint_tombstone: Option<String>,
@@ -289,13 +290,13 @@ pub struct ZeroSurvivalEvent {
     /// `None` when no `EmbeddingModel` is present in `AppState`.
     #[serde(default)]
     pub n_eff_cosine_actual: Option<f64>,
-    /// MAPE-K failure classification. `None` when no EmbeddingModel is available.
+    /// MAPE-K failure classification. `None` when no `EmbeddingModel` is available.
     #[serde(default)]
     pub failure_mode: Option<FailureMode>,
 }
 
-/// Emitted when CG_embed falls below `cg_collapse_threshold`.
-/// The planner forces N_max=1 — no ensemble benefit is possible when coordination quality collapses.
+/// Emitted when `CG_embed` falls below `cg_collapse_threshold`.
+/// The planner forces `N_max=1` — no ensemble benefit is possible when coordination quality collapses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZeroCoordinationQualityEvent {
     pub task_id: TaskId,
@@ -324,11 +325,11 @@ pub struct SelectionResolvedEvent {
     pub pruned_proposals: Vec<(ExplorerId, String)>,
     pub merge_strategy: MergeStrategy,
     pub timestamp: DateTime<Utc>,
-    /// Wall-clock seconds consumed by MergeEngine::resolve() for this event.
+    /// Wall-clock seconds consumed by `MergeEngine::resolve()` for this event.
     /// `None` for events reconstructed from older serialised logs.
     #[serde(default)]
     pub merge_elapsed_secs: Option<f64>,
-    /// Number of proposals (valid + pruned) that entered resolve().
+    /// Number of proposals (valid + pruned) that entered `resolve()`.
     #[serde(default)]
     pub n_input_proposals: usize,
     /// Number of non-pruned proposals that scored exactly 0.0 and were excluded
@@ -342,7 +343,7 @@ pub struct SelectionResolvedEvent {
 pub struct MergeResolvedEvent {
     pub task_id: TaskId,
     pub resolved_output: String,
-    /// Ensemble Efficiency Index: Q_realized / Q_ceiling ∈ [0, 1].
+    /// Ensemble Efficiency Index: `Q_realized` / `Q_ceiling` ∈ [0, 1].
     /// Measures what fraction of the Condorcet quality ceiling was realized.
     /// None when calibration is unavailable at merge time.
     #[serde(default)]
@@ -352,6 +353,11 @@ pub struct MergeResolvedEvent {
     /// `None` when no oracle gate was configured or evaluation has not yet completed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oracle_gate_passed: Option<bool>,
+    /// Zone 3 audit-findings text from the last OSP merge attempt.
+    /// Contains only `constraint_id` and `remediation_hint` — never raw proposal text.
+    /// Used by the engine as retry hint injection context on `ZeroSurvival`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone3_hints: Option<String>,
 }
 
 /// Emitted when the MAPE-K loop exhausts all retries without producing a resolved output.
@@ -427,6 +433,7 @@ pub struct ShadowAuditorResultEvent {
 
 /// Emitted by `ShadowAuditorAccumulator` when a domain's rolling disagreement rate
 /// exceeds `promotion_threshold` over `promotion_window` observations.
+///
 /// From this point the domain uses two-auditor AND vote in Phase 4.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditDomainPromotedEvent {
@@ -438,6 +445,7 @@ pub struct AuditDomainPromotedEvent {
 
 /// Emitted by `ShadowAuditorAccumulator` when a promoted domain's rolling rate
 /// drops below `promotion_threshold / 2` over `2 * promotion_window` observations.
+///
 /// Majority-vote enforcement is removed for this domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditDomainDemotedEvent {
@@ -448,7 +456,9 @@ pub struct AuditDomainDemotedEvent {
 }
 
 /// Emitted when the CV of pairwise Jaccard distances among surviving proposals
-/// falls below `correlated_hallucination_cv_threshold`. Low CV = semantic clustering.
+/// falls below `correlated_hallucination_cv_threshold`.
+///
+/// Low CV = semantic clustering.
 /// Triggers a MAPE-K retry with researcher grounding injected into explorer prompts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrelatedEnsembleWarning {
@@ -462,6 +472,7 @@ pub struct CorrelatedEnsembleWarning {
 }
 
 /// Emitted when SRANI detects shared ungrounded architectural entities across proposals.
+///
 /// CFI (Correlated Fabrication Index) = max pairwise overlap of ungrounded entity sets.
 /// 0.0 = no shared fabrication; 1.0 = all proposals share the same fabricated component.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,21 +480,21 @@ pub struct CorrelatedFabricationEvent {
     pub task_id: TaskId,
     /// CFI value that triggered this event.
     pub cfi: f64,
-    /// Sigmoid injection pressure: sigmoid((CFI − μ) / T). Range [0, 1].
-    /// 0.20 = warn floor; gate_threshold (default 0.50) = injection cutoff.
-    /// Set to 0.0 when adaptive=false (legacy static-threshold path).
+    /// Sigmoid injection pressure: `sigmoid((CFI − μ) / T)`. Range [0, 1].
+    /// 0.20 = warn floor; `gate_threshold` (default 0.50) = injection cutoff.
+    /// Set to 0.0 when `adaptive=false` (legacy static-threshold path).
     pub injection_pressure: f64,
     /// Architectural entities present in ≥2 proposals but absent from the task specification.
     pub shared_ungrounded_entities: Vec<String>,
     /// Number of proposals analysed.
     pub proposal_count: usize,
-    /// True if a grounding hint was injected into retry_context.
+    /// True if a grounding hint was injected into `retry_context`.
     pub hint_injected: bool,
     pub timestamp: DateTime<Utc>,
 }
 
 /// Identifies which tier of the SRANI grounding chain produced a `ResearcherGroundingEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GroundingSource {
     SpecAnchor,
@@ -620,11 +631,11 @@ pub struct SubtaskCompletedEvent {
 }
 
 /// Category of self-optimizer suggestion applied on a wasteful-but-successful run.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OptimizationKind {
-    /// SelfOptimizer suggested adjusting the verify_threshold to reduce wasted proposals.
+    /// `SelfOptimizer` suggested adjusting the `verify_threshold` to reduce wasted proposals.
     TauSpreadAdjusted,
-    /// SelfOptimizer suggested switching topology (stored as a one-shot hint in AppState).
+    /// `SelfOptimizer` suggested switching topology (stored as a one-shot hint in `AppState`).
     TopologyHintSet,
 }
 
@@ -664,11 +675,11 @@ pub struct TaskAttributionEvent {
     pub q_interval_hi: Option<f64>,
     /// Source of quality predictions: `Heuristic` or `Empirical`.
     pub prediction_basis: PredictionBasis,
-    /// Fraction of dispatched proposals that survived verification (valid / total_evaluated).
+    /// Fraction of dispatched proposals that survived verification (valid / `total_evaluated`).
     /// 1.0 = no waste; below `optimizer_waste_threshold` = wasteful run.
     #[serde(default = "default_waste_ratio")]
     pub waste_ratio: f64,
-    /// SelfOptimizer suggestions applied on this successful-but-wasteful run.
+    /// `SelfOptimizer` suggestions applied on this successful-but-wasteful run.
     /// Empty when the run was not wasteful or no applicable suggestions existed.
     #[serde(default)]
     pub applied_optimizations: Vec<AppliedOptimization>,
@@ -676,13 +687,13 @@ pub struct TaskAttributionEvent {
     /// When the task passed through the HITL gate, this records the reviewer's decision.
     #[serde(default)]
     pub approval_decision: Option<crate::approval::ApprovalDecision>,
-    /// CalibrationSource active during this task's execution.
+    /// `CalibrationSource` active during this task's execution.
     /// `#[serde(default)]` preserves backwards compatibility with older stored events.
     #[serde(default)]
     pub calibration_source: CalibrationSource,
 }
 
-fn default_waste_ratio() -> f64 {
+const fn default_waste_ratio() -> f64 {
     1.0
 }
 
@@ -693,29 +704,29 @@ fn default_waste_ratio() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskComplexityAssessedEvent {
     pub task_id: TaskId,
-    /// TCC_structural: zero-cost prior from corpus metadata (formula-based, no LLM calls).
+    /// `TCC_structural`: zero-cost prior from corpus metadata (formula-based, no LLM calls).
     pub tcc_structural: f64,
-    /// TCC_empirical: participation ratio from N-probe satisfaction matrix.
+    /// `TCC_empirical`: participation ratio from N-probe satisfaction matrix.
     /// `None` when probe was skipped (see `probe_skip_reason`).
     #[serde(default)]
     pub tcc_empirical: Option<f64>,
-    /// TCC_effective = max(tcc_structural, tcc_empirical) + mismatch_penalty.
-    /// Equals tcc_structural when probe was skipped.
+    /// `TCC_effective` = `max(tcc_structural, tcc_empirical)` + `mismatch_penalty`.
+    /// Equals `tcc_structural` when probe was skipped.
     pub tcc_effective: f64,
-    /// Pool-level N_eff from the most recent calibration (eigenvalue participation ratio).
-    /// `None` when EigenCalibration was not available at calibration time.
+    /// Pool-level `N_eff` from the most recent calibration (eigenvalue participation ratio).
+    /// `None` when `EigenCalibration` was not available at calibration time.
     #[serde(default)]
     pub n_eff_pool: Option<f64>,
-    /// Routing quadrant before shadow_mode override.
+    /// Routing quadrant before `shadow_mode` override.
     pub task_quadrant: TaskQuadrant,
     /// Whether the N-probe mini-generation step was skipped.
     pub probe_skipped: bool,
     /// Reason the probe was skipped; `None` when probe ran.
     #[serde(default)]
     pub probe_skip_reason: ProbeSkipReason,
-    /// Fraction of Heavy-tier constraints (OracleExecution) in the corpus.
+    /// Fraction of Heavy-tier constraints (`OracleExecution`) in the corpus.
     pub heavy_fraction: f64,
-    /// True when tcc_empirical diverges from tcc_structural by > 0.3 (signal mismatch).
+    /// True when `tcc_empirical` diverges from `tcc_structural` by > 0.3 (signal mismatch).
     pub tcc_mismatch: bool,
     /// Total tokens consumed by the probe mini-generation calls (0 when probe skipped).
     pub probe_cost_tokens: u64,
@@ -732,7 +743,7 @@ pub struct TaskComplexityAssessedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstraintFrontierEvent {
     pub task_id: TaskId,
-    /// satisfaction_matrix[i][j] = score of proposal i on constraint j ∈ [0, 1].
+    /// `satisfaction_matrix[i][j]` = score of proposal i on constraint j ∈ [0, 1].
     pub satisfaction_matrix: Vec<Vec<f64>>,
     /// Constraint IDs in column order.
     pub constraint_ids: Vec<String>,
@@ -810,10 +821,10 @@ pub struct OraclePendingEvent {
     pub n_used: u32,
     pub oracle_spec: OracleSpec,
     pub domain: OracleDomain,
+    #[serde(default)]
+    pub tenant_id: crate::identity::TenantId,
 }
 
-/// Oracle evaluation result returned by the oracle sidecar.
-///
 /// Published to `h2ai.oracle.results`. Consumed by `OracleAccumulator`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleResultEvent {
@@ -822,16 +833,17 @@ pub struct OracleResultEvent {
     pub q_confidence: f64,
     /// Echoed from [`OraclePendingEvent`] for bandit update.
     pub n_used: u32,
-    /// `true` if all test cases passed.
     pub passed: bool,
-    /// `pass_count / total_count` — partial-credit score ∈ [0, 1].
     pub score: f64,
     /// Nonconformity score: `|q_confidence − passed as f64|`.
     pub residual: f64,
     pub domain: OracleDomain,
-    pub oracle_type: OracleType,
     pub duration_ms: u64,
     pub timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<crate::sizing::OracleVerdict>,
+    #[serde(default)]
+    pub tenant_id: crate::identity::TenantId,
 }
 
 /// Emitted when ECE > 0.15 for 10 consecutive oracle observations.
@@ -918,7 +930,7 @@ pub struct ThinkingLoopCompletedEvent {
 }
 
 /// Emitted inside `patch_ensemble_p_from_oracle` when the oracle has accumulated enough
-/// observations (n >= 10) to replace the heuristic p_mean with the empirical pass rate.
+/// observations (n >= 10) to replace the heuristic `p_mean` with the empirical pass rate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleCalibrationPatchedEvent {
     pub task_id: TaskId,
@@ -930,7 +942,7 @@ pub struct OracleCalibrationPatchedEvent {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// Emitted when j_eff EMA drops below the configured threshold, triggering OPRO.
+/// Emitted when `j_eff` EMA drops below the configured threshold, triggering OPRO.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OproTriggeredEvent {
     pub adapter_name: String,
@@ -1000,7 +1012,7 @@ pub enum H2AIEvent {
         calibration_id: String,
         reason: String,
     },
-    /// Wraps [`TaskBootstrappedEvent`]: task context compiled and J_eff gate passed.
+    /// Wraps [`TaskBootstrappedEvent`]: task context compiled and `J_eff` gate passed.
     TaskBootstrapped(TaskBootstrappedEvent),
     /// Wraps [`TopologyProvisionedEvent`]: planner selected topology and explorer roles.
     TopologyProvisioned(TopologyProvisionedEvent),
@@ -1070,7 +1082,7 @@ pub enum H2AIEvent {
     VerifierComparison(VerifierComparisonEvent),
     /// Per-proposal shadow auditor outcome (GAP-C2 shadow mode).
     ShadowAudit(ShadowAuditorResultEvent),
-    /// Domain promoted to two-auditor majority-vote mode by ShadowAuditorAccumulator.
+    /// Domain promoted to two-auditor majority-vote mode by `ShadowAuditorAccumulator`.
     AuditDomainPromoted(AuditDomainPromotedEvent),
     /// Domain demoted from majority-vote mode (disagreement rate fell below threshold/2).
     AuditDomainDemoted(AuditDomainDemotedEvent),
@@ -1084,13 +1096,13 @@ pub enum H2AIEvent {
     CorrelatedFabrication(CorrelatedFabricationEvent),
     /// Pre-execution thinking loop completed (or was skipped). Always emitted per task.
     ThinkingLoopCompleted(ThinkingLoopCompletedEvent),
-    /// Oracle accumulated enough observations to replace heuristic p_mean with pass_rate.
+    /// Oracle accumulated enough observations to replace heuristic `p_mean` with `pass_rate`.
     OracleCalibrationPatched(OracleCalibrationPatchedEvent),
     /// Oracle gate finished evaluating proposals before merge; records pass/fail and confidence.
     OracleGateResult(OracleGateResultEvent),
     /// Orchestrator requires human clarification before continuing task execution.
     PendingClarification(PendingClarificationEvent),
-    /// OPRO triggered: j_eff EMA fell below threshold.
+    /// OPRO triggered: `j_eff` EMA fell below threshold.
     OproTriggered(OproTriggeredEvent),
     /// Prompt variant promoted: OPRO selected a winning variant.
     PromptVariantPromoted(PromptVariantPromotedEvent),
@@ -1103,68 +1115,16 @@ pub enum H2AIEvent {
 }
 
 impl H2AIEvent {
+    #[must_use]
     pub fn subject(&self, task_id: &TaskId) -> String {
         match self {
-            H2AIEvent::PendingApproval(e) => {
+            Self::PendingApproval(e) => {
                 format!("h2ai.tasks.{}.pending_approval", e.task_id)
             }
-            H2AIEvent::ApprovalResolved(e) => {
+            Self::ApprovalResolved(e) => {
                 format!("h2ai.tasks.{}.approval_resolved", e.task_id)
             }
-            _ => format!("h2ai.tasks.{}", task_id),
+            _ => format!("h2ai.tasks.{task_id}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod bivariate_types_tests {
-    use super::*;
-
-    #[test]
-    fn epistemic_yield_event_roundtrip() {
-        use crate::identity::TaskId;
-        let ev = EpistemicYieldEvent {
-            task_id: TaskId::new(),
-            n_eff_cosine_actual: 2.3,
-            n_eff_prior: 2.8,
-            yield_ratio: 0.77,
-            adapters: vec!["anthropic-a".into(), "openai-b".into()],
-        };
-        let json = serde_json::to_string(&ev).unwrap();
-        let back: EpistemicYieldEvent = serde_json::from_str(&json).unwrap();
-        assert!((back.n_eff_cosine_actual - 2.3).abs() < 1e-9);
-        assert_eq!(back.adapters.len(), 2);
-    }
-
-    #[test]
-    fn failure_mode_serde() {
-        let fm = FailureMode::ModeCollapse;
-        let s = serde_json::to_string(&fm).unwrap();
-        let back: FailureMode = serde_json::from_str(&s).unwrap();
-        assert_eq!(back, FailureMode::ModeCollapse);
-    }
-
-    #[test]
-    fn zero_survival_event_new_fields_default_to_none() {
-        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000000","retry_count":0,"timestamp":"2026-01-01T00:00:00Z"}"#;
-        let ev: ZeroSurvivalEvent = serde_json::from_str(json).unwrap();
-        assert!(ev.n_eff_cosine_actual.is_none());
-        assert!(ev.failure_mode.is_none());
-    }
-
-    #[test]
-    fn task_attribution_event_calibration_source_defaults_on_old_json() {
-        // Old events without calibration_source field must deserialise to Measured (default)
-        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000000","q_confidence":0.8,"prediction_basis":"Heuristic","waste_ratio":1.0,"applied_optimizations":[],"timestamp":"2026-01-01T00:00:00Z"}"#;
-        let ev: TaskAttributionEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(ev.calibration_source, CalibrationSource::Measured);
-    }
-
-    #[test]
-    fn topology_provisioned_constraint_tombstone_defaults_none() {
-        // Simulate old serialised event that doesn't carry the new field
-        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000000","topology_kind":"Ensemble","explorer_configs":[],"auditor_config":{"adapter":{"CloudGeneric":{"endpoint":"x","api_key_env":"X"}},"prompt_template":"","tau":0.2,"max_tokens":1000},"n_max":3.0,"interface_n_max":null,"beta_eff":0.03,"role_error_costs":[],"merge_strategy":"ScoreOrdered","coordination_threshold":0.1,"review_gates":[],"retry_count":0,"timestamp":"2026-01-01T00:00:00Z"}"#;
-        let ev: TopologyProvisionedEvent = serde_json::from_str(json).unwrap();
-        assert!(ev.constraint_tombstone.is_none());
     }
 }

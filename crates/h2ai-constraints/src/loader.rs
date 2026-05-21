@@ -26,9 +26,9 @@ impl ConstraintSource for YamlDirSource {
 
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| ConstraintError::Unavailable(e.to_string()))?
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
 
         let mut specs = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
@@ -81,15 +81,20 @@ impl ConstraintSource for YamlDirSource {
 // ── Legacy function kept for internal callers ──────────────────────────────
 
 /// Load a constraint corpus from a directory.
-/// Used by RuntimeConstraintStore::load() and existing test fixtures.
+/// Used by `RuntimeConstraintStore::load()` and existing test fixtures.
+///
+/// # Errors
+/// Returns `std::io::Error` if reading the directory or any YAML file fails.
 pub fn load_corpus(dir: impl AsRef<Path>) -> Result<Vec<ConstraintDoc>, std::io::Error> {
     let dir = dir.as_ref();
     if !dir.exists() {
         return Ok(vec![]);
     }
 
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(std::result::Result::ok)
+        .collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     let mut corpus = Vec::new();
     let mut seen_ids: HashSet<String> = HashSet::new();

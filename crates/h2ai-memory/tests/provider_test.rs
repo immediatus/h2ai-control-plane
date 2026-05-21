@@ -8,7 +8,7 @@ struct MockMemory {
 }
 
 impl MockMemory {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             entries: std::sync::Mutex::new(vec![]),
         }
@@ -31,8 +31,7 @@ impl MemoryProvider for MockMemory {
         _session_id: &str,
         memories: Vec<serde_json::Value>,
     ) -> Result<(), MemoryError> {
-        let mut entries = self.entries.lock().unwrap();
-        entries.extend(memories);
+        self.entries.lock().unwrap().extend(memories);
         Ok(())
     }
 

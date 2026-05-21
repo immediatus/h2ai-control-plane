@@ -31,7 +31,7 @@ pub enum ExitReason {
     OracleBlocked,
     /// GAP-C1 correlated hallucination detected — clustered ensemble; retry with grounding.
     HallucinationDetected {
-        /// Formatted retry_context hint to set before `continue`.
+        /// Formatted `retry_context` hint to set before `continue`.
         retry_context_hint: String,
         tau_values: Vec<f64>,
         warning: h2ai_types::events::CorrelatedEnsembleWarning,

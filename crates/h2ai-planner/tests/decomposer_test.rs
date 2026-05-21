@@ -1,9 +1,29 @@
+use async_trait::async_trait;
 use h2ai_adapters::MockAdapter;
 use h2ai_planner::decomposer::{PlannerError, PlanningEngine};
+use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_types::config::AdapterKind;
 use h2ai_types::config::{AgentRole, ParetoWeights};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use h2ai_types::plan::PlanStatus;
 use h2ai_types::sizing::TauValue;
+
+/// An adapter that always returns an error — used to exercise the Adapter error path.
+#[derive(Debug)]
+struct FailingAdapter;
+
+#[async_trait]
+impl IComputeAdapter for FailingAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        Err(AdapterError::NetworkError(
+            "simulated network failure".into(),
+        ))
+    }
+
+    fn kind(&self) -> &AdapterKind {
+        unimplemented!("FailingAdapter::kind not needed in tests")
+    }
+}
 
 fn manifest() -> TaskManifest {
     TaskManifest {
@@ -168,4 +188,61 @@ async fn decomposer_unrecognised_role_hint_yields_none() {
         Some(AgentRole::Executor),
         "known role_hint must be preserved"
     );
+}
+
+#[tokio::test]
+async fn decomposer_recognises_synthesizer_and_coordinator_role_hints() {
+    let adapter = MockAdapter::new(
+        r#"{
+          "subtasks": [
+            {"description": "Synthesize results", "depends_on": [], "role_hint": "Synthesizer"},
+            {"description": "Coordinate work", "depends_on": [0], "role_hint": "Coordinator"},
+            {"description": "Evaluate output", "depends_on": [0], "role_hint": "Evaluator"}
+          ]
+        }"#
+        .into(),
+    );
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        plan.subtasks[0].role_hint,
+        Some(AgentRole::Synthesizer),
+        "Synthesizer role_hint must be preserved"
+    );
+    assert_eq!(
+        plan.subtasks[1].role_hint,
+        Some(AgentRole::Coordinator),
+        "Coordinator role_hint must be preserved"
+    );
+    assert_eq!(
+        plan.subtasks[2].role_hint,
+        Some(AgentRole::Evaluator),
+        "Evaluator role_hint must be preserved"
+    );
+}
+
+#[tokio::test]
+async fn decomposer_propagates_adapter_error() {
+    let result =
+        PlanningEngine::decompose(&manifest(), &FailingAdapter, TauValue::new(0.4).unwrap()).await;
+    assert!(
+        matches!(result, Err(PlannerError::Adapter(_))),
+        "adapter failure must propagate as PlannerError::Adapter, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn decomposer_handles_manifest_with_no_constraints() {
+    // Exercises the `constraints_str = "none"` branch in decompose().
+    let mut m = manifest();
+    m.constraints = vec![];
+    let adapter = MockAdapter::new(
+        r#"{"subtasks": [{"description": "Only step", "depends_on": [], "role_hint": null}]}"#
+            .into(),
+    );
+    let plan = PlanningEngine::decompose(&m, &adapter, TauValue::new(0.4).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(plan.subtasks.len(), 1);
 }

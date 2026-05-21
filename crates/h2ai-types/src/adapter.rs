@@ -22,7 +22,7 @@ pub struct ComputeResponse {
     /// Used for token-cost β₀ EMA (`beta_from_token_spans`).
     #[serde(default)]
     pub tokens_used: Option<u64>,
-    /// Raw reasoning trace from two-phase thinking models (e.g. DeepSeek R1 with `content` +
+    /// Raw reasoning trace from two-phase thinking models (e.g. `DeepSeek` R1 with `content` +
     /// `reasoning_content`).  `None` for standard models and reasoning-only models where the
     /// trace is promoted directly into `output`.  Preserved for Auditor Gate inspection.
     #[serde(default)]
@@ -86,6 +86,7 @@ pub struct AdapterRegistry {
 impl AdapterRegistry {
     /// Create a registry with only a reasoning adapter. Scoring and structural
     /// profiles fall back to the reasoning adapter until explicitly configured.
+    #[must_use]
     pub fn new(reasoning: Arc<dyn IComputeAdapter>) -> Self {
         Self {
             reasoning,
@@ -95,12 +96,14 @@ impl AdapterRegistry {
     }
 
     /// Attach a dedicated adapter for `TaskProfile::Scoring` tasks.
+    #[must_use]
     pub fn with_scoring(mut self, adapter: Arc<dyn IComputeAdapter>) -> Self {
         self.scoring = Some(adapter);
         self
     }
 
     /// Attach a dedicated adapter for `TaskProfile::Structural` tasks.
+    #[must_use]
     pub fn with_structural(mut self, adapter: Arc<dyn IComputeAdapter>) -> Self {
         self.structural = Some(adapter);
         self
@@ -110,14 +113,18 @@ impl AdapterRegistry {
     ///
     /// `Scoring` and `Structural` fall back to the reasoning adapter when no
     /// dedicated adapter has been configured.
+    #[must_use]
     pub fn resolve(&self, profile: &TaskProfile) -> &dyn IComputeAdapter {
         match profile {
             TaskProfile::Reasoning => self.reasoning.as_ref(),
-            TaskProfile::Scoring => self.scoring.as_deref().unwrap_or(self.reasoning.as_ref()),
+            TaskProfile::Scoring => self
+                .scoring
+                .as_deref()
+                .unwrap_or_else(|| self.reasoning.as_ref()),
             TaskProfile::Structural => self
                 .structural
                 .as_deref()
-                .unwrap_or(self.reasoning.as_ref()),
+                .unwrap_or_else(|| self.reasoning.as_ref()),
         }
     }
 }

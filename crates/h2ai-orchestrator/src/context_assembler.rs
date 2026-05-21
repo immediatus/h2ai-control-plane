@@ -9,7 +9,7 @@ fn constraint_regex() -> &'static Regex {
     CONSTRAINT_RE.get_or_init(|| Regex::new(r"C-\d{3}").unwrap())
 }
 
-/// Output of a single ContextAssembler::build() call.
+/// Output of a single `ContextAssembler::build()` call.
 #[derive(Debug, Clone)]
 pub struct AssembledContext {
     pub text: String,
@@ -22,7 +22,7 @@ pub struct AssembledContext {
     pub quality_clamped: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompressionKind {
     /// Compression disabled (no budget configured).
     None,
@@ -64,7 +64,7 @@ pub enum SectionTag {
     ConstraintTension,
 }
 
-/// Input to ContextAssembler::build().
+/// Input to `ContextAssembler::build()`.
 pub struct ContextAssemblerInput<'a> {
     pub active_ctx: &'a str,
     pub retry_context: Option<&'a str>,
@@ -120,7 +120,7 @@ impl ContextAssembler {
         let original_tokens: usize = sections.iter().map(|s| estimate_tokens(&s.text)).sum();
 
         // Step 2: rule-based pass
-        let wave = input.prev_wave_blob.map(|_| 1u32).unwrap_or(0);
+        let wave = input.prev_wave_blob.map_or(0, |_| 1u32);
         let mut sections = sections;
         let delta_applied = rule_pass(
             &mut sections,
@@ -238,6 +238,7 @@ pub(crate) fn sections_to_text(sections: &[Section]) -> String {
 }
 
 /// Concatenate input pieces into a raw context string (no compression).
+#[must_use]
 pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(lp) = input.leader_prefix {
@@ -247,7 +248,7 @@ pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
     }
     if let Some(g) = input.grounding {
         if !g.is_empty() {
-            parts.push(format!("[STATE-OF-THE-ART]: {}", g));
+            parts.push(format!("[STATE-OF-THE-ART]: {g}"));
         }
     }
     if let Some(rf) = input.role_frame {
@@ -257,14 +258,13 @@ pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
     }
     if let Some(m) = input.mandate {
         if !m.is_empty() {
-            parts.push(format!("[MANDATE]: {}", m));
+            parts.push(format!("[MANDATE]: {m}"));
         }
     }
     if let Some(rc) = input.rejection_criteria {
         if !rc.is_empty() {
             parts.push(format!(
-                "[AFTER WRITING YOUR PROPOSAL, IDENTIFY THE BIGGEST RISK]: {}",
-                rc
+                "[AFTER WRITING YOUR PROPOSAL, IDENTIFY THE BIGGEST RISK]: {rc}"
             ));
         }
     }
@@ -281,17 +281,17 @@ pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
     }
     if let Some(gk) = input.global_knowledge {
         if !gk.is_empty() {
-            parts.push(format!("[KNOWLEDGE]:\n{}", gk));
+            parts.push(format!("[KNOWLEDGE]:\n{gk}"));
         }
     }
     if let Some(tk) = input.topic_knowledge {
         if !tk.is_empty() {
-            parts.push(format!("[DOMAIN KNOWLEDGE]:\n{}", tk));
+            parts.push(format!("[DOMAIN KNOWLEDGE]:\n{tk}"));
         }
     }
     if let Some(ct) = input.constraint_tensions {
         if !ct.is_empty() {
-            parts.push(format!("[CONSTRAINT TENSIONS]:\n{}", ct));
+            parts.push(format!("[CONSTRAINT TENSIONS]:\n{ct}"));
         }
     }
     parts.join("\n\n")
@@ -313,12 +313,13 @@ pub(crate) fn estimate_tokens(text: &str) -> usize {
         .count();
     let total_lines = text.lines().count().max(1);
     let code_ratio = code_lines as f64 / total_lines as f64;
-    let chars_per_token = 3.0 + 1.5 * (1.0 - code_ratio);
+    let chars_per_token = 1.5f64.mul_add(1.0 - code_ratio, 3.0);
     (chars as f64 / chars_per_token).ceil() as usize
 }
 
-/// Decompose a ContextAssemblerInput into an ordered list of Sections.
+/// Decompose a `ContextAssemblerInput` into an ordered list of Sections.
 /// Empty strings are silently skipped — callers should not pass `Some("")`.
+#[must_use]
 pub fn build_sections(input: &ContextAssemblerInput<'_>) -> Vec<Section> {
     let mut sections = Vec::new();
     if let Some(lp) = input.leader_prefix {
@@ -433,14 +434,16 @@ pub fn build_sections(input: &ContextAssemblerInput<'_>) -> Vec<Section> {
 }
 
 /// Adjust section importance scores based on content signals.
+///
 /// Both adjustments apply to the same base score independently:
 /// +0.15 if the section contains a constraint ID (C-NNN);
-/// -0.30 if the section text is a verbatim substring of prev_wave_text
+/// -0.30 if the section text is a verbatim substring of `prev_wave_text`
 /// (exact match — not semantic similarity).
 /// When both fire, net effect is base - 0.15 (penalty dominates).
+#[must_use]
 pub fn score_sections(mut sections: Vec<Section>, prev_wave_text: Option<&str>) -> Vec<Section> {
     let re = constraint_regex();
-    for s in sections.iter_mut() {
+    for s in &mut sections {
         if s.preserve {
             continue;
         }
@@ -504,12 +507,11 @@ fn dedup_blocks(text: &str) -> String {
             let block = lines[i..i + 4].join("\n");
             if seen.contains(&block) {
                 result_lines.push("[duplicate block omitted]");
-                i += 4;
             } else {
                 seen.insert(block);
                 result_lines.extend_from_slice(&lines[i..i + 4]);
-                i += 4;
             }
+            i += 4;
         } else {
             result_lines.push(lines[i]);
             i += 1;
@@ -537,9 +539,11 @@ fn normalize_whitespace(text: &str) -> String {
 }
 
 /// Trim non-preserved sections by importance ascending until token estimate ≤ budget.
+///
 /// Each targeted section is reduced to 60% of its current length, trimmed to the
 /// nearest sentence boundary (". ") if one exists within the trimmed range.
 /// Preserved sections are never touched.
+#[must_use]
 pub fn importance_trim(mut sections: Vec<Section>, budget: usize) -> Vec<Section> {
     let mut target_indices: Vec<usize> = sections
         .iter()
@@ -579,7 +583,7 @@ pub fn importance_trim(mut sections: Vec<Section>, budget: usize) -> Vec<Section
                 .unwrap_or(0);
             let search_range = &text[..keep_bytes];
             let trimmed = if let Some(pos) = search_range.rfind(". ") {
-                text[..pos + 1].to_string()
+                text[..=pos].to_string()
             } else {
                 search_range.to_string()
             };
@@ -627,6 +631,7 @@ pub mod stable_cache {
     }
 
     impl StableContextCache {
+        #[must_use]
         pub fn new() -> Self {
             Self::default()
         }

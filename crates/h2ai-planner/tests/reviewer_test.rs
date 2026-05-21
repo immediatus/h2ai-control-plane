@@ -1,9 +1,28 @@
+use async_trait::async_trait;
 use chrono::Utc;
 use h2ai_adapters::MockAdapter;
+use h2ai_planner::decomposer::PlannerError;
 use h2ai_planner::reviewer::{PlanReviewer, ReviewOutcome};
+use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::{SubtaskId, TaskId};
 use h2ai_types::plan::{PlanStatus, Subtask, SubtaskPlan};
 use h2ai_types::sizing::TauValue;
+
+/// Adapter that always returns an error — covers the adapter-failure branch in `evaluate()`.
+#[derive(Debug)]
+struct FailingAdapter;
+
+#[async_trait]
+impl IComputeAdapter for FailingAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        Err(AdapterError::NetworkError("simulated failure".into()))
+    }
+
+    fn kind(&self) -> &AdapterKind {
+        unimplemented!()
+    }
+}
 
 fn two_step_plan() -> SubtaskPlan {
     let a = SubtaskId::new();
@@ -19,7 +38,7 @@ fn two_step_plan() -> SubtaskPlan {
                 role_hint: None,
             },
             Subtask {
-                id: b.clone(),
+                id: b,
                 description: "Implement endpoints".into(),
                 depends_on: vec![a],
                 role_hint: None,
@@ -195,5 +214,55 @@ async fn reviewer_returns_parse_error_when_approved_field_missing() {
     assert!(
         matches!(result, Err(PlannerError::ParseError(_))),
         "missing 'approved' field must produce ParseError, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn reviewer_propagates_adapter_error() {
+    let result = PlanReviewer::evaluate(
+        &two_step_plan(),
+        "Build a REST API",
+        &FailingAdapter,
+        TauValue::new(0.2).unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(PlannerError::Adapter(_))),
+        "adapter failure must propagate as PlannerError::Adapter, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn reviewer_formats_unknown_dependency_id_in_summary() {
+    // Construct a plan where subtask B has a depends_on entry whose ID
+    // is not present among the plan's subtasks.  This exercises the
+    // `map_or_else(|| "<unknown>".into(), ...)` branch in the summary
+    // formatter, which is reached before any LLM call.
+    //
+    // The adapter returns a valid approved JSON so we can confirm the
+    // request was formed and the path was exercised (no parse error).
+    let a = SubtaskId::new();
+    let phantom_id = SubtaskId::new(); // intentionally NOT added to subtasks
+    let plan = SubtaskPlan {
+        plan_id: TaskId::new(),
+        parent_task_id: TaskId::new(),
+        subtasks: vec![Subtask {
+            id: a.clone(),
+            description: "Step A".into(),
+            depends_on: vec![phantom_id], // phantom — not in subtask list
+            role_hint: None,
+        }],
+        status: PlanStatus::PendingReview,
+        created_at: Utc::now(),
+    };
+    let adapter = MockAdapter::new(
+        r#"{"approved": true, "reason": "Looks good despite unknown dep."}"#.into(),
+    );
+    let outcome = PlanReviewer::evaluate(&plan, "some task", &adapter, TauValue::new(0.2).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, ReviewOutcome::Approved),
+        "plan with phantom dep ID should still be reviewable"
     );
 }

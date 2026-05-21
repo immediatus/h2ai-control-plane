@@ -1,3 +1,56 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 // Requires a live NATS server. Run with:
 //   NATS_URL=nats://localhost:4222 cargo nextest run -p h2ai-state --test nats_infra_test
 
@@ -19,7 +72,6 @@ async fn make_client() -> Option<NatsClient> {
 }
 
 #[tokio::test]
-#[ignore]
 async fn ensure_infrastructure_is_idempotent() {
     let url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match NatsClient::connect(&url).await {
@@ -37,7 +89,6 @@ async fn ensure_infrastructure_is_idempotent() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn put_and_get_calibration_roundtrip() {
     use chrono::Utc;
     use h2ai_types::events::CalibrationCompletedEvent;
@@ -84,7 +135,6 @@ async fn put_and_get_calibration_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn put_and_get_tao_estimator_roundtrip() {
     let url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match NatsClient::connect(&url).await {
@@ -109,7 +159,6 @@ async fn put_and_get_tao_estimator_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore = "requires NATS"]
 async fn signal_round_trips_via_jetstream() {
     let url = h2ai_config::H2AIConfig::default().nats_url;
     let client = match NatsClient::connect(&url).await {
@@ -160,7 +209,6 @@ async fn signal_round_trips_via_jetstream() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn calibration_record_roundtrip() {
     use h2ai_types::calibration::{AuditorCircuitState, CalibrationRecord, ProbeSource};
     let Some(client) = make_client().await else {
@@ -188,7 +236,6 @@ async fn calibration_record_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn auditor_health_roundtrip() {
     use h2ai_types::calibration::{AuditorCircuitState, AuditorHealth};
     let Some(client) = make_client().await else {
@@ -213,7 +260,6 @@ async fn auditor_health_roundtrip() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn probe_lease_cas_exclusive() {
     let Some(client) = make_client().await else {
         return;
@@ -236,7 +282,6 @@ async fn probe_lease_cas_exclusive() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn get_calibration_record_missing_returns_none() {
     let Some(client) = make_client().await else {
         return;

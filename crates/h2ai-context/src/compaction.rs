@@ -3,17 +3,18 @@ pub struct CompactionConfig {
     pub preserve_keywords: Vec<String>,
 }
 
-fn estimate_tokens(s: &str) -> usize {
+const fn estimate_tokens(s: &str) -> usize {
     s.len().saturating_add(3) / 4
 }
 
 /// Compact `context` to fit within `config.max_tokens` (±N-token heuristic slack).
 ///
 /// Strategy (Lost-in-Middle mitigation):
-/// 1. If already within budget, return with missing preserve_keywords appended (no truncation).
+/// 1. If already within budget, return with missing `preserve_keywords` appended (no truncation).
 /// 2. Otherwise keep a head and tail slice of the body, drop the middle, and
-///    append any missing preserve_keywords at the end (checked against the
+///    append any missing `preserve_keywords` at the end (checked against the
 ///    compacted body so keywords dropped from the middle are re-injected).
+#[must_use]
 pub fn compact(context: &str, config: &CompactionConfig) -> String {
     // Fast path: check if we're already within budget with any suffix needed.
     let initial_suffix = build_keyword_suffix(context, &config.preserve_keywords);
@@ -88,7 +89,7 @@ fn build_keyword_suffix(context: &str, keywords: &[String]) -> String {
     let missing: Vec<&str> = keywords
         .iter()
         .filter(|kw| seen.insert(kw.as_str()) && !context.contains(kw.as_str()))
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
         .collect();
     if missing.is_empty() {
         String::new()

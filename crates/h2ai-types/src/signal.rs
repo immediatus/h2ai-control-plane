@@ -38,7 +38,7 @@ pub struct ApproveSignal {
     pub operator_id: String,
 }
 
-/// Custom serializer for SignalPayload using adjacently-tagged format.
+/// Custom serializer for `SignalPayload` using adjacently-tagged format.
 fn serialize_signal_payload<S>(payload: &SignalPayload, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -67,7 +67,7 @@ where
     }
 }
 
-/// Custom deserializer for SignalPayload that catches unknown variants.
+/// Custom deserializer for `SignalPayload` that catches unknown variants.
 fn deserialize_signal_payload<'de, D>(deserializer: D) -> Result<SignalPayload, D::Error>
 where
     D: Deserializer<'de>,

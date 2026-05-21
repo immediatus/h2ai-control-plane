@@ -1,12 +1,13 @@
+#![allow(clippy::cast_precision_loss)]
 use h2ai_context::embedding::{cosine_similarity, EmbeddingModel};
 use h2ai_types::events::{ConstraintViolation, FailureMode};
 use h2ai_types::sizing::EigenCalibration;
 use nalgebra::DMatrix;
 
-/// Compute N_eff (effective independent adapters) from a set of proposal or output texts.
+/// Compute `N_eff` (effective independent adapters) from a set of proposal or output texts.
 ///
 /// Embeds each text, builds the N×N cosine matrix C (diagonal = 1.0), normalises
-/// K = C / N so trace(K) = 1, then computes N_eff via `EigenCalibration::from_cosine_matrix`.
+/// K = C / N so trace(K) = 1, then computes `N_eff` via `EigenCalibration::from_cosine_matrix`.
 /// Returns 1.0 for fewer than 2 texts (degenerate — only one perspective).
 pub fn compute_n_eff_cosine(texts: &[String], model: &dyn EmbeddingModel, delta: f64) -> f64 {
     let n = texts.len();
@@ -31,12 +32,13 @@ pub fn compute_n_eff_cosine(texts: &[String], model: &dyn EmbeddingModel, delta:
     EigenCalibration::from_cosine_matrix(&k, delta).n_effective
 }
 
-/// Classify a zero-survival event as ConstrainedExploration or ModeCollapse.
+/// Classify a zero-survival event as `ConstrainedExploration` or `ModeCollapse`.
 ///
-/// Boundary: `n_eff > diversity_threshold × n_requested` → ConstrainedExploration.
-/// When `diversity_threshold` is 0.0, the boundary is 0.0 — any positive N_eff
-/// (which always ≥ 1.0) will produce ConstrainedExploration. Set `diversity_threshold`
+/// Boundary: `n_eff > diversity_threshold × n_requested` → `ConstrainedExploration`.
+/// When `diversity_threshold` is 0.0, the boundary is 0.0 — any positive `N_eff`
+/// (which always ≥ 1.0) will produce `ConstrainedExploration`. Set `diversity_threshold`
 /// to a meaningful value (e.g. 0.5) in `H2AIConfig` for production routing.
+#[must_use]
 pub fn classify_failure_mode(
     n_eff: f64,
     n_requested: usize,
@@ -55,6 +57,7 @@ pub fn classify_failure_mode(
 /// raw proposal text or remediation hints. Keeps context window α low and avoids
 /// "Lost in the Middle" attention degradation on re-tries.
 /// Returns `None` when `violations` is empty.
+#[must_use]
 pub fn synthesize_tombstone(violations: &[ConstraintViolation]) -> Option<String> {
     if violations.is_empty() {
         return None;

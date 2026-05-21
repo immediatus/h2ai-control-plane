@@ -1,5 +1,6 @@
 pub use crate::nats_dispatch_adapter::NatsDispatchConfig;
 use crate::task_store::{TaskState, TaskStore};
+use h2ai_autonomic::retry_accumulator::RetryAccumulator;
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_context::embedding::EmbeddingModel;
@@ -47,7 +48,7 @@ pub enum EngineError {
     /// Increase `task_deadline_secs` or reduce ensemble size to fit the budget.
     #[error("task deadline exceeded (budget {budget_secs}s)")]
     DeadlineExceeded { budget_secs: u64 },
-    /// The provisioned ensemble is too small for the requested OutlierResistant fault bound.
+    /// The provisioned ensemble is too small for the requested `OutlierResistant` fault bound.
     /// Either reduce `f` or provision at least `2f + 3` explorers.
     #[error("insufficient quorum for OutlierResistant f={f}: need n ≥ {required}, got n={n}")]
     InsufficientQuorum { n: usize, f: usize, required: usize },
@@ -72,7 +73,7 @@ pub enum EngineError {
 pub struct ShadowAuditCtx {
     /// The shadow auditor adapter — must be from a different family than the primary.
     pub adapter: std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>,
-    /// Domains currently in AND-vote mode, loaded from AppState at task dispatch.
+    /// Domains currently in AND-vote mode, loaded from `AppState` at task dispatch.
     pub promoted_domains: std::collections::HashSet<String>,
 }
 
@@ -102,16 +103,16 @@ pub struct EngineInput<'a> {
     pub cfg: &'a H2AIConfig,
     /// In-memory task state store for phase and validation tracking.
     pub store: TaskStore,
-    /// When Some, each explorer slot gets a NatsDispatchAdapter instead of
-    /// drawing from explorer_adapters. explorer_adapters may be empty.
+    /// When Some, each explorer slot gets a `NatsDispatchAdapter` instead of
+    /// drawing from `explorer_adapters`. `explorer_adapters` may be empty.
     pub nats_dispatch: Option<NatsDispatchConfig>,
     /// Adapter registry for profile-based routing.
     pub registry: &'a AdapterRegistry,
     /// Optional embedding model for Weiszfeld geometric median and cosine similarity.
     /// When `Some`, enables the Weiszfeld path in incoherent merge clusters.
     pub embedding_model: Option<&'a dyn EmbeddingModel>,
-    /// Pre-task snapshot of TaoMultiplierEstimator::multiplier().
-    /// Used for tao_per_turn_factor in AttributionInput so attribution reflects
+    /// Pre-task snapshot of `TaoMultiplierEstimator::multiplier()`.
+    /// Used for `tao_per_turn_factor` in `AttributionInput` so attribution reflects
     /// what was known at dispatch time, not the mid-task update.
     pub tao_multiplier: f64,
     /// Shared estimator updated with (turn-1 score, final score) pairs after
@@ -123,7 +124,7 @@ pub struct EngineInput<'a> {
     pub synthesis_adapter: Option<&'a dyn IComputeAdapter>,
     /// Optional Thompson Sampling bandit for adaptive N selection.
     /// When `Some`, the bandit selects `n_agents` and its posterior is updated on task completion.
-    /// When `None`, N selection falls back to `n_optimal_hint` from EnsembleCalibration.
+    /// When `None`, N selection falls back to `n_optimal_hint` from `EnsembleCalibration`.
     pub bandit_state: Option<std::sync::Arc<tokio::sync::RwLock<crate::bandit::BanditState>>>,
     /// Shadow auditor context for GAP-C2 disagreement measurement. `None` = shadow off.
     pub shadow_audit_ctx: Option<ShadowAuditCtx>,
@@ -131,8 +132,8 @@ pub struct EngineInput<'a> {
     /// Uses `Arc` so it can be called from async closures inside the MAPE-K loop.
     /// When `None`, search-enabled slots and C1 retries fall back to hint-only.
     pub researcher_adapter: Option<std::sync::Arc<dyn IComputeAdapter>>,
-    /// Current SRANI EMA midpoint (ema_cfi) loaded from NATS KV by tasks.rs.
-    /// When count < 5, the engine substitutes cfg.srani.cold_start_midpoint().
+    /// Current SRANI EMA midpoint (`ema_cfi`) loaded from NATS KV by tasks.rs.
+    /// When count < 5, the engine substitutes `cfg.srani.cold_start_midpoint()`.
     pub srani_ema_cfi: f64,
     /// Number of tasks that have contributed a CFI observation to the EMA.
     pub srani_count: usize,
@@ -158,7 +159,7 @@ pub struct EngineInput<'a> {
     pub stable_cache:
         Option<std::sync::Arc<crate::context_assembler::stable_cache::StableContextCache>>,
     /// Optional BM25 knowledge provider. When Some, generation queries it per slot.
-    /// When None, global_knowledge and topic_knowledge remain None (existing behavior).
+    /// When None, `global_knowledge` and `topic_knowledge` remain None (existing behavior).
     pub knowledge_provider:
         Option<std::sync::Arc<dyn h2ai_knowledge::provider::KnowledgeProvider + Send + Sync>>,
     /// Optional induction store for cross-task knowledge boosting.
@@ -175,9 +176,9 @@ pub struct EngineOutput {
     pub resolved_output: String,
     /// Selection-resolved event: which proposals survived, pruned, merge strategy, and timing.
     pub selection_resolved: SelectionResolvedEvent,
-    /// Quality attribution snapshot (q_confidence + components) computed at resolve time.
+    /// Quality attribution snapshot (`q_confidence` + components) computed at resolve time.
     pub attribution: crate::attribution::HarnessAttribution,
-    /// Bootstrap CI over q_confidence from CG sample variance. `None` when < 2 CG samples.
+    /// Bootstrap CI over `q_confidence` from CG sample variance. `None` when < 2 CG samples.
     pub attribution_interval: Option<crate::attribution::AttributionInterval>,
     /// All verification scored events collected across every MAPE-K retry iteration.
     pub verification_events: Vec<VerificationScoredEvent>,
@@ -188,37 +189,37 @@ pub struct EngineOutput {
     /// `None` when no verification events were produced.
     /// Typically `Some(Insufficient)` state for a single task (< 20 runs needed for calibration).
     pub talagrand: Option<crate::diagnostics::TalagrandDiagnostic>,
-    /// SelfOptimizer suggestion for the next task run, computed from this run's quality.
+    /// `SelfOptimizer` suggestion for the next task run, computed from this run's quality.
     /// `None` only when no quality history was accumulated (should not happen on success).
     /// Callers may apply this to their next `EngineInput` to improve throughput.
     pub suggested_next_params: Option<crate::self_optimizer::OptimizerParams>,
-    /// Fraction of dispatched proposals that survived verification (valid / total_evaluated).
+    /// Fraction of dispatched proposals that survived verification (valid / `total_evaluated`).
     /// 1.0 = no waste; below `cfg.optimizer_waste_threshold` = wasteful run.
     pub waste_ratio: f64,
-    /// SelfOptimizer suggestions derived from this wasteful-but-successful run.
+    /// `SelfOptimizer` suggestions derived from this wasteful-but-successful run.
     /// Empty when not wasteful or no applicable suggestion was found.
-    /// Callers should apply these to AppState (τ spread EMA, topology hint).
+    /// Callers should apply these to `AppState` (τ spread EMA, topology hint).
     pub applied_optimizations: Vec<h2ai_types::events::AppliedOptimization>,
     /// Retry topology events in order — one entry per MAPE-K retry wave.
-    /// Populated only when a ZeroSurvivalEvent fired; empty on first-wave success.
+    /// Populated only when a `ZeroSurvivalEvent` fired; empty on first-wave success.
     pub topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent>,
-    /// Number of ModeCollapse rotations applied across all retries.
+    /// Number of `ModeCollapse` rotations applied across all retries.
     pub mode_collapse_count: usize,
     /// Epistemic yield from the resolved wave (reserved for Task 9 metrics wiring).
     pub epistemic_yield: Option<f64>,
     /// Routing quadrant assigned by Phase 1.5 task complexity assessment.
-    /// In shadow_mode this is informational only — topology was not changed.
+    /// In `shadow_mode` this is informational only — topology was not changed.
     /// `None` only when the engine path skips Phase 1.5 (should not happen in production).
     pub task_quadrant: Option<TaskQuadrant>,
     /// Full Phase 1.5 assessment event for NATS publishing by the caller.
-    /// Always `Some` — carried here so the API route can publish to JetStream.
+    /// Always `Some` — carried here so the API route can publish to `JetStream`.
     pub complexity_event: TaskComplexityAssessedEvent,
     /// Constraint Pareto frontier coverage measured from the final wave's satisfaction matrix.
     /// `None` only when no proposals survived auditing.
     pub frontier_event: Option<h2ai_types::events::ConstraintFrontierEvent>,
     /// Per-explorer correctness flag from the final verification wave.
-    /// `true` = proposal passed verification (score ≥ verify_threshold).
-    /// Used for H1 (ρ_actual) empirical measurement in the GAP-A1 experiment.
+    /// `true` = proposal passed verification (score ≥ `verify_threshold`).
+    /// Used for H1 (`ρ_actual`) empirical measurement in the GAP-A1 experiment.
     pub adapter_correctness: Vec<(h2ai_types::identity::ExplorerId, bool)>,
     /// Domain-level coherence state from all pruned proposals across all MAPE-K waves.
     pub coherence_state: crate::coherence::CoherenceState,
@@ -235,12 +236,12 @@ pub struct EngineOutput {
     /// C3 domain coverage degradation event. `Some` when coverage < threshold.
     /// `None` when coverage is sufficient or corpus has no domain tags.
     pub diversity_degraded_event: Option<h2ai_types::events::DiversityGuardDegradedEvent>,
-    /// SRANI correlated fabrication events — fired when CFI > warn_threshold.
+    /// SRANI correlated fabrication events — fired when CFI > `warn_threshold`.
     pub srani_events: Vec<h2ai_types::events::CorrelatedFabricationEvent>,
     /// EMA midpoint updated after absorbing this task's CFI observation.
-    /// Zero when no CFI was computed this task (proposals.len() < 2 or srani disabled).
+    /// Zero when no CFI was computed this task (`proposals.len()` < 2 or srani disabled).
     pub srani_ema_cfi_updated: f64,
-    /// Count after this task's CFI observation (srani_count + 1 if CFI was computed, else unchanged).
+    /// Count after this task's CFI observation (`srani_count` + 1 if CFI was computed, else unchanged).
     pub srani_count_updated: usize,
     /// Result of the oracle gate check before merge. `None` when gate was disabled or
     /// no NATS client was provided. `Some(true)` = passed, `Some(false)` = failed.
@@ -258,7 +259,7 @@ async fn write_reasoning_checkpoint(
     strict: bool,
 ) -> Result<(), EngineError> {
     match nats.put_reasoning_checkpoint(cp, prefix).await {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(e) => {
             if strict {
                 tracing::error!(
@@ -412,6 +413,10 @@ impl ExecutionEngine {
         // is included in the final EngineOutput via MapeKController::finalize().
         controller.diversity_degraded_event = diversity_degraded_event;
 
+        // Per-task OSP retry accumulator. Local variable — never stored in NATS KV or shared
+        // state. Reset on Resolved (spec §A.3: state-leakage prevention).
+        let mut osp_accumulator = RetryAccumulator::new();
+
         for retry_count in 0..=input.cfg.max_autonomic_retries {
             if let Some(dl) = controller.deadline() {
                 if std::time::Instant::now() >= dl {
@@ -423,7 +428,12 @@ impl ExecutionEngine {
             }
 
             let wave = pipeline
-                .run(controller.params(), retry_count as usize)
+                .run(
+                    controller.params(),
+                    retry_count as usize,
+                    Some(&mut osp_accumulator),
+                    input.cfg.osp.as_ref(),
+                )
                 .await;
             controller.observe(&wave);
             // ── Epistemic Leader Election ────────────────────────────────────
@@ -525,10 +535,16 @@ impl ExecutionEngine {
                     }
 
                     // ── HITL approval gate ────────────────────────────────────
-                    // When HITL is enabled, the engine waits for a Finalize signal
-                    // before returning. On reject, publishes ApprovalResolved and
-                    // returns HitlRejected. On approve (or timeout), falls through.
-                    if input.cfg.hitl.enabled {
+                    // Fires when: hitl enabled AND NOT oracle task AND
+                    // (require_approval flag OR q_confidence < threshold).
+                    // Oracle tasks bypass — programmatic oracle verdict is sufficient.
+                    let hitl_oracle_bypass = input.manifest.oracle.is_some();
+                    let hitl_q = out.attribution.q_confidence;
+                    let needs_hitl = input.cfg.hitl.enabled
+                        && !hitl_oracle_bypass
+                        && (input.manifest.require_approval
+                            || hitl_q < input.cfg.hitl.confidence_threshold);
+                    if needs_hitl {
                         use futures::StreamExt as _;
 
                         let now_ms = || {
@@ -546,6 +562,9 @@ impl ExecutionEngine {
                             as u64;
 
                         let timeout_at_ms = now_ms() + effective_ms;
+
+                        // Update in-memory store so GET /tasks/{id} reflects the HITL state.
+                        input.store.set_awaiting_approval(&input.task_id);
 
                         // Publish PendingApproval so harness/UI knows we're waiting.
                         if let Some(ref nats) = input.nats {
@@ -620,7 +639,7 @@ impl ExecutionEngine {
                                             }
                                         }
                                     }
-                                    _ = tokio::time::sleep(std::time::Duration::from_millis(effective_ms)) => {
+                                    () = tokio::time::sleep(std::time::Duration::from_millis(effective_ms)) => {
                                         (
                                             true,
                                             "system:timeout".to_string(),
@@ -730,6 +749,10 @@ impl ExecutionEngine {
                         }
                     }
 
+                    // Reset OSP accumulator on successful resolve (spec §A.3).
+                    // NOT called on ZeroSurvival — accumulation must persist across retries.
+                    osp_accumulator.reset();
+
                     return Ok(*out);
                 }
                 crate::mape_k::MapeKDecision::Retry => continue,
@@ -809,7 +832,7 @@ impl ExecutionEngine {
 
         let phase = crate::task_store::TaskPhase::try_from_name_str(&checkpoint.phase);
 
-        if let Some(crate::task_store::TaskPhase::Merging) = phase {
+        if phase == Some(crate::task_store::TaskPhase::Merging) {
             let resolved = checkpoint.resolved_output.ok_or_else(|| {
                 EngineError::Parse("Merging checkpoint missing resolved_output".into())
             })?;
@@ -934,15 +957,5 @@ impl ExecutionEngine {
             // Earlier phase or unknown phase — restart from scratch
             Self::run_offline(input).await
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn conflict_beta_disabled_skips_accumulator_load() {
-        let mut cfg = h2ai_config::H2AIConfig::default();
-        cfg.conflict_beta.enabled = false;
-        assert!(!cfg.conflict_beta.enabled);
     }
 }

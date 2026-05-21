@@ -63,6 +63,7 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 | More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
 | Retry loop repeats same failed approach | Hope next attempt differs | Epistemic Leader — Krum-elected leader generates Socratic diagnostic question per failed wave; follower context forced to distinct constraint dimensions; credibility-weighted rotation on stagnation |
 | Retry discards all prior work and regenerates from scratch — constraints that were passing get violated again | Retry with stronger hint and hope for the best | CSPR-v2 — `ConstraintConflictGraph` detects structurally-incompatible constraint pairs at corpus load; `RetryWithHints` anchors on the best prior proposal, emits per-violated-constraint REPAIR TARGET instructions, and adds a MetaRepair block when competing constraints would produce contradictory directives; FALCON Bounded-Locality Theorem guarantees quality loss `∝ v(x̂)` not unconstrained as in full regeneration |
+| Score-blind synthesis merges failing proposals (score=0.0) symmetrically with passing ones — merged output is worse than the best single passing proposal | Hope the synthesiser discards bad inputs | Optimal Synthesis Policy (OSP) — `OspRegime` classifies proposals into `ZeroSurvival` / `SingleSurvivor` / `ClearLeader` / `TightCluster` before merge dispatch; `AuditChannelBuilder` extracts Zone 3 findings from structured `ConstraintViolation` IR only (Pink Elephant prevention — no raw proposal text); `RetryAccumulator` tracks per-constraint violation rates across retries with λ=0.7 leaky decay; `zone3_hints` on `MergeResolvedEvent` carries positive guidance framing into next-wave prompts |
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates; `constraint_error_cost = 1 − compliance` |
 | Constraint corpus is static and fragile | Bulk file reload loses history | Constraint Wiki (`H2AI_CONSTRAINT_WIKI` KV) — hot-reload via NATS KV watch; `ConstraintSource` trait decouples corpus access from storage; `ConstraintSnapshot` in every checkpoint records which wiki revision was active |
 | Flat constraint retrieval returns all-or-nothing | Inject entire corpus or keyword-match | Hierarchical Knowledge Provider — `Bm25WikiProvider` scores constraints via BM25+/PPR across a Global → Topic → Leaf tree; dual RAPTOR modes (TreeTraversal + CollapsedTree); PPR multi-hop expansion surfaces related constraints; role-stratified `KnowledgeProfile` (Coordinator → CollapsedTree/top_k=3; Executor → TreeTraversal/PPR expand_hops=2; Evaluator → TreeTraversal; Synthesizer → CollapsedTree+1 PPR hop + `ConstraintTension` injection); cross-task `InductionStore` (NATS KV) promotes high-hit-rate node IDs to `explicit_ids` on subsequent tasks with matching domain tags |
@@ -241,7 +242,7 @@ Zero survivors → `ZeroSurvivalEvent`. The three-layer MAPE-K engine engages: `
 
 > The `bft_threshold` is a fractional agreement gate on constraint fingerprints — not PBFT. PBFT handles adversarial nodes with cryptographic guarantees at O(N²) message cost. Here the "Byzantine nodes" are stochastically diverging LLMs. A fractional threshold + Krum outlier rejection is the correct tool; full PBFT would be architectural overkill.
 
-**Layer 2 — Semantic reconciliation (synthesis LLM):** The synthesis LLM receives only validated proposals. Two passes: (1) **critique** at low τ produces a structured gap analysis; (2) **synthesis** reads proposals + critique and produces the final coherent output. Before synthesis runs, a diversity gate rejects mono-culture ensembles — if mean pairwise Hamming distance across fingerprints falls below `diversity_threshold`, a MAPE-K retry fires.
+**Layer 2 — Semantic reconciliation (synthesis LLM):** Before synthesis, the **OSP regime layer** (when `[osp]` configured) classifies surviving proposals: `ClearLeader` (score gap Δ ≥ 2·T_v and P(correct) ≥ 0.92) selects the leader directly without synthesis; `TightCluster` runs synthesis over passing proposals only. The synthesis LLM receives only validated proposals. Two passes: (1) **critique** at low τ produces a structured gap analysis; (2) **synthesis** reads proposals + critique and produces the final coherent output. Before synthesis runs, a diversity gate rejects mono-culture ensembles — if mean pairwise Hamming distance across fingerprints falls below `diversity_threshold`, a MAPE-K retry fires.
 
 The **Merge Authority UI** presents the valid proposals panel, tombstone panel (every rejection with reason and `c_i`), MAPE-K intervention timeline, and live physics panel (`θ_coord`, `β_eff`, `N_max`, `MergeStrategy`). One human decision. `MergeResolvedEvent` closes the task.
 
@@ -290,7 +291,7 @@ ZeroSurvivalEvent                  → all proposals pruned, autonomic retry fir
 InterfaceSaturationWarningEvent    → active sub-tasks approaching N_max^interface
 ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates from ScoreOrdered to ConsensusMedian/OutlierResistant (fractional BFT threshold on fingerprints — not PBFT)
 SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
-MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted; oracle_gate_passed: Option<bool>
+MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted; oracle_gate_passed: Option<bool>; zone3_hints: Option<String> (OSP audit findings for next-retry guidance)
 OracleGateResultEvent              → Phase 4.5 oracle gate: gate_passed, confidence, checked/passed counts
 PendingClarificationEvent          → engine suspended awaiting operator answer; POST /{tenant_id}/tasks/{id}/clarify to resume
 OproTriggeredEvent                 → OPRO cycle started: j_eff_ema fell below threshold for adapter
@@ -333,7 +334,7 @@ AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable 
 | `h2ai-nats` | NATS subject constants + scoped NKey provisioning per `task_id` |
 | `h2ai-state` | CRDT semilattice, NATS JetStream I/O, checkpoint delta encoding (JSON Patch RFC 6902), per-tenant KV buckets |
 | `h2ai-context` | Dark Knowledge Compiler — assembles immutable `system_context` from constraint corpus + task manifest |
-| `h2ai-autonomic` | Calibration harness, USL solver (α/β/CG → N_max), eigenvalue computation (spawn_blocking) |
+| `h2ai-autonomic` | Calibration harness, USL solver (α/β/CG → N_max), eigenvalue computation (spawn_blocking); OSP merger (`AuditChannelBuilder`, `RetryAccumulator`, `OspRegime` dispatch) |
 | `h2ai-orchestrator` | MAPE-K engine (`engine.rs` + `ExecutionPipeline` + `MapeKController`), all 16 phase modules, compound + scheduling engines, `JudgePanel` cross-family verification aggregation |
 | `h2ai-provisioner` | `AgentProvider` — container pool management, capability filter, cost-tier ceiling, least-loaded scheduling |
 | `h2ai-planner` | `PlanningEngine::decompose` + `PlanReviewer::evaluate` — LLM-driven task decomposition with structural cycle/empty checks |
@@ -384,7 +385,7 @@ The system is **C-first**: the distributed cluster is the architectural foundati
 | [Math](docs/architecture/math.md) | USL/CJT foundations, 10 definitions + 5 propositions, β_eff formula, calibration table |
 | [Reference](docs/architecture/reference.md) | REST API, SSE event stream, configuration fields, Prometheus metrics, adapter guide, constraint corpus |
 | [Operations](docs/architecture/operations.md) | Getting started, deployment plans, key metrics, alert rules, scaling, troubleshooting |
-| [Research State](docs/architecture/research-state.md) | Project thesis, implemented gaps, open research questions, empirical benchmarking strategy |
+| [Research State](docs/architecture/research-state.md) | Project thesis, mathematical defensibility, open research questions, empirical validation status |
 
 ---
 

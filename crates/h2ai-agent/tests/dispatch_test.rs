@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test]
-#[ignore]
 async fn dispatch_executes_addressed_task_and_publishes_result() {
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match h2ai_state::NatsClient::connect(&nats_url).await {

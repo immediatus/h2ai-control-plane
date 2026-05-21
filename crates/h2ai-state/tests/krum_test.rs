@@ -1,7 +1,61 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 use chrono::Utc;
+use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::krum::{
-    cluster_coherent, krum_index, krum_score_subset, mean_pairwise_distance, min_quorum,
-    quorum_satisfied,
+    cluster_coherent, krum_index, krum_score_subset, krum_select_semantic, mean_pairwise_distance,
+    min_quorum, multi_krum_select_semantic, quorum_satisfied,
 };
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::ProposalEvent;
@@ -12,7 +66,7 @@ use std::collections::HashSet;
 fn tokenize(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
+        .map(str::to_lowercase)
         .filter(|t| t.len() > 1)
         .collect()
 }
@@ -383,5 +437,243 @@ fn multi_krum_m_equals_one_with_f_nonzero() {
     assert_ne!(
         survivors[0].raw_output, byzantine,
         "multi_krum m=1 must not select Byzantine proposal"
+    );
+}
+
+// ── Mock EmbeddingModel ───────────────────────────────────────────────────────
+
+/// Fixed-vector mock: every text maps to the same pre-set vector.
+struct FixedEmbedding(Vec<f32>);
+impl EmbeddingModel for FixedEmbedding {
+    fn embed(&self, _text: &str) -> Vec<f32> {
+        self.0.clone()
+    }
+}
+
+/// Variable-vector mock: selects a vector by hashing the first char of the text.
+/// Texts starting with the same character get the same embedding.
+struct FirstCharEmbedding;
+impl EmbeddingModel for FirstCharEmbedding {
+    fn embed(&self, text: &str) -> Vec<f32> {
+        match text.chars().next() {
+            Some('a') => vec![1.0, 0.0, 0.0],
+            Some('b') => vec![0.9, 0.436, 0.0], // ~cos(~25°) close to 'a'
+            Some('c') => vec![0.9, 0.436, 0.0],
+            Some('d') => vec![0.9, 0.436, 0.0],
+            Some('e') => vec![0.9, 0.436, 0.0],
+            // outlier: orthogonal to everything above
+            _ => vec![0.0, 0.0, 1.0],
+        }
+    }
+}
+
+/// Empty-embedding mock: always returns an empty vec.
+struct EmptyEmbedding;
+impl EmbeddingModel for EmptyEmbedding {
+    fn embed(&self, _text: &str) -> Vec<f32> {
+        vec![]
+    }
+}
+
+// ── krum_select_semantic ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn krum_select_semantic_no_embedding_returns_none() {
+    let proposals = vec![prop("stateless jwt auth")];
+    let result = krum_select_semantic(&proposals, 1, None).await;
+    assert!(result.is_none(), "None embedding model must return None");
+}
+
+#[tokio::test]
+async fn krum_select_semantic_empty_proposals_returns_none() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    let result = krum_select_semantic(&[], 1, Some(&model)).await;
+    assert!(result.is_none(), "empty proposals must return None");
+}
+
+#[tokio::test]
+async fn krum_select_semantic_f_zero_returns_first() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    let proposals = vec![prop("first proposal"), prop("second proposal")];
+    let result = krum_select_semantic(&proposals, 0, Some(&model)).await;
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().raw_output, "first proposal");
+}
+
+#[tokio::test]
+async fn krum_select_semantic_quorum_fail_returns_none() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    // n=4, f=1: need n >= 5
+    let proposals: Vec<_> = (0..4).map(|i| prop(&format!("proposal {i}"))).collect();
+    let result = krum_select_semantic(&proposals, 1, Some(&model)).await;
+    assert!(result.is_none(), "quorum not satisfied must return None");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn krum_select_semantic_real_selection_rejects_outlier() {
+    // n=5, f=1: quorum satisfied.
+    // 4 proposals with 'a'-prefix embeddings cluster together; 1 'z'-prefix is outlier.
+    let model = FirstCharEmbedding;
+    let proposals = vec![
+        prop("alpha cluster jwt"),
+        prop("alpha stateless auth"),
+        prop("alpha bearer token"),
+        prop("alpha rotation adr"),
+        prop("zzz outlier blockchain hash"),
+    ];
+    let result = krum_select_semantic(&proposals, 1, Some(&model)).await;
+    assert!(result.is_some());
+    assert_ne!(
+        result.unwrap().raw_output,
+        "zzz outlier blockchain hash",
+        "semantic krum must reject the outlier"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn krum_select_semantic_empty_embedding_fallback() {
+    // With an empty-embedding model, identical texts → sim=1.0; different → 0.0
+    let model = EmptyEmbedding;
+    // n=5, f=1 — quorum satisfied; all identical → all at distance 0 from each other
+    let proposals: Vec<_> = (0..5).map(|_| prop("identical text")).collect();
+    let result = krum_select_semantic(&proposals, 1, Some(&model)).await;
+    assert!(
+        result.is_some(),
+        "should return Some for identical proposals"
+    );
+}
+
+// ── multi_krum_select_semantic ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn multi_krum_select_semantic_no_embedding_returns_empty() {
+    let proposals = vec![prop("stateless jwt")];
+    let result = multi_krum_select_semantic(&proposals, 1, 1, None).await;
+    assert!(result.is_empty(), "None embedding must return empty vec");
+}
+
+#[tokio::test]
+async fn multi_krum_select_semantic_empty_proposals_returns_empty() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    let result = multi_krum_select_semantic(&[], 1, 2, Some(&model)).await;
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn multi_krum_select_semantic_m_zero_returns_empty() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    let proposals = vec![prop("stateless jwt")];
+    let result = multi_krum_select_semantic(&proposals, 1, 0, Some(&model)).await;
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn multi_krum_select_semantic_f_zero_returns_first_m() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    let proposals: Vec<_> = ["alpha", "beta", "gamma"].iter().map(|t| prop(t)).collect();
+    let result = multi_krum_select_semantic(&proposals, 0, 2, Some(&model)).await;
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].raw_output, "alpha");
+    assert_eq!(result[1].raw_output, "beta");
+}
+
+#[tokio::test]
+async fn multi_krum_select_semantic_quorum_fail_returns_empty() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    // n=4, f=1: need n >= 5
+    let proposals: Vec<_> = (0..4).map(|i| prop(&format!("p{i}"))).collect();
+    let result = multi_krum_select_semantic(&proposals, 1, 2, Some(&model)).await;
+    assert!(result.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_krum_select_semantic_real_selection_rejects_outliers() {
+    // n=7, f=2, m=3: should select 3 honest proposals.
+    let model = FirstCharEmbedding;
+    let proposals = vec![
+        prop("alpha cluster jwt auth"),
+        prop("alpha stateless bearer"),
+        prop("alpha rotation adr compliant"),
+        prop("alpha jwt token refresh"),
+        prop("alpha bearer stateless auth"),
+        prop("zzz outlier blockchain hash one"),
+        prop("zzz outlier redis session two"),
+    ];
+    let result = multi_krum_select_semantic(&proposals, 2, 3, Some(&model)).await;
+    assert_eq!(result.len(), 3);
+    for s in &result {
+        assert!(
+            !s.raw_output.starts_with("zzz"),
+            "must not select outlier; got: {}",
+            s.raw_output
+        );
+    }
+}
+
+// ── cluster_coherent with embedding model ─────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cluster_coherent_with_tight_embedding_returns_true() {
+    // All proposals embed to the same vector → distance 0 → coherent
+    let model = FixedEmbedding(vec![1.0, 0.0, 0.0]);
+    let proposals: Vec<_> = (0..5).map(|_| prop("stateless jwt auth")).collect();
+    let result = cluster_coherent(&proposals, Some(&model)).await;
+    assert!(result, "identical embeddings must be cluster_coherent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cluster_coherent_with_dispersed_embedding_returns_false() {
+    // Orthogonal embeddings → cosine similarity 0 → distance 1.0 > MAX_CLUSTER_DIAMETER
+    struct AxisEmbedding;
+    impl EmbeddingModel for AxisEmbedding {
+        fn embed(&self, text: &str) -> Vec<f32> {
+            match text.chars().next() {
+                Some('a') => vec![1.0, 0.0, 0.0],
+                Some('b') => vec![0.0, 1.0, 0.0],
+                _ => vec![0.0, 0.0, 1.0],
+            }
+        }
+    }
+    let model = AxisEmbedding;
+    let proposals = vec![prop("alpha one"), prop("beta two"), prop("charlie three")];
+    let result = cluster_coherent(&proposals, Some(&model)).await;
+    assert!(
+        !result,
+        "orthogonal embeddings must NOT be cluster_coherent"
+    );
+}
+
+// ── mean_pairwise_distance with embedding model ───────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mean_pairwise_distance_with_identical_embeddings_is_zero() {
+    let model = FixedEmbedding(vec![1.0, 0.0]);
+    let proposals: Vec<_> = (0..3).map(|_| prop("jwt stateless")).collect();
+    let d = mean_pairwise_distance(&proposals, Some(&model)).await;
+    assert!(d.abs() < 1e-9, "identical embeddings → distance 0, got {d}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mean_pairwise_distance_with_empty_embeddings_uses_equality_fallback() {
+    // EmptyEmbedding → falls back to exact string comparison.
+    // All identical → sim=1.0, distance=0.0
+    let model = EmptyEmbedding;
+    let proposals = vec![prop("same text"), prop("same text"), prop("same text")];
+    let d = mean_pairwise_distance(&proposals, Some(&model)).await;
+    assert!(
+        d.abs() < 1e-9,
+        "identical strings with empty embedding → 0.0, got {d}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mean_pairwise_distance_with_empty_embedding_different_strings() {
+    // EmptyEmbedding + different strings → sim=0.0, distance=1.0
+    let model = EmptyEmbedding;
+    let proposals = vec![prop("aaa bbb"), prop("ccc ddd")];
+    let d = mean_pairwise_distance(&proposals, Some(&model)).await;
+    assert!(
+        (d - 1.0).abs() < 1e-9,
+        "different strings with empty embedding → 1.0, got {d}"
     );
 }

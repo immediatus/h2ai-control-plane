@@ -16,7 +16,7 @@ pub struct Input<'a> {
     pub engine_input: &'a EngineInput<'a>,
     pub task_id: &'a TaskId,
     pub retry_count: u32,
-    /// The active context string (retry_context if Some, else system_context).
+    /// The active context string (`retry_context` if Some, else `system_context`).
     pub active_ctx: String,
     /// The base system context without retry feedback.
     pub system_context: String,
@@ -102,7 +102,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
             } else {
                 Some(&effective_slot_configs[idx % effective_slot_configs.len()])
             };
-            if sc_opt.map(|sc| sc.search_enabled).unwrap_or(false) {
+            if sc_opt.is_some_and(|sc| sc.search_enabled) {
                 let req = ComputeRequest {
                     system_context: active_ctx.clone(),
                     task: format!(
@@ -402,7 +402,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
                         offload_threshold_bytes: nd_cfg.offload_threshold_bytes,
                     },
                 ));
-                let generation = retry_count as u64;
+                let generation = u64::from(retry_count);
                 let fut: ExplorerFuture<'_> = Box::pin(async move {
                     use crate::tao_loop::{TaoInput, TaoLoop};
                     match TaoLoop::run(TaoInput {
@@ -435,7 +435,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
                 let pool_len = engine_input.explorer_adapters.len();
                 let adapter_idx = (idx + input.adapter_rotation_offset) % pool_len;
                 let adapter = engine_input.explorer_adapters[adapter_idx];
-                let generation = retry_count as u64;
+                let generation = u64::from(retry_count);
                 let fut: ExplorerFuture<'_> = Box::pin(async move {
                     use crate::tao_loop::{TaoInput, TaoLoop};
                     match TaoLoop::run(TaoInput {
@@ -499,7 +499,10 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
     let tao_turns_mean = if tao_turns_collected.is_empty() {
         1.0
     } else {
-        tao_turns_collected.iter().map(|&t| t as f64).sum::<f64>()
+        tao_turns_collected
+            .iter()
+            .map(|&t| f64::from(t))
+            .sum::<f64>()
             / tao_turns_collected.len() as f64
     };
 

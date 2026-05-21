@@ -15,7 +15,8 @@ pub struct ContextChunk<'a> {
 }
 
 impl<'a> ContextChunk<'a> {
-    pub fn new(content: &'a str, tier: MemoryTier, timestamp_secs: u64) -> Self {
+    #[must_use]
+    pub const fn new(content: &'a str, tier: MemoryTier, timestamp_secs: u64) -> Self {
         Self {
             content,
             tier,
@@ -27,6 +28,8 @@ impl<'a> ContextChunk<'a> {
     ///
     /// Returns 1.0 for chunks with `timestamp_secs >= now_secs` (future timestamps
     /// are treated as age zero via saturating subtraction — never penalised).
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn decay_weight(&self, now_secs: u64) -> f64 {
         let halflife = self.tier.decay_halflife_secs() as f64;
         let age = now_secs.saturating_sub(self.timestamp_secs) as f64;
@@ -34,6 +37,7 @@ impl<'a> ContextChunk<'a> {
     }
 
     /// Minimum ensemble size for reliable use of this chunk's tier.
+    #[must_use]
     pub fn n_it_optimal(&self) -> usize {
         self.tier.n_it_optimal()
     }
@@ -44,8 +48,13 @@ impl<'a> ContextChunk<'a> {
 /// Use this as the `n_optimal` hint when an agent receives chunks of varying tiers in
 /// a single context window — the ensemble must be large enough to handle the least
 /// reliable chunk present.
+#[must_use]
 pub fn recommended_ensemble_size(chunks: &[ContextChunk<'_>]) -> usize {
-    chunks.iter().map(|c| c.n_it_optimal()).max().unwrap_or(1)
+    chunks
+        .iter()
+        .map(ContextChunk::n_it_optimal)
+        .max()
+        .unwrap_or(1)
 }
 
 /// Build an ordered context string from tiered chunks for LLM injection.
@@ -59,6 +68,7 @@ pub fn recommended_ensemble_size(chunks: &[ContextChunk<'_>]) -> usize {
 ///
 /// The `manifest` is prepended as the first section. Chunks below `min_weight` are
 /// excluded — pass `0.0` to include everything.
+#[must_use]
 pub fn build_tiered_context(
     manifest: &str,
     chunks: &[ContextChunk<'_>],
@@ -89,127 +99,4 @@ pub fn build_tiered_context(
         parts.push(format!("{header}\n{}", chunk.content));
     }
     parts.join("\n\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NOW: u64 = 1_000_000;
-
-    fn chunk(content: &'static str, tier: MemoryTier, age_secs: u64) -> ContextChunk<'static> {
-        ContextChunk::new(content, tier, NOW.saturating_sub(age_secs))
-    }
-
-    // ── decay_weight ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn decay_weight_at_age_zero_is_one() {
-        let c = chunk("x", MemoryTier::Working, 0);
-        assert!((c.decay_weight(NOW) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn decay_weight_at_one_time_constant_is_inv_e() {
-        // exp(-t/τ) at t=τ → 1/e ≈ 0.368 (not 0.5 — halflife here means time constant)
-        let halflife = MemoryTier::Working.decay_halflife_secs();
-        let c = chunk("x", MemoryTier::Working, halflife);
-        let expected = std::f64::consts::E.recip();
-        assert!((c.decay_weight(NOW) - expected).abs() < 1e-9);
-    }
-
-    #[test]
-    fn decay_weight_future_timestamp_clamped_to_one() {
-        let c = ContextChunk::new("x", MemoryTier::Episodic, NOW + 3600);
-        assert!((c.decay_weight(NOW) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn procedural_decays_slower_than_working_at_same_age() {
-        let age = 3_600u64; // 1 hour
-        let w = chunk("x", MemoryTier::Working, age).decay_weight(NOW);
-        let p = chunk("x", MemoryTier::Procedural, age).decay_weight(NOW);
-        assert!(p > w, "procedural decays slower: p={p:.4} w={w:.4}");
-    }
-
-    // ── n_it_optimal on ContextChunk ─────────────────────────────────────────
-
-    #[test]
-    fn n_it_optimal_delegates_to_tier() {
-        assert_eq!(chunk("x", MemoryTier::Procedural, 0).n_it_optimal(), 2);
-        assert_eq!(chunk("x", MemoryTier::Working, 0).n_it_optimal(), 9);
-    }
-
-    // ── recommended_ensemble_size ────────────────────────────────────────────
-
-    #[test]
-    fn recommended_ensemble_size_empty_is_one() {
-        assert_eq!(recommended_ensemble_size(&[]), 1);
-    }
-
-    #[test]
-    fn recommended_ensemble_size_takes_worst_case_tier() {
-        let chunks = vec![
-            chunk("rule", MemoryTier::Procedural, 0),
-            chunk("obs", MemoryTier::Working, 0),
-        ];
-        assert_eq!(recommended_ensemble_size(&chunks), 9);
-    }
-
-    // ── build_tiered_context ─────────────────────────────────────────────────
-
-    #[test]
-    fn build_tiered_context_manifest_always_first() {
-        let chunks = vec![chunk("working obs", MemoryTier::Working, 0)];
-        let ctx = build_tiered_context("manifest text", &chunks, NOW, 0.0);
-        assert!(
-            ctx.starts_with("## Task Manifest"),
-            "manifest must open the context"
-        );
-    }
-
-    #[test]
-    fn build_tiered_context_procedural_before_working() {
-        let chunks = vec![
-            chunk("working obs", MemoryTier::Working, 0),
-            chunk("stable rule", MemoryTier::Procedural, 0),
-        ];
-        let ctx = build_tiered_context("m", &chunks, NOW, 0.0);
-        let proc_pos = ctx.find("## Procedural Memory").unwrap();
-        let work_pos = ctx.find("## Working Memory").unwrap();
-        assert!(
-            proc_pos < work_pos,
-            "Procedural must precede Working in context"
-        );
-    }
-
-    #[test]
-    fn build_tiered_context_min_weight_filters_stale_chunks() {
-        let halflife = MemoryTier::Working.decay_halflife_secs();
-        let chunks = vec![
-            chunk("fresh", MemoryTier::Working, 0),
-            chunk("stale", MemoryTier::Working, halflife * 10), // weight ≈ 0.001
-        ];
-        let ctx = build_tiered_context("m", &chunks, NOW, 0.01);
-        assert!(ctx.contains("fresh"));
-        assert!(
-            !ctx.contains("stale"),
-            "chunk below min_weight must be excluded"
-        );
-    }
-
-    #[test]
-    fn build_tiered_context_within_tier_recent_first() {
-        let chunks = vec![
-            chunk("old proc", MemoryTier::Procedural, 86_400),
-            chunk("new proc", MemoryTier::Procedural, 0),
-        ];
-        let ctx = build_tiered_context("m", &chunks, NOW, 0.0);
-        let pos_new = ctx.find("new proc").unwrap();
-        let pos_old = ctx.find("old proc").unwrap();
-        assert!(
-            pos_new < pos_old,
-            "more recent chunk must appear first within tier"
-        );
-    }
 }

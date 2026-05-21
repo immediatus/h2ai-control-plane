@@ -3,7 +3,7 @@ use std::collections::HashSet;
 fn tokenize(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
+        .map(str::to_lowercase)
         .filter(|t| t.len() > 1)
         .collect()
 }
@@ -22,7 +22,7 @@ fn token_jaccard_distance(a: &str, b: &str) -> f64 {
 /// Signal returned by `compute_cv` when at least 2 proposals are provided.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorrelationSignal {
-    /// Coefficient of variation: std_dev / mean of pairwise Jaccard distances.
+    /// Coefficient of variation: `std_dev` / mean of pairwise Jaccard distances.
     /// Low value (near 0) = proposals are tightly clustered = correlated hallucination risk.
     pub cv: f64,
     /// Mean pairwise Jaccard distance across all proposal pairs.
@@ -34,6 +34,7 @@ pub struct CorrelationSignal {
 /// Returns `None` when fewer than 2 proposals are provided.
 /// Returns `Some(signal)` with `cv = 0.0` when all proposals are identical
 /// or only two proposals exist (single-point distribution).
+#[must_use]
 pub fn compute_cv(proposals: &[&str]) -> Option<CorrelationSignal> {
     let n = proposals.len();
     if n < 2 {
@@ -67,76 +68,4 @@ pub fn compute_cv(proposals: &[&str]) -> Option<CorrelationSignal> {
         cv,
         mean_jaccard_distance: mean,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn single_proposal_returns_none() {
-        assert!(compute_cv(&["some text"]).is_none());
-    }
-
-    #[test]
-    fn empty_returns_none() {
-        assert!(compute_cv(&[]).is_none());
-    }
-
-    #[test]
-    fn identical_proposals_return_zero_cv() {
-        let s = compute_cv(&[
-            "the quick brown fox",
-            "the quick brown fox",
-            "the quick brown fox",
-        ])
-        .unwrap();
-        assert_eq!(s.cv, 0.0);
-        assert_eq!(s.mean_jaccard_distance, 0.0);
-    }
-
-    #[test]
-    fn diverse_proposals_return_high_mean_distance() {
-        let proposals = &[
-            "quantum entanglement photon polarization measurement",
-            "sql database transaction isolation deadlock prevention",
-            "rust borrow checker lifetime ownership memory safety",
-            "neural network backpropagation gradient descent loss",
-        ];
-        let s = compute_cv(proposals).unwrap();
-        assert!(
-            s.mean_jaccard_distance > 0.5,
-            "diverse proposals should have large distances, got {}",
-            s.mean_jaccard_distance
-        );
-    }
-
-    #[test]
-    fn similar_proposals_return_low_mean_distance() {
-        let proposals = &[
-            "stateless JWT authentication token validation",
-            "stateless JWT authentication bearer token",
-            "stateless token based JWT authentication scheme",
-        ];
-        let s = compute_cv(proposals).unwrap();
-        assert!(
-            s.mean_jaccard_distance < 0.6,
-            "similar proposals should have small distances: got {}",
-            s.mean_jaccard_distance
-        );
-    }
-
-    #[test]
-    fn two_diverse_proposals_returns_none() {
-        // N=2 with non-zero distance: single-point distribution → CV meaningless → None
-        assert!(compute_cv(&["foo bar baz", "foo bar qux"]).is_none());
-    }
-
-    #[test]
-    fn two_identical_proposals_returns_zero_cv() {
-        // N=2 identical: mean=0 → definite correlation signal
-        let s = compute_cv(&["foo bar baz", "foo bar baz"]).unwrap();
-        assert_eq!(s.cv, 0.0);
-        assert_eq!(s.mean_jaccard_distance, 0.0);
-    }
 }

@@ -9,19 +9,20 @@ pub enum JudgePersona {
 }
 
 impl JudgePersona {
-    pub fn system_prompt_prefix(&self) -> &'static str {
+    #[must_use]
+    pub const fn system_prompt_prefix(&self) -> &'static str {
         match self {
-            JudgePersona::Literal => {
+            Self::Literal => {
                 "Evaluate this proposal against each constraint exactly as written. \
                 Apply no benefit of the doubt; the proposal must satisfy the literal \
                 text of each constraint."
             }
-            JudgePersona::Contextual => {
+            Self::Contextual => {
                 "Evaluate this proposal against each constraint in the spirit of its \
                 intent. Tolerate reasonable variation in form as long as the underlying \
                 requirement is satisfied."
             }
-            JudgePersona::Skeptical => {
+            Self::Skeptical => {
                 "Evaluate this proposal against each constraint with a high bar for \
                 compliance. Only mark a constraint as satisfied when the proposal provides \
                 explicit, unambiguous evidence of compliance."

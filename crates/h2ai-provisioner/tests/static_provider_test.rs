@@ -1,6 +1,6 @@
 use h2ai_provisioner::provider::AgentProvider;
 use h2ai_provisioner::static_provider::StaticProvider;
-use h2ai_types::agent::{AgentDescriptor, AgentTool};
+use h2ai_types::agent::{AgentDescriptor, AgentTool, CostTier, TaskRequirements};
 use h2ai_types::identity::AgentId;
 
 fn descriptor(model: &str) -> AgentDescriptor {
@@ -52,4 +52,18 @@ async fn static_provider_capacity_boundary_at_limit_is_ok() {
         )
         .await
         .is_ok());
+}
+
+#[tokio::test]
+async fn static_provider_select_agent_returns_unavailable() {
+    let provider = StaticProvider::new(10);
+    let req = TaskRequirements {
+        max_cost_tier: CostTier::Mid,
+        required_tools: vec![],
+    };
+    let err = provider.select_agent(&req).await;
+    assert!(
+        err.is_err(),
+        "StaticProvider always returns NoAgentsAvailable"
+    );
 }

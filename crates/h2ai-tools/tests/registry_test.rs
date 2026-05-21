@@ -11,7 +11,7 @@ async fn shell_executor_runs_echo_command() {
             r#"{"command": "echo", "args": ["hello_tool"]}"#,
         )
         .await;
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     assert!(result.unwrap().contains("hello_tool"));
 }
 

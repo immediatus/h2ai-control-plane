@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod oracle_types_tests {
-    use h2ai_types::sizing::{OracleDomain, OracleObservation, OracleSpec, OracleType};
+    use h2ai_types::sizing::{OracleDomain, OracleObservation, OracleSpec};
 
     #[test]
     fn oracle_domain_serde_roundtrip() {
@@ -14,18 +14,13 @@ mod oracle_types_tests {
     fn oracle_spec_serde_roundtrip() {
         let spec = OracleSpec {
             runner_uri: "http://localhost:9090".into(),
-            test_suite: "tests/".into(),
-            language: "python".into(),
             timeout_ms: 5000,
-            reference_output: None,
-            oracle_type: OracleType::TestSuite,
             domain: OracleDomain::Code,
         };
         let s = serde_json::to_string(&spec).unwrap();
         let back: OracleSpec = serde_json::from_str(&s).unwrap();
         assert_eq!(back.runner_uri, "http://localhost:9090");
         assert_eq!(back.timeout_ms, 5000);
-        assert!(matches!(back.oracle_type, OracleType::TestSuite));
     }
 
     #[test]
@@ -38,7 +33,6 @@ mod oracle_types_tests {
             y_oracle: true,
             residual,
             domain: OracleDomain::Code,
-            oracle_type: OracleType::TestSuite,
             timestamp_ms: 0,
         };
         assert!((obs.residual - 0.2).abs() < 1e-9);
@@ -51,7 +45,7 @@ use h2ai_types::events::*;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::{
     CoherencyCoefficients, CoordinationThreshold, MergeStrategy, MultiplicationConditionFailure,
-    RoleErrorCost, TauValue,
+    ProbeSkipReason, RoleErrorCost, TauValue,
 };
 
 fn task_id() -> TaskId {
@@ -72,6 +66,7 @@ fn calibration() -> CoherencyCoefficients {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn calibration_completed_event_serde_round_trip() {
     let cc = calibration();
     let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
@@ -83,15 +78,15 @@ fn calibration_completed_event_serde_round_trip() {
         eigen: None,
         timestamp: Utc::now(),
         pairwise_beta: None,
-        cg_mode: Default::default(),
+        cg_mode: CgMode::default(),
         adapter_families: Vec::new(),
         explorer_verification_family_match: false,
         single_family_warning: false,
         n_max_lo: 0.0,
         n_max_hi: 0.0,
         n_eff_cosine_prior: 0.0,
-        calibration_quality: Default::default(),
-        calibration_source: Default::default(),
+        calibration_quality: CalibrationQuality::default(),
+        calibration_source: CalibrationSource::default(),
         beta_quality: None,
     };
     let json = serde_json::to_string(&e).unwrap();
@@ -164,6 +159,7 @@ fn topology_provisioned_event_includes_physics_fields() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn branch_pruned_event_includes_error_cost() {
     let e = BranchPrunedEvent {
         task_id: task_id(),
@@ -217,6 +213,7 @@ fn selection_resolved_event_includes_merge_strategy() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn consensus_required_event_serde_round_trip() {
     let e = ConsensusRequiredEvent {
         task_id: task_id(),
@@ -249,6 +246,7 @@ fn task_failed_event_may_include_multiplication_failure() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn h2ai_event_enum_wraps_all_17_events() {
     let cc = calibration();
     let theta = CoordinationThreshold::from_calibration(&cc, 0.3);
@@ -264,15 +262,15 @@ fn h2ai_event_enum_wraps_all_17_events() {
             eigen: None,
             timestamp: Utc::now(),
             pairwise_beta: None,
-            cg_mode: Default::default(),
+            cg_mode: CgMode::default(),
             adapter_families: Vec::new(),
             explorer_verification_family_match: false,
             single_family_warning: false,
             n_max_lo: 0.0,
             n_max_hi: 0.0,
             n_eff_cosine_prior: 0.0,
-            calibration_quality: Default::default(),
-            calibration_source: Default::default(),
+            calibration_quality: CalibrationQuality::default(),
+            calibration_source: CalibrationSource::default(),
             beta_quality: None,
         }),
         H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
@@ -294,7 +292,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             beta_eff: 0.05,
             role_error_costs: vec![RoleErrorCost::new(0.5).unwrap()],
             merge_strategy: merge.clone(),
-            coordination_threshold: theta.clone(),
+            coordination_threshold: theta,
             review_gates: vec![],
             retry_count: 0,
             timestamp: Utc::now(),
@@ -395,6 +393,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             j_eff: None,
             oracle_gate_passed: None,
             timestamp: Utc::now(),
+            zone3_hints: None,
         }),
         H2AIEvent::TaskFailed(TaskFailedEvent {
             task_id: task_id(),
@@ -412,7 +411,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             n_eff_pool: None,
             task_quadrant: h2ai_types::sizing::TaskQuadrant::Coverage,
             probe_skipped: true,
-            probe_skip_reason: Default::default(),
+            probe_skip_reason: ProbeSkipReason::default(),
             heavy_fraction: 0.0,
             tcc_mismatch: false,
             probe_cost_tokens: 0,
@@ -496,23 +495,19 @@ mod oracle_event_tests {
         CalibrationDriftWarning, H2AIEvent, OraclePendingEvent, OracleResultEvent,
         OracleSuspectEvent,
     };
-    use h2ai_types::sizing::{OracleDomain, OracleSpec, OracleType};
+    use h2ai_types::sizing::{OracleDomain, OracleSpec};
 
     fn make_oracle_spec() -> OracleSpec {
         OracleSpec {
             runner_uri: "http://localhost:9090".into(),
-            test_suite: "tests/".into(),
-            language: "python".into(),
             timeout_ms: 5000,
-            reference_output: None,
-            oracle_type: OracleType::TestSuite,
             domain: OracleDomain::Code,
         }
     }
 
     #[test]
     fn oracle_pending_event_serde_roundtrip() {
-        use h2ai_types::identity::TaskId;
+        use h2ai_types::identity::{TaskId, TenantId};
         let ev = OraclePendingEvent {
             task_id: TaskId::new(),
             winning_output: "print('hello')".into(),
@@ -520,6 +515,7 @@ mod oracle_event_tests {
             n_used: 3,
             oracle_spec: make_oracle_spec(),
             domain: OracleDomain::Code,
+            tenant_id: TenantId::default(),
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OraclePendingEvent = serde_json::from_str(&json).unwrap();
@@ -529,7 +525,7 @@ mod oracle_event_tests {
 
     #[test]
     fn oracle_result_event_residual_formula() {
-        use h2ai_types::identity::TaskId;
+        use h2ai_types::identity::{TaskId, TenantId};
         // residual = |q_confidence - passed as f64|
         // q=0.8, passed=true (1.0) → residual = 0.2
         let ev = OracleResultEvent {
@@ -540,9 +536,10 @@ mod oracle_event_tests {
             score: 1.0,
             residual: (0.8_f64 - 1.0_f64).abs(),
             domain: OracleDomain::Code,
-            oracle_type: OracleType::TestSuite,
             duration_ms: 250,
             timestamp_ms: 0,
+            verdict: None,
+            tenant_id: TenantId::default(),
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: OracleResultEvent = serde_json::from_str(&json).unwrap();
@@ -577,7 +574,7 @@ mod oracle_event_tests {
 
     #[test]
     fn h2ai_event_oracle_variants_serde() {
-        use h2ai_types::identity::TaskId;
+        use h2ai_types::identity::{TaskId, TenantId};
         let ev = H2AIEvent::OraclePending(OraclePendingEvent {
             task_id: TaskId::new(),
             winning_output: "output".into(),
@@ -585,6 +582,7 @@ mod oracle_event_tests {
             n_used: 2,
             oracle_spec: make_oracle_spec(),
             domain: OracleDomain::Factual,
+            tenant_id: TenantId::default(),
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("OraclePending"));
@@ -650,7 +648,7 @@ fn verifier_comparison_event_roundtrips_json() {
 #[cfg(test)]
 mod manifest_oracle_tests {
     use h2ai_types::manifest::TaskManifest;
-    use h2ai_types::sizing::{OracleDomain, OracleSpec, OracleType};
+    use h2ai_types::sizing::{OracleDomain, OracleSpec};
 
     #[test]
     fn task_manifest_oracle_defaults_to_none() {
@@ -702,19 +700,15 @@ mod manifest_oracle_tests {
             tenant_id: h2ai_types::identity::TenantId::default_tenant(),
             oracle: Some(OracleSpec {
                 runner_uri: "http://localhost:9090".into(),
-                test_suite: "tests/".into(),
-                language: "python".into(),
                 timeout_ms: 5000,
-                reference_output: None,
-                oracle_type: OracleType::TestSuite,
                 domain: OracleDomain::Code,
             }),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let back: TaskManifest = serde_json::from_str(&json).unwrap();
         let spec = back.oracle.unwrap();
-        assert_eq!(spec.language, "python");
-        assert!(matches!(spec.oracle_type, OracleType::TestSuite));
+        assert_eq!(spec.runner_uri, "http://localhost:9090");
+        assert_eq!(spec.timeout_ms, 5000);
     }
 }
 
@@ -735,7 +729,7 @@ fn constraint_ambiguity_event_roundtrips_serde() {
         timestamp: chrono::Utc::now(),
     };
 
-    let wrapped = H2AIEvent::ConstraintAmbiguity(event.clone());
+    let wrapped = H2AIEvent::ConstraintAmbiguity(event);
     let json = serde_json::to_string(&wrapped).unwrap();
     assert!(json.contains("\"event_type\":\"ConstraintAmbiguity\""));
     assert!(json.contains("constraint-1"));
@@ -768,7 +762,7 @@ mod shadow_auditor_event_tests {
             domain: "security".to_string(),
             primary_family: "cloudgeneric".to_string(),
             shadow_family: "llamacpp".to_string(),
-            timestamp_ms: 1234567890,
+            timestamp_ms: 1_234_567_890,
         };
         let json = serde_json::to_string(&ev).unwrap();
         let back: ShadowAuditorResultEvent = serde_json::from_str(&json).unwrap();

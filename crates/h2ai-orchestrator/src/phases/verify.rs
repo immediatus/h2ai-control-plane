@@ -18,9 +18,9 @@ pub struct Input<'a> {
     pub verification_config: VerificationConfig,
     pub provisioned: &'a TopologyProvisionedEvent,
     pub task_eval_cache: EvalCache,
-    /// Turn-1 output map from the generation phase (explorer_id → turn-1 raw_output).
+    /// Turn-1 output map from the generation phase (`explorer_id` → turn-1 `raw_output`).
     pub turn1_map: HashMap<h2ai_types::identity::ExplorerId, String>,
-    /// τ values from this generation wave; carried in the ZeroSurvival early exit so the
+    /// τ values from this generation wave; carried in the `ZeroSurvival` early exit so the
     /// MAPE-K loop can push them to `tau_values_tried` before calling `RetryPolicy::decide`.
     pub tau_values: Vec<f64>,
 }
@@ -29,7 +29,7 @@ pub struct Output {
     pub proposals: Vec<ProposalEvent>,
     pub pruned: Vec<BranchPrunedEvent>,
     pub iteration_verification_events: Vec<VerificationScoredEvent>,
-    /// Turn-1 re-wrapped proposals for the TaoMultiplierEstimator Option B feed.
+    /// Turn-1 re-wrapped proposals for the `TaoMultiplierEstimator` Option B feed.
     pub turn1_proposals_for_scoring: Vec<ProposalEvent>,
     /// Comparison events (populated only when `record_adversarial_comparison` is set).
     pub all_comparison_events: Vec<VerifierComparisonEvent>,
@@ -148,7 +148,9 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         proposals.push(prop);
     }
     for (prop, results, violations, any_cache_hit) in ver_out.failed {
-        let hard_gate = results.iter().all(|r| r.hard_passes());
+        let hard_gate = results
+            .iter()
+            .all(h2ai_constraints::types::ComplianceResult::hard_passes);
         let soft = h2ai_constraints::types::aggregate_compliance_score(&results);
         let compliance = if hard_gate { soft } else { 0.0 };
         let score = compliance;

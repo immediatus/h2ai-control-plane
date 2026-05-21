@@ -34,7 +34,7 @@ pub fn run(input: &EngineInput<'_>) -> Result<Output, EngineError> {
             )));
         }
         Some(DiversityGuardDegradedEvent {
-            task_id: task_id.clone(),
+            task_id,
             reason: format!(
                 "slot domain coverage {coverage_score:.2} below threshold {:.2}",
                 input.cfg.domain_coverage_threshold

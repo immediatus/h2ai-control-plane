@@ -14,6 +14,7 @@ pub struct Input<'a> {
 ///
 /// This is a pure enrichment step — it never fails or early-exits. Returns `None`
 /// when there are no synthesis candidates or no Static-tier constraints in the corpus.
+#[must_use]
 pub fn run(input: Input<'_>) -> Option<ConstraintFrontierEvent> {
     let static_constraints: Vec<&ConstraintDoc> = input
         .engine_input

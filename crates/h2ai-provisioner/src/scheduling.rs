@@ -12,7 +12,7 @@ pub trait SchedulingPolicy: Send + Sync {
     fn select(&self, candidates: &[AgentCandidate]) -> Option<AgentId>;
 }
 
-/// Default: cheapest tier → fewest active_tasks → AgentId tiebreaker.
+/// Default: cheapest tier → fewest `active_tasks` → `AgentId` tiebreaker.
 pub struct LeastLoadedPolicy;
 
 impl SchedulingPolicy for LeastLoadedPolicy {
@@ -80,13 +80,14 @@ impl SchedulingPolicy for CostAwareSpilloverPolicy {
     }
 }
 
-/// Cycles through eligible candidates by sorted AgentId. Ignores cost and load.
+/// Cycles through eligible candidates by sorted `AgentId`. Ignores cost and load.
 pub struct RoundRobinPolicy {
     counter: AtomicUsize,
 }
 
 impl RoundRobinPolicy {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             counter: AtomicUsize::new(0),
         }

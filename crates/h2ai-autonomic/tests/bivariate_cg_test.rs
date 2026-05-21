@@ -1,3 +1,4 @@
+#![allow(clippy::doc_markdown, clippy::cast_precision_loss, clippy::float_cmp)]
 //! Section 4A simulation harness tests for the bivariate CG control loop.
 //!
 //! Tests the three embedding stubs (Collapse, Diverse, PartialCollapse) and
@@ -264,10 +265,10 @@ fn retry_emits_topology_not_bootstrap() {
 /// yield_ratio uses N_requested (not N_responded) as denominator.
 #[test]
 fn yield_ratio_uses_n_requested_not_n_responded() {
-    let n_requested: usize = 3;
+    let n_requested: f64 = 3.0;
     let n_eff_actual: f64 = 1.5;
 
-    let yield_correct = n_eff_actual / n_requested as f64;
+    let yield_correct = n_eff_actual / n_requested;
     let yield_wrong = n_eff_actual / 2.0_f64; // wrong: uses N_responded
 
     assert!((yield_correct - 0.5).abs() < 1e-9);

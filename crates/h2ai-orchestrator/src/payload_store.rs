@@ -27,6 +27,7 @@ pub struct MemoryPayloadStore {
 }
 
 impl MemoryPayloadStore {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashMap::new()),

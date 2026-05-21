@@ -27,30 +27,30 @@ pub enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
-            ApiError::CalibrationRequired => (
+            Self::CalibrationRequired => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({
                     "error": "CalibrationRequiredError",
                     "message": "No calibration data found. POST /calibrate before submitting tasks."
                 }),
             ),
-            ApiError::TaskNotFound(id) => (
+            Self::TaskNotFound(id) => (
                 StatusCode::NOT_FOUND,
                 json!({ "error": "TaskNotFound", "task_id": id }),
             ),
-            ApiError::TaskAlreadyResolved(id) => (
+            Self::TaskAlreadyResolved(id) => (
                 StatusCode::CONFLICT,
                 json!({ "error": "TaskAlreadyResolved", "task_id": id }),
             ),
-            ApiError::InvalidRequest(msg) => (
+            Self::InvalidRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "InvalidRequest", "message": msg }),
             ),
-            ApiError::NatsUnavailable(msg) => (
+            Self::NatsUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "NatsUnavailable", "message": msg }),
             ),
-            ApiError::ExplorerBudgetExceeded { requested, n_max } => (
+            Self::ExplorerBudgetExceeded { requested, n_max } => (
                 StatusCode::BAD_REQUEST,
                 json!({
                     "error": "ExplorerBudgetExceeded",
@@ -59,15 +59,15 @@ impl IntoResponse for ApiError {
                     "message": format!("Requested {requested} explorers but N_max={n_max:.1} for current calibration. Reduce explorer count.")
                 }),
             ),
-            ApiError::ServiceUnavailable(msg) => (
+            Self::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "ServiceUnavailable", "message": msg }),
             ),
-            ApiError::LlmUnavailable(msg) => (
+            Self::LlmUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "LlmUnavailable", "message": msg }),
             ),
-            ApiError::SingleFamilyPool { family } => (
+            Self::SingleFamilyPool { family } => (
                 StatusCode::BAD_REQUEST,
                 json!({
                     "error": "SingleFamilyPool",

@@ -13,6 +13,7 @@ pub enum ResumeAction {
     Ignore,
 }
 
+#[must_use]
 pub fn resolve_action(payload: SignalPayload) -> ResumeAction {
     match payload {
         SignalPayload::WaveContinue(s) => ResumeAction::ContinueToNextWave {

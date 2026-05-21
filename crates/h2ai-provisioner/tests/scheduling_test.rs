@@ -31,7 +31,7 @@ fn register(
     active: u32,
 ) {
     provider.inject_registration(
-        id.clone(),
+        id,
         AgentDescriptor {
             model: model.into(),
             tools,
@@ -265,4 +265,11 @@ async fn round_robin_policy_cycles() {
     let first = p.select_agent(&req).await.unwrap();
     let second = p.select_agent(&req).await.unwrap();
     assert_ne!(first, second, "round-robin should alternate");
+}
+
+#[test]
+fn round_robin_policy_default_uses_new() {
+    let policy = RoundRobinPolicy::default();
+    let candidates = vec![candidate("a", CostTier::Low, 0)];
+    assert!(policy.select(&candidates).is_some());
 }

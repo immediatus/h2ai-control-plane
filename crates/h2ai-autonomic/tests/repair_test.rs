@@ -109,5 +109,38 @@ fn repair_context_includes_attempt_count() {
         attempts_remaining: 2,
         system_context_with_rubric: "CTX",
     });
-    assert!(ctx.contains("2"), "must mention attempts remaining");
+    assert!(ctx.contains('2'), "must mention attempts remaining");
+}
+
+#[test]
+fn repair_context_emits_conflict_block_and_breaks_loop() {
+    // Line 73 (break 'outer) AND line 74 (closing brace of non-conflicting pair):
+    // Use 3 violated IDs — first pair (A,B) does NOT conflict, second pair (A,C) DOES.
+    // A(first=debit, then=publish) conflicts with C(first=publish, then=debit).
+    // B(first=credit, then=withdraw) does not conflict with A or C.
+    let doc_a = make_ordering_doc("A", "debit", "publish");
+    let doc_b = make_ordering_doc("B", "credit", "withdraw");
+    let doc_c = make_ordering_doc("C", "publish", "debit");
+    let graph = ConstraintConflictGraph::build(&[doc_a, doc_b, doc_c]);
+    let ctx = build_repair_context(RepairInput {
+        prior_proposal_text: "my proposal",
+        violated_ids: &["A".to_owned(), "B".to_owned(), "C".to_owned()],
+        violated_hints: &[
+            Some("fix A".to_owned()),
+            Some("fix B".to_owned()),
+            Some("fix C".to_owned()),
+        ],
+        conflict_graph: &graph,
+        retry_count: 0,
+        attempts_remaining: 3,
+        system_context_with_rubric: "CTX",
+    });
+    assert!(
+        ctx.contains("COMPETING CONSTRAINTS"),
+        "conflict block must appear"
+    );
+    assert!(
+        ctx.contains("REPAIR TARGET"),
+        "repair targets must still be emitted"
+    );
 }

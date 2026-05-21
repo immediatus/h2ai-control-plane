@@ -30,6 +30,17 @@ pub struct NatsAgentProvider {
 }
 
 impl NatsAgentProvider {
+    /// Create a new `NatsAgentProvider` that subscribes to the heartbeat subject.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProvisionError::Transport` if `ttl` is zero or if the NATS subscription fails.
+    ///
+    /// # Panics
+    ///
+    /// The spawned cleanup task will panic if `Instant::now()` cannot be subtracted by `ttl`
+    /// (i.e. if `ttl` is larger than the elapsed system time, which cannot happen in practice
+    /// because `ttl` is validated to be non-zero and is typically a few seconds or minutes).
     pub async fn new(nats: async_nats::Client, ttl: Duration) -> Result<Self, ProvisionError> {
         if ttl.is_zero() {
             return Err(ProvisionError::Transport(
@@ -66,7 +77,7 @@ impl NatsAgentProvider {
             let mut ticker = tokio::time::interval(ttl_clean / 2);
             loop {
                 ticker.tick().await;
-                let cutoff = Instant::now() - ttl_clean;
+                let cutoff = Instant::now().checked_sub(ttl_clean).unwrap();
                 registry_clean.retain(|_, r| r.last_seen > cutoff);
                 tracing::debug!(live_agents = registry_clean.len(), "agent registry pruned");
             }
@@ -81,12 +92,15 @@ impl NatsAgentProvider {
         })
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn with_policy(mut self, policy: Arc<dyn SchedulingPolicy>) -> Self {
         self.policy = policy;
         self
     }
 
     /// Build and apply a scheduling policy from config.
+    #[must_use]
     pub fn with_policy_from_config(
         self,
         policy: &SchedulerPolicy,
@@ -102,7 +116,7 @@ impl NatsAgentProvider {
     }
 
     fn live_matching(&self, descriptor: &AgentDescriptor) -> usize {
-        let cutoff = Instant::now() - self.ttl;
+        let cutoff = Instant::now().checked_sub(self.ttl).unwrap();
         self.registry
             .iter()
             .filter(|r| r.descriptor == *descriptor && r.last_seen > cutoff)
@@ -110,6 +124,7 @@ impl NatsAgentProvider {
     }
 
     #[cfg(feature = "testing")]
+    #[must_use]
     pub fn new_test_only() -> Self {
         Self {
             registry: Arc::new(DashMap::new()),
@@ -123,7 +138,7 @@ impl NatsAgentProvider {
     #[cfg(feature = "testing")]
     pub fn inject_registration(
         &self,
-        agent_id: AgentId,
+        agent_id: &AgentId,
         descriptor: AgentDescriptor,
         active_tasks: u32,
     ) {
@@ -181,7 +196,7 @@ impl AgentProvider for NatsAgentProvider {
         &self,
         requirements: &TaskRequirements,
     ) -> Result<AgentId, ProvisionError> {
-        let cutoff = Instant::now() - self.ttl;
+        let cutoff = Instant::now().checked_sub(self.ttl).unwrap();
 
         let candidates: Vec<AgentCandidate> = self
             .registry

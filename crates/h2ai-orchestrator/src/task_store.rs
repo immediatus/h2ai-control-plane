@@ -40,7 +40,8 @@ impl TryFrom<u8> for TaskPhase {
 }
 
 impl TaskPhase {
-    pub fn status_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn status_str(&self) -> &'static str {
         match self {
             Self::Bootstrap => "pending",
             Self::ComplexityAssessed => "assessing",
@@ -55,7 +56,8 @@ impl TaskPhase {
         }
     }
 
-    pub fn name_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn name_str(&self) -> &'static str {
         match self {
             Self::Bootstrap => "Bootstrap",
             Self::ComplexityAssessed => "ComplexityAssessment",
@@ -70,6 +72,7 @@ impl TaskPhase {
         }
     }
 
+    #[must_use]
     pub fn try_from_name_str(s: &str) -> Option<Self> {
         match s {
             "Bootstrap" => Some(Self::Bootstrap),
@@ -102,6 +105,7 @@ pub struct TaskState {
 }
 
 impl TaskState {
+    #[must_use]
     pub fn new(task_id: TaskId, tenant_id: TenantId) -> Self {
         Self {
             task_id,
@@ -122,6 +126,7 @@ impl TaskState {
 pub struct TaskStore(Arc<DashMap<String, TaskState>>);
 
 impl TaskStore {
+    #[must_use]
     pub fn new() -> Self {
         Self(Arc::new(DashMap::new()))
     }
@@ -130,6 +135,7 @@ impl TaskStore {
         self.0.insert(id.to_string(), state);
     }
 
+    #[must_use]
     pub fn get(&self, id: &TaskId) -> Option<TaskState> {
         self.0.get(&id.to_string()).map(|r| r.value().clone())
     }
@@ -138,6 +144,7 @@ impl TaskStore {
     ///
     /// Returns `None` when the task doesn't exist or belongs to a different tenant.
     /// Use this on external-facing routes to prevent cross-tenant task enumeration.
+    #[must_use]
     pub fn get_for_tenant(&self, id: &TaskId, tenant_id: &TenantId) -> Option<TaskState> {
         self.0
             .get(&id.to_string())
@@ -197,6 +204,7 @@ impl TaskStore {
 
     /// Returns `true` when the task exists and has not yet reached a terminal phase
     /// (`Resolved` or `Failed`).  Returns `false` for unknown tasks.
+    #[must_use]
     pub fn is_active(&self, id: &TaskId) -> bool {
         match self.0.get(&id.to_string()) {
             Some(entry) => {
@@ -204,47 +212,5 @@ impl TaskStore {
             }
             None => false,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_types::identity::{TaskId, TenantId};
-
-    #[test]
-    fn get_for_tenant_returns_none_for_wrong_tenant() {
-        let store = TaskStore::new();
-        let task_id = TaskId::new();
-        store.insert(
-            task_id.clone(),
-            TaskState::new(task_id.clone(), TenantId::from("acme")),
-        );
-        assert!(store
-            .get_for_tenant(&task_id, &TenantId::from("beta"))
-            .is_none());
-    }
-
-    #[test]
-    fn get_for_tenant_returns_state_for_owner() {
-        let store = TaskStore::new();
-        let task_id = TaskId::new();
-        let tenant = TenantId::from("acme");
-        store.insert(
-            task_id.clone(),
-            TaskState::new(task_id.clone(), tenant.clone()),
-        );
-        assert!(store.get_for_tenant(&task_id, &tenant).is_some());
-    }
-
-    #[test]
-    fn get_without_tenant_still_works_for_backward_compat() {
-        let store = TaskStore::new();
-        let task_id = TaskId::new();
-        store.insert(
-            task_id.clone(),
-            TaskState::new(task_id.clone(), TenantId::default_tenant()),
-        );
-        assert!(store.get(&task_id).is_some());
     }
 }

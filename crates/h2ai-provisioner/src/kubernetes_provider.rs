@@ -10,8 +10,8 @@ use kube::Client as KubeClient;
 /// Kubernetes-backed agent provisioner.
 ///
 /// Provisions ephemeral LLM-based agent pods as Kubernetes Jobs.
-/// Image and tool ConfigMaps are derived from the `AgentDescriptor`.
-/// Each job receives scoped NATS NKeys via env vars.
+/// Image and tool `ConfigMaps` are derived from the `AgentDescriptor`.
+/// Each job receives scoped NATS `NKeys` via env vars.
 ///
 /// # Phase 2 implementation
 /// Currently scaffolded — full Job manifest generation is TODO.

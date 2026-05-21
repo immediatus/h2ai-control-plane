@@ -1,15 +1,15 @@
-//! Fréchet Median proposal selection (ConsensusMedian).
+//! Fréchet Median proposal selection (`ConsensusMedian`).
 //!
 //! ## Mathematical foundation
 //!
-//! In metric space (𝒫(Tokens), d_J) where d_J(A,B) = 1 − J(A,B), the **Fréchet median**
+//! In metric space (𝒫(Tokens), `d_J`) where `d_J(A,B)` = 1 − J(A,B), the **Fréchet median**
 //! (Fréchet 1948) is:
 //!
 //!   m* = argmin_{x ∈ S} Σᵢ d(x, sᵢ)
 //!
 //! Minimising the sum of distances is equivalent to maximising the sum of similarities:
 //!
-//!   m* = argmax_{x ∈ S} Σᵢ semantic_jaccard(x, sᵢ)
+//!   m* = argmax_{x ∈ S} Σᵢ `semantic_jaccard(x`, sᵢ)
 //!
 //! **Breakdown point:** The Fréchet median tolerates ⌊n/2⌋ − 1 outliers
 //! (breakdown point 1/2, Vardi & Zhang 2000). This is strictly stronger than Krum's
@@ -36,11 +36,12 @@ use std::collections::HashSet;
 fn tokenize(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
+        .map(str::to_lowercase)
         .filter(|t| t.len() > 1)
         .collect()
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn token_jaccard(a: &str, b: &str) -> f64 {
     let ta = tokenize(a);
     let tb = tokenize(b);
@@ -70,6 +71,7 @@ impl ConsensusMedian {
     /// (deterministic, no I/O, suitable for tests).  The breakdown point of 1/2
     /// means that so long as the majority of proposals are honest, the selected
     /// proposal is drawn from that majority regardless of where the outliers lie.
+    #[allow(clippy::unused_async)]
     pub async fn resolve<'a>(
         proposals: &'a [ProposalEvent],
         embedding_model: Option<&'a dyn EmbeddingModel>,
@@ -93,8 +95,14 @@ impl ConsensusMedian {
             .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
             .collect();
 
-        let pair_sims: Vec<f64> = match embedding_model {
-            Some(m) => {
+        let pair_sims: Vec<f64> = embedding_model.map_or_else(
+            || {
+                pairs
+                    .iter()
+                    .map(|&(i, j)| token_jaccard(outputs[i], outputs[j]))
+                    .collect()
+            },
+            |m| {
                 let embeddings: Vec<Vec<f32>> =
                     tokio::task::block_in_place(|| outputs.iter().map(|s| m.embed(s)).collect());
                 pairs
@@ -111,12 +119,8 @@ impl ConsensusMedian {
                         }
                     })
                     .collect()
-            }
-            None => pairs
-                .iter()
-                .map(|&(i, j)| token_jaccard(outputs[i], outputs[j]))
-                .collect(),
-        };
+            },
+        );
 
         // Populate symmetric similarity matrix.
         let mut sims = vec![vec![1.0f64; n]; n]; // diagonal = 1.0 (self-similarity)
@@ -136,81 +140,5 @@ impl ConsensusMedian {
                 si.partial_cmp(&sj).unwrap_or(Ordering::Equal)
             })
             .map(|(_, p)| p)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Utc;
-    use h2ai_types::config::AdapterKind;
-    use h2ai_types::identity::{ExplorerId, TaskId};
-    use h2ai_types::sizing::TauValue;
-
-    fn prop(text: &str) -> ProposalEvent {
-        ProposalEvent {
-            task_id: TaskId::new(),
-            explorer_id: ExplorerId::new(),
-            tau: TauValue::new(0.5).unwrap(),
-            generation: 0,
-            raw_output: text.into(),
-            token_cost: text.len() as u64,
-            adapter_kind: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-            timestamp: Utc::now(),
-        }
-    }
-
-    #[tokio::test]
-    async fn empty_proposals_returns_none() {
-        assert!(ConsensusMedian::resolve(&[], None).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn single_proposal_returns_itself() {
-        let p = prop("only proposal");
-        let proposals = [p.clone()];
-        let result = ConsensusMedian::resolve(&proposals, None).await.unwrap();
-        assert_eq!(result.raw_output, p.raw_output);
-    }
-
-    #[tokio::test]
-    async fn selects_consensus_not_outlier() {
-        let ca = prop("JWT stateless auth ADR-001 compliant token rotation");
-        let cb = prop("JWT stateless authentication compliant ADR-001 rotation");
-        let outlier = prop("Redis session store sliding window expiry completely different");
-        let proposals = vec![ca.clone(), cb.clone(), outlier];
-        let selected = ConsensusMedian::resolve(&proposals, None).await.unwrap();
-        assert!(
-            selected.raw_output == ca.raw_output || selected.raw_output == cb.raw_output,
-            "expected consensus proposal, got: {}",
-            selected.raw_output
-        );
-    }
-
-    #[tokio::test]
-    async fn two_identical_proposals_returns_first_by_stability() {
-        let p1 = prop("identical stateless JWT auth ADR-001");
-        let p2 = prop("identical stateless JWT auth ADR-001");
-        let proposals = vec![p1.clone(), p2];
-        let result = ConsensusMedian::resolve(&proposals, None).await.unwrap();
-        assert_eq!(result.raw_output, p1.raw_output);
-    }
-
-    #[tokio::test]
-    async fn frechet_median_selects_semantically_central_proposal() {
-        let p1 = prop("stateless JWT authentication token rotation ADR-001 compliant");
-        let p2 = prop("JWT auth token stateless rotation ADR-001 implementation");
-        let outlier = prop("Redis session store sliding window expiry database cache");
-        let proposals = vec![p1.clone(), p2.clone(), outlier];
-        let selected = ConsensusMedian::resolve(&proposals, None).await.unwrap();
-        assert!(
-            selected.raw_output == p1.raw_output || selected.raw_output == p2.raw_output,
-            "Fréchet median must select from the close pair, got: {}",
-            selected.raw_output
-        );
     }
 }

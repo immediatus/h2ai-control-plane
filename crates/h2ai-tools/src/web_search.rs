@@ -2,6 +2,7 @@ use crate::error::ToolError;
 use crate::{ToolExecutor, ToolSchema};
 use async_trait::async_trait;
 use serde_json::json;
+use std::fmt::Write as FmtWrite;
 
 #[async_trait]
 pub trait WebSearchBackend: Send + Sync {
@@ -89,7 +90,7 @@ impl WebSearchBackend for GoogleSearchBackend {
             let link = item.get("link").and_then(|v| v.as_str()).unwrap_or("");
             // Link omitted: URLs waste token budget and can cause LLMs to hallucinate citations.
             let _ = link;
-            out.push_str(&format!("[{}] {} — {}\n", i + 1, title, snippet));
+            writeln!(out, "[{}] {} — {}", i + 1, title, snippet).unwrap();
         }
         if out.is_empty() {
             out = "No results found.".into();
@@ -111,6 +112,7 @@ impl Default for DuckDuckGoSearchBackend {
 }
 
 impl DuckDuckGoSearchBackend {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -227,7 +229,7 @@ pub(crate) fn extract_text_from_html(html: &str) -> String {
     let mut skip_depth: u32 = 0;
     let mut prev_newline = false;
 
-    let mut chars = html.char_indices().peekable();
+    let mut chars = html.char_indices();
     while let Some((_, ch)) = chars.next() {
         if in_tag {
             if ch == '>' {
@@ -312,8 +314,8 @@ pub(crate) fn extract_text_from_html(html: &str) -> String {
 
 // ── Live: StackOverflow via StackExchange API (no key required) ───────────────
 
-/// Searches StackOverflow for questions matching the query, then fetches accepted/top
-/// answers. Uses the StackExchange API (free, 300 req/day per IP, no key needed).
+/// Searches `StackOverflow` for questions matching the query, then fetches accepted/top
+/// answers. Uses the `StackExchange` API (free, 300 req/day per IP, no key needed).
 ///
 /// Returns rich text — question title + top answer bodies — so the distiller
 /// receives real implementation knowledge rather than encyclopedic intros.
@@ -330,6 +332,7 @@ impl Default for StackOverflowSearchBackend {
 }
 
 impl StackOverflowSearchBackend {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_site("stackoverflow")
     }
@@ -425,7 +428,7 @@ impl WebSearchBackend for StackOverflowSearchBackend {
 
             let mut block = format!("[{}] {} (score: {})\n", i + 1, title, score);
             for (j, ans) in answers.iter().enumerate() {
-                block.push_str(&format!("Answer {}: {}\n", j + 1, ans));
+                writeln!(block, "Answer {}: {}", j + 1, ans).unwrap();
             }
             parts.push(block);
         }
@@ -452,6 +455,7 @@ impl Default for WikipediaSearchBackend {
 }
 
 impl WikipediaSearchBackend {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -558,6 +562,7 @@ impl GeminiSearchBackend {
         }
     }
 
+    #[must_use]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
@@ -660,6 +665,7 @@ impl Default for WebGroundingBackend {
 }
 
 impl WebGroundingBackend {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -674,7 +680,8 @@ impl WebGroundingBackend {
         }
     }
 
-    pub fn with_page_chars(mut self, n: usize) -> Self {
+    #[must_use]
+    pub const fn with_page_chars(mut self, n: usize) -> Self {
         self.max_page_chars = n;
         self
     }
@@ -813,6 +820,7 @@ impl WebGroundingBackend {
 
     /// Fetch a GitHub repo README via the GitHub API (returns clean markdown).
     async fn fetch_github_readme(&self, owner: &str, repo: &str) -> Option<String> {
+        use std::io::Read;
         let url = format!("https://api.github.com/repos/{owner}/{repo}/readme");
         let resp = self
             .client
@@ -828,7 +836,6 @@ impl WebGroundingBackend {
         let encoded = body["content"].as_str()?;
         // GitHub returns base64 with newlines
         let decoded = encoded.replace('\n', "");
-        use std::io::Read;
         let bytes = {
             let mut buf = Vec::new();
             let mut dec = base64_decoder(decoded.as_bytes());
@@ -894,7 +901,7 @@ fn base64_decoder(input: &[u8]) -> impl std::io::Read + '_ {
         buf: &'a [u8],
         pos: usize,
     }
-    impl<'a> std::io::Read for B64Reader<'a> {
+    impl std::io::Read for B64Reader<'_> {
         fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
             const TABLE: &[u8; 128] = b"\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x40\x3e\x40\x40\x40\x3f\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x40\x40\x40\x40\x40\x40\x40\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x40\x40\x40\x40\x40\x40\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x40\x40\x40\x40\x40";
             let mut written = 0;
@@ -1009,6 +1016,7 @@ pub struct WebSearchExecutor {
 }
 
 impl WebSearchExecutor {
+    #[must_use]
     pub fn new(backend: Box<dyn WebSearchBackend>, max_results: usize) -> Self {
         Self {
             backend,

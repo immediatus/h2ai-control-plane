@@ -15,12 +15,12 @@ pub struct NatsDispatchConfig {
     pub provider: Arc<dyn AgentProvider>,
     /// Used in TaskPayload.agent field (tells edge agent what capabilities to use).
     pub agent_descriptor: AgentDescriptor,
-    /// Used for select_agent — what we require from the selected agent.
+    /// Used for `select_agent` — what we require from the selected agent.
     pub task_requirements: TaskRequirements,
     pub task_timeout: Duration,
     /// Content-addressed store for large context offloading.
     pub payload_store: Arc<dyn PayloadStore>,
-    /// Byte threshold above which system_context is offloaded to the store.
+    /// Byte threshold above which `system_context` is offloaded to the store.
     pub offload_threshold_bytes: usize,
 }
 
@@ -47,6 +47,7 @@ impl std::fmt::Debug for NatsDispatchAdapter {
 }
 
 impl NatsDispatchAdapter {
+    #[must_use]
     pub fn new(cfg: NatsDispatchConfig) -> Self {
         Self {
             nats: cfg.nats,

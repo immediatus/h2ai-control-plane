@@ -1,15 +1,52 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 use async_trait::async_trait;
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{
-    aimd_decay, aimd_reset, beta_from_merge_spans, beta_from_n_eff_adj, yield_from_history,
-    CalibrationHarness, CalibrationInput,
+    aimd_decay, aimd_reset, beta_from_merge_spans, beta_from_n_eff_adj, beta_from_token_spans,
+    compute_conflict_rate, yield_from_history, CalibrationHarness, CalibrationInput,
 };
 use h2ai_config::H2AIConfig;
+use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::TaskId;
+use h2ai_types::sizing::{EigenCalibration, EnsembleCalibration};
+use nalgebra::DMatrix;
 
-/// A minimal test adapter that returns a fixed output and reports a configurable AdapterKind.
+/// A test adapter that always returns an error — used to exercise error propagation paths.
+#[derive(Debug)]
+struct FailingAdapter {
+    kind: AdapterKind,
+}
+
+impl FailingAdapter {
+    fn new() -> Self {
+        Self {
+            kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://failing".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl IComputeAdapter for FailingAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        Err(AdapterError::Remote("test failure".to_string()))
+    }
+
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
+
+/// A minimal test adapter that returns a fixed output and reports a configurable `AdapterKind`.
 /// Used to exercise multi-family scenarios without spinning up real network adapters.
 #[derive(Debug)]
 struct KindedMockAdapter {
@@ -501,8 +538,8 @@ async fn calibration_source_is_partial_fit_with_two_adapters() {
 
 // ── adapter_families / explorer_verification_family_match / single_family_warning ─────────
 
-/// Single adapter → adapter_families has exactly one entry, single_family_warning is true,
-/// explorer_verification_family_match is false (only one distinct family present).
+/// Single adapter → `adapter_families` has exactly one entry, `single_family_warning` is true,
+/// `explorer_verification_family_match` is false (only one distinct family present).
 #[tokio::test]
 async fn adapter_families_single_adapter_populates_one_family() {
     let cfg = H2AIConfig::default();
@@ -533,8 +570,8 @@ async fn adapter_families_single_adapter_populates_one_family() {
     );
 }
 
-/// Two adapters from the same family (both Cloud) → single_family_warning true,
-/// explorer_verification_family_match false.
+/// Two adapters from the same family (both Cloud) → `single_family_warning` true,
+/// `explorer_verification_family_match` false.
 #[tokio::test]
 async fn adapter_families_same_family_sets_single_family_warning() {
     let cfg = H2AIConfig::default();
@@ -567,8 +604,8 @@ async fn adapter_families_same_family_sets_single_family_warning() {
     );
 }
 
-/// Two adapters from different families (Anthropic + Local) → adapter_families has two entries,
-/// explorer_verification_family_match true, single_family_warning false.
+/// Two adapters from different families (Anthropic + Local) → `adapter_families` has two entries,
+/// `explorer_verification_family_match` true, `single_family_warning` false.
 #[tokio::test]
 async fn adapter_families_cross_family_sets_verification_match() {
     let cfg = H2AIConfig::default();
@@ -600,8 +637,8 @@ async fn adapter_families_cross_family_sets_verification_match() {
     );
 }
 
-/// Three adapters spanning three distinct families → adapter_families has 3 entries,
-/// explorer_verification_family_match true, single_family_warning false.
+/// Three adapters spanning three distinct families → `adapter_families` has 3 entries,
+/// `explorer_verification_family_match` true, `single_family_warning` false.
 #[tokio::test]
 async fn adapter_families_three_distinct_families() {
     let cfg = H2AIConfig::default();
@@ -691,6 +728,57 @@ async fn calibration_with_embedding_model_uses_epistemic_beta() {
         event.coefficients.beta_base,
         cfg.beta_base_default
     );
+}
+
+#[tokio::test]
+async fn calibration_baseline_accuracy_proxy_uses_from_measured_p() {
+    // Lines 172-175: EnsembleCalibration::from_measured_p is called when
+    // baseline_accuracy_proxy > 0.0 (non-default). Two adapters satisfy adapter_outputs.len() >= 2.
+    let a1 = mock_adapter();
+    let a2 = mock_adapter();
+    let cfg = H2AIConfig {
+        baseline_accuracy_proxy: 0.75,
+        ..H2AIConfig::default()
+    };
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        adapters: vec![
+            &a1 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &a2 as &dyn h2ai_types::adapter::IComputeAdapter,
+        ],
+        task_prompts: vec!["test prompt".into()],
+        constraint_corpus: &[],
+        embedding_model: None,
+        cfg: &cfg,
+    };
+    let result = CalibrationHarness::run(input).await.unwrap();
+    assert!(
+        result.coefficients.alpha >= 0.0,
+        "alpha must be non-negative"
+    );
+}
+
+#[tokio::test]
+async fn calibration_embedding_model_with_no_task_prompts_uses_cosine_prior_fallback() {
+    // Line 262: embedding_model present but k_prompts==0 (empty task_prompts) →
+    // n_eff_cosine_prior = 1.0 fallback.
+    let a1 = mock_adapter();
+    let a2 = mock_adapter();
+    let model = FixedEmbeddingModel;
+    let cfg = H2AIConfig::default();
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        adapters: vec![
+            &a1 as &dyn h2ai_types::adapter::IComputeAdapter,
+            &a2 as &dyn h2ai_types::adapter::IComputeAdapter,
+        ],
+        task_prompts: vec![],
+        constraint_corpus: &[],
+        embedding_model: Some(&model as &dyn h2ai_context::embedding::EmbeddingModel),
+        cfg: &cfg,
+    };
+    let result = CalibrationHarness::run(input).await.unwrap();
+    assert!(result.coefficients.alpha >= 0.0);
 }
 
 // ── beta_from_n_eff_adj ──────────────────────────────────────────────────────
@@ -803,4 +891,320 @@ fn yield_from_history_skips_zero_n_max() {
     let history = vec![(2u8, 3u8, 0u32), (0, 0, 0), (1, 2, 0)];
     let y = yield_from_history(&history).unwrap();
     assert!((y - 0.583).abs() < 1e-3, "yield skip zero: got {y}");
+}
+
+#[tokio::test]
+async fn calibration_returns_error_on_adapter_failure() {
+    // Exercises error propagation (L483 map_err, L496 r?, L91/L101/L112 await?) when adapters fail.
+    let failing = FailingAdapter::new();
+    let good = mock_adapter();
+    let cfg = H2AIConfig::default();
+    let input = CalibrationInput {
+        calibration_id: TaskId::new(),
+        adapters: vec![
+            &failing as &dyn h2ai_types::adapter::IComputeAdapter,
+            &good as &dyn h2ai_types::adapter::IComputeAdapter,
+        ],
+        task_prompts: vec!["test prompt".into()],
+        constraint_corpus: &[],
+        embedding_model: None,
+        cfg: &cfg,
+    };
+    let result = CalibrationHarness::run(input).await;
+    assert!(result.is_err(), "adapter failure must propagate as Err");
+}
+
+#[test]
+fn yield_from_history_all_zero_n_max_returns_none() {
+    // Line 625: non-empty history but all n_max==0 → count stays 0 → return None
+    let history = vec![(5u8, 0u8, 0u32), (3, 0, 0)];
+    assert_eq!(
+        yield_from_history(&history),
+        None,
+        "all-zero n_max must return None"
+    );
+}
+
+// ── usl_fit tests ────────────────────────────────────────────────────────────
+
+fn usl_throughput(n: f64, alpha: f64, beta: f64) -> f64 {
+    n / (beta * n).mul_add(n - 1.0, alpha.mul_add(n - 1.0, 1.0))
+}
+
+#[test]
+fn usl_fit_recovers_ai_agent_params() {
+    // Ground truth: α=0.15, β₀=0.01, CG_mean=0.4 → β_eff=0.025
+    let true_alpha = 0.15_f64;
+    let true_beta0 = 0.01_f64;
+    let t1 = 1.0_f64;
+    let t2 = t1 / usl_throughput(2.0, true_alpha, true_beta0);
+    let t4 = t1 / usl_throughput(4.0, true_alpha, true_beta0);
+
+    let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2, 4, t4, 0.12, 0.01);
+    assert!(
+        (alpha - true_alpha).abs() < 0.005,
+        "α recovery: expected {true_alpha}, got {alpha:.4}"
+    );
+    assert!(
+        (beta0 - true_beta0).abs() < 0.001,
+        "β₀ recovery: expected {true_beta0}, got {beta0:.6}"
+    );
+}
+
+#[test]
+fn usl_fit_recovers_human_team_params() {
+    let true_alpha = 0.10_f64;
+    let true_beta0 = 0.005_f64;
+    let t1 = 1.0_f64;
+    let t2 = t1 / usl_throughput(2.0, true_alpha, true_beta0);
+    let t5 = t1 / usl_throughput(5.0, true_alpha, true_beta0);
+
+    let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2, 5, t5, 0.12, 0.01);
+    assert!(
+        (alpha - true_alpha).abs() < 0.005,
+        "α: expected {true_alpha}, got {alpha:.4}"
+    );
+    assert!(
+        (beta0 - true_beta0).abs() < 0.001,
+        "β₀: expected {true_beta0}, got {beta0:.6}"
+    );
+}
+
+#[test]
+fn usl_fit_fallback_when_m_less_than_3() {
+    let (alpha, beta0) = CalibrationHarness::usl_fit(1.0, 0.8, 2, 0.8, 0.12, 0.01);
+    assert_eq!(alpha, 0.12, "fallback α when M=2");
+    assert_eq!(beta0, 0.01, "fallback β₀ when M=2");
+}
+
+#[test]
+fn usl_fit_fallback_when_m_is_1() {
+    let (alpha, beta0) = CalibrationHarness::usl_fit(1.0, 1.0, 1, 1.0, 0.12, 0.01);
+    assert_eq!(alpha, 0.12);
+    assert_eq!(beta0, 0.01);
+}
+
+#[test]
+fn usl_fit_fallback_on_degenerate_timing() {
+    // t1 = 0 → degenerate
+    let (alpha, beta0) = CalibrationHarness::usl_fit(0.0, 0.5, 4, 0.5, 0.12, 0.01);
+    assert_eq!(alpha, 0.12);
+    assert_eq!(beta0, 0.01);
+}
+
+#[test]
+fn usl_fit_fallback_on_negative_derived_params() {
+    // Super-linear speedup at N=2 → negative alpha → use fallback
+    let t1 = 1.0_f64;
+    let t2_superlinear = 0.3; // X(2) ≈ 3.33 > 2 → super-linear → degenerate
+    let t4 = 0.5;
+    let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2_superlinear, 4, t4, 0.12, 0.01);
+    assert_eq!(alpha, 0.12, "super-linear speedup must trigger fallback");
+    assert_eq!(beta0, 0.01);
+}
+
+#[test]
+fn usl_fit_clamps_extreme_values() {
+    // Ground truth: α=0.8, β₀=0.02 — both positive but α > 0.5 clamp ceiling.
+    let true_alpha = 0.8_f64;
+    let true_beta0 = 0.02_f64;
+    let t1 = 1.0_f64;
+    let t2 = t1 / usl_throughput(2.0, true_alpha, true_beta0);
+    let t4 = t1 / usl_throughput(4.0, true_alpha, true_beta0);
+
+    let (alpha, beta0) = CalibrationHarness::usl_fit(t1, t2, 4, t4, 0.12, 0.01);
+    assert_eq!(alpha, 0.5, "α=0.8 must be clamped to 0.5");
+    assert!(
+        (1e-6..=0.1).contains(&beta0),
+        "beta0 out of clamped range: {beta0}"
+    );
+    assert!(
+        (beta0 - 0.01).abs() > 1e-6,
+        "beta0 must not be the fallback value — clamp path must be taken"
+    );
+}
+
+// ── beta_from_token_spans tests ──────────────────────────────────────────────
+
+#[test]
+fn beta_from_token_spans_basic() {
+    // 1 span: 100 tokens consumed for 5 proposals → 10 pairs → per_pair = 10
+    // t1_tokens = 500 → β₀ = 10/500 = 0.02
+    let spans = vec![(100u64, 5usize)];
+    let beta = beta_from_token_spans(&spans, 500).unwrap();
+    assert!(
+        (beta - 0.02).abs() < 1e-9,
+        "expected β₀=0.02, got {beta:.8}"
+    );
+}
+
+#[test]
+fn beta_from_token_spans_clamps_to_max() {
+    // Pathological: many tokens for 2 proposals → 1 pair → enormous per_pair → clamps to 0.1
+    let spans = vec![(1_000_000u64, 2usize)];
+    let beta = beta_from_token_spans(&spans, 1).unwrap();
+    assert_eq!(beta, 0.1, "must clamp to max 0.1");
+}
+
+#[test]
+fn beta_from_token_spans_none_on_empty() {
+    assert!(beta_from_token_spans(&[], 100).is_none());
+}
+
+#[test]
+fn beta_from_token_spans_none_on_zero_t1() {
+    assert!(beta_from_token_spans(&[(50, 3)], 0).is_none());
+}
+
+#[test]
+fn beta_from_token_spans_multi_span_is_mean() {
+    let spans = vec![(200u64, 3usize), (600u64, 3usize)];
+    let beta = beta_from_token_spans(&spans, 10_000).unwrap();
+    let expected = f64::midpoint(200.0_f64 / 3.0, 600.0 / 3.0) / 10_000.0;
+    assert!(
+        (beta - expected).abs() < 1e-9,
+        "multi-span mean: expected {expected:.8}, got {beta:.8}"
+    );
+}
+
+// ── calibration_max_ensemble_size test ───────────────────────────────────────
+
+#[test]
+fn calibration_max_ensemble_size_bounds_condorcet_search() {
+    let cfg = H2AIConfig {
+        calibration_max_ensemble_size: 3,
+        ..Default::default()
+    };
+    let ec = EnsembleCalibration::from_cg_mean(0.7, cfg.calibration_max_ensemble_size);
+    assert!(
+        ec.n_optimal <= 3,
+        "n_optimal must be ≤ calibration_max_ensemble_size=3, got {}",
+        ec.n_optimal
+    );
+}
+
+// ── EigenCalibration tests ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn from_cg_matrix_runs_on_blocking_thread() {
+    let n = 3usize;
+    let mut sigma = DMatrix::<f64>::identity(n, n);
+    sigma[(0, 1)] = 0.5;
+    sigma[(1, 0)] = 0.5;
+    sigma[(0, 2)] = 0.3;
+    sigma[(2, 0)] = 0.3;
+    sigma[(1, 2)] = 0.2;
+    sigma[(2, 1)] = 0.2;
+    let delta = 0.01_f64;
+    let sigma_clone = sigma.clone();
+    let result =
+        tokio::task::spawn_blocking(move || EigenCalibration::from_cg_matrix(&sigma_clone, delta))
+            .await
+            .expect("eigenvalue task panicked");
+    assert!(result.n_effective > 0.0);
+    assert!(result.n_effective <= n as f64 + 1e-9);
+}
+
+#[tokio::test]
+async fn from_cosine_matrix_runs_on_blocking_thread() {
+    let n = 3usize;
+    let mut c = DMatrix::<f64>::zeros(n, n);
+    for i in 0..n {
+        c[(i, i)] = 1.0;
+    }
+    c[(0, 1)] = 0.6;
+    c[(1, 0)] = 0.6;
+    c[(0, 2)] = 0.4;
+    c[(2, 0)] = 0.4;
+    c[(1, 2)] = 0.3;
+    c[(2, 1)] = 0.3;
+    // Normalise: divide by n so trace = 1
+    let k_norm = c / n as f64;
+    let delta = 0.01_f64;
+    let k_clone = k_norm.clone();
+    let result =
+        tokio::task::spawn_blocking(move || EigenCalibration::from_cosine_matrix(&k_clone, delta))
+            .await
+            .expect("cosine eigenvalue task panicked");
+    assert!(result.n_effective > 0.0);
+    assert!(result.n_effective <= n as f64 + 1e-9);
+}
+
+// ── compute_conflict_rate tests ──────────────────────────────────────────────
+
+fn hard_length_range(id: &str, min: Option<usize>, max: Option<usize>) -> ConstraintDoc {
+    ConstraintDoc {
+        id: id.to_owned(),
+        source_file: format!("{id}.yaml"),
+        description: String::new(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: h2ai_constraints::types::ConstraintPredicate::LengthRange {
+            min_chars: min,
+            max_chars: max,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    }
+}
+
+#[test]
+fn conflict_rate_fewer_than_2_proposals_returns_none() {
+    assert!(compute_conflict_rate(&["hello"], &[]).is_none());
+    assert!(compute_conflict_rate(&[], &[]).is_none());
+}
+
+#[test]
+fn conflict_rate_empty_corpus_returns_none() {
+    assert!(compute_conflict_rate(&["hello", "world"], &[]).is_none());
+}
+
+#[test]
+fn conflict_rate_identical_proposals_clamped_to_min() {
+    let corpus = vec![hard_length_range("c1", Some(3), None)];
+    let result = compute_conflict_rate(&["abc", "abc"], &corpus).unwrap();
+    assert!(
+        (result - 1e-6).abs() < 1e-10,
+        "identical proposals must clamp to 1e-6, got {result}"
+    );
+}
+
+#[test]
+fn conflict_rate_perfect_disagreement_is_one() {
+    let corpus = vec![hard_length_range("c1", Some(10), None)];
+    let long_output = "hello world!!"; // 13 chars → passes
+    let short_output = "hi"; // 2 chars → fails
+    let result = compute_conflict_rate(&[long_output, short_output], &corpus).unwrap();
+    assert!(
+        (result - 1.0).abs() < 1e-9,
+        "perfect disagreement must be 1.0, got {result}"
+    );
+}
+
+#[test]
+fn conflict_rate_unanimous_fail_is_clamped_to_min() {
+    let corpus = vec![hard_length_range("c1", Some(10), None)];
+    let result = compute_conflict_rate(&["x", "y"], &corpus).unwrap();
+    assert!(
+        (result - 1e-6).abs() < 1e-10,
+        "unanimous failure must clamp to 1e-6, got {result}"
+    );
+}
+
+#[test]
+fn conflict_rate_partial_disagreement() {
+    let corpus = vec![
+        hard_length_range("c1", Some(5), None),
+        hard_length_range("c2", None, Some(20)),
+        hard_length_range("c3", Some(1), None),
+        hard_length_range("c4", None, Some(3)),
+    ];
+    let a = "hello world"; // 11 chars
+    let b = "hi"; // 2 chars
+    let result = compute_conflict_rate(&[a, b], &corpus).unwrap();
+    assert!(
+        (result - 0.5).abs() < 1e-9,
+        "partial disagreement (2/4) must be 0.5, got {result}"
+    );
 }

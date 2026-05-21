@@ -131,3 +131,39 @@ fn compaction_empty_context_with_keyword_injects_keyword() {
     let out = compact("", &cfg(4096, vec!["INJECT_ME"]));
     assert!(out.contains("INJECT_ME"));
 }
+
+// ── Short context over budget: else branch (no middle gap) ───────────────────
+
+#[test]
+fn compaction_short_context_over_budget_no_marker() {
+    // Use emoji (4 bytes per char) so byte-based token estimate exceeds max_tokens (7)
+    // while char count (8) equals char_budget/2 (4 each) → tail_start == head_end → else branch.
+    // emoji "😀" = 4 bytes; 8 emoji = 32 bytes → estimate_tokens = (32+3)/4 = 8 > max_tokens=7.
+    // body_budget = 7 - 0 (no keywords) - 5 (marker) = 2; char_budget = 8; half = 4.
+    // chars.len()=8; head_end = min(4,8)=4; tail_start = 8-4=4; 4 > 4 is false → else branch.
+    let emoji_ctx = "😀😀😀😀😀😀😀😀"; // 8 emoji
+    let out = compact(emoji_ctx, &cfg(7, vec![]));
+    // No [...compacted...] marker — else branch just takes chars[..head_end]
+    assert!(!out.contains("[...compacted...]"));
+}
+
+#[test]
+fn compaction_truncated_body_missing_keyword_appends_it() {
+    // Context is long enough to be truncated AND the keyword only appears in the middle
+    // (which gets dropped), so post_suffix is non-empty — exercises line 82.
+    let middle_kw = "MIDDLE_KEYWORD";
+    let long_ctx = format!("{} {middle_kw} {}", "A".repeat(400), "B".repeat(400));
+    let config = CompactionConfig {
+        max_tokens: 50,
+        preserve_keywords: vec![middle_kw.to_string()],
+    };
+    let out = compact(&long_ctx, &config);
+    assert!(
+        out.contains(middle_kw),
+        "keyword dropped from middle must be re-injected as post-suffix"
+    );
+    assert!(
+        out.contains("[...compacted...]"),
+        "truncation marker must appear when middle is dropped"
+    );
+}

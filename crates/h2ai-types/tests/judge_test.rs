@@ -75,7 +75,7 @@ fn adapter_family_from_kind_all_variants() {
         AdapterFamily::from_kind(&AdapterKind::A2a {
             endpoint: "https://example.com".into(),
             auth_scheme: "none".into(),
-            auth_token_env: "".into(),
+            auth_token_env: String::new(),
             timeout_minutes: 5,
             poll_interval_ms: 1000,
             max_poll_interval_ms: 30000,
@@ -92,4 +92,17 @@ fn adapter_kind_family_method_matches_from_kind() {
         model: "c".into(),
     };
     assert_eq!(kind.family(), AdapterFamily::from_kind(&kind));
+}
+
+#[test]
+fn oracle_verdict_serde_roundtrip() {
+    use h2ai_types::sizing::OracleVerdict;
+
+    let verdict = OracleVerdict {
+        details: serde_json::json!({"pass_count": 3, "total_count": 4}),
+    };
+    let json = serde_json::to_string(&verdict).unwrap();
+    let back: OracleVerdict = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.details["pass_count"], 3);
+    assert_eq!(back, verdict);
 }

@@ -1,5 +1,5 @@
 //! Execution perimeter tests — proves the injection surface is closed and
-//! WaveMode construction contracts are enforced.
+//! `WaveMode` construction contracts are enforced.
 
 use h2ai_config::H2AIConfig;
 use h2ai_tools::error::ToolError;
@@ -109,8 +109,14 @@ async fn empty_allowlist_permits_all_commands() {
 
 fn test_cfg(normal: &[&str], hardened: &[&str]) -> H2AIConfig {
     H2AIConfig {
-        shell_allowlist: normal.iter().map(|s| s.to_string()).collect(),
-        shell_hardened_allowlist: hardened.iter().map(|s| s.to_string()).collect(),
+        shell_allowlist: normal
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
+        shell_hardened_allowlist: hardened
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
         ..Default::default()
     }
 }

@@ -42,6 +42,7 @@
 /// against the empty case before interpreting the result as a valid proposal index.
 /// Tolerates up to ⌊n/2⌋ − 1 Byzantine (arbitrarily corrupted) embeddings without
 /// the selected proposal leaving the convex hull of the honest majority.
+#[must_use]
 pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
     if embeddings.is_empty() {
         return 0;
@@ -59,9 +60,10 @@ pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
     let mut median: Vec<f64> = vec![0.0; dim];
     for emb in embeddings {
         for (i, &v) in emb.iter().enumerate() {
-            median[i] += v as f64;
+            median[i] += f64::from(v);
         }
     }
+    #[allow(clippy::cast_precision_loss)]
     let n = embeddings.len() as f64;
     for v in &mut median {
         *v /= n;
@@ -76,7 +78,7 @@ pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
                 let d: f64 = emb
                     .iter()
                     .zip(median.iter())
-                    .map(|(&a, &b)| (a as f64 - b).powi(2))
+                    .map(|(&a, &b)| (f64::from(a) - b).powi(2))
                     .sum::<f64>()
                     .sqrt();
                 d.max(1e-8) // clamp to avoid division by zero
@@ -93,7 +95,7 @@ pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
         for (emb, &dist) in embeddings.iter().zip(dists.iter()) {
             let w = 1.0 / dist;
             for (i, &v) in emb.iter().enumerate() {
-                new_median[i] += w * v as f64;
+                new_median[i] += w * f64::from(v);
             }
         }
         for v in &mut new_median {
@@ -116,20 +118,19 @@ pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
         .map(|(i, emb)| {
             let emb_norm: f64 = emb
                 .iter()
-                .map(|&v| (v as f64).powi(2))
+                .map(|&v| f64::from(v).powi(2))
                 .sum::<f64>()
                 .sqrt()
                 .max(1e-12);
             let dot: f64 = emb
                 .iter()
                 .zip(median.iter())
-                .map(|(&a, &b)| a as f64 * b)
+                .map(|(&a, &b)| f64::from(a) * b)
                 .sum();
             let cosine_sim = dot / (emb_norm * median_norm);
             let cosine_dist = 1.0 - cosine_sim;
             (i, cosine_dist)
         })
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+        .map_or(0, |(i, _)| i)
 }

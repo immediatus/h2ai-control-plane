@@ -486,12 +486,13 @@ neff_probe_warning_fraction = 0.35
 # against the winning merged output.
 # Absent or commented-out = Phase 6 oracle disabled (bootstrap intervals used).
 
-# [oracle_sidecar]
-# # HTTP endpoint of the oracle sidecar service.
-# runner_uri = "http://oracle-sidecar:9090"
+# [oracle]
+# # Path to the local binary invoked by the TestSuite oracle.
+# # Ignored by schema, z3, reference_answer, human, and staged-code oracle types.
+# runner_uri = "/opt/validators/run_tests.py"
 # # Default timeout for oracle evaluations in milliseconds.
 # default_timeout_ms = 10000
-# # Language runtime to use when not specified by the task manifest.
+# # Language hint for TestSuite oracle output parsing ("python" enables pytest parsing).
 # default_language = "python"
 
 # ── Human-in-the-loop approval gate ──────────────────────────────────────────
@@ -560,6 +561,9 @@ oracle_ece_alert_threshold = 0.15
 # Pass-rate floor — fires OracleSuspectEvent when pass_rate drops below this
 # over ≥30 observations.
 oracle_pass_rate_floor = 0.30
+
+# NATS KV bucket name for human oracle pending requests.
+oracle_human_bucket = "H2AI_ORACLE_HUMAN"
 
 # LLM judge passes for Hard constraints. ≥2 averages scores, reducing single-pass false-positives.
 verifier_consensus_passes = 1

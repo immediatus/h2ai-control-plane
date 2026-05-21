@@ -491,3 +491,47 @@ The `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`) automatically re
 | `induction_store put` warn log | NATS KV write failed for pattern recording (non-fatal) |
 | `InductionStore: corrupt pattern at key …` warn log | Deserialization failure in KV bucket (non-fatal, hit_rate treated as 0) |
 | `checks_present` below threshold in e2e results | Content checks may target knowledge that BM25 retrieval misses — try raising `topic_cluster_top_k` or adding `wiki/` topic nodes for the relevant domain |
+
+---
+
+## 11. Optimal Synthesis Policy (OSP)
+
+OSP replaces the score-blind merger with regime-based selection. It is activated by adding an `[osp]` section to `h2ai.toml` (see `reference.md §4` for full parameter table). When absent, the legacy strategy dispatch runs unchanged.
+
+### Enabling OSP
+
+```toml
+[osp]
+t_v               = 0.125
+concordance_alpha = 0.1
+max_n_v_for_zone3 = 4
+accumulation_decay = 0.7
+```
+
+### Tuning `t_v`
+
+`t_v` (verifier noise temperature) controls `ClearLeader` sensitivity. With N verification scores `s_1 ≥ s_2`, the gap is `Δ = s_1 − s_2`. `ClearLeader` activates when `Δ ≥ 2·t_v` and `P(correct) = 1 − Φ(−Δ/(2·t_v)) ≥ 0.92`.
+
+- `t_v = 0.125` (default): ClearLeader requires Δ ≥ 0.25 (quarter of the 0–1 score range). Works well when the verifier produces well-separated scores.
+- Lower `t_v` (e.g. 0.05): more aggressive leader selection — more tasks routed directly, fewer `ConsensusMedian` calls. Use when verifier scores are reliable and well-spread.
+- Higher `t_v` (e.g. 0.25): leader must dominate by a large margin before skipping synthesis — safer for domains where score noise is high. Falls back to `TightCluster` ConsensusMedian more often.
+
+### Tuning `concordance_alpha`
+
+`concordance_alpha` (Hoeffding α) governs the adaptive concordance threshold τ(N_f) for Zone 3 injection. Lower α = stricter threshold = fewer Zone 3 injections but higher statistical confidence in what is injected. At the default α=0.1:
+- τ(1) = 1.0 (need all 1 failed proposals to agree — prevents spurious injection on a single failure)
+- τ(2) ≈ 0.96, τ(5) ≈ 0.77, τ(10) ≈ 0.66
+
+Set `concordance_alpha = 0.05` for stricter injection (recommended when Zone 3 guidance quality is more important than coverage). Set `concordance_alpha = 0.2` to inject earlier when N_f is small.
+
+### Zone 3 signals to watch
+
+| Signal | Meaning | Action |
+|---|---|---|
+| `zone3_hints Some(...)` on `MergeResolvedEvent` | Zone 3 guidance was injected into retry | Expected on hard tasks with high N_f |
+| Same constraint ID in `zone3_hints` across 3+ retries | Constraint is systematically hard for this task | Review constraint definition; consider raising `t_v` |
+| `zone3_hints None` despite many failures | `n_v > max_n_v_for_zone3` or concordance threshold not met | Lower `concordance_alpha` or raise `max_n_v_for_zone3` |
+
+### RetryAccumulator decay
+
+The RetryAccumulator tracks per-constraint violation rates using an exponential moving average with decay λ=0.7 (configurable via `accumulation_decay`). It is reset on task success and retained on `ZeroSurvival`, so accumulated signal carries across mode-collapse retries. The accumulator is a local variable in the engine retry loop — it is never persisted to NATS KV and is lost when the server restarts.

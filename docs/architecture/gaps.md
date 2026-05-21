@@ -36,9 +36,7 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🔴 OPEN | **High** | Multi-family committee enforcement on ModeCollapse retry; structural pre-generation family diversity gate |
 
 | **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🔴 OPEN | Medium | Hierarchical tournament merge; bounded context |
-| **GAP-D8 Synthesis contamination — failing proposals corrupt merged output** | 🔴 OPEN | **High** | Score-aware merge: pass failing proposals as "avoid" context not synthesis input |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
-| GAP-E1 Oracle integration | 🟢 WIRED | Blocking | Phase 4.5 gate wired; domain-specific automated oracles remaining |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
 
 | **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
@@ -251,7 +249,7 @@ Loops  :
 | Phase 4 audit | Final coherence gate before a belief is accepted as output |
 | Phase 5a synthesis | Belief integration — construct the most coherent view across contributors |
 | MAPE-K retry | Belief revision — update under new evidence from failed coherence tests |
-| Phase 6 oracle (GAP-E1) | **Grounding** — connect beliefs to external reality |
+| Phase 6 oracle | **Grounding** — connect beliefs to external reality |
 | Calibration | Update meta-beliefs about team epistemic capabilities |
 
 ### The epistemological traditions each gap violates
@@ -259,7 +257,6 @@ Loops  :
 | Gap | Epistemic violation |
 |---|---|
 | GAP-A6: Self-MoA as competitor | Core diversity premise is empirically untested |
-| GAP-E1: no oracle | Epistemic closure — internally coherent but ungrounded |
 | GAP-B3: attribution without oracle | Cannot distinguish confident-and-correct from confident-and-wrong |
 | GAP-B5: proxy chain | Three proxies (rho_mean, p_mean, β_eff) all use CG_mean as input with no empirical validation; cold-start prior 0.45 unvalidated |
 | GAP-B6: judge validity | Krum and verifier consensus depend on LLM judge scores; judge bias (verbosity, self-preference) corrupts outlier rejection |
@@ -271,7 +268,7 @@ Loops  :
 | TAO inner | `agent_max_tool_iterations` (budget) | No productive hypothesis extensions remain | Budget is proxy for epistemic exhaustion |
 | MAPE-K retry | Proposals satisfy threshold OR retries exhausted; ZeroSurvival + is_closed() gate | Coherent closure: no active constraint violated, no domain uncovered | Quality threshold is rubric-coherent, not oracle-grounded |
 | Calibration | Startup-automatic + POST /calibrate | Confidence intervals narrow enough for decision quality required | — |
-| Oracle grounding | Phase 4.5 gate wired (NATS request/reply, `OracleGateConfig`); thinking loop Stage 2 inline oracle; `PendingClarificationEvent` suspension via `clarification_waiters` | All load-bearing beliefs grounded in at least one oracle test | GAP-E1: domain-specific automated test suites remaining |
+| Oracle grounding | Phase 4.5 gate wired (NATS request/reply, `OracleGateConfig`); thinking loop Stage 2 inline oracle; `PendingClarificationEvent` suspension via `clarification_waiters`; control plane is oracle-agnostic — `OracleClient` POSTs winning output to external `runner_uri` and receives `{ passed, score, details }`; `OracleSpec` has 3 fields (`runner_uri`, `timeout_ms`, `domain`); in-process oracle type implementations removed (oracle refactor, 2026-05-23); `OracleAccumulator` calibration loop unchanged | All load-bearing beliefs grounded in at least one oracle test | — |
 
 ---
 
@@ -487,7 +484,7 @@ the attention term has explanatory power.
 
 ### GAP-B3: Attribution Formula Is Self-Referential 🟡 PARTIAL
 
-Oracle-grounded calibration requires GAP-E1 data. Once available, apply conformal prediction:
+Oracle-grounded calibration is now available via `OracleAccumulator`. Apply conformal prediction:
 
 ```
 conformal_margin(α) = quantile(|q_confidence - q_oracle|, 1-α)  over calibration split
@@ -739,90 +736,6 @@ position) to exploit the attention recency effect.
 
 ---
 
-### GAP-D8: Synthesis Contamination — Failing Proposals Corrupt Merged Output 🔴 OPEN — High
-
-**Gap statement.**
-`SemilatticeResult::compile` passes ALL non-pruned proposals to `valid_proposals` regardless
-of their verification score, and strips the score before the merger receives them:
-
-```rust
-// semilattice.rs:124 — score dropped here
-valid_proposals: scored.into_iter().map(|(p, _)| p).collect(),
-```
-
-When the majority of explorer proposals fail verification (score = 0.0) — the normal outcome
-for hard tasks where semantic constraint gates correctly filter out constraint-violating proposals —
-the merger receives and synthesizes ALL of them symmetrically. Text from failing proposals
-(e.g., a proposal that routes audit events to CockroachDB instead of Kafka) bleeds into
-the merged output alongside text from the single passing proposal (Kafka path). The result
-is an internally contradictory merged output that is **worse quality than the best passing
-proposal alone**.
-
-**Empirical evidence.**
-Observed across 4 benchmark runs (2026-05-20):
-- avg_score = 0.167 (1/6 passing) and 0.333 (1/3 passing)
-- Merged output simultaneously contained "fire-and-forget" (from score=0.0 proposal) and
-  "acks=all" (from score=1.0 proposal) for Kafka publishing semantics
-- `CoherenceIncomplete` event fired on both runs — synthesis could not reconcile the contradictions
-- C-005/1 content check ("publishes to Kafka") returned MISSING even though the passing
-  proposal's Kafka pattern was clearly present — judge confused by contradictory text
-
-**Root cause location.**
-- `crates/h2ai-state/src/semilattice.rs` — `SemilatticeResult::compile` strips scores
-- `crates/h2ai-autonomic/src/merger.rs` — merger receives proposals without scores, cannot
-  differentiate passing from failing
-
-**Why this is distinct from GAP-D5.**
-GAP-D5 addresses merge *architecture* (tournament vs. one-shot, context size).
-GAP-D8 is about *what enters the merge* — the pre-merge filtering contract.
-Fixing GAP-D5 (hierarchical tournament) would not help: a tournament among proposals that
-includes score=0.0 candidates still propagates contradictory text in every round.
-
-**Proposed solution — score-stratified merge.**
-
-Split `SemilatticeResult::compile` by verification score threshold (default: score > 0.0):
-
-```rust
-pub struct SemilatticeResult {
-    pub task_id: TaskId,
-    /// Proposals that passed verification (score > pass_threshold), sorted score descending.
-    pub valid_proposals: Vec<ProposalEvent>,
-    /// Proposals that failed verification (score ≤ pass_threshold).
-    /// Passed to the merger as "avoid" context, not synthesis input.
-    pub failed_proposals: Vec<ProposalEvent>,
-    /// Proposals whose explorer branch was pruned by the auditor.
-    pub pruned_proposals: Vec<BranchPrunedEvent>,
-}
-```
-
-**Merger synthesis prompt modification:**
-```
-## Synthesis inputs (verified compliant — use as primary material)
-<passing proposals>
-
-## Anti-patterns to avoid (failed verification — do NOT incorporate these patterns)
-<failing proposals, each prefaced with which constraint it violated>
-```
-
-**Edge case — all proposals score 0.0:** Fall back to `valid_proposals = all proposals`
-(current behavior) so the merge always produces output. Log a `AllProposalsFailedVerification`
-event to signal degraded mode.
-
-**Interaction with GAP-D5.** The two fixes are composable: stratified merge first, then
-tournament merge within the passing stratum. The tournament fix is still valuable (handles
-long contexts when N passing proposals > 3); stratified split is necessary regardless.
-
-**Effort estimate.** Medium: 2–3 days.
-- `semilattice.rs`: add `failed_proposals` field; split in `compile()`
-- `merger.rs`: thread `failed_proposals` into the synthesis prompt as avoidance context
-- `pipeline.rs`: propagate `failed_proposals` through `AuditOut` → `SemilatticeResult`
-- Tests: unit test for stratified split; integration test confirming failing proposal text
-  does not appear in merged output when passing proposals exist
-
-**Closes:** Synthesis contamination finding from 2026-05-20 benchmark analysis.
-
----
-
 ### GAP-D2: Compound Task Cost Is Unconstrained 🔴 OPEN — Low
 
 A `CompoundTaskEngine` DAG fires a full wave for each subtask with no pre-execution cost estimate
@@ -838,33 +751,6 @@ Use the existing Thompson Sampling bandit to improve probe accuracy over time.
 ---
 
 ## Brainstorm Group E — Quality Measurement Infrastructure
-
----
-
-### GAP-E1: Oracle Integration 🟢 WIRED — Blocking
-
-**Wired (2026-05-14).** Phase 4.5 oracle gate is live: NATS `request()` to `cfg.oracle_gate.subject` with configurable timeout before the Phase 5 merge step. The thinking loop Stage 2 (`brainstorm_one`) sends candidate solutions to the oracle inline; `synthesize` applies `oracle_confidence_bonus` when the oracle approved. On fail + low confidence, a matching `ClarificationTemplate` fires a `PendingClarificationEvent` that suspends the engine; `POST /{tenant_id}/tasks/{id}/clarify` resumes it with an operator answer. `oracle_gate_passed: Option<bool>` on `MergeResolvedEvent` tracks the gate outcome per task.
-
-**Open.** Domain-specific automated test suites (code, factual QA, structured output) are the remaining work for automated oracle coverage.
-
-**Innovative opportunity — FUSE-style zero-label verifier ensembling.**
-arXiv 2604.18547 (Lee et al., 2026) — *"FUSE: Ensembling Verifiers with Zero Labeled Data"* —
-proposes unsupervised ensembling of LLM verifiers using only agreement structure among verifiers.
-Applicable to H2AI's cold-start problem: before domain-specific oracles exist, use FUSE-style
-inter-verifier agreement to produce a calibrated ensemble score without ground truth labels.
-
-**Oracle priority queue by implementation cost:**
-
-| Oracle type | Tasks covered | Implementation cost |
-|---|---|---|
-| JSON schema validation | Structured output tasks | 1 day — already have typed deserialisation |
-| Cargo test / pytest runner | Code tasks | 3 days — ShellExecutor extension |
-| MMLU / TriviaQA lookup | Factual QA | 1 week — reference dataset integration |
-| Symbolic verifier (Z3) | Formal reasoning | 2 weeks |
-| Human rating | Open-ended writing | Open-ended |
-
-Start with JSON schema validation (zero new dependencies, covers structured output tasks which
-are H2AI's primary use case) and cargo test runner (enables the GAP-A6 experiment on HumanEval).
 
 ---
 
@@ -926,7 +812,7 @@ The architecture maps closely to H2AI:
 |---|---|---|
 | Planner (strategy retrieval) | Context assembler + knowledge provider | GAP-F4 |
 | Solver (patch-based repair) | Explorer adapters + MAPE-K retry + **CSPR-v2 repair context** + **SemanticSpec IR** | Closed (GAP-D7, 2026-05-20) |
-| Oracle (certified test generation) | Verifier + oracle gate | GAP-E1 |
+| Oracle (certified test generation) | Verifier + oracle gate + domain oracle types | Closed |
 | Hacker (adversarial attack) | Auditor / constraint eval | GAP-B6, GAP-C5 |
 | Trainable edge weights (REINFORCE) | Bandit state / `conflict_beta` | GAP-F4, GAP-F5 |
 
@@ -1011,12 +897,10 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 | **INNOVATION-5 H2-P vs B3 experiment** | Critical | 1 week | None (single-model) | **Week 1** |
 | **INNOVATION-4 N_IT as primary sizer** | High | 1 week | None | **Week 2** |
 | **GAP-B5 rho_mean documentation** | Medium | 2 days | None | **Week 2** |
-| GAP-E1 Domain-specific oracles | Blocking for A/B | 1–3 weeks | Domain test suites | Session 1 |
 | GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
 | GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
 | GAP-A2 USL quality curve experiment | High | 2 weeks | Shared task set | Session 2 |
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
-| **GAP-D8 Synthesis contamination** | **High** | **2–3 days** | **None** | **Week 2** |
 | GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
 | **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
 | **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |

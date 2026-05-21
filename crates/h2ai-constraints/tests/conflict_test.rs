@@ -144,7 +144,7 @@ fn conflicts_for_returns_all_conflicting_ids() {
     ];
     let g = ConstraintConflictGraph::build(&docs);
     let mut conflicts = g.conflicts_for("A");
-    conflicts.sort();
+    conflicts.sort_unstable();
     assert_eq!(conflicts, vec!["B", "C"]);
 }
 
@@ -184,6 +184,62 @@ fn composite_and_conflict_propagates() {
         g.are_conflicting("A", "B"),
         "And-composite should propagate ordering conflict"
     );
+}
+
+// ── Lines 67-70: conflicts_for b == id branch and None branch ─────────────────
+
+#[test]
+fn conflicts_for_works_when_querying_second_member_of_pair() {
+    // A conflicts with B. Calling conflicts_for("B") exercises the `b == id` branch
+    // (canonical pair stores alphabetically: ("A", "B"), so when id="B", b matches).
+    // conflicts_for("A") exercises the `a == id` arm.
+    // Adding a third pair "C"↔"D" ensures the None branch (neither a nor b == id)
+    // is also exercised when iterating all pairs.
+    let docs = vec![
+        make_doc(
+            "A",
+            ConstraintPredicate::SemanticOrdering {
+                first: "alpha".to_owned(),
+                then: "beta".to_owned(),
+                passes: 3,
+            },
+        ),
+        make_doc(
+            "B",
+            ConstraintPredicate::SemanticOrdering {
+                first: "beta".to_owned(),
+                then: "alpha".to_owned(),
+                passes: 3,
+            },
+        ),
+        make_doc(
+            "C",
+            ConstraintPredicate::SemanticOrdering {
+                first: "x".to_owned(),
+                then: "y".to_owned(),
+                passes: 3,
+            },
+        ),
+        make_doc(
+            "D",
+            ConstraintPredicate::SemanticOrdering {
+                first: "y".to_owned(),
+                then: "x".to_owned(),
+                passes: 3,
+            },
+        ),
+    ];
+    let g = ConstraintConflictGraph::build(&docs);
+
+    // conflicts_for("B") must return "A" — exercises the `b == id` arm
+    // (pair ("A","B"): a="A", b="B", so b == id → Some(a))
+    let conflicts_b = g.conflicts_for("B");
+    assert_eq!(conflicts_b, vec!["A"], "conflicts_for(B) must return [A]");
+
+    // conflicts_for("A") exercises the `a == id` arm
+    // Also exercises the `else { None }` arm for pair ("C","D") which doesn't involve "A"
+    let conflicts_a = g.conflicts_for("A");
+    assert_eq!(conflicts_a, vec!["B"], "conflicts_for(A) must return [B]");
 }
 
 #[test]

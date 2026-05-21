@@ -49,9 +49,9 @@ pub struct TaoInput<'a> {
     /// so `ProposalSet` can apply generation-first LUB semantics.
     pub generation: u64,
     /// When `true`, the TAO retry loop is skipped: the adapter is called exactly once and
-    /// the result is returned unconditionally.  Use for models with built-in CoT (o1, o3,
-    /// DeepSeek R1) where injecting TAO memory over the model's own reasoning trace causes
-    /// an α-spike that collapses the USL N_max ceiling.
+    /// the result is returned unconditionally.  Use for models with built-in `CoT` (o1, o3,
+    /// `DeepSeek` R1) where injecting TAO memory over the model's own reasoning trace causes
+    /// an α-spike that collapses the USL `N_max` ceiling.
     pub bypass_tao: bool,
 }
 
@@ -111,7 +111,8 @@ pub struct TaoMultiplierEstimator {
 }
 
 impl TaoMultiplierEstimator {
-    pub fn new_with_alpha(alpha: f64) -> Self {
+    #[must_use]
+    pub const fn new_with_alpha(alpha: f64) -> Self {
         Self {
             ema: 0.0,
             count: 0,
@@ -122,13 +123,15 @@ impl TaoMultiplierEstimator {
     }
 
     /// Restore alpha after deserializing from NATS.
-    pub fn with_alpha(mut self, alpha: f64) -> Self {
+    #[must_use]
+    pub const fn with_alpha(mut self, alpha: f64) -> Self {
         self.alpha = alpha;
         self
     }
 
     /// Override the default warm-up count (20). Returns self for chaining.
-    pub fn with_warmup(mut self, warmup: usize) -> Self {
+    #[must_use]
+    pub const fn with_warmup(mut self, warmup: usize) -> Self {
         self.warmup = warmup;
         self
     }
@@ -142,19 +145,24 @@ impl TaoMultiplierEstimator {
         }
         let ratio = (q_after / q_before).clamp(0.0, 2.0);
         self.count += 1;
-        if self.count < self.warmup {
-            self.warmup_sum += ratio;
-        } else if self.count == self.warmup {
-            self.warmup_sum += ratio;
-            self.ema = self.warmup_sum / self.warmup as f64;
-        } else {
-            self.ema += self.alpha * (ratio - self.ema);
+        match self.count.cmp(&self.warmup) {
+            std::cmp::Ordering::Less => {
+                self.warmup_sum += ratio;
+            }
+            std::cmp::Ordering::Equal => {
+                self.warmup_sum += ratio;
+                self.ema = self.warmup_sum / self.warmup as f64;
+            }
+            std::cmp::Ordering::Greater => {
+                self.ema += self.alpha * (ratio - self.ema);
+            }
         }
     }
 
     /// Current estimate of the per-turn quality factor.
     /// Returns the heuristic prior (0.6) until 20 samples are available.
-    pub fn multiplier(&self) -> f64 {
+    #[must_use]
+    pub const fn multiplier(&self) -> f64 {
         if self.count < self.warmup {
             0.6
         } else {
@@ -163,13 +171,15 @@ impl TaoMultiplierEstimator {
     }
 
     /// Number of valid samples collected so far.
-    pub fn sample_count(&self) -> usize {
+    #[must_use]
+    pub const fn sample_count(&self) -> usize {
         self.count
     }
 
     /// Returns `(ema, count)` for NATS persistence, or `None` when warm-up is incomplete.
     /// Callers must not persist partial warm-up state.
-    pub fn persist_state(&self) -> Option<(f64, usize)> {
+    #[must_use]
+    pub const fn persist_state(&self) -> Option<(f64, usize)> {
         if self.count >= self.warmup {
             Some((self.ema, self.count))
         } else {
@@ -253,10 +263,7 @@ impl TaoLoop {
                 turn1_output = Some(resp.output.clone());
             }
 
-            let pattern_passed = pattern
-                .as_ref()
-                .map(|re| re.is_match(&resp.output))
-                .unwrap_or(true);
+            let pattern_passed = pattern.as_ref().is_none_or(|re| re.is_match(&resp.output));
 
             let schema_result = validate_output(&resp.output, input.schema_config.as_ref());
             let schema_passed = !matches!(schema_result, SchemaValidationResult::Invalid(_));

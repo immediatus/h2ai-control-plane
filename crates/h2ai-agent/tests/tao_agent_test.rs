@@ -201,7 +201,7 @@ async fn tao_agent_truncated_flag_set_when_cap_reached() {
 
 // ── Test 9: tool block injected into system context ───────────────────────────
 
-/// A test adapter that records the last ComputeRequest it received.
+/// A test adapter that records the last `ComputeRequest` it received.
 #[derive(Debug, Clone)]
 struct RecordingAdapter {
     response: String,

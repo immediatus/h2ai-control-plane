@@ -1,6 +1,6 @@
 use h2ai_types::config::OutputSchemaConfig;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaValidationResult {
     Valid,
     Invalid(String),
@@ -9,7 +9,8 @@ pub enum SchemaValidationResult {
 
 impl SchemaValidationResult {
     /// Returns the error message if the result is `Invalid`, otherwise `None`.
-    pub fn as_invalid_msg(&self) -> Option<&str> {
+    #[must_use]
+    pub const fn as_invalid_msg(&self) -> Option<&str> {
         match self {
             Self::Invalid(msg) => Some(msg.as_str()),
             _ => None,
@@ -17,6 +18,7 @@ impl SchemaValidationResult {
     }
 }
 
+#[must_use]
 pub fn validate_output(
     output: &str,
     config: Option<&OutputSchemaConfig>,
@@ -57,6 +59,7 @@ pub fn validate_output(
 }
 
 /// Convert a schema validation result into an error message for use in the TAO loop.
+#[must_use]
 pub fn schema_error_to_engine(result: &SchemaValidationResult) -> Option<String> {
     match result {
         SchemaValidationResult::Invalid(msg) => Some(msg.clone()),

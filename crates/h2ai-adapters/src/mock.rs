@@ -9,6 +9,7 @@ pub struct MockAdapter {
 }
 
 impl MockAdapter {
+    #[must_use]
     pub fn new(output: String) -> Self {
         Self {
             output,
@@ -50,6 +51,7 @@ pub struct DecompositionMockAdapter {
 }
 
 impl DecompositionMockAdapter {
+    #[must_use]
     pub fn new(fallback_output: String) -> Self {
         Self {
             fallback_output,
@@ -113,6 +115,7 @@ pub struct SequencedMockAdapter {
 }
 
 impl SequencedMockAdapter {
+    #[must_use]
     pub fn new(responses: Vec<String>) -> Self {
         Self {
             responses: std::sync::Arc::new(std::sync::Mutex::new(responses)),

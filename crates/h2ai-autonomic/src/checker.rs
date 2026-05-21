@@ -7,6 +7,13 @@ use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold, Multiplic
 pub struct MultiplicationChecker;
 
 impl MultiplicationChecker {
+    /// Check whether the multiplication condition holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(MultiplicationConditionFailedEvent)` when the multiplication
+    /// condition is not satisfied (baseline competence too low, error correlation too
+    /// high, or coordination gain insufficient).
     pub fn check(
         task_id: &TaskId,
         cc: &CoherencyCoefficients,

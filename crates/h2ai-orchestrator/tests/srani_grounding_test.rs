@@ -1,12 +1,66 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::{H2AIConfig, SraniConfig};
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_orchestrator::srani_grounding::{
-    GroundingContext, GroundingProvider, GroundingSource, LlmResearcherGrounder,
-    SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
+    format_grounding_hint, GroundingContext, GroundingProvider, GroundingResult, GroundingSource,
+    LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
 };
 use h2ai_orchestrator::task_store::TaskStore;
+use h2ai_tools::error::ToolError;
 use h2ai_tools::web_search::{
     GeminiSearchBackend, MockSearchBackend, StackOverflowSearchBackend, WebGroundingBackend,
     WebSearchBackend,
@@ -416,6 +470,339 @@ async fn live_web_grounding_backend_fetches_real_page_content() {
             );
         }
     }
+}
+
+// ── SpecAnchorGrounder unit tests ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn spec_anchor_extracts_spec_entities_as_alternatives() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let grounder = SpecAnchorGrounder;
+    let result = grounder.ground(&ctx).await.unwrap();
+    assert!(
+        result.alternatives.contains(&"Redis".to_string()),
+        "expected Redis in alternatives, got {:?}",
+        result.alternatives
+    );
+    assert!(
+        !result.alternatives.contains(&"CockroachDB".to_string()),
+        "CockroachDB should not be promoted — it is fabricated"
+    );
+}
+
+#[tokio::test]
+async fn spec_anchor_excludes_fabricated_from_alternatives() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["Redis".into(), "CockroachDB".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let grounder = SpecAnchorGrounder;
+    let result = grounder.ground(&ctx).await.unwrap();
+    assert!(
+        !result.alternatives.contains(&"Redis".to_string()),
+        "Redis is fabricated — must not appear in alternatives"
+    );
+}
+
+#[tokio::test]
+async fn spec_anchor_empty_spec_still_produces_result() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "do something simple".into(),
+    };
+    let grounder = SpecAnchorGrounder;
+    let result = grounder.ground(&ctx).await;
+    assert!(result.is_some());
+    assert!(result.unwrap().alternatives.is_empty());
+}
+
+#[tokio::test]
+async fn spec_anchor_source_tag_is_correct() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let grounder = SpecAnchorGrounder;
+    let result = grounder.ground(&ctx).await.unwrap();
+    assert_eq!(result.source, GroundingSource::SpecAnchor);
+}
+
+// ── LlmResearcherGrounder unit tests ──────────────────────────────────────────
+
+#[tokio::test]
+async fn llm_researcher_happy_path() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let adapter = Arc::new(MockAdapter::new(
+        r#"{"alternatives": ["Redis TTL counters", "sliding window"], "statement": "Use Redis TTL + Lua for rate limiting"}"#.into(),
+    ));
+    let grounder = LlmResearcherGrounder::new(adapter);
+    let result = grounder.ground(&ctx).await.unwrap();
+    assert!(!result.alternatives.is_empty());
+    assert_eq!(result.source, GroundingSource::LlmResearcher);
+}
+
+#[tokio::test]
+async fn llm_researcher_invalid_json_returns_none() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate-limiting service using Redis".into(),
+    };
+    let adapter = Arc::new(MockAdapter::new("not json at all !!!".into()));
+    let grounder = LlmResearcherGrounder::new(adapter);
+    let result = grounder.ground(&ctx).await;
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn llm_researcher_missing_alternatives_field_returns_none() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate-limiting service using Redis".into(),
+    };
+    let adapter = Arc::new(MockAdapter::new(r#"{"statement": "use Redis"}"#.into()));
+    let grounder = LlmResearcherGrounder::new(adapter);
+    let result = grounder.ground(&ctx).await;
+    assert!(
+        result.is_none(),
+        "missing alternatives field must return None"
+    );
+}
+
+// ── WebSearchGrounder unit tests ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn web_search_produces_web_search_source() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let backend = Arc::new(MockSearchBackend::new(
+        "Redis sliding-window counter is the standard approach for rate limiting".to_string(),
+    ));
+    let grounder = WebSearchGrounder::new(backend, 3);
+    let result = grounder.ground(&ctx).await.unwrap();
+    assert_eq!(result.source, GroundingSource::WebSearch);
+    assert!(!result.grounding_statement.is_empty());
+}
+
+#[tokio::test]
+async fn web_search_empty_results_returns_none() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate-limiting service using Redis".into(),
+    };
+    let backend = Arc::new(MockSearchBackend::new("".to_string()));
+    let grounder = WebSearchGrounder::new(backend, 3);
+    let result = grounder.ground(&ctx).await;
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn web_search_error_returns_none() {
+    struct FailingBackend;
+    #[async_trait::async_trait]
+    impl WebSearchBackend for FailingBackend {
+        async fn search(&self, _q: &str, _n: usize) -> Result<String, ToolError> {
+            Err(ToolError::MalformedInput("network error".into()))
+        }
+    }
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate-limiting service using Redis".into(),
+    };
+    let grounder = WebSearchGrounder::new(Arc::new(FailingBackend), 3);
+    let result = grounder.ground(&ctx).await;
+    assert!(result.is_none());
+}
+
+// ── strip_urls via format_grounding_hint ──────────────────────────────────────
+// strip_urls is private; exercised indirectly through format_grounding_hint.
+
+#[test]
+fn format_grounding_hint_removes_urls_from_statement() {
+    let result = GroundingResult {
+        alternatives: vec!["Redis".into()],
+        grounding_statement:
+            "Redis https://redis.io/docs sliding window http://example.com counter".into(),
+        source: GroundingSource::WebSearch,
+    };
+    let hint = format_grounding_hint(&result, &["CockroachDB".into()]);
+    assert!(!hint.contains("https://"), "https:// must be removed");
+    assert!(!hint.contains("http://"), "http:// must be removed");
+    assert!(hint.contains("Redis"), "prose words must survive");
+    assert!(hint.contains("counter"), "prose words must survive");
+}
+
+#[test]
+fn format_grounding_hint_preserves_non_url_statement() {
+    let result = GroundingResult {
+        alternatives: vec!["Redis".into()],
+        grounding_statement: "rate limiting with Redis sliding window".into(),
+        source: GroundingSource::LlmResearcher,
+    };
+    let hint = format_grounding_hint(&result, &["CockroachDB".into()]);
+    assert!(hint.contains("rate limiting with Redis sliding window"));
+}
+
+// ── truncate_at_sentence via SraniGroundingChain::resolve distillation ────────
+// truncate_at_sentence is private; exercised indirectly by the chain's hint_max_chars cap.
+
+#[tokio::test]
+async fn chain_distillation_replaces_raw_web_text_with_distilled_output() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let raw_text = "Web result: use Redis. ".repeat(200); // > 4000 chars
+    let distilled_output = "Redis sliding window is the standard rate-limiting approach.";
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(SpecAnchorGrounder),
+        Box::new(WebSearchGrounder::new(
+            Arc::new(MockSearchBackend::new(raw_text.clone())),
+            3,
+        )),
+    ];
+    let distiller = Arc::new(MockAdapter::new(distilled_output.into()));
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, 4000, 1200, true);
+    let result = chain.resolve(&ctx, 1).await.unwrap();
+    assert_eq!(result.source, GroundingSource::WebSearch);
+    assert!(
+        result.grounding_statement.contains("Redis sliding window"),
+        "distilled text must be in statement, got: {}",
+        result.grounding_statement
+    );
+    assert!(
+        result.grounding_statement.len() <= 1200,
+        "hint must respect hint_max_chars, len={}",
+        result.grounding_statement.len()
+    );
+}
+
+#[tokio::test]
+async fn chain_distill_disabled_preserves_raw_text_capped_at_hint_limit() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let raw_text = "Redis. ".repeat(300); // > 1200 chars
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(SpecAnchorGrounder),
+        Box::new(WebSearchGrounder::new(
+            Arc::new(MockSearchBackend::new(raw_text)),
+            3,
+        )),
+    ];
+    let distiller = Arc::new(MockAdapter::new("should not be called".into()));
+    let chain = SraniGroundingChain::new(providers).with_distiller(
+        distiller, 4000, 1200, false, // disabled
+    );
+    let result = chain.resolve(&ctx, 1).await.unwrap();
+    assert!(
+        result.grounding_statement.len() <= 1200,
+        "hint must still be capped even with distill=false, len={}",
+        result.grounding_statement.len()
+    );
+}
+
+// ── SraniGroundingChain unit tests ────────────────────────────────────────────
+
+#[tokio::test]
+async fn chain_tier0_merges_spec_anchor_and_researcher() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(SpecAnchorGrounder),
+        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
+            r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua"}"#
+                .into(),
+        )))),
+    ];
+    let chain = SraniGroundingChain::new(providers);
+    let result = chain.resolve(&ctx, 0).await.unwrap();
+    assert!(
+        result.grounding_statement.contains("Spec-defined"),
+        "anchor statement missing: {}",
+        result.grounding_statement
+    );
+    assert!(
+        result.grounding_statement.contains("Redis TTL"),
+        "researcher statement missing: {}",
+        result.grounding_statement
+    );
+}
+
+#[tokio::test]
+async fn chain_tier1_escalates_to_web_search_skips_researcher() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(SpecAnchorGrounder),
+        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
+            "should not appear".into(),
+        )))),
+        Box::new(WebSearchGrounder::new(
+            Arc::new(MockSearchBackend::new("Web result: use Redis".to_string())),
+            3,
+        )),
+    ];
+    let chain = SraniGroundingChain::new(providers);
+    let result = chain.resolve(&ctx, 1).await.unwrap();
+    assert_eq!(
+        result.source,
+        GroundingSource::WebSearch,
+        "tier=1 must use WebSearch"
+    );
+}
+
+#[tokio::test]
+async fn chain_tier_clamped_at_last_tier() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(SpecAnchorGrounder),
+        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
+            r#"{"alternatives": ["x"], "statement": "y"}"#.into(),
+        )))),
+    ];
+    let chain = SraniGroundingChain::new(providers);
+    let result = chain.resolve(&ctx, 99).await;
+    assert!(result.is_some(), "clamped tier must not panic");
+}
+
+#[tokio::test]
+async fn chain_spec_anchor_only_still_produces_positive_result() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![Box::new(SpecAnchorGrounder)];
+    let chain = SraniGroundingChain::new(providers);
+    let result = chain.resolve(&ctx, 0).await;
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().source, GroundingSource::SpecAnchor);
 }
 
 /// Live: WebGroundingBackend wired into WebSearchGrounder — 3 queries, multi-source.

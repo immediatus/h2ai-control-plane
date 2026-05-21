@@ -51,7 +51,7 @@ pub const EVALUATOR_SYSTEM_PROMPT: &str = concat!(
 /// instructed to look for a specific failure mode, so the verifier should probe adversarially
 /// rather than check rubric compliance. This partially restores verifier independence
 /// without requiring a separate model family (GAP-A4).
-/// System prompt for binary YES/NO factual checks (SemanticPresence, SemanticExclusion, SemanticOrdering).
+/// System prompt for binary YES/NO factual checks (`SemanticPresence`, `SemanticExclusion`, `SemanticOrdering`).
 /// Must NOT use the adversarial evaluator framing — factual presence checks require neutral classification,
 /// not hostile scoring. The adversarial framing causes the model to answer NO regardless of content.
 pub const BINARY_CLASSIFIER_SYSTEM_PROMPT: &str =
@@ -105,7 +105,7 @@ pub const ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT: &str = concat!(
 ///
 /// 2. **Anchored chain-of-thought** (Self-Refine, Madaan et al. 2023): force the
 ///    model to enumerate each constraint and state a verdict before reaching the
-///    overall decision. Structured CoT dramatically reduces confirmation bias compared
+///    overall decision. Structured `CoT` dramatically reduces confirmation bias compared
 ///    to a single yes/no question (Wei et al. 2022).
 pub const AUDITOR_SYSTEM_PROMPT: &str = concat!(
     "You are a post-incident engineer. You have been called in after production failures ",
@@ -122,6 +122,7 @@ pub const AUDITOR_SYSTEM_PROMPT: &str = concat!(
 );
 
 /// `serde(default)` helper for `AuditorConfig::system_prompt`.
+#[must_use]
 pub fn auditor_system_prompt_default() -> String {
     AUDITOR_SYSTEM_PROMPT.into()
 }
@@ -192,33 +193,3 @@ pub const SYNTHESIS_WRITE_PROMPT: &str = concat!(
     "Critique document:\n{critique_document}\n\n",
     "Write only the final synthesised response. No preamble, no meta-commentary."
 );
-
-#[cfg(test)]
-mod adversarial_prompt_tests {
-    use super::*;
-
-    #[test]
-    fn adversarial_prompt_contains_hostile_reviewer_framing() {
-        assert!(
-            ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.contains("hostile reviewer"),
-            "adversarial prompt must establish hostile reviewer role"
-        );
-    }
-
-    #[test]
-    fn adversarial_prompt_requires_json_output() {
-        assert!(
-            ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.contains("score"),
-            "adversarial prompt must still require JSON score output"
-        );
-    }
-
-    #[test]
-    fn adversarial_prompt_differs_from_standard_prompt() {
-        assert_ne!(ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT);
-        assert!(
-            !ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.contains("architectural compliance evaluator"),
-            "adversarial prompt must not use compliance evaluator framing"
-        );
-    }
-}

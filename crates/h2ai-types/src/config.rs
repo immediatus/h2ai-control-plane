@@ -20,6 +20,13 @@ pub struct ParetoWeights {
 }
 
 impl ParetoWeights {
+    /// Construct a validated set of Pareto weights.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::NegativeWeight`] when any component is negative,
+    /// or [`ConfigError::InvalidWeightSum`] when the components do not sum to
+    /// `1.0` within `1e-6`.
     pub fn new(throughput: f64, containment: f64, diversity: f64) -> Result<Self, ConfigError> {
         if throughput < 0.0 || containment < 0.0 || diversity < 0.0 {
             return Err(ConfigError::NegativeWeight);
@@ -51,7 +58,8 @@ pub enum AgentRole {
 }
 
 impl AgentRole {
-    pub fn default_tau(&self) -> f64 {
+    #[must_use]
+    pub const fn default_tau(&self) -> f64 {
         match self {
             Self::Coordinator => 0.05,
             Self::Executor => 0.40,
@@ -61,12 +69,12 @@ impl AgentRole {
         }
     }
 
-    pub fn default_role_error_cost(&self) -> f64 {
+    #[must_use]
+    pub const fn default_role_error_cost(&self) -> f64 {
         match self {
-            Self::Coordinator => 0.1,
+            Self::Coordinator | Self::Synthesizer => 0.1,
             Self::Executor => 0.5,
             Self::Evaluator => 0.9,
-            Self::Synthesizer => 0.1,
             Self::Custom {
                 role_error_cost, ..
             } => *role_error_cost,
@@ -100,19 +108,20 @@ pub enum TopologyKind {
 pub enum AdapterFamily {
     Anthropic,
     OpenAI,
-    /// LocalLlamaCpp and Ollama — locally-served models.
+    /// `LocalLlamaCpp` and Ollama — locally-served models.
     Local,
-    /// CloudGeneric and A2a — endpoint-based adapters without vendor-specific family.
+    /// `CloudGeneric` and `A2a` — endpoint-based adapters without vendor-specific family.
     Cloud,
 }
 
 impl AdapterFamily {
-    pub fn from_kind(kind: &AdapterKind) -> Self {
+    #[must_use]
+    pub const fn from_kind(kind: &AdapterKind) -> Self {
         match kind {
-            AdapterKind::Anthropic { .. } => AdapterFamily::Anthropic,
-            AdapterKind::OpenAI { .. } => AdapterFamily::OpenAI,
-            AdapterKind::LocalLlamaCpp { .. } | AdapterKind::Ollama { .. } => AdapterFamily::Local,
-            AdapterKind::CloudGeneric { .. } | AdapterKind::A2a { .. } => AdapterFamily::Cloud,
+            AdapterKind::Anthropic { .. } => Self::Anthropic,
+            AdapterKind::OpenAI { .. } => Self::OpenAI,
+            AdapterKind::LocalLlamaCpp { .. } | AdapterKind::Ollama { .. } => Self::Local,
+            AdapterKind::CloudGeneric { .. } | AdapterKind::A2a { .. } => Self::Cloud,
         }
     }
 }
@@ -120,10 +129,10 @@ impl AdapterFamily {
 impl std::fmt::Display for AdapterFamily {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AdapterFamily::Anthropic => write!(f, "anthropic"),
-            AdapterFamily::OpenAI => write!(f, "openai"),
-            AdapterFamily::Local => write!(f, "local"),
-            AdapterFamily::Cloud => write!(f, "cloud"),
+            Self::Anthropic => write!(f, "anthropic"),
+            Self::OpenAI => write!(f, "openai"),
+            Self::Local => write!(f, "local"),
+            Self::Cloud => write!(f, "cloud"),
         }
     }
 }
@@ -164,7 +173,8 @@ pub enum AdapterKind {
 }
 
 impl AdapterKind {
-    pub fn family(&self) -> AdapterFamily {
+    #[must_use]
+    pub const fn family(&self) -> AdapterFamily {
         AdapterFamily::from_kind(self)
     }
 }
@@ -176,7 +186,7 @@ pub struct ExplorerConfig {
     pub adapter: AdapterKind,
     pub role: Option<AgentRole>,
     /// When `true`, the TAO retry loop is bypassed and the adapter is called exactly once.
-    /// Set this for models with built-in chain-of-thought (DeepSeek R1, o1, o3, o4-mini)
+    /// Set this for models with built-in chain-of-thought (`DeepSeek` R1, o1, o3, o4-mini)
     /// to avoid α-spike from injecting the model's own reasoning trace back as TAO memory.
     #[serde(default)]
     pub is_reasoning_model: bool,
@@ -253,7 +263,7 @@ pub struct VerificationConfig {
     pub evaluator_system_prompt: String,
     pub evaluator_tau: TauValue,
     pub evaluator_max_tokens: u64,
-    /// When true, run both standard and adversarial verifiers and emit VerifierComparisonEvent.
+    /// When true, run both standard and adversarial verifiers and emit `VerifierComparisonEvent`.
     /// Does not affect pruning decisions. Off by default; enable only for measurement runs.
     #[serde(default)]
     pub record_adversarial_comparison: bool,

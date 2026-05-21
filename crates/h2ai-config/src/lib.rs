@@ -10,7 +10,7 @@ use thiserror::Error;
 ///
 /// When the oracle gate fails with a reason, pattern matching against templates
 /// generates follow-up questions for the user to clarify intent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClarificationTemplate {
     /// Regex pattern to match oracle failure reason.
     pub pattern: String,
@@ -45,19 +45,19 @@ pub struct OracleGateConfig {
     pub clarification_templates: Vec<ClarificationTemplate>,
 }
 
-fn default_oracle_gate_enabled() -> bool {
+const fn default_oracle_gate_enabled() -> bool {
     false
 }
 fn default_oracle_gate_subject() -> String {
     "h2ai.oracle.gate".to_string()
 }
-fn default_oracle_gate_timeout_secs() -> u64 {
+const fn default_oracle_gate_timeout_secs() -> u64 {
     30u64
 }
 fn default_oracle_gate_on_timeout() -> String {
     "pass".to_string()
 }
-fn default_oracle_gate_min_confidence() -> f64 {
+const fn default_oracle_gate_min_confidence() -> f64 {
     0.7f64
 }
 
@@ -78,8 +78,8 @@ impl Default for OracleGateConfig {
 ///
 /// All defaults are set in `reference.toml` under `[task_complexity]`.
 /// Shadow mode (default: `true`) lets you collect routing data before the
-/// GAP-A1 experiment validates the thresholds — ParetoRouter is unchanged until
-/// shadow_mode is set to `false`.
+/// GAP-A1 experiment validates the thresholds — `ParetoRouter` is unchanged until
+/// `shadow_mode` is set to `false`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskComplexityConfig {
     /// When `true` (default): Phase 1.5 emits `TaskComplexityAssessedEvent` but
@@ -90,22 +90,22 @@ pub struct TaskComplexityConfig {
     pub tcc_precision_threshold: f64,
     /// TCC above this threshold classifies the task as Coverage (cross-family).
     pub tcc_coverage_threshold: f64,
-    /// Soft-constraint weight coefficient in TCC_structural formula.
+    /// Soft-constraint weight coefficient in `TCC_structural` formula.
     pub k_soft: f64,
-    /// Type-diversity coefficient in TCC_structural formula.
+    /// Type-diversity coefficient in `TCC_structural` formula.
     pub k_type: f64,
-    /// Interaction-term (soft_fraction × type_diversity) coefficient in TCC_structural.
+    /// Interaction-term (`soft_fraction` × `type_diversity`) coefficient in `TCC_structural`.
     pub k_cross: f64,
     /// Heavy-fraction amplification: when `static_coverage < min_static_coverage_for_probe`,
-    /// TCC_effective = tcc_structural × (1 + k_heavy × heavy_fraction).
+    /// `TCC_effective` = `tcc_structural` × (1 + `k_heavy` × `heavy_fraction`).
     pub k_heavy: f64,
     /// Minimum static coverage fraction required to run the N-probe sampling.
     /// Corpora with `static_coverage < this` are treated as heavy-dominant (probe skipped).
     pub min_static_coverage_for_probe: f64,
-    /// Number of mini-probe calls used to estimate TCC_empirical (ambiguous band only).
+    /// Number of mini-probe calls used to estimate `TCC_empirical` (ambiguous band only).
     /// Probe is skipped on unambiguous Precision/Coverage paths and heavy-dominant corpora.
     pub n_probe: usize,
-    /// Pool N_eff threshold below which Coverage → Complex escalation occurs.
+    /// Pool `N_eff` threshold below which Coverage → Complex escalation occurs.
     pub n_eff_complex_threshold: f64,
     /// Max tokens per probe completion. Probe outputs are structure assessments, not
     /// full answers — 512 tokens is sufficient for static constraint evaluation.
@@ -114,18 +114,18 @@ pub struct TaskComplexityConfig {
     /// outputs needed to generate an informative satisfaction matrix.
     pub probe_tau: f64,
     /// Minimum number of informative static constraints (≥1 pass AND ≥1 fail across
-    /// probes) needed to compute TCC_empirical. Below this, eigendecomposition is
-    /// degenerate; fall back to TCC_structural with heavy amplification.
+    /// probes) needed to compute `TCC_empirical`. Below this, eigendecomposition is
+    /// degenerate; fall back to `TCC_structural` with heavy amplification.
     pub tcc_min_informative_constraints: usize,
-    /// Penalty added to TCC_effective when TCC_structural > TCC_empirical + 1.0.
+    /// Penalty added to `TCC_effective` when `TCC_structural` > `TCC_empirical` + 1.0.
     /// Signals that the corpus is more complex than static probes detected — typically
     /// because Heavy-tier constraints dominate actual complexity. Routes toward Coverage.
     pub tcc_mismatch_penalty: f64,
-    /// Probe n_eff threshold (as fraction of n_probe) for Coverage vs Complex routing.
-    /// Tasks with probe n_eff below `neff_probe_min_fraction × n_probe` escalate to Complex.
+    /// Probe `n_eff` threshold (as fraction of `n_probe`) for Coverage vs Complex routing.
+    /// Tasks with probe `n_eff` below `neff_probe_min_fraction × n_probe` escalate to Complex.
     pub neff_probe_min_fraction: f64,
-    /// Probe n_eff threshold (as fraction of n_probe) for Precision vs Degenerate routing.
-    /// Tasks with probe n_eff below `neff_probe_warning_fraction × n_probe` → Degenerate.
+    /// Probe `n_eff` threshold (as fraction of `n_probe`) for Precision vs Degenerate routing.
+    /// Tasks with probe `n_eff` below `neff_probe_warning_fraction × n_probe` → Degenerate.
     pub neff_probe_warning_fraction: f64,
 }
 
@@ -139,12 +139,12 @@ pub enum ProfileTier {
     Capable,
 }
 
-/// Named adapter configuration entry used for TaskProfile routing.
+/// Named adapter configuration entry used for `TaskProfile` routing.
 ///
 /// Operators populate `H2AIConfig::adapter_profiles` with these entries so that
 /// model backends are configured once and referenced by name throughout the
 /// application, avoiding scattered `AdapterKind` values at startup.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterProfile {
     /// Unique human-readable identifier for this profile (e.g. `"claude-sonnet"`).
     pub name: String,
@@ -153,9 +153,9 @@ pub struct AdapterProfile {
     /// Model capability tier for Bayesian priors and OPRO triggering.
     #[serde(default)]
     pub tier: ProfileTier,
-    /// Set to `true` for models with built-in chain-of-thought (o1, o3, o4-mini, DeepSeek R1).
+    /// Set to `true` for models with built-in chain-of-thought (o1, o3, o4-mini, `DeepSeek` R1).
     /// Bypasses the TAO retry loop — these models' internal reasoning is the retry mechanism;
-    /// injecting TAO memory over their own trace causes an α-spike that collapses USL N_max.
+    /// injecting TAO memory over their own trace causes an α-spike that collapses USL `N_max`.
     #[serde(default)]
     pub is_reasoning_model: bool,
 }
@@ -209,7 +209,7 @@ impl Default for ShadowAuditorConfig {
 
 /// Named safety tier. When `profile != Custom`, `apply_safety_profile()` overwrites
 /// all `SafetyConfig` fields from the profile definition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SafetyProfile {
     #[default]
@@ -220,19 +220,20 @@ pub enum SafetyProfile {
 }
 
 impl SafetyProfile {
-    pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            SafetyProfile::Development => "development",
-            SafetyProfile::Production => "production",
-            SafetyProfile::Strict => "strict",
-            SafetyProfile::Custom => "custom",
+            Self::Development => "development",
+            Self::Production => "production",
+            Self::Strict => "strict",
+            Self::Custom => "custom",
         }
     }
 }
 
 /// Three-way policy for multi-family adapter pool enforcement.
 /// Replaces `allow_single_family: bool`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FamilyConstraint {
     #[default]
@@ -275,7 +276,7 @@ pub struct SraniConfig {
     #[serde(default = "srani_default_enabled")]
     pub enabled: bool,
     /// When true (default), use sigmoid gate with EMA midpoint.
-    /// When false, use static warn_threshold / inject_threshold.
+    /// When false, use static `warn_threshold` / `inject_threshold`.
     #[serde(default = "srani_default_adaptive")]
     pub adaptive: bool,
     /// EMA smoothing factor for the adaptive midpoint. Range (0, 1].
@@ -289,11 +290,11 @@ pub struct SraniConfig {
     #[serde(default = "srani_default_gate_threshold")]
     pub gate_threshold: f64,
     /// CFI above this threshold emits `CorrelatedFabricationEvent` (adaptive=false only).
-    /// Also used for cold_start_midpoint() when adaptive=true. Default 0.3.
+    /// Also used for `cold_start_midpoint()` when adaptive=true. Default 0.3.
     #[serde(default = "srani_default_warn_threshold")]
     pub warn_threshold: f64,
     /// CFI above this threshold injects a grounding hint (adaptive=false only).
-    /// Also used for cold_start_midpoint() when adaptive=true. Default 0.6.
+    /// Also used for `cold_start_midpoint()` when adaptive=true. Default 0.6.
     #[serde(default = "srani_default_inject_threshold")]
     pub inject_threshold: f64,
     /// Maximum characters of raw web-search text fed into the distillation step.
@@ -310,34 +311,34 @@ pub struct SraniConfig {
     pub grounding_distill: bool,
 }
 
-fn srani_default_enabled() -> bool {
+const fn srani_default_enabled() -> bool {
     true
 }
-fn srani_default_adaptive() -> bool {
+const fn srani_default_adaptive() -> bool {
     true
 }
-fn srani_default_ema_alpha() -> f64 {
+const fn srani_default_ema_alpha() -> f64 {
     0.20
 }
-fn srani_default_temperature() -> f64 {
+const fn srani_default_temperature() -> f64 {
     0.15
 }
-fn srani_default_gate_threshold() -> f64 {
+const fn srani_default_gate_threshold() -> f64 {
     0.50
 }
-fn srani_default_warn_threshold() -> f64 {
+const fn srani_default_warn_threshold() -> f64 {
     0.3
 }
-fn srani_default_inject_threshold() -> f64 {
+const fn srani_default_inject_threshold() -> f64 {
     0.6
 }
-fn srani_default_grounding_raw_max_chars() -> usize {
+const fn srani_default_grounding_raw_max_chars() -> usize {
     4000
 }
-fn srani_default_grounding_hint_max_chars() -> usize {
+const fn srani_default_grounding_hint_max_chars() -> usize {
     1200
 }
-fn srani_default_grounding_distill() -> bool {
+const fn srani_default_grounding_distill() -> bool {
     true
 }
 
@@ -348,7 +349,7 @@ pub struct OproConfig {
     /// Enable OPRO variant selection and promotion. Default: false.
     #[serde(default = "default_opro_enabled")]
     pub enabled: bool,
-    /// Trigger OPRO when j_eff EMA falls below this threshold. Default: 0.6.
+    /// Trigger OPRO when `j_eff` EMA falls below this threshold. Default: 0.6.
     #[serde(default = "default_opro_trigger_j_eff_threshold")]
     pub trigger_j_eff_threshold: f64,
     /// Minimum tasks completed before OPRO can be triggered. Default: 10.
@@ -363,30 +364,30 @@ pub struct OproConfig {
     /// Performance margin a variant must beat current by to promote. Default: 0.05.
     #[serde(default = "default_opro_promotion_margin")]
     pub promotion_margin: f64,
-    /// EMA window size for j_eff smoothing. Default: 10.
+    /// EMA window size for `j_eff` smoothing. Default: 10.
     #[serde(default = "default_opro_ema_window")]
     pub ema_window: u32,
 }
 
-fn default_opro_enabled() -> bool {
+const fn default_opro_enabled() -> bool {
     false
 }
-fn default_opro_trigger_j_eff_threshold() -> f64 {
+const fn default_opro_trigger_j_eff_threshold() -> f64 {
     0.6f64
 }
-fn default_opro_min_tasks_before_trigger() -> u32 {
+const fn default_opro_min_tasks_before_trigger() -> u32 {
     10u32
 }
-fn default_opro_suppress_n_tasks() -> u32 {
+const fn default_opro_suppress_n_tasks() -> u32 {
     5u32
 }
-fn default_opro_graduation_tasks() -> u32 {
+const fn default_opro_graduation_tasks() -> u32 {
     20u32
 }
-fn default_opro_promotion_margin() -> f64 {
+const fn default_opro_promotion_margin() -> f64 {
     0.05f64
 }
-fn default_opro_ema_window() -> u32 {
+const fn default_opro_ema_window() -> u32 {
     10u32
 }
 
@@ -405,14 +406,14 @@ impl Default for OproConfig {
 }
 
 /// Configuration for calibration bootstrap parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalibrationBootstrapConfig {
     /// Number of synthetic observations for the bootstrap prior. Default: 5.
     #[serde(default = "default_bootstrap_prior_weight")]
     pub prior_weight: u32,
 }
 
-fn default_bootstrap_prior_weight() -> u32 {
+const fn default_bootstrap_prior_weight() -> u32 {
     5u32
 }
 
@@ -426,7 +427,7 @@ impl Default for CalibrationBootstrapConfig {
 
 /// Modifier injected into the system context for the epistemic probe phase.
 /// Invalid TOML values cause a serde deserialization error at startup.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemModifier {
     /// Injects: "Provide a maximally compressed architectural skeleton. Do not write
@@ -440,10 +441,10 @@ pub enum SystemModifier {
 }
 
 /// Whether the epistemic probe uses the production prompt or a synthetic task.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeTaskSource {
-    /// Use the production prompt, truncated to probe max_tokens budget.
+    /// Use the production prompt, truncated to probe `max_tokens` budget.
     #[default]
     Same,
     /// Compile from constraint YAML: criteria.pass + predicates → canonical task.
@@ -454,7 +455,7 @@ pub enum ProbeTaskSource {
 /// Configuration for the epistemic probe phase (Phase 2 of two-phase calibration).
 ///
 /// The probe runs `agents` LLM instances on a short task, embeds outputs via cosine kernel,
-/// computes N_eff, and derives β₀ = f(N_eff^adj, CG, k).
+/// computes `N_eff`, and derives β₀ = `f(N_eff^adj`, CG, k).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationProbeConfig {
     /// Number of agents in the epistemic probe. Minimum 3 for a valid β₀ solve.
@@ -465,8 +466,8 @@ pub struct CalibrationProbeConfig {
     pub system_modifier: SystemModifier,
     /// Whether to use the production prompt or a synthetic constraint-derived task.
     pub probe_task_source: ProbeTaskSource,
-    /// Exponent k in N_eff^adj = clamp(N_eff × CG^k, 1, N_cal).
-    /// k=2 is a quadratic trapdoor: CG=0.65 → N_eff^adj collapses to ~1.
+    /// Exponent k in `N_eff^adj` = `clamp(N_eff` × CG^k, 1, `N_cal`).
+    /// k=2 is a quadratic trapdoor: CG=0.65 → `N_eff^adj` collapses to ~1.
     pub neff_cg_exponent: f64,
 }
 
@@ -489,13 +490,13 @@ impl Default for CalibrationProbeConfig {
 /// On yield < `reset_threshold`: `alpha = min(alpha × reset_multiplier, seed_alpha)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationSlowStartConfig {
-    /// Initial alpha for new adapter registrations. Conservative — suppresses N_max cold-start.
+    /// Initial alpha for new adapter registrations. Conservative — suppresses `N_max` cold-start.
     pub seed_alpha: f64,
     /// Multiplicative decay per successful verification wave.
     pub decay_rate: f64,
-    /// Multiplier applied to alpha on AIMD reset (yield < reset_threshold).
+    /// Multiplier applied to alpha on AIMD reset (yield < `reset_threshold`).
     pub reset_multiplier: f64,
-    /// Yield floor (N_useful/N_max) below which AIMD reset fires.
+    /// Yield floor (`N_useful/N_max`) below which AIMD reset fires.
     pub reset_threshold: f64,
 }
 
@@ -530,13 +531,14 @@ impl Default for SraniConfig {
 impl SraniConfig {
     /// Returns the static midpoint used during cold start (count < 5) and when adaptive=false.
     /// Derived from existing thresholds — no new config required.
-    pub fn cold_start_midpoint(&self) -> f64 {
-        (self.warn_threshold + self.inject_threshold) / 2.0
+    #[must_use]
+    pub const fn cold_start_midpoint(&self) -> f64 {
+        f64::midpoint(self.warn_threshold, self.inject_threshold)
     }
 }
 
 /// Adapter profile name mappings for the three thinking loop model tiers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ThinkingModelTiers {
     /// Adapter profile name for Fast tier. Empty string = use first available explorer adapter.
     #[serde(default)]
@@ -555,7 +557,7 @@ pub struct ThinkingModelTiers {
 /// TTLs, and induction cycle scheduling parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReasoningMemoryConfig {
-    /// Enable reasoning checkpoint writes and TaskMetaState projection.
+    /// Enable reasoning checkpoint writes and `TaskMetaState` projection.
     /// When `false`, all checkpoint writes are skipped (no NATS calls).
     #[serde(default)]
     pub enabled: bool,
@@ -565,7 +567,7 @@ pub struct ReasoningMemoryConfig {
     /// Maximum seconds between induction cycles regardless of task count. Default: 86400 (24h).
     #[serde(default = "default_induction_max_interval_secs")]
     pub induction_max_interval_secs: u64,
-    /// Maximum TaskMetaState records loaded per induction run. Default: 50.
+    /// Maximum `TaskMetaState` records loaded per induction run. Default: 50.
     #[serde(default = "default_induction_max_tasks_per_run")]
     pub induction_max_tasks_per_run: usize,
     /// Jaccard tag-gate threshold for retrieval in Layer 3. Default: 0.2.
@@ -574,7 +576,7 @@ pub struct ReasoningMemoryConfig {
     /// Maximum archetype confidence boost from memory priors. Default: 0.15.
     #[serde(default = "default_max_archetype_boost")]
     pub max_archetype_boost: f64,
-    /// Maximum archetype confidence penalty from avoid_for_tags. Default: 0.20.
+    /// Maximum archetype confidence penalty from `avoid_for_tags`. Default: 0.20.
     #[serde(default = "default_max_archetype_penalty")]
     pub max_archetype_penalty: f64,
     /// When `true`, reasoning checkpoint write failures abort the task with a hard error
@@ -584,22 +586,22 @@ pub struct ReasoningMemoryConfig {
     pub strict_audit_checkpoint: bool,
 }
 
-fn default_induction_batch_size() -> usize {
+const fn default_induction_batch_size() -> usize {
     10
 }
-fn default_induction_max_interval_secs() -> u64 {
+const fn default_induction_max_interval_secs() -> u64 {
     86_400
 }
-fn default_induction_max_tasks_per_run() -> usize {
+const fn default_induction_max_tasks_per_run() -> usize {
     50
 }
-fn default_tag_gate_threshold() -> f64 {
+const fn default_tag_gate_threshold() -> f64 {
     0.2
 }
-fn default_max_archetype_boost() -> f64 {
+const fn default_max_archetype_boost() -> f64 {
     0.15
 }
-fn default_max_archetype_penalty() -> f64 {
+const fn default_max_archetype_penalty() -> f64 {
     0.20
 }
 
@@ -619,7 +621,7 @@ impl Default for ReasoningMemoryConfig {
 }
 
 /// Configuration for the conflict-rate β signal (GAP-D1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConflictBetaConfig {
     #[serde(default = "default_conflict_beta_enabled")]
     pub enabled: bool,
@@ -631,16 +633,16 @@ pub struct ConflictBetaConfig {
     pub min_samples_for_override: usize,
 }
 
-fn default_conflict_beta_enabled() -> bool {
+const fn default_conflict_beta_enabled() -> bool {
     true
 }
-fn default_conflict_beta_max_samples() -> usize {
+const fn default_conflict_beta_max_samples() -> usize {
     100
 }
-fn default_conflict_beta_halflife_secs() -> u64 {
+const fn default_conflict_beta_halflife_secs() -> u64 {
     604_800
 }
-fn default_conflict_beta_min_samples_for_override() -> usize {
+const fn default_conflict_beta_min_samples_for_override() -> usize {
     5
 }
 
@@ -658,30 +660,30 @@ impl Default for ConflictBetaConfig {
 /// Configuration for the multi-variant judge panel (GAP-A7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JudgePanelConfig {
-    /// Supermajority fraction required for a confident CrossFamily verdict. Default: 0.67.
+    /// Supermajority fraction required for a confident `CrossFamily` verdict. Default: 0.67.
     #[serde(default = "default_judge_panel_quorum_fraction")]
     pub quorum_fraction: f64,
     /// Compliance score multiplier applied to uncertain-constraint contributions. Default: 0.7.
     #[serde(default = "default_judge_panel_uncertainty_weight")]
     pub uncertainty_weight: f64,
-    /// Per-persona temperatures for PersonaOnly panels: [Literal, Contextual, Skeptical]. Default: [0.0, 0.2, 0.4].
+    /// Per-persona temperatures for `PersonaOnly` panels: [Literal, Contextual, Skeptical]. Default: [0.0, 0.2, 0.4].
     #[serde(default = "default_judge_panel_persona_temperatures")]
     pub persona_temperatures: [f32; 3],
-    /// Minimum uncertain-vote count on one constraint per wave before emitting ConstraintAmbiguityEvent. Default: 2.
+    /// Minimum uncertain-vote count on one constraint per wave before emitting `ConstraintAmbiguityEvent`. Default: 2.
     #[serde(default = "default_judge_panel_ambiguity_threshold")]
     pub ambiguity_threshold: usize,
 }
 
-fn default_judge_panel_quorum_fraction() -> f64 {
+const fn default_judge_panel_quorum_fraction() -> f64 {
     0.67
 }
-fn default_judge_panel_uncertainty_weight() -> f64 {
+const fn default_judge_panel_uncertainty_weight() -> f64 {
     0.7
 }
-fn default_judge_panel_persona_temperatures() -> [f32; 3] {
+const fn default_judge_panel_persona_temperatures() -> [f32; 3] {
     [0.0, 0.2, 0.4]
 }
-fn default_judge_panel_ambiguity_threshold() -> usize {
+const fn default_judge_panel_ambiguity_threshold() -> usize {
     2
 }
 
@@ -724,36 +726,36 @@ pub struct ThinkingLoopConfig {
     /// Timeout for inline oracle check per archetype. Default: 20 seconds.
     #[serde(default = "default_oracle_timeout_secs")]
     pub oracle_timeout_secs: u64,
-    /// j_eff boost when oracle passes. Default: 0.1
+    /// `j_eff` boost when oracle passes. Default: 0.1
     #[serde(default = "default_oracle_confidence_bonus")]
     pub oracle_confidence_bonus: f64,
 }
 
-fn default_oracle_timeout_secs() -> u64 {
+const fn default_oracle_timeout_secs() -> u64 {
     20u64
 }
-fn default_oracle_confidence_bonus() -> f64 {
+const fn default_oracle_confidence_bonus() -> f64 {
     0.1f64
 }
-fn default_thinking_max_iterations() -> u32 {
+const fn default_thinking_max_iterations() -> u32 {
     5
 }
-fn default_thinking_max_archetypes() -> usize {
+const fn default_thinking_max_archetypes() -> usize {
     4
 }
-fn default_thinking_coverage_threshold() -> f64 {
+const fn default_thinking_coverage_threshold() -> f64 {
     0.75
 }
-fn default_thinking_convergence_threshold() -> f64 {
+const fn default_thinking_convergence_threshold() -> f64 {
     0.90
 }
-fn default_tl_tau_max() -> f64 {
+const fn default_tl_tau_max() -> f64 {
     0.85
 }
-fn default_tl_tau_min() -> f64 {
+const fn default_tl_tau_min() -> f64 {
     0.20
 }
-fn default_expansion_quality_floor() -> f64 {
+const fn default_expansion_quality_floor() -> f64 {
     0.30
 }
 
@@ -780,14 +782,14 @@ impl Default for ThinkingLoopConfig {
 /// When enabled, `RetryWithHints` uses the best prior proposal as an anchor
 /// and injects targeted per-violated-constraint repair instructions instead of
 /// regenerating from scratch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CsprConfig {
     /// Enable CSPR-v2 patch repair. Default: false.
     pub enabled: bool,
 }
 
 /// Configuration for delta checkpoint encoding parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDeltaConfig {
     #[serde(default = "default_delta_enabled")]
     pub enabled: bool,
@@ -799,16 +801,16 @@ pub struct StateDeltaConfig {
     pub cache_max_entries: usize,
 }
 
-fn default_delta_enabled() -> bool {
+const fn default_delta_enabled() -> bool {
     true
 }
-fn default_base_interval() -> u32 {
+const fn default_base_interval() -> u32 {
     10
 }
-fn default_cache_ttl_secs() -> u64 {
+const fn default_cache_ttl_secs() -> u64 {
     60
 }
-fn default_cache_max_entries() -> usize {
+const fn default_cache_max_entries() -> usize {
     200
 }
 
@@ -824,7 +826,7 @@ impl Default for StateDeltaConfig {
 }
 
 /// Configuration for NATS bucket names, stream names, and delta checkpoint encoding.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateConfig {
     #[serde(default = "default_snapshots_bucket")]
     pub snapshots_bucket: String,
@@ -838,13 +840,13 @@ pub struct StateConfig {
     pub estimator_bucket: String,
     #[serde(default = "default_calibration_bucket")]
     pub calibration_bucket: String,
-    /// KV bucket for per-adapter-profile CalibrationRecord telemetry. Default: "H2AI_CALIBRATION_RECORDS".
+    /// KV bucket for per-adapter-profile `CalibrationRecord` telemetry. Default: "`H2AI_CALIBRATION_RECORDS`".
     #[serde(default = "default_calibration_records_bucket")]
     pub calibration_records_bucket: String,
-    /// KV bucket for per-adapter-profile AuditorHealth circuit-breaker state. Default: "H2AI_AUDITOR_HEALTH".
+    /// KV bucket for per-adapter-profile `AuditorHealth` circuit-breaker state. Default: "`H2AI_AUDITOR_HEALTH`".
     #[serde(default = "default_auditor_health_bucket")]
     pub auditor_health_bucket: String,
-    /// KV bucket for probe lease CAS tokens (HalfOpen circuit-breaker). Default: "H2AI_PROBE_LEASE".
+    /// KV bucket for probe lease CAS tokens (`HalfOpen` circuit-breaker). Default: "`H2AI_PROBE_LEASE`".
     #[serde(default = "default_probe_lease_bucket")]
     pub probe_lease_bucket: String,
     #[serde(default = "default_sessions_bucket")]
@@ -856,19 +858,19 @@ pub struct StateConfig {
     #[serde(default = "default_approvals_bucket")]
     pub approvals_bucket: String,
     /// NATS KV bucket name prefix for per-tenant reasoning checkpoints.
-    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_CHECKPOINT".
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "`H2AI_CHECKPOINT`".
     #[serde(default = "default_reasoning_checkpoint_bucket_prefix")]
     pub reasoning_checkpoint_bucket_prefix: String,
     /// NATS KV bucket name prefix for per-tenant task meta-state records.
-    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_META".
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "`H2AI_META`".
     #[serde(default = "default_task_meta_state_bucket_prefix")]
     pub task_meta_state_bucket_prefix: String,
     /// NATS KV bucket name prefix for per-tenant distilled memory store (Phase 2).
-    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_MEMORY".
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "`H2AI_MEMORY`".
     #[serde(default = "default_tenant_memory_bucket_prefix")]
     pub tenant_memory_bucket_prefix: String,
     /// NATS KV bucket name prefix for per-tenant conflict-rate accumulators (GAP-D1).
-    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "H2AI_CONFLICT".
+    /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "`H2AI_CONFLICT`".
     #[serde(default = "default_conflict_beta_bucket_prefix")]
     pub conflict_beta_bucket_prefix: String,
     // JetStream stream names
@@ -990,6 +992,7 @@ impl Default for StateConfig {
 /// All fields are populated by `load_layered()`, which merges the embedded
 /// `reference.toml` defaults, an optional operator override file, and
 /// `H2AI_<FIELD>` environment variables (highest priority wins).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct H2AIConfig {
     /// BFT consensus threshold — fraction of agents that must agree for a result to be accepted. Range [0, 1].
@@ -1033,7 +1036,7 @@ pub struct H2AIConfig {
     pub decomposition_json_max_tokens: u64,
     /// When `false`, passes `chat_template_kwargs: {"enable_thinking": false}` in every
     /// adapter request body. Disables the extended thinking chain on Qwen3-style models
-    /// served by llama.cpp, making multi-step pipelines practical. Cloud APIs (OpenAI,
+    /// served by llama.cpp, making multi-step pipelines practical. Cloud APIs (`OpenAI`,
     /// Anthropic) silently ignore unknown body fields, so this is safe globally.
     pub adapter_enable_thinking: bool,
     /// Temperature used for all calibration adapter probes. Range [0, 1].
@@ -1048,7 +1051,7 @@ pub struct H2AIConfig {
     pub max_autonomic_retries: u32,
     /// Enable Raft-style cross-wave epistemic leader election. Default: false.
     pub leader_enabled: bool,
-    /// Minimum q_confidence improvement per wave to avoid stagnation. Range [0,1].
+    /// Minimum `q_confidence` improvement per wave to avoid stagnation. Range [0,1].
     pub leader_stagnation_threshold: f64,
     /// Consecutive stagnant waves before leadership rotates to runner-up.
     pub leader_stagnation_waves: u32,
@@ -1079,7 +1082,7 @@ pub struct H2AIConfig {
     pub task_deadline_secs: Option<u64>,
     /// Maximum number of concurrent task executions; requests beyond this limit receive HTTP 503.
     pub max_concurrent_tasks: usize,
-    /// Named adapter profiles available for TaskProfile routing.
+    /// Named adapter profiles available for `TaskProfile` routing.
     pub adapter_profiles: Vec<AdapterProfile>,
     /// Context pressure sensitivity γ: scales how much a full context window raises β. `0` disables the effect; `0.5` doubles β at 100% context fill. Range [0, 1].
     pub context_pressure_gamma: f64,
@@ -1089,24 +1092,24 @@ pub struct H2AIConfig {
     pub calibration_adapter_count: usize,
     /// τ spread `[min, max]` for calibration instances; instances are spaced linearly across this range. The spread may expand up to `tau_spread_max_factor` when Talagrand detects over-confidence.
     pub calibration_tau_spread: [f64; 2],
-    /// CG collapse threshold: when CG_embed drops below this value the planner forces N_max = 1. Default `0.10` — below 10 % agent outputs are so divergent that coherence drag is unbounded.
+    /// CG collapse threshold: when `CG_embed` drops below this value the planner forces `N_max` = 1. Default `0.10` — below 10 % agent outputs are so divergent that coherence drag is unbounded.
     pub cg_collapse_threshold: f64,
     /// Cosine similarity threshold for counting two adapter outputs as "in agreement" when computing CG via embedding cosine (future; currently CG uses constraint-profile Hamming).
     pub cg_agreement_threshold: f64,
     /// Embedding model used for CG cosine agreement measurement; requires the `fastembed-embed` Cargo feature.
     pub embedding_model_name: EmbeddingModelName,
-    /// Minimum N_eff increment required to include the next adapter in `EigenCalibration::n_pruned`.
-    /// Adapter k is kept when adding it raises N_eff by ≥ this delta. Default 0.05.
+    /// Minimum `N_eff` increment required to include the next adapter in `EigenCalibration::n_pruned`.
+    /// Adapter k is kept when adding it raises `N_eff` by ≥ this delta. Default 0.05.
     /// Increase toward 0.1–0.2 for calibrations with few adapters (N ≤ 4).
     pub eigen_n_eff_delta: f64,
     /// Minimum number of TAO loop samples before `TaoMultiplierEstimator` state is persisted
     /// to NATS. The EMA estimate is unreliable below this count. Default 20.
     /// Raise to 50–100 for high-variance task distributions.
     pub tao_estimator_warmup: usize,
-    /// Initial N_max used to seed the Thompson Sampling bandit warm prior at first startup
-    /// before any calibration result is available. Clamped to [1, bandit_n_max_arms] by the bandit. Default 4.
+    /// Initial `N_max` used to seed the Thompson Sampling bandit warm prior at first startup
+    /// before any calibration result is available. Clamped to [1, `bandit_n_max_arms`] by the bandit. Default 4.
     pub bandit_n_max_initial: u32,
-    /// Tasks completed before activating the bandit (Phase 0 — pure exploration); during Phase 0 N = N_max_USL unconditionally.
+    /// Tasks completed before activating the bandit (Phase 0 — pure exploration); during Phase 0 N = `N_max_USL` unconditionally.
     pub bandit_phase0_k: u32,
     /// Tasks completed before switching from ε-greedy to pure Thompson Sampling (Phase 1).
     pub bandit_phase1_k: u32,
@@ -1114,18 +1117,18 @@ pub struct H2AIConfig {
     pub bandit_epsilon: f64,
     /// Soft-reset decay factor applied to the learned posterior when the adapter version hash changes. `0.3` blends 30 % toward the initial prior.
     pub bandit_soft_reset_decay: f64,
-    /// Maximum ensemble size explored by Condorcet/n_it_optimal search during calibration.
+    /// Maximum ensemble size explored by `Condorcet/n_it_optimal` search during calibration.
     /// Bounds `EnsembleCalibration::from_cg_mean` and `from_measured_p`. Default 9.
     /// Lower on resource-constrained nodes; raise for very large adapter pools.
     #[serde(default = "default_calibration_max_ensemble_size")]
     pub calibration_max_ensemble_size: usize,
     /// Maximum number of arms (N values) the Thompson Sampling bandit explores.
-    /// The bandit considers N ∈ [1, bandit_n_max_arms]. Default 6.
-    /// Must be ≤ calibration_max_ensemble_size for coherent physics.
+    /// The bandit considers N ∈ [1, `bandit_n_max_arms`]. Default 6.
+    /// Must be ≤ `calibration_max_ensemble_size` for coherent physics.
     #[serde(default = "default_bandit_n_max_arms")]
     pub bandit_n_max_arms: u32,
-    /// σ for the Gaussian warm prior centred on N_max_USL in the bandit.
-    /// σ=2 means arms within 2 of N_max get meaningful weight; σ²=4 appears in the exponent.
+    /// σ for the Gaussian warm prior centred on `N_max_USL` in the bandit.
+    /// σ=2 means arms within 2 of `N_max` get meaningful weight; σ²=4 appears in the exponent.
     /// Default 2.0. Decrease for tighter priors (faster convergence, less exploration).
     #[serde(default = "default_bandit_prior_sigma")]
     pub bandit_prior_sigma: f64,
@@ -1161,7 +1164,7 @@ pub struct H2AIConfig {
     pub scheduler_policy: SchedulerPolicy,
     /// Queue depth per cost tier at which `CostAwareSpillover` routes to the next tier.
     pub scheduler_spillover_threshold: usize,
-    /// Byte length above which system_context is offloaded to the payload store. Default 524288 (512 KB) — half of NATS 1 MB default limit.
+    /// Byte length above which `system_context` is offloaded to the payload store. Default 524288 (512 KB) — half of NATS 1 MB default limit.
     pub payload_offload_threshold_bytes: usize,
     /// Events published per task before a state snapshot is written to NATS KV. Reduces crash-recovery replay time. Default 50. 0 disables snapshotting.
     pub snapshot_interval_events: usize,
@@ -1172,11 +1175,11 @@ pub struct H2AIConfig {
     pub listen_addr: String,
     /// NATS server URL used by the API server, agent binary, and integration tests.
     pub nats_url: String,
-    /// Enable NATS agent dispatch mode. When true, explorer slots are dispatched to TaoAgent processes via NATS. Default: false.
+    /// Enable NATS agent dispatch mode. When true, explorer slots are dispatched to `TaoAgent` processes via NATS. Default: false.
     pub nats_dispatch_enabled: bool,
     /// TTL in seconds for NATS-dispatched agent task slots. Default: 30.
     pub nats_agent_ttl_secs: u64,
-    /// Model name reported in AgentDescriptor for NATS-dispatched agent tasks.
+    /// Model name reported in `AgentDescriptor` for NATS-dispatched agent tasks.
     pub nats_agent_model: String,
     /// Timeout in seconds for a single NATS-dispatched agent task. Default: 120.
     pub nats_agent_timeout_secs: u64,
@@ -1201,13 +1204,13 @@ pub struct H2AIConfig {
     pub shell_timeout_secs: u64,
     /// Maximum number of TAO loop tool-call iterations an edge agent may execute per task.
     /// After this limit the agent returns whatever output the LLM produced last. Default: 5.
-    /// Valid range: 1–255. A value of 0 is rejected by the TaoAgent and treated as 1.
+    /// Valid range: 1–255. A value of 0 is rejected by the `TaoAgent` and treated as 1.
     pub agent_max_tool_iterations: u8,
     /// Maximum UTF-8 byte length of a single tool observation appended to the agent
     /// context. Observations longer than this are truncated with a suffix noting the
     /// original and capped lengths. Default: 8192. Set to 0 to disable truncation.
     pub agent_max_observation_chars: usize,
-    /// Google Custom Search configuration. Absent = WebSearch executor disabled.
+    /// Google Custom Search configuration. Absent = `WebSearch` executor disabled.
     #[serde(default)]
     pub web_search: Option<WebSearchConfig>,
     /// MCP filesystem subprocess configuration. Absent = MCP executor disabled.
@@ -1243,7 +1246,7 @@ pub struct H2AIConfig {
     #[serde(default)]
     pub safety: SafetyConfig,
     /// CV threshold below which correlated hallucination detection fires (GAP-C1).
-    /// CV = std_dev(pairwise_jaccard_distances) / mean(pairwise_jaccard_distances).
+    /// CV = `std_dev(pairwise_jaccard_distances)` / `mean(pairwise_jaccard_distances)`.
     /// Low CV = proposals are semantically clustered → correlated assumption risk.
     /// Default 0.30. Set to 0.0 to disable C1 detection entirely.
     #[serde(default = "default_correlated_hallucination_cv_threshold")]
@@ -1251,11 +1254,11 @@ pub struct H2AIConfig {
     /// Minimum mean pairwise Jaccard distance required for C1 to fire.
     /// Guards against spurious C1 retries when proposals are already diverse by absolute measure
     /// (uniform-but-diverse ensemble: low CV but high mean distance). Default 0.50.
-    /// C1 fires only when BOTH cv < cv_threshold AND mean_jaccard < this floor.
+    /// C1 fires only when BOTH cv < `cv_threshold` AND `mean_jaccard` < this floor.
     #[serde(default = "default_correlated_hallucination_min_jaccard_floor")]
     pub correlated_hallucination_min_jaccard_floor: f64,
     /// Minimum fraction of constraint corpus domains that slot assignments must cover (GAP-C3).
-    /// coverage_score = |covered_domains ∩ corpus_domains| / |corpus_domains|.
+    /// `coverage_score` = |`covered_domains` ∩ `corpus_domains`| / |`corpus_domains`|.
     /// Fires `DiversityGuardDegradedEvent` when below this threshold. Default 0.40.
     #[serde(default = "default_domain_coverage_threshold")]
     pub domain_coverage_threshold: f64,
@@ -1305,74 +1308,85 @@ pub struct H2AIConfig {
     /// Judge panel configuration for Phase 3.5 multi-variant evaluation (GAP-A7).
     #[serde(default)]
     pub judge_panel: JudgePanelConfig,
-    /// Knowledge provider configuration. When absent, uses PassthroughProvider
-    /// (delegates to existing ConstraintResolver — zero behaviour change).
+    /// Knowledge provider configuration. When absent, uses `PassthroughProvider`
+    /// (delegates to existing `ConstraintResolver` — zero behaviour change).
     #[serde(default)]
     pub knowledge: Option<KnowledgeConfig>,
-    /// ms to wait at each WaveCompleted boundary for a WaveContinue signal. 0 = disabled.
+    /// ms to wait at each `WaveCompleted` boundary for a `WaveContinue` signal. 0 = disabled.
     #[serde(default)]
     pub signal_wave_window_ms: u64,
-    /// Minimum timeout_ms a caller may request via POST /signal.
+    /// Minimum `timeout_ms` a caller may request via POST /signal.
     #[serde(default = "default_signal_min_timeout_ms")]
     pub signal_min_timeout_ms: u64,
-    /// Maximum timeout_ms a caller may request via POST /signal.
+    /// Maximum `timeout_ms` a caller may request via POST /signal.
     #[serde(default = "default_signal_max_timeout_ms")]
     pub signal_max_timeout_ms: u64,
     /// Epistemic probe phase configuration (two-phase calibration, spec section 2-3).
-    /// Absent from config file → uses defaults (agents=3, max_tokens=512, k=2.0).
+    /// Absent from config file → uses defaults (agents=3, `max_tokens=512`, k=2.0).
     #[serde(default)]
     pub calibration_probe: CalibrationProbeConfig,
     /// AIMD slow start and congestion recovery configuration (spec section 4).
-    /// Absent from config file → uses defaults (seed_alpha=0.15, decay_rate=0.95).
+    /// Absent from config file → uses defaults (`seed_alpha=0.15`, `decay_rate=0.95`).
     #[serde(default)]
     pub calibration_slow_start: CalibrationSlowStartConfig,
+    /// Optional OSP configuration. When None, merger uses legacy strategy dispatch.
+    #[serde(default)]
+    pub osp: Option<h2ai_types::sizing::OspConfig>,
+    /// NATS KV bucket name for human oracle pending requests (per-tenant prefix).
+    /// Default: "`H2AI_ORACLE_HUMAN`".
+    #[serde(default = "default_oracle_human_bucket")]
+    pub oracle_human_bucket: String,
 }
 
-fn default_correlated_hallucination_cv_threshold() -> f64 {
+fn default_oracle_human_bucket() -> String {
+    "H2AI_ORACLE_HUMAN".to_string()
+}
+
+const fn default_correlated_hallucination_cv_threshold() -> f64 {
     0.30
 }
-fn default_correlated_hallucination_min_jaccard_floor() -> f64 {
+const fn default_correlated_hallucination_min_jaccard_floor() -> f64 {
     0.50
 }
-fn default_domain_coverage_threshold() -> f64 {
+const fn default_domain_coverage_threshold() -> f64 {
     0.40
 }
-fn default_calibration_max_ensemble_size() -> usize {
+const fn default_calibration_max_ensemble_size() -> usize {
     9
 }
-fn default_bandit_n_max_arms() -> u32 {
+const fn default_bandit_n_max_arms() -> u32 {
     6
 }
-fn default_bandit_prior_sigma() -> f64 {
+const fn default_bandit_prior_sigma() -> f64 {
     2.0
 }
-fn default_bandit_prior_strength() -> f64 {
+const fn default_bandit_prior_strength() -> f64 {
     5.0
 }
-fn default_precision_mode_max_slots() -> usize {
+const fn default_precision_mode_max_slots() -> usize {
     3
 }
-fn default_oracle_window_size() -> usize {
+const fn default_oracle_window_size() -> usize {
     200
 }
-fn default_oracle_ece_alert_threshold() -> f64 {
+const fn default_oracle_ece_alert_threshold() -> f64 {
     0.15
 }
-fn default_oracle_pass_rate_floor() -> f64 {
+const fn default_oracle_pass_rate_floor() -> f64 {
     0.30
 }
-fn default_verifier_consensus_passes() -> u8 {
+const fn default_verifier_consensus_passes() -> u8 {
     1
 }
-fn default_signal_min_timeout_ms() -> u64 {
+const fn default_signal_min_timeout_ms() -> u64 {
     60_000
 }
-fn default_signal_max_timeout_ms() -> u64 {
+const fn default_signal_max_timeout_ms() -> u64 {
     86_400_000
 }
 
-/// Configuration for the WebSearch executor (Google Custom Search API).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Configuration for the `WebSearch` executor (Google Custom Search API).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchConfig {
     /// Name of the environment variable holding the Google Custom Search API key.
     pub api_key_env: String,
@@ -1383,23 +1397,23 @@ pub struct WebSearchConfig {
     pub max_results: usize,
 }
 
-fn default_max_results() -> usize {
+const fn default_max_results() -> usize {
     3
 }
 
 /// Configuration for the MCP filesystem executor (stdio subprocess transport).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpFilesystemConfig {
     /// Binary to spawn for the MCP server (e.g. "npx").
     pub command: String,
-    /// Arguments passed to the binary (e.g. ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]).
+    /// Arguments passed to the binary (e.g. `["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]`).
     pub args: Vec<String>,
     /// Seconds before the subprocess is killed via the process group reaper.
     pub timeout_secs: u64,
 }
 
-/// Configuration for the WASM executor (QuickJS interpreter sandbox).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Configuration for the WASM executor (`QuickJS` interpreter sandbox).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WasmExecutorConfig {
     /// Path to the pre-compiled trusted interpreter WASM binary (e.g. "assets/quickjs.wasm").
     pub interpreter_wasm_path: String,
@@ -1415,24 +1429,24 @@ pub struct WasmExecutorConfig {
 pub struct HitlConfig {
     /// When `false`, the HITL gate is completely bypassed (development mode).
     pub enabled: bool,
-    /// q_confidence below this threshold routes the task to human review.
+    /// `q_confidence` below this threshold routes the task to human review.
     pub confidence_threshold: f64,
     /// Maximum milliseconds a task may wait for human approval before auto-rejection.
     pub timeout_ms: u64,
     /// Multiplier applied per consecutive non-response: effective = base × decay^n.
     /// Must be in (0.0, 1.0). Default: 0.5 (halve per miss).
     pub timeout_decay: f64,
-    /// Minimum effective timeout in ms regardless of decay. Default: 300_000 (5 min).
+    /// Minimum effective timeout in ms regardless of decay. Default: `300_000` (5 min).
     pub timeout_floor_ms: u64,
 }
 
-fn default_resolve_k() -> usize {
+const fn default_resolve_k() -> usize {
     50
 }
 
 /// Constraint resolution backend. Exactly one variant is active — the
 /// previously-possible `enabled=true + corpus_path` ambiguity cannot be expressed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ConstraintWikiConfig {
     /// No constraint resolution (default).
@@ -1444,104 +1458,6 @@ pub enum ConstraintWikiConfig {
         #[serde(default = "default_resolve_k")]
         resolve_k: usize,
     },
-}
-
-#[cfg(test)]
-mod synthesis_config_tests {
-    use super::*;
-
-    #[test]
-    fn synthesis_defaults_load_from_reference_toml() {
-        let cfg = H2AIConfig::default();
-        assert!(cfg.synthesis_enabled);
-        assert_eq!(cfg.synthesis_min_proposals, 2);
-        assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
-        assert_eq!(cfg.synthesis_critique_max_tokens, 32768);
-        assert_eq!(cfg.synthesis_max_tokens, 32768);
-    }
-
-    #[test]
-    fn subset_validation_does_not_panic_on_contradiction() {
-        let cfg = H2AIConfig {
-            shell_allowlist: vec!["git".into(), "ls".into()],
-            shell_hardened_allowlist: vec!["ls".into(), "rm".into()],
-            ..H2AIConfig::default()
-        };
-        cfg.validate_shell_allowlist_subset();
-    }
-
-    #[test]
-    fn subset_validation_skipped_when_normal_allowlist_empty() {
-        let cfg = H2AIConfig {
-            shell_allowlist: vec![],
-            shell_hardened_allowlist: vec!["rm".into()],
-            ..H2AIConfig::default()
-        };
-        cfg.validate_shell_allowlist_subset();
-    }
-}
-
-#[cfg(test)]
-mod agent_config_tests {
-    use super::*;
-
-    #[test]
-    fn agent_max_tool_iterations_default_is_five() {
-        let cfg = H2AIConfig::default();
-        assert_eq!(cfg.agent_max_tool_iterations, 5);
-    }
-}
-
-#[cfg(test)]
-mod a2a_adapter_tests {
-    use super::*;
-
-    #[test]
-    fn a2a_adapter_kind_deserializes_from_toml() {
-        use config::{Config, File, FileFormat};
-
-        let toml_str = r#"
-[adapter]
-A2a = { endpoint = "https://example.com", auth_scheme = "bearer", auth_token_env = "TOKEN_ENV", timeout_minutes = 10, poll_interval_ms = 2000, max_poll_interval_ms = 30000, agent_card_cache_ttl_s = 3600 }
-        "#;
-
-        #[derive(serde::Deserialize)]
-        struct Wrapper {
-            adapter: AdapterKind,
-        }
-
-        let cfg = Config::builder()
-            .add_source(File::from_str(toml_str, FileFormat::Toml))
-            .build()
-            .expect("config builder failed");
-
-        let w: Wrapper = cfg
-            .try_deserialize()
-            .expect("should parse A2a AdapterKind from TOML");
-        assert!(matches!(w.adapter, AdapterKind::A2a { .. }));
-
-        // Verify field values
-        if let AdapterKind::A2a {
-            endpoint,
-            auth_scheme,
-            auth_token_env,
-            timeout_minutes,
-            poll_interval_ms,
-            max_poll_interval_ms,
-            agent_card_cache_ttl_s,
-        } = w.adapter
-        {
-            assert_eq!(endpoint, "https://example.com");
-            assert_eq!(auth_scheme, "bearer");
-            assert_eq!(auth_token_env, "TOKEN_ENV");
-            assert_eq!(timeout_minutes, 10);
-            assert_eq!(poll_interval_ms, 2000);
-            assert_eq!(max_poll_interval_ms, 30000);
-            assert_eq!(agent_card_cache_ttl_s, 3600);
-        } else {
-            panic!("Expected A2a variant");
-        }
-    }
 }
 
 /// Agent scheduling policy.
@@ -1567,7 +1483,7 @@ pub enum EmbeddingModelName {
     #[default]
     AllMiniLmL6V2,
     /// BAAI/bge-small-en-v1.5 — 109 MB, ~5 ms/sentence CPU.
-    /// Better MTEB STS scores than AllMiniLmL6V2; recommended for production deployments.
+    /// Better MTEB STS scores than `AllMiniLmL6V2`; recommended for production deployments.
     BgeSmallEnV1_5,
 }
 
@@ -1578,8 +1494,8 @@ impl Default for H2AIConfig {
 }
 
 impl H2AIConfig {
-    /// Emits tracing::warn! for every command in shell_hardened_allowlist that is
-    /// absent from shell_allowlist (when shell_allowlist is non-empty).
+    /// Emits `tracing::warn`! for every command in `shell_hardened_allowlist` that is
+    /// absent from `shell_allowlist` (when `shell_allowlist` is non-empty).
     /// Does NOT abort — the process boots with the contradiction in place.
     pub fn validate_shell_allowlist_subset(&self) {
         if self.shell_allowlist.is_empty() {
@@ -1604,6 +1520,8 @@ impl H2AIConfig {
     /// 1. Embedded `reference.toml` — all defaults, always present
     /// 2. `override_path` file — operator-provided TOML with only changed fields
     /// 3. `H2AI_<FIELD>` env vars — highest priority, per-field overrides
+    ///
+    /// # Errors
     ///
     /// Returns `Err` if `override_path` is `Some` but the file does not exist or
     /// contains invalid TOML, or if a field has a wrong type.
@@ -1636,6 +1554,10 @@ impl H2AIConfig {
     ///
     /// Unlike `load_layered`, this does NOT merge with `reference.toml` — the JSON
     /// must contain all required fields. Partial JSON will fail deserialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigLoadError`] if the file cannot be read or if deserialization fails.
     pub fn load_from_file(path: &Path) -> Result<Self, ConfigLoadError> {
         let contents = std::fs::read_to_string(path)?;
         let cfg: Self = serde_json::from_str(&contents)?;
@@ -1648,6 +1570,7 @@ impl H2AIConfig {
 ///
 /// Logs at WARN when a primary safety/activation flag is in a degraded or disabled state;
 /// logs at INFO otherwise. Call this once after `load_layered()` completes.
+#[allow(clippy::too_many_lines)]
 pub fn log_startup_config_report(cfg: &H2AIConfig) {
     // [safety] block — WARN if development profile
     if cfg.safety.profile == SafetyProfile::Development {
@@ -1712,20 +1635,7 @@ pub fn log_startup_config_report(cfg: &H2AIConfig) {
     }
 
     // [srani] block — WARN if !enabled
-    if !cfg.srani.enabled {
-        tracing::warn!(
-            enabled = cfg.srani.enabled,
-            adaptive = cfg.srani.adaptive,
-            ema_alpha = cfg.srani.ema_alpha,
-            temperature = cfg.srani.temperature,
-            gate_threshold = cfg.srani.gate_threshold,
-            warn_threshold = cfg.srani.warn_threshold,
-            inject_threshold = cfg.srani.inject_threshold,
-            "[srani] enabled={} ({})",
-            cfg.srani.enabled,
-            "hint injection disabled"
-        );
-    } else {
+    if cfg.srani.enabled {
         tracing::info!(
             enabled = cfg.srani.enabled,
             adaptive = cfg.srani.adaptive,
@@ -1738,19 +1648,23 @@ pub fn log_startup_config_report(cfg: &H2AIConfig) {
             cfg.srani.enabled,
             "hint injection active"
         );
+    } else {
+        tracing::warn!(
+            enabled = cfg.srani.enabled,
+            adaptive = cfg.srani.adaptive,
+            ema_alpha = cfg.srani.ema_alpha,
+            temperature = cfg.srani.temperature,
+            gate_threshold = cfg.srani.gate_threshold,
+            warn_threshold = cfg.srani.warn_threshold,
+            inject_threshold = cfg.srani.inject_threshold,
+            "[srani] enabled={} ({})",
+            cfg.srani.enabled,
+            "hint injection disabled"
+        );
     }
 
     // [hitl] block — WARN if !enabled
-    if !cfg.hitl.enabled {
-        tracing::warn!(
-            enabled = cfg.hitl.enabled,
-            confidence_threshold = cfg.hitl.confidence_threshold,
-            timeout_ms = cfg.hitl.timeout_ms,
-            "[hitl] enabled={} ({})",
-            cfg.hitl.enabled,
-            "human approval gate bypassed"
-        );
-    } else {
+    if cfg.hitl.enabled {
         tracing::info!(
             enabled = cfg.hitl.enabled,
             confidence_threshold = cfg.hitl.confidence_threshold,
@@ -1759,13 +1673,23 @@ pub fn log_startup_config_report(cfg: &H2AIConfig) {
             cfg.hitl.enabled,
             "human approval gate active"
         );
+    } else {
+        tracing::warn!(
+            enabled = cfg.hitl.enabled,
+            confidence_threshold = cfg.hitl.confidence_threshold,
+            timeout_ms = cfg.hitl.timeout_ms,
+            "[hitl] enabled={} ({})",
+            cfg.hitl.enabled,
+            "human approval gate bypassed"
+        );
     }
 }
 
 /// Post-deserialization step called inside `load_layered()`.
+///
 /// For non-Custom profiles, overwrites all safety fields from the canonical profile.
 /// Only `shadow_auditor` tuning sub-fields are preserved from operator override.
-pub fn apply_safety_profile(cfg: &mut H2AIConfig) {
+pub const fn apply_safety_profile(cfg: &mut H2AIConfig) {
     match cfg.safety.profile {
         SafetyProfile::Development => {
             cfg.safety.krum_fault_tolerance = 0;
@@ -1792,38 +1716,5 @@ pub fn apply_safety_profile(cfg: &mut H2AIConfig) {
             cfg.safety.shadow_auditor.enabled = true;
         }
         SafetyProfile::Custom => {}
-    }
-}
-
-#[cfg(test)]
-mod leader_config_tests {
-    use super::*;
-    #[test]
-    fn leader_fields_present_in_default_config() {
-        let cfg = H2AIConfig::default();
-        assert!(!cfg.leader_enabled);
-        assert_eq!(cfg.leader_stagnation_waves, 1);
-        assert_eq!(cfg.leader_eig_candidates, 3);
-    }
-}
-
-#[cfg(test)]
-mod thinking_config_tests {
-    use super::*;
-
-    #[test]
-    fn thinking_loop_config_defaults_to_disabled() {
-        let cfg = ThinkingLoopConfig::default();
-        assert!(!cfg.enabled);
-        assert_eq!(cfg.max_iterations, 5);
-        assert_eq!(cfg.max_archetypes, 4);
-        assert!((cfg.coverage_threshold - 0.75).abs() < 1e-9);
-        assert!((cfg.convergence_threshold - 0.90).abs() < 1e-9);
-    }
-
-    #[test]
-    fn h2ai_config_default_has_thinking_loop_disabled() {
-        let cfg = H2AIConfig::default();
-        assert!(!cfg.thinking_loop.enabled);
     }
 }

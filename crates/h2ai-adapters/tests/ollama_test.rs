@@ -104,3 +104,75 @@ async fn ollama_adapter_kind_reflects_constructor_args() {
         other => panic!("unexpected kind: {other:?}"),
     }
 }
+
+/// tau < 0.35 branch — uses low-temperature sampling options (`top_k=20`, `min_p=0.05`)
+#[tokio::test]
+async fn ollama_adapter_tau_low_branch() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("low-tau response")))
+        .mount(&server)
+        .await;
+
+    let adapter = OllamaAdapter::new(server.uri(), "llama3.2".into());
+    let req = ComputeRequest {
+        system_context: "system".into(),
+        task: "task".into(),
+        tau: TauValue::new(0.2).unwrap(),
+        max_tokens: 100,
+    };
+    let resp = adapter.execute(req).await.unwrap();
+    assert_eq!(resp.output, "low-tau response");
+}
+
+/// tau > 0.65 branch — uses mirostat sampling options
+#[tokio::test]
+async fn ollama_adapter_tau_high_branch() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("high-tau response")))
+        .mount(&server)
+        .await;
+
+    let adapter = OllamaAdapter::new(server.uri(), "llama3.2".into());
+    let req = ComputeRequest {
+        system_context: "system".into(),
+        task: "task".into(),
+        tau: TauValue::new(0.8).unwrap(),
+        max_tokens: 100,
+    };
+    let resp = adapter.execute(req).await.unwrap();
+    assert_eq!(resp.output, "high-tau response");
+}
+
+/// Connection refused — exercises the `map_err(NetworkError)` on send failure (line 90)
+#[tokio::test]
+async fn ollama_adapter_network_error_on_connection_refused() {
+    // Port 1 is reserved and guaranteed to refuse connections
+    let adapter = OllamaAdapter::new("http://127.0.0.1:1".into(), "llama3.2".into());
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "expected NetworkError on connection refused, got: {result:?}"
+    );
+}
+
+/// Malformed JSON body — exercises the `json()` parse error path (line 104)
+#[tokio::test]
+async fn ollama_adapter_network_error_on_invalid_json_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("not valid json", "application/json"))
+        .mount(&server)
+        .await;
+
+    let adapter = OllamaAdapter::new(server.uri(), "llama3.2".into());
+    let result = adapter.execute(request()).await;
+    assert!(
+        matches!(result, Err(AdapterError::NetworkError(_))),
+        "expected NetworkError on malformed JSON, got: {result:?}"
+    );
+}

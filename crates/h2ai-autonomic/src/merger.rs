@@ -13,6 +13,33 @@ use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::MergeStrategy;
 use tokio::time::Instant;
 
+use crate::audit_channel::AuditChannelBuilder;
+use crate::retry_accumulator::RetryAccumulator;
+use h2ai_types::events::ConstraintViolation;
+use h2ai_types::sizing::OspConfig;
+
+/// OSP regime based on valid-proposal score spread.
+enum OspRegime {
+    /// `N_v` = 1: single survivor, no comparison needed.
+    SingleSurvivor,
+    /// `N_v` ≥ 2 and Δ ≥ `2·T_v`: top proposal reliably best (P(correct) ≥ 0.92).
+    ClearLeader,
+    /// `N_v` ≥ 2 and Δ < `2·T_v`: scores too close to trust ordering; use semantic median.
+    TightCluster,
+}
+
+fn classify_osp_regime(scores: &[f64], t_v: f64) -> OspRegime {
+    if scores.len() <= 1 {
+        return OspRegime::SingleSurvivor;
+    }
+    let delta = scores[0] - scores[1]; // scores sorted descending
+    if delta >= 2.0 * t_v {
+        OspRegime::ClearLeader
+    } else {
+        OspRegime::TightCluster
+    }
+}
+
 /// Result of a single `MergeEngine::resolve` call.
 ///
 /// `Resolved` carries both the selection audit event and the final merged output;
@@ -49,6 +76,7 @@ impl MergeEngine {
     ///    against adversarial outliers; weaker against correlated hallucination clusters).
     /// 4. `ConsensusMedian` fallback — used when quorum/coherence fails and no embedding
     ///    model is available, handling honest stochastic divergence without a cluster assumption.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn resolve(
         task_id: TaskId,
         proposals: ProposalSet,
@@ -56,6 +84,9 @@ impl MergeEngine {
         strategy: MergeStrategy,
         retry_count: u32,
         embedding_model: Option<&dyn EmbeddingModel>,
+        violations: Option<&[ConstraintViolation]>,
+        retry_accumulator: Option<&mut RetryAccumulator>,
+        osp_config: Option<&OspConfig>,
     ) -> MergeOutcome {
         let merge_start = Instant::now();
         let n_input = proposals.len() + pruned.len();
@@ -71,88 +102,106 @@ impl MergeEngine {
             });
         }
 
-        let resolved_output = match strategy {
-            MergeStrategy::ConsensusMedian => {
-                ConsensusMedian::resolve(&result.valid_proposals, embedding_model)
-                    .await
+        let resolved_output = if let Some(config) = osp_config {
+            let regime = classify_osp_regime(&result.valid_proposal_scores, config.t_v);
+            match regime {
+                OspRegime::SingleSurvivor | OspRegime::ClearLeader => result
+                    .valid_proposals
+                    .first()
                     .map(|p| p.raw_output.clone())
-                    .unwrap_or_default()
-            }
-            MergeStrategy::ScoreOrdered => result
-                .valid_proposals
-                .first()
-                .map(|p| p.raw_output.clone())
-                .unwrap_or_default(),
-            MergeStrategy::OutlierResistant { f } => {
-                let proposals = &result.valid_proposals;
-                if quorum_satisfied(proposals.len(), f)
-                    && cluster_coherent(proposals, embedding_model).await
-                {
-                    krum_select_semantic(proposals, f, embedding_model)
+                    .unwrap_or_default(),
+                OspRegime::TightCluster => {
+                    ConsensusMedian::resolve(&result.valid_proposals, embedding_model)
                         .await
                         .map(|p| p.raw_output.clone())
                         .unwrap_or_default()
-                } else {
-                    // Quorum not met OR cluster assumption violated (diverse stochastic outputs).
-                    // With an embedding model: Weiszfeld geometric median (breakdown 50%).
-                    // Without: ConsensusMedian handles honest divergence without requiring a cluster.
-                    match embedding_model {
-                        Some(model) => {
-                            let embeddings: Vec<Vec<f32>> = tokio::task::block_in_place(|| {
-                                proposals
-                                    .iter()
-                                    .map(|p| model.embed(&p.raw_output))
-                                    .collect()
-                            });
-                            let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
-                            proposals
-                                .get(idx)
-                                .map(|p| p.raw_output.clone())
-                                .unwrap_or_default()
-                        }
-                        None => ConsensusMedian::resolve(proposals, embedding_model)
-                            .await
-                            .map(|p| p.raw_output.clone())
-                            .unwrap_or_default(),
-                    }
                 }
             }
-            MergeStrategy::MultiOutlierResistant { f, m } => {
-                let proposals = &result.valid_proposals;
-                if quorum_satisfied(proposals.len(), f)
-                    && cluster_coherent(proposals, embedding_model).await
-                {
-                    let survivors =
-                        multi_krum_select_semantic(proposals, f, m, embedding_model).await;
-                    // valid_proposals is sorted by verification score descending.
-                    // Pick the survivor that appears earliest (= highest verification score).
-                    proposals
-                        .iter()
-                        .find(|p| survivors.iter().any(|s| s.explorer_id == p.explorer_id))
+        } else {
+            // Legacy path: existing strategy dispatch (backward compatible)
+            match strategy {
+                MergeStrategy::ConsensusMedian => {
+                    ConsensusMedian::resolve(&result.valid_proposals, embedding_model)
+                        .await
                         .map(|p| p.raw_output.clone())
                         .unwrap_or_default()
-                } else {
-                    // Quorum not met OR cluster assumption violated.
-                    // With an embedding model: Weiszfeld geometric median (breakdown 50%).
-                    // Without: ConsensusMedian handles honest stochastic divergence.
-                    match embedding_model {
-                        Some(model) => {
-                            let embeddings: Vec<Vec<f32>> = tokio::task::block_in_place(|| {
-                                proposals
-                                    .iter()
-                                    .map(|p| model.embed(&p.raw_output))
-                                    .collect()
-                            });
-                            let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
-                            proposals
-                                .get(idx)
-                                .map(|p| p.raw_output.clone())
-                                .unwrap_or_default()
-                        }
-                        None => ConsensusMedian::resolve(proposals, embedding_model)
+                }
+                MergeStrategy::ScoreOrdered => result
+                    .valid_proposals
+                    .first()
+                    .map(|p| p.raw_output.clone())
+                    .unwrap_or_default(),
+                MergeStrategy::OutlierResistant { f } => {
+                    let proposals = &result.valid_proposals;
+                    if quorum_satisfied(proposals.len(), f)
+                        && cluster_coherent(proposals, embedding_model).await
+                    {
+                        krum_select_semantic(proposals, f, embedding_model)
                             .await
                             .map(|p| p.raw_output.clone())
-                            .unwrap_or_default(),
+                            .unwrap_or_default()
+                    } else {
+                        // Quorum not met OR cluster assumption violated (diverse stochastic outputs).
+                        // With an embedding model: Weiszfeld geometric median (breakdown 50%).
+                        // Without: ConsensusMedian handles honest divergence without requiring a cluster.
+                        match embedding_model {
+                            Some(model) => {
+                                let embeddings: Vec<Vec<f32>> = tokio::task::block_in_place(|| {
+                                    proposals
+                                        .iter()
+                                        .map(|p| model.embed(&p.raw_output))
+                                        .collect()
+                                });
+                                let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
+                                proposals
+                                    .get(idx)
+                                    .map(|p| p.raw_output.clone())
+                                    .unwrap_or_default()
+                            }
+                            None => ConsensusMedian::resolve(proposals, embedding_model)
+                                .await
+                                .map(|p| p.raw_output.clone())
+                                .unwrap_or_default(),
+                        }
+                    }
+                }
+                MergeStrategy::MultiOutlierResistant { f, m } => {
+                    let proposals = &result.valid_proposals;
+                    if quorum_satisfied(proposals.len(), f)
+                        && cluster_coherent(proposals, embedding_model).await
+                    {
+                        let survivors =
+                            multi_krum_select_semantic(proposals, f, m, embedding_model).await;
+                        // valid_proposals is sorted by verification score descending.
+                        // Pick the survivor that appears earliest (= highest verification score).
+                        proposals
+                            .iter()
+                            .find(|p| survivors.iter().any(|s| s.explorer_id == p.explorer_id))
+                            .map(|p| p.raw_output.clone())
+                            .unwrap_or_default()
+                    } else {
+                        // Quorum not met OR cluster assumption violated.
+                        // With an embedding model: Weiszfeld geometric median (breakdown 50%).
+                        // Without: ConsensusMedian handles honest stochastic divergence.
+                        match embedding_model {
+                            Some(model) => {
+                                let embeddings: Vec<Vec<f32>> = tokio::task::block_in_place(|| {
+                                    proposals
+                                        .iter()
+                                        .map(|p| model.embed(&p.raw_output))
+                                        .collect()
+                                });
+                                let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
+                                proposals
+                                    .get(idx)
+                                    .map(|p| p.raw_output.clone())
+                                    .unwrap_or_default()
+                            }
+                            None => ConsensusMedian::resolve(proposals, embedding_model)
+                                .await
+                                .map(|p| p.raw_output.clone())
+                                .unwrap_or_default(),
+                        }
                     }
                 }
             }
@@ -178,12 +227,38 @@ impl MergeEngine {
             n_failed_proposals: result.failed_proposals.len(),
         };
 
+        let n_v = result.valid_proposals.len();
+        // n_f counts proposals that failed verification and contributed violations.
+        // result.failed_proposals covers semilattice (score=0) rejections; when violations
+        // are provided externally (from the verification step), use at least 1 so
+        // AuditChannelBuilder can compute concordance rates.
+        let n_f_semilattice = result.failed_proposals.len();
+        let n_f = violations.map_or(n_f_semilattice, |v| {
+            if v.is_empty() {
+                n_f_semilattice
+            } else {
+                n_f_semilattice.max(1)
+            }
+        });
+        let zone3 = osp_config.and_then(|config| {
+            violations.and_then(|viols| {
+                AuditChannelBuilder::build_zone3(viols, n_f, n_v, retry_count, config)
+            })
+        });
+
+        if let (Some(acc), Some(config)) = (retry_accumulator, osp_config) {
+            if let Some(viols) = violations {
+                acc.update(viols, n_f, config.accumulation_decay);
+            }
+        }
+
         let resolved = MergeResolvedEvent {
             task_id,
             resolved_output,
             j_eff: None,
             timestamp: Utc::now(),
             oracle_gate_passed: None,
+            zone3_hints: zone3,
         };
 
         MergeOutcome::Resolved {

@@ -1,3 +1,56 @@
+#![allow(
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::unused_async,
+    clippy::default_trait_access,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_wrap,
+    clippy::doc_markdown,
+    clippy::manual_let_else,
+    clippy::match_wildcard_for_single_variants,
+    clippy::similar_names,
+    clippy::match_same_arms,
+    clippy::literal_string_with_formatting_args,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::useless_format,
+    clippy::option_if_let_else,
+    clippy::map_unwrap_or,
+    clippy::cloned_instead_of_copied,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::cast_lossless,
+    clippy::uninlined_format_args,
+    clippy::needless_pass_by_value,
+    clippy::explicit_iter_loop,
+    clippy::needless_borrow,
+    clippy::large_futures,
+    clippy::manual_string_new,
+    clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
+    clippy::redundant_else,
+    clippy::stable_sort_primitive,
+    clippy::type_complexity,
+    clippy::wildcard_imports,
+    clippy::single_match_else,
+    clippy::missing_fields_in_debug,
+    clippy::doc_link_with_quotes,
+    clippy::implicit_hasher,
+    clippy::needless_collect,
+    clippy::suboptimal_flops,
+    clippy::missing_const_for_fn,
+    clippy::needless_type_cast,
+    clippy::unreadable_literal,
+    clippy::no_effect_underscore_binding
+)]
 use h2ai_types::approval::{ApprovalDecision, ApprovalRecord};
 use h2ai_types::events::{ApprovalRiskLevel, ApprovalTrigger};
 use h2ai_types::identity::TenantId;
@@ -8,42 +61,23 @@ use h2ai_types::identity::TenantId;
 /// Pre-inserted into the task store as an active (Bootstrap phase) task.
 const SIGNAL_TEST_TASK_ID: &str = "00000000-0000-0000-0000-000000000001";
 
-/// Build a minimal Axum test app wired to local NATS.
+/// Build a minimal Axum test app without a live NATS server.
 ///
-/// Requires a running NATS server (default: nats://127.0.0.1:4222).
-/// The task `SIGNAL_TEST_TASK_ID` is pre-seeded into the store as active.
-#[cfg(test)]
+/// Uses `AppState::new_for_tests()` with an in-memory backend so no NATS connection
+/// is required. The task `SIGNAL_TEST_TASK_ID` is pre-seeded into the store as active.
 async fn build_test_app() -> axum::Router {
     use h2ai_adapters::mock::MockAdapter;
     use h2ai_api::{routes::task_router, state::AppState};
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::task_store::TaskState;
-    use h2ai_state::nats::NatsClient;
     use h2ai_types::identity::TaskId;
     use std::sync::Arc;
-
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
-    // Use a unique stream name and subject prefix per test invocation so concurrent
-    // test processes don't race on get_or_create_stream with the live server's H2AI_SIGNALS.
-    let test_id = &uuid::Uuid::new_v4().to_string()[..8];
-    let test_state_cfg = h2ai_config::StateConfig {
-        signals_stream: format!("H2AI_SIGNALS_TEST_{test_id}"),
-        signals_subject_prefix: format!("h2ai.test.signals.{test_id}"),
-        ..Default::default()
-    };
-    let nats = NatsClient::connect_with_cfg(&nats_url, test_state_cfg)
-        .await
-        .expect("NATS connect");
-    nats.provision_signals_stream()
-        .await
-        .expect("provision signals stream");
 
     let cfg = H2AIConfig::load_layered(None).expect("load config");
     let adapter = Arc::new(MockAdapter::new(
         r#"{"approved":true,"score":0.9,"reason":"mock"}"#.into(),
     ));
-    let state = AppState::new(
-        nats,
+    let state = AppState::new_for_tests(
         cfg,
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
         adapter,

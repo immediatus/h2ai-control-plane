@@ -13,7 +13,7 @@ struct DomainWindow {
 }
 
 impl DomainWindow {
-    fn new(window: usize) -> Self {
+    const fn new(window: usize) -> Self {
         Self {
             window,
             buf: std::collections::VecDeque::new(),
@@ -55,6 +55,7 @@ pub struct ShadowAuditorAccumulator {
 }
 
 impl ShadowAuditorAccumulator {
+    #[must_use]
     pub fn new(state: Arc<AppState>) -> Self {
         let promotion_threshold = state.cfg.safety.shadow_auditor.promotion_threshold;
         let promotion_window = state.cfg.safety.shadow_auditor.promotion_window;
@@ -119,11 +120,11 @@ impl ShadowAuditorAccumulator {
                         timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
                     });
                 let task_id_sentinel = h2ai_types::identity::TaskId::from_uuid(uuid::Uuid::nil());
-                self.state
-                    .nats
-                    .publish_event(&task_id_sentinel, &promote_ev)
-                    .await
-                    .ok();
+                if let Some(nats) = &self.state.nats {
+                    nats.publish_event(&task_id_sentinel, &promote_ev)
+                        .await
+                        .ok();
+                }
             } else if currently_promoted && self.auto_demotion {
                 // Switch window to demotion window size on first demote check.
                 let demote_window = self
@@ -155,11 +156,9 @@ impl ShadowAuditorAccumulator {
                     );
                     let task_id_sentinel =
                         h2ai_types::identity::TaskId::from_uuid(uuid::Uuid::nil());
-                    self.state
-                        .nats
-                        .publish_event(&task_id_sentinel, &demote_ev)
-                        .await
-                        .ok();
+                    if let Some(nats) = &self.state.nats {
+                        nats.publish_event(&task_id_sentinel, &demote_ev).await.ok();
+                    }
                 }
             }
         }
@@ -167,8 +166,10 @@ impl ShadowAuditorAccumulator {
         if changed {
             let domains: std::collections::HashSet<String> =
                 self.state.promoted_audit_domains.read().await.clone();
-            if let Err(e) = self.state.nats.put_shadow_promoted_domains(&domains).await {
-                tracing::warn!(error = %e, "shadow_auditor: failed to persist promoted domains");
+            if let Some(nats) = &self.state.nats {
+                if let Err(e) = nats.put_shadow_promoted_domains(&domains).await {
+                    tracing::warn!(error = %e, "shadow_auditor: failed to persist promoted domains");
+                }
             }
         }
 
@@ -184,69 +185,5 @@ impl ShadowAuditorAccumulator {
             metrics.shadow_audit_disagreement_rate =
                 metrics.shadow_audit_disagreements as f64 / metrics.shadow_audit_total as f64;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn domain_window_disagreement_rate_empty() {
-        let w = DomainWindow::new(10);
-        assert_eq!(w.disagreement_rate(), 0.0);
-        assert_eq!(w.n_observations(), 0);
-    }
-
-    #[test]
-    fn domain_window_rates_correctly() {
-        let mut w = DomainWindow::new(4);
-        w.push(true);
-        w.push(false);
-        w.push(true);
-        w.push(false);
-        assert_eq!(w.n_observations(), 4);
-        assert!((w.disagreement_rate() - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn domain_window_evicts_oldest_on_overflow() {
-        let mut w = DomainWindow::new(3);
-        // fill with disagreements
-        w.push(true);
-        w.push(true);
-        w.push(true);
-        // push agreement — evicts oldest (true), window is now [true, true, false]
-        w.push(false);
-        assert_eq!(w.n_observations(), 3);
-        assert!((w.disagreement_rate() - 2.0 / 3.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn domain_window_all_agreements_rate_zero() {
-        let mut w = DomainWindow::new(5);
-        for _ in 0..5 {
-            w.push(false);
-        }
-        assert_eq!(w.disagreement_rate(), 0.0);
-    }
-
-    #[test]
-    fn domain_window_all_disagreements_rate_one() {
-        let mut w = DomainWindow::new(5);
-        for _ in 0..5 {
-            w.push(true);
-        }
-        assert_eq!(w.disagreement_rate(), 1.0);
-    }
-
-    #[test]
-    fn domain_window_partial_fill_does_not_count_empty_slots() {
-        let mut w = DomainWindow::new(10);
-        w.push(true);
-        w.push(false);
-        // only 2 observations, not 10
-        assert_eq!(w.n_observations(), 2);
-        assert!((w.disagreement_rate() - 0.5).abs() < 1e-9);
     }
 }

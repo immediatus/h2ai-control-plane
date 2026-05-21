@@ -19,13 +19,17 @@ pub enum ConstraintError {
     Validation(String),
 }
 
-/// Storage-agnostic source of SemanticSpec objects.
-/// Implementations: YamlDirSource (filesystem) and InMemorySource (tests/code).
+/// Storage-agnostic source of `SemanticSpec` objects.
+/// Implementations: `YamlDirSource` (filesystem) and `InMemorySource` (tests/code).
 pub trait ConstraintSource: Send + Sync {
+    /// Load all constraint specs from this source.
+    ///
+    /// # Errors
+    /// Returns `ConstraintError` if loading or parsing any spec fails.
     fn load_all(&self) -> Result<Vec<SemanticSpec>, ConstraintError>;
 }
 
-/// In-memory source — holds SemanticSpec directly. Use in tests and programmatic construction.
+/// In-memory source — holds `SemanticSpec` directly. Use in tests and programmatic construction.
 pub struct InMemorySource {
     pub specs: Vec<SemanticSpec>,
 }
@@ -36,9 +40,9 @@ impl ConstraintSource for InMemorySource {
     }
 }
 
-/// In-memory ConstraintIndex + ConstraintStore built from any ConstraintSource.
+/// In-memory `ConstraintIndex` + `ConstraintStore` built from any `ConstraintSource`.
 ///
-/// "Runtime" prefix reflects that these types hold compiled ConstraintDoc in memory
+/// "Runtime" prefix reflects that these types hold compiled `ConstraintDoc` in memory
 /// regardless of how the source loaded them. The "Fs" prefix was an artifact of the
 /// original filesystem-only load path.
 pub struct RuntimeConstraintIndex {
@@ -48,6 +52,7 @@ pub struct RuntimeConstraintIndex {
 }
 
 impl RuntimeConstraintIndex {
+    #[must_use]
     pub fn from_docs(docs: &[ConstraintDoc]) -> Self {
         let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_ids = HashSet::new();
@@ -104,20 +109,30 @@ pub struct RuntimeConstraintStore {
 }
 
 impl RuntimeConstraintStore {
+    #[must_use]
     pub fn from_docs(docs: Vec<ConstraintDoc>) -> Self {
         Self {
             docs: docs.into_iter().map(|d| (d.id.clone(), d)).collect(),
         }
     }
 
-    /// Load from any ConstraintSource — filesystem, in-memory, or future NATS KV.
-    pub fn from_source(source: &dyn ConstraintSource) -> Result<Self, ConstraintError> {
+    /// Load from any `ConstraintSource` — filesystem, in-memory, or future NATS KV.
+    ///
+    /// # Errors
+    /// Returns `ConstraintError` if the source fails to load any spec.
+    pub fn from_source(source: &impl ConstraintSource) -> Result<Self, ConstraintError> {
         let specs = source.load_all()?;
-        let docs: Vec<ConstraintDoc> = specs.into_iter().map(|s| s.into_constraint_doc()).collect();
+        let docs: Vec<ConstraintDoc> = specs
+            .into_iter()
+            .map(super::spec::SemanticSpec::into_constraint_doc)
+            .collect();
         Ok(Self::from_docs(docs))
     }
 
-    /// Load a corpus directory — convenience wrapper over load_corpus().
+    /// Load a corpus directory — convenience wrapper over `load_corpus()`.
+    ///
+    /// # Errors
+    /// Returns `std::io::Error` if the directory cannot be read or any YAML file fails to parse.
     pub fn load(
         dir: impl AsRef<std::path::Path>,
     ) -> Result<(RuntimeConstraintIndex, Self), std::io::Error> {
@@ -128,10 +143,12 @@ impl RuntimeConstraintStore {
         Ok((index, store))
     }
 
+    #[must_use]
     pub fn all_docs(&self) -> Vec<&ConstraintDoc> {
         self.docs.values().collect()
     }
 
+    #[must_use]
     pub fn all_docs_sorted(&self) -> Vec<ConstraintDoc> {
         let mut v: Vec<ConstraintDoc> = self.docs.values().cloned().collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
@@ -149,7 +166,8 @@ impl ConstraintStore for RuntimeConstraintStore {
     }
 }
 
-/// Build a ConstraintMeta vec from a store (used by decomposition agent).
+/// Build a `ConstraintMeta` vec from a store (used by decomposition agent).
+#[must_use]
 pub fn metas_from_store(store: &RuntimeConstraintStore) -> Vec<ConstraintMeta> {
     store
         .all_docs_sorted()

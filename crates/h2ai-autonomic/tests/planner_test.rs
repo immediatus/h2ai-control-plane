@@ -1,3 +1,4 @@
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 use h2ai_autonomic::planner::{ProvisionInput, TopologyPlanner};
 use h2ai_config::H2AIConfig;
 use h2ai_types::config::{
@@ -477,5 +478,65 @@ fn planner_complex_quadrant_force_topology_overrides_ensemble() {
         event.topology_kind,
         TopologyKind::TeamSwarmHybrid,
         "force_topology must override Complex quadrant Ensemble forcing"
+    );
+}
+
+// ── select_topology edge cases (tested via provision) ────────────────────────
+
+#[test]
+fn select_topology_diversity_heavy_gives_team_swarm() {
+    // weights(throughput=0.1, containment=0.1, diversity=0.8) → TeamSwarmHybrid
+    let cc = cc();
+    let weights = ParetoWeights::new(0.1, 0.1, 0.8).unwrap();
+    let cfg = H2AIConfig::default();
+    let (event, _) = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &weights,
+        role_specs: &two_roles(),
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: None,
+        task_quadrant: None,
+    });
+    assert!(
+        matches!(event.topology_kind, TopologyKind::TeamSwarmHybrid),
+        "diversity-heavy weights → TeamSwarmHybrid, got {:?}",
+        event.topology_kind
+    );
+}
+
+#[test]
+fn planner_no_max_context_tokens_uses_n_max() {
+    // Line 104: max_context_tokens = None → fallback to cc.n_max()
+    let cc = cc();
+    let weights = ParetoWeights::new(0.34, 0.33, 0.33).unwrap();
+    let cfg = H2AIConfig {
+        max_context_tokens: None,
+        ..H2AIConfig::default()
+    };
+    let (event, _) = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &weights,
+        role_specs: &two_roles(),
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: None,
+        task_quadrant: None,
+    });
+    let expected_n_max = cc.n_max();
+    assert!(
+        event.n_max <= expected_n_max + 0.5,
+        "no context limit → n_max should use cc.n_max()={expected_n_max}, got {}",
+        event.n_max
     );
 }

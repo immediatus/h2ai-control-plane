@@ -8,11 +8,11 @@ use serde_json::json;
 
 /// `GET /tenants/{tenant_id}/tasks/{task_id}/recover`
 ///
-/// Replays the JetStream event log for `task_id` and upserts the reconstructed
+/// Replays the `JetStream` event log for `task_id` and upserts the reconstructed
 /// `TaskState` into the live `TaskStore`. After this call `GET /tasks/{id}/status`
 /// returns accurate state even if the server restarted mid-execution.
 ///
-/// Returns 404 if no events exist for the task in JetStream.
+/// Returns 404 if no events exist for the task in `JetStream`.
 pub async fn recover_task(
     Path((tenant_id, task_id)): Path<(String, String)>,
     State(state): State<AppState>,

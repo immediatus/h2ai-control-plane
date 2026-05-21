@@ -18,7 +18,8 @@ pub struct MockMcpBackend {
 }
 
 impl MockMcpBackend {
-    pub fn new(files: HashMap<String, String>) -> Self {
+    #[must_use]
+    pub const fn new(files: HashMap<String, String>) -> Self {
         Self { files }
     }
 }
@@ -117,7 +118,10 @@ impl McpBackend for StdioMcpBackend {
         // Kill process group on Unix regardless of outcome (same pattern as ShellExecutor).
         #[cfg(unix)]
         if let Some(pid) = child_pid {
-            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            #[allow(clippy::cast_possible_wrap)]
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL)
+            };
         }
         #[cfg(not(unix))]
         tracing::warn!("MCP process group kill not supported on this platform; child may linger");
@@ -134,6 +138,7 @@ pub struct McpExecutor {
 }
 
 impl McpExecutor {
+    #[must_use]
     pub fn new(backend: Box<dyn McpBackend>) -> Self {
         Self { backend }
     }

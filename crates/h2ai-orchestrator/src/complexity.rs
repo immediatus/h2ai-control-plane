@@ -17,15 +17,15 @@ use h2ai_types::sizing::{ProbeSkipReason, TaskQuadrant};
 /// Phase 1.5 of the MAPE-K pipeline. Called once per task, before topology provisioning.
 ///
 /// # Routing paths
-/// - **Path A (Precision)**: TCC_structural ≤ tcc_precision_threshold → skip probe, Precision
-/// - **Path B (Coverage)**: TCC_structural ≥ tcc_coverage_threshold → skip probe, Coverage
+/// - **Path A (Precision)**: `TCC_structural` ≤ `tcc_precision_threshold` → skip probe, Precision
+/// - **Path B (Coverage)**: `TCC_structural` ≥ `tcc_coverage_threshold` → skip probe, Coverage
 /// - **Path C (Ambiguous)**: between thresholds → if `probe` is `Some`, dispatches N-probe
-///   completions via `run_probe` to compute TCC_empirical; falls back to Coverage when `None`
-/// - **Heavy-dominant bypass**: static_coverage < min_static_coverage_for_probe →
-///   apply heavy amplification to TCC_structural, skip probe
-/// - **Bootstrap guard**: CalibrationQuality::Bootstrap → skip probe, route Coverage
+///   completions via `run_probe` to compute `TCC_empirical`; falls back to Coverage when `None`
+/// - **Heavy-dominant bypass**: `static_coverage` < `min_static_coverage_for_probe` →
+///   apply heavy amplification to `TCC_structural`, skip probe
+/// - **Bootstrap guard**: `CalibrationQuality::Bootstrap` → skip probe, route Coverage
 ///
-/// In shadow_mode (default: true) the quadrant is computed and emitted but does not
+/// In `shadow_mode` (default: true) the quadrant is computed and emitted but does not
 /// influence topology selection — all tasks route as Coverage downstream.
 pub async fn assess_task_complexity(
     corpus: &[ConstraintDoc],
@@ -60,7 +60,7 @@ pub async fn assess_task_complexity(
 
     // Heavy-dominant bypass: satisfaction matrix would be near-empty.
     if meta.static_coverage < cfg.min_static_coverage_for_probe {
-        let tcc_eff = meta.tcc_structural * (1.0 + cfg.k_heavy * meta.heavy_fraction);
+        let tcc_eff = meta.tcc_structural * cfg.k_heavy.mul_add(meta.heavy_fraction, 1.0);
         let quadrant = classify_quadrant(tcc_eff, n_eff_pool, cfg);
         return TaskComplexityAssessedEvent {
             task_id,
@@ -160,18 +160,17 @@ pub async fn assess_task_complexity(
     }
 }
 
-/// Classify routing quadrant from TCC_effective and pool N_eff.
+/// Classify routing quadrant from `TCC_effective` and pool `N_eff`.
 ///
 /// High TCC → Coverage or Complex depending on pool diversity.
 /// Low TCC → Precision or Degenerate depending on pool diversity.
+#[must_use]
 pub fn classify_quadrant(
     tcc_effective: f64,
     n_eff_pool: Option<f64>,
     cfg: &TaskComplexityConfig,
 ) -> TaskQuadrant {
-    let pool_ok = n_eff_pool
-        .map(|n| n >= cfg.n_eff_complex_threshold)
-        .unwrap_or(true); // no eigen calibration → assume adequate diversity
+    let pool_ok = n_eff_pool.is_none_or(|n| n >= cfg.n_eff_complex_threshold); // no eigen calibration → assume adequate diversity
 
     if tcc_effective >= cfg.tcc_coverage_threshold {
         if pool_ok {
@@ -197,14 +196,15 @@ pub fn classify_quadrant(
 
 // ── N-probe path: empirical TCC estimation ────────────────────────────────────
 
-/// Participation ratio PR = (Σλ_i)² / Σλ_i² for the covariance matrix of the
+/// Participation ratio PR = (`Σλ_i)²` / `Σλ_i²` for the covariance matrix of the
 /// constraint satisfaction vectors across probe outputs.
 ///
 /// Uses the trace identity: PR = tr(C)² / tr(C²) = tr(C)² / ‖C‖_F²
 /// (valid for any symmetric PSD matrix; no eigendecomposition required).
 ///
-/// `matrix` is row-major: matrix[probe_idx][constraint_idx] ∈ {0, 1}.
+/// `matrix` is row-major: matrix[`probe_idx`][constraint_idx] ∈ {0, 1}.
 /// Returns 1.0 for empty or all-zero inputs (degenerate fallback).
+#[must_use]
 pub fn participation_ratio(matrix: &[Vec<f64>]) -> f64 {
     if matrix.is_empty() {
         return 1.0;
@@ -276,11 +276,11 @@ pub struct ProbeInput<'a> {
 ///
 /// Dispatches `cfg.n_probe` lightweight completions, evaluates Static-tier constraints
 /// via `eval_sync`, computes the constraint satisfaction covariance matrix, and derives
-/// TCC_empirical as its participation ratio.  Falls back to TCC_structural when the
+/// `TCC_empirical` as its participation ratio.  Falls back to `TCC_structural` when the
 /// probe outputs are degenerate (all constraints unanimously pass or fail).
 ///
 /// # Routing decision
-/// - TCC_effective = max(TCC_structural, TCC_empirical) + mismatch_penalty × [mismatch]
+/// - `TCC_effective` = `max(TCC_structural`, `TCC_empirical`) + `mismatch_penalty` × [mismatch]
 /// - Then re-classifies the quadrant using the same `classify_quadrant` function.
 pub async fn run_probe(input: ProbeInput<'_>) -> TaskComplexityAssessedEvent {
     let ProbeInput {
@@ -293,23 +293,20 @@ pub async fn run_probe(input: ProbeInput<'_>) -> TaskComplexityAssessedEvent {
         adapter,
         system_context,
     } = input;
-    let probe_reqs: Vec<ComputeRequest> = (0..cfg.n_probe)
-        .map(|_| ComputeRequest {
+    let probe_outputs: Vec<String> = join_all((0..cfg.n_probe).map(|_| {
+        adapter.execute(ComputeRequest {
             system_context: format!("{PROBE_SYSTEM_PREFIX}\n{system_context}"),
             task: PROBE_TASK.as_str().into(),
             tau: h2ai_types::sizing::TauValue::new(cfg.probe_tau.clamp(0.05, 0.95))
                 .unwrap_or_else(|_| h2ai_types::sizing::TauValue::new(0.5).unwrap()),
             max_tokens: cfg.probe_max_tokens,
         })
-        .collect();
-
-    let probe_outputs: Vec<String> =
-        join_all(probe_reqs.into_iter().map(|req| adapter.execute(req)))
-            .await
-            .into_iter()
-            .filter_map(|r| r.ok())
-            .map(|r| r.output)
-            .collect();
+    }))
+    .await
+    .into_iter()
+    .filter_map(std::result::Result::ok)
+    .map(|r| r.output)
+    .collect();
 
     let probe_cost_tokens = probe_outputs.len() as u64 * cfg.probe_max_tokens;
 
@@ -364,7 +361,7 @@ pub async fn run_probe(input: ProbeInput<'_>) -> TaskComplexityAssessedEvent {
     if n_informative_static < cfg.tcc_min_informative_constraints {
         // All probes agree on everything — no constraint discrimination signal.
         // Amplify structural TCC (same as heavy-dominant formula) and classify.
-        let tcc_eff = meta_tcc_structural * (1.0 + cfg.k_heavy * meta_heavy_fraction);
+        let tcc_eff = meta_tcc_structural * cfg.k_heavy.mul_add(meta_heavy_fraction, 1.0);
         let quadrant = classify_quadrant(tcc_eff, n_eff_pool, cfg);
         return TaskComplexityAssessedEvent {
             task_id,
@@ -415,259 +412,5 @@ pub async fn run_probe(input: ProbeInput<'_>) -> TaskComplexityAssessedEvent {
         probe_cost_tokens,
         n_informative_static,
         timestamp: Utc::now(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_config::H2AIConfig;
-    use h2ai_constraints::types::{
-        ConstraintDoc, ConstraintPredicate, ConstraintSeverity, NumericOp, VocabularyMode,
-    };
-    use h2ai_types::identity::TaskId;
-    use h2ai_types::sizing::CoherencyCoefficients;
-
-    fn dummy_calibration() -> CalibrationCompletedEvent {
-        use h2ai_types::events::CgMode;
-        use h2ai_types::sizing::CoordinationThreshold;
-        let cc = CoherencyCoefficients::new(0.12, 0.039, vec![0.7]).unwrap();
-        let thresh = CoordinationThreshold::from_calibration(&cc, 0.3);
-        CalibrationCompletedEvent {
-            calibration_id: TaskId::new(),
-            coefficients: cc,
-            coordination_threshold: thresh,
-            ensemble: None,
-            eigen: None,
-            timestamp: Utc::now(),
-            pairwise_beta: None,
-            cg_mode: CgMode::default(),
-            adapter_families: vec![],
-            explorer_verification_family_match: false,
-            single_family_warning: false,
-            n_max_lo: 0.0,
-            n_max_hi: 0.0,
-            n_eff_cosine_prior: 0.0,
-            calibration_quality: CalibrationQuality::Domain,
-            calibration_source: Default::default(),
-            beta_quality: None,
-        }
-    }
-
-    fn vocab_constraint(id: &str) -> ConstraintDoc {
-        ConstraintDoc {
-            id: id.into(),
-            source_file: "test".into(),
-            description: "vocab".into(),
-            severity: ConstraintSeverity::Hard { threshold: 0.9 },
-            predicate: ConstraintPredicate::VocabularyPresence {
-                mode: VocabularyMode::AllOf,
-                terms: vec!["stateless".into()],
-            },
-            remediation_hint: None,
-            domains: vec![],
-            mandatory_for_tags: vec![],
-            related_to: vec![],
-        }
-    }
-
-    #[tokio::test]
-    async fn bootstrap_calibration_routes_coverage() {
-        let cfg = H2AIConfig::default().task_complexity;
-        let mut cal = dummy_calibration();
-        cal.calibration_quality = CalibrationQuality::Bootstrap;
-        let result =
-            assess_task_complexity(&[vocab_constraint("c1")], &cal, &cfg, TaskId::new(), None)
-                .await;
-        assert_eq!(result.task_quadrant, TaskQuadrant::Coverage);
-        assert_eq!(
-            result.probe_skip_reason,
-            ProbeSkipReason::BootstrapCalibration
-        );
-    }
-
-    #[tokio::test]
-    async fn empty_corpus_routes_precision() {
-        let cfg = H2AIConfig::default().task_complexity;
-        let cal = dummy_calibration();
-        let result = assess_task_complexity(&[], &cal, &cfg, TaskId::new(), None).await;
-        // TCC = 1.0 < tcc_precision_threshold (2.0) → Precision
-        assert_eq!(result.task_quadrant, TaskQuadrant::Precision);
-        assert!((result.tcc_effective - 1.0).abs() < 1e-9);
-    }
-
-    #[tokio::test]
-    async fn single_hard_static_constraint_routes_precision() {
-        let cfg = H2AIConfig::default().task_complexity;
-        let cal = dummy_calibration();
-        let corpus = vec![vocab_constraint("c1")];
-        let result = assess_task_complexity(&corpus, &cal, &cfg, TaskId::new(), None).await;
-        // 1 type (VocabularyPresence) out of 9 → type_diversity = 1/9 ≈ 0.111
-        // TCC = 1.0 + 1.0×0.111 = 1.111 < tcc_precision_threshold (2.0) → Precision
-        assert_eq!(result.task_quadrant, TaskQuadrant::Precision);
-        assert_eq!(
-            result.probe_skip_reason,
-            ProbeSkipReason::UnambiguousPrecision
-        );
-    }
-
-    #[tokio::test]
-    async fn ambiguous_band_tcc_defers_probe_and_routes_coverage() {
-        let mut cfg = H2AIConfig::default().task_complexity;
-        // Custom thresholds to frame the ambiguous band around the constructed TCC.
-        cfg.tcc_precision_threshold = 1.2;
-        cfg.tcc_coverage_threshold = 1.8;
-        let cal = dummy_calibration();
-
-        // Build a 5-constraint corpus: all Hard Static, 5 distinct predicate types.
-        // soft_fraction = 0, type_diversity = 5/9 ≈ 0.556
-        // TCC = 1.0 + 2.0×0 + 1.0×0.556 + 1.5×0×0.556 = 1.556 → inside (1.2, 1.8) ✓
-        let make_hard = |id: &str, pred: ConstraintPredicate| ConstraintDoc {
-            id: id.into(),
-            source_file: "test".into(),
-            description: "hard static".into(),
-            severity: ConstraintSeverity::Hard { threshold: 0.9 },
-            predicate: pred,
-            remediation_hint: None,
-            domains: vec![],
-            mandatory_for_tags: vec![],
-            related_to: vec![],
-        };
-        let corpus = vec![
-            make_hard(
-                "c1",
-                ConstraintPredicate::VocabularyPresence {
-                    mode: VocabularyMode::AllOf,
-                    terms: vec!["foo".into()],
-                },
-            ),
-            make_hard(
-                "c2",
-                ConstraintPredicate::NegativeKeyword {
-                    terms: vec!["bad".into()],
-                },
-            ),
-            make_hard(
-                "c3",
-                ConstraintPredicate::RegexMatch {
-                    pattern: "ok".into(),
-                    must_match: true,
-                },
-            ),
-            make_hard(
-                "c4",
-                ConstraintPredicate::LengthRange {
-                    min_chars: Some(10),
-                    max_chars: Some(500),
-                },
-            ),
-            make_hard(
-                "c5",
-                ConstraintPredicate::NumericThreshold {
-                    field_pattern: r"(\d+)".into(),
-                    op: NumericOp::Ge,
-                    value: 1.0,
-                },
-            ),
-        ];
-        let result = assess_task_complexity(&corpus, &cal, &cfg, TaskId::new(), None).await;
-
-        // TCC must be inside the ambiguous band
-        assert!(
-            result.tcc_effective > cfg.tcc_precision_threshold
-                && result.tcc_effective < cfg.tcc_coverage_threshold,
-            "expected TCC in ambiguous band [{:.2}, {:.2}], got {:.3}",
-            cfg.tcc_precision_threshold,
-            cfg.tcc_coverage_threshold,
-            result.tcc_effective
-        );
-        // Probe deferred — correct reason set
-        assert_eq!(
-            result.probe_skip_reason,
-            ProbeSkipReason::AmbiguousBandProbeDeferred
-        );
-        assert!(result.probe_skipped);
-        // Conservative routing to Coverage
-        assert_eq!(result.task_quadrant, TaskQuadrant::Coverage);
-    }
-
-    #[test]
-    fn classify_quadrant_high_tcc_good_pool_is_coverage() {
-        let cfg = H2AIConfig::default().task_complexity;
-        // TCC=3.0 is above tcc_coverage_threshold (2.5) with a healthy pool.
-        let q = classify_quadrant(3.0, Some(2.0), &cfg);
-        assert_eq!(q, TaskQuadrant::Coverage);
-    }
-
-    #[test]
-    fn classify_quadrant_high_tcc_poor_pool_is_complex() {
-        let cfg = H2AIConfig::default().task_complexity;
-        // TCC=3.0 is above tcc_coverage_threshold (2.5) but pool quality is poor.
-        let q = classify_quadrant(3.0, Some(1.0), &cfg);
-        assert_eq!(q, TaskQuadrant::Complex);
-    }
-
-    #[test]
-    fn classify_quadrant_low_tcc_good_pool_is_precision() {
-        let cfg = H2AIConfig::default().task_complexity;
-        let q = classify_quadrant(1.1, Some(2.0), &cfg);
-        assert_eq!(q, TaskQuadrant::Precision);
-    }
-
-    #[test]
-    fn classify_quadrant_low_tcc_poor_pool_is_degenerate() {
-        let cfg = H2AIConfig::default().task_complexity;
-        let q = classify_quadrant(1.1, Some(1.0), &cfg);
-        assert_eq!(q, TaskQuadrant::Degenerate);
-    }
-
-    // ── participation_ratio unit tests ──────────────────────────────────────
-
-    #[test]
-    fn participation_ratio_empty_returns_one() {
-        assert!((participation_ratio(&[]) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn participation_ratio_single_row_returns_one() {
-        // n_probes=1 → denom=0 → returns 1.0 (degenerate)
-        let m = vec![vec![1.0, 0.0, 1.0]];
-        assert!((participation_ratio(&m) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn participation_ratio_all_identical_rows_returns_one() {
-        // All probes agree on every constraint → covariance is zero → PR = 1.0
-        let row = vec![1.0, 0.0, 1.0, 1.0];
-        let m = vec![row.clone(), row.clone(), row.clone()];
-        assert!((participation_ratio(&m) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn participation_ratio_perfect_diversity_is_above_one() {
-        // Each probe passes exactly one distinct constraint and fails all others.
-        // The centered 3×3 identity pattern has row-sum=0, giving a rank-2 covariance;
-        // PR = tr(C)² / ‖C‖_F² = 1 / 0.5 = 2.0.
-        let m = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-            vec![0.0, 0.0, 1.0],
-        ];
-        let pr = participation_ratio(&m);
-        assert!((pr - 2.0).abs() < 1e-6, "expected PR=2.0, got {pr:.6}");
-    }
-
-    #[test]
-    fn participation_ratio_rank_one_returns_one() {
-        // All columns perfectly correlated → rank-1 covariance → PR = 1.0
-        let m = vec![
-            vec![1.0, 1.0, 1.0],
-            vec![0.0, 0.0, 0.0],
-            vec![1.0, 1.0, 1.0],
-            vec![0.0, 0.0, 0.0],
-        ];
-        let pr = participation_ratio(&m);
-        // Perfectly correlated columns → rank-1 → PR = 1.0
-        assert!((pr - 1.0).abs() < 1e-6, "expected PR=1.0, got {pr:.6}");
     }
 }

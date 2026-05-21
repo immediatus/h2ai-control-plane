@@ -16,6 +16,7 @@ fn redact(s: &str) -> String {
 }
 
 /// Redact secrets from an `AgentTelemetryEvent` before it reaches an audit provider.
+#[must_use]
 pub fn redact_event(event: AgentTelemetryEvent) -> AgentTelemetryEvent {
     match event {
         AgentTelemetryEvent::LlmPromptSent {

@@ -1058,3 +1058,643 @@ async fn panel_all_pass_uncertain_map_is_empty() {
         "all-pass verdicts must not populate uncertain_map"
     );
 }
+
+// ── adversarial comparison ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn adversarial_comparison_produces_comparison_events() {
+    // record_adversarial_comparison = true triggers a second adversarial pass and
+    // populates comparison_events with one entry per proposal.
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "My proposal text");
+
+    let config = VerificationConfig {
+        record_adversarial_comparison: true,
+        ..Default::default()
+    };
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config,
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(out.passed.len(), 1, "proposal must still pass");
+    assert_eq!(
+        out.comparison_events.len(),
+        1,
+        "one comparison event per proposal"
+    );
+    let ev = &out.comparison_events[0];
+    // Both standard and adversarial evaluators return same mock score 0.85 → both pass.
+    assert!(ev.standard_passed, "standard pass must be true");
+    assert!(ev.adversarial_passed, "adversarial pass must be true");
+    assert!((ev.standard_score - ev.adversarial_score).abs() < 0.01);
+}
+
+#[tokio::test]
+async fn adversarial_comparison_off_by_default_no_events() {
+    // Default config has record_adversarial_comparison = false → no comparison events.
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "My proposal text");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert!(
+        out.comparison_events.is_empty(),
+        "no adversarial comparison events when flag is off"
+    );
+}
+
+// ── multi-variant panel (2-variant CrossFamily path) ─────────────────────────
+
+#[tokio::test]
+async fn panel_two_variants_both_pass_no_uncertain() {
+    use h2ai_config::JudgePanelConfig;
+    use h2ai_orchestrator::judge_panel::JudgePanel;
+
+    // Two adapters, both returning score 0.85 → both vote pass → CrossFamily quorum
+    // (2 out of 2 ≥ 0.67 quorum) → Pass verdict → no uncertain map entries.
+    let eval_a = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let eval_b = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "Some proposal");
+
+    let input = VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[],
+        evaluator: &eval_a as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    };
+
+    let panel = JudgePanel {
+        variants: vec![
+            h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+                adapter: &eval_a as &dyn h2ai_types::adapter::IComputeAdapter,
+                persona: h2ai_types::judge::JudgePersona::Literal,
+                temperature_override: None,
+            },
+            h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+                adapter: &eval_b as &dyn h2ai_types::adapter::IComputeAdapter,
+                persona: h2ai_types::judge::JudgePersona::Literal,
+                temperature_override: None,
+            },
+        ],
+        diversity_kind: h2ai_types::judge::PanelDiversityKind::CrossFamily,
+    };
+
+    let panel_cfg = JudgePanelConfig::default();
+    let (out, uncertain_map) = VerificationPhase::run_with_panel(input, &panel, &panel_cfg).await;
+
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "unanimous pass should be routed to passed"
+    );
+    assert_eq!(out.failed.len(), 0);
+    assert!(
+        uncertain_map.is_empty(),
+        "both variants agree — no uncertainty"
+    );
+}
+
+#[tokio::test]
+async fn panel_two_variants_both_fail_hard_constraint() {
+    use h2ai_config::JudgePanelConfig;
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    use h2ai_orchestrator::judge_panel::JudgePanel;
+
+    // Both adapters return score 0.2 (below Hard threshold 0.5) → both vote Fail →
+    // CrossFamily quorum met for Fail → hard_fail = true → proposal fails.
+    let eval_a = MockAdapter::new(r#"{"score": 0.2, "reason": "poor"}"#.into());
+    let eval_b = MockAdapter::new(r#"{"score": 0.2, "reason": "poor"}"#.into());
+
+    let doc = ConstraintDoc {
+        id: "hard_constraint".into(),
+        source_file: "test".into(),
+        description: "must pass hard check".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "Is this a good proposal?".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let proposal = make_proposal(TaskId::new(), "Poor proposal");
+
+    let input = VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &eval_a as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    };
+
+    let panel = JudgePanel {
+        variants: vec![
+            h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+                adapter: &eval_a as &dyn h2ai_types::adapter::IComputeAdapter,
+                persona: h2ai_types::judge::JudgePersona::Literal,
+                temperature_override: None,
+            },
+            h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+                adapter: &eval_b as &dyn h2ai_types::adapter::IComputeAdapter,
+                persona: h2ai_types::judge::JudgePersona::Literal,
+                temperature_override: None,
+            },
+        ],
+        diversity_kind: h2ai_types::judge::PanelDiversityKind::CrossFamily,
+    };
+
+    let panel_cfg = JudgePanelConfig::default();
+    let (out, _uncertain_map) = VerificationPhase::run_with_panel(input, &panel, &panel_cfg).await;
+
+    assert_eq!(
+        out.failed.len(),
+        1,
+        "unanimous hard fail must route to failed"
+    );
+    assert_eq!(out.passed.len(), 0);
+}
+
+#[tokio::test]
+async fn panel_two_variants_disagreement_uncertain_constraint() {
+    use h2ai_config::JudgePanelConfig;
+    use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+    use h2ai_orchestrator::judge_panel::JudgePanel;
+
+    // eval_a scores 0.9 (pass), eval_b scores 0.2 (fail) → CrossFamily with quorum 0.67
+    // → neither side meets quorum (1/2 = 0.5 < 0.67) → Uncertain → uncertain_map populated.
+    let eval_a = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let eval_b = MockAdapter::new(r#"{"score": 0.2, "reason": "poor"}"#.into());
+
+    let doc = ConstraintDoc {
+        id: "contested_constraint".into(),
+        source_file: "test".into(),
+        description: "contested".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "Is this good?".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let proposal = make_proposal(TaskId::new(), "Ambiguous proposal");
+    let explorer_id = proposal.explorer_id.clone();
+
+    let input = VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &eval_a as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    };
+
+    let panel = JudgePanel {
+        variants: vec![
+            h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+                adapter: &eval_a as &dyn h2ai_types::adapter::IComputeAdapter,
+                persona: h2ai_types::judge::JudgePersona::Literal,
+                temperature_override: None,
+            },
+            h2ai_orchestrator::judge_panel::RuntimeJudgeVariant {
+                adapter: &eval_b as &dyn h2ai_types::adapter::IComputeAdapter,
+                persona: h2ai_types::judge::JudgePersona::Literal,
+                temperature_override: None,
+            },
+        ],
+        diversity_kind: h2ai_types::judge::PanelDiversityKind::CrossFamily,
+    };
+
+    // quorum_fraction = 0.67 so neither 1/2 pass nor 1/2 fail meets quorum → Uncertain
+    let panel_cfg = JudgePanelConfig {
+        quorum_fraction: 0.67,
+        ..Default::default()
+    };
+    let (_out, uncertain_map) = VerificationPhase::run_with_panel(input, &panel, &panel_cfg).await;
+
+    // Uncertain constraint → score = avg * uncertainty_weight; may pass or fail depending on
+    // uncertainty_weight, but the uncertain_map must contain the explorer_id.
+    assert!(
+        uncertain_map.contains_key(&explorer_id),
+        "disagreeing variants must populate uncertain_map for explorer"
+    );
+    let uncertain_ids = &uncertain_map[&explorer_id];
+    assert!(
+        uncertain_ids.contains(&"contested_constraint".to_string()),
+        "contested_constraint must appear in uncertain constraint list"
+    );
+}
+
+// ── Composite predicate ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn composite_and_both_pass() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // And( LengthRange(max=1000), LlmJudge ) — both pass → score is min of two scores.
+    let doc = ConstraintDoc {
+        id: "composite_and".into(),
+        source_file: "test".into(),
+        description: "must be short and good".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::And,
+            children: vec![
+                ConstraintPredicate::LengthRange {
+                    min_chars: None,
+                    max_chars: Some(1000),
+                },
+                ConstraintPredicate::LlmJudge {
+                    rubric: "Is this a good proposal?".into(),
+                },
+            ],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "A short good proposal.");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "Composite(And) both pass → proposal passes"
+    );
+}
+
+#[tokio::test]
+async fn composite_and_static_fails_skips_llm() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // And( LengthRange(max=5), LlmJudge ) — static fails (length > 5) → short-circuit,
+    // LlmJudge is never called, overall score = 0.0.
+    let doc = ConstraintDoc {
+        id: "composite_and_short_circuit".into(),
+        source_file: "test".into(),
+        description: "must be ≤5 chars AND pass llm".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::And,
+            children: vec![
+                ConstraintPredicate::LengthRange {
+                    min_chars: None,
+                    max_chars: Some(5),
+                },
+                ConstraintPredicate::LlmJudge {
+                    rubric: "Is this a good proposal?".into(),
+                },
+            ],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    // LlmJudge would return 0.9, but short-circuit means it won't be called.
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let proposal = make_proposal(
+        TaskId::new(),
+        "This is definitely longer than five characters.",
+    );
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(
+        out.failed.len(),
+        1,
+        "Composite(And) static child fails → proposal must fail"
+    );
+    assert!(
+        (out.failed[0].1[0].score - 0.0).abs() < 1e-9,
+        "short-circuit score must be 0.0"
+    );
+}
+
+#[tokio::test]
+async fn composite_or_first_passes_short_circuits() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // Or( LengthRange(max=1000), LengthRange(min=1) ) — first passes → max score = 1.0.
+    let doc = ConstraintDoc {
+        id: "composite_or".into(),
+        source_file: "test".into(),
+        description: "either short or present".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::Or,
+            children: vec![
+                ConstraintPredicate::LengthRange {
+                    min_chars: None,
+                    max_chars: Some(1000),
+                },
+                ConstraintPredicate::LengthRange {
+                    min_chars: Some(1),
+                    max_chars: None,
+                },
+            ],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "Short enough.");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "Composite(Or) first passes → proposal passes"
+    );
+}
+
+#[tokio::test]
+async fn composite_or_both_fail() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // Or( LengthRange(max=0), LengthRange(max=0) ) — both fail → score 0.0.
+    let doc = ConstraintDoc {
+        id: "composite_or_fail".into(),
+        source_file: "test".into(),
+        description: "either condition must pass".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::Or,
+            children: vec![
+                ConstraintPredicate::LengthRange {
+                    min_chars: None,
+                    max_chars: Some(0),
+                },
+                ConstraintPredicate::LengthRange {
+                    min_chars: None,
+                    max_chars: Some(0),
+                },
+            ],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "Non-empty text.");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(
+        out.failed.len(),
+        1,
+        "Composite(Or) both fail → proposal fails"
+    );
+}
+
+#[tokio::test]
+async fn composite_not_inverts_pass_to_fail() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // Not( LengthRange(max=1000) ) — inner passes (1.0) → Not inverts to 0.0 → fails.
+    let doc = ConstraintDoc {
+        id: "composite_not".into(),
+        source_file: "test".into(),
+        description: "must NOT satisfy length range".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::Not,
+            children: vec![ConstraintPredicate::LengthRange {
+                min_chars: None,
+                max_chars: Some(1000),
+            }],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "Short text.");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(
+        out.failed.len(),
+        1,
+        "Composite(Not) inverts 1.0 to 0.0 → fails Hard gate"
+    );
+    assert!(
+        (out.failed[0].1[0].score - 0.0).abs() < 1e-9,
+        "Not(pass) = 1.0 - 1.0 = 0.0"
+    );
+}
+
+#[tokio::test]
+async fn composite_not_inverts_fail_to_pass() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // Not( LengthRange(max=0) ) — inner fails (0.0) → Not inverts to 1.0 → passes.
+    let doc = ConstraintDoc {
+        id: "composite_not_pass".into(),
+        source_file: "test".into(),
+        description: "must NOT have zero chars".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::Not,
+            children: vec![ConstraintPredicate::LengthRange {
+                min_chars: None,
+                max_chars: Some(0),
+            }],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "Has content.");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "Composite(Not) inverts 0.0 to 1.0 → passes"
+    );
+}
+
+#[tokio::test]
+async fn composite_not_empty_children_returns_zero() {
+    use h2ai_constraints::types::{
+        CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+    };
+
+    // Not with empty children → s = 0.0 → 1.0 - 0.0 = 1.0. Wait, code reads:
+    // if let Some(child) = children.first() { ... } else { 0.0 }
+    // So empty Not → s = 0.0 → returns 1.0 - 0.0 = 1.0.
+    let doc = ConstraintDoc {
+        id: "composite_not_empty".into(),
+        source_file: "test".into(),
+        description: "empty not".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::Composite {
+            op: CompositeOp::Not,
+            children: vec![],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+    };
+
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let proposal = make_proposal(TaskId::new(), "Any proposal.");
+
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    // Not(empty) → s=0.0 → 1.0-0.0 = 1.0 → passes Hard threshold 0.5.
+    assert_eq!(
+        out.passed.len(),
+        1,
+        "Composite(Not) with empty children returns 1.0 → passes"
+    );
+}
+
+// ── score_proposals ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn score_proposals_returns_aggregate_per_proposal() {
+    // score_proposals returns one (proposal, score) per input in order.
+    let evaluator = MockAdapter::new(r#"{"score": 0.8, "reason": "good"}"#.into());
+    let task_id = TaskId::new();
+    let proposals = vec![
+        make_proposal(task_id.clone(), "Proposal A"),
+        make_proposal(task_id.clone(), "Proposal B"),
+    ];
+
+    let scores = VerificationPhase::score_proposals(
+        proposals,
+        &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        &VerificationConfig::default(),
+        &[],
+    )
+    .await;
+
+    assert_eq!(scores.len(), 2, "one score per proposal");
+    // With empty corpus → Hard __rubric__ fallback; score 0.8 → aggregate (Hard-only) = 1.0.
+    for (_, s) in &scores {
+        assert!(*s >= 0.0 && *s <= 1.0, "score must be in [0,1], got {s}");
+    }
+}
+
+#[tokio::test]
+async fn score_proposals_empty_input_returns_empty() {
+    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let scores = VerificationPhase::score_proposals(
+        vec![],
+        &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        &VerificationConfig::default(),
+        &[],
+    )
+    .await;
+    assert!(scores.is_empty(), "empty input → empty output");
+}

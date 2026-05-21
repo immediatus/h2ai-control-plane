@@ -8,6 +8,7 @@ pub struct InMemoryCache {
 }
 
 impl InMemoryCache {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: DashMap::new(),

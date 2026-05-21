@@ -5,6 +5,7 @@ use h2ai_knowledge::types::{
 
 #[test]
 fn types_compile() {
+    static ALL: &[NodeDepth] = &[NodeDepth::Global, NodeDepth::Topic, NodeDepth::Leaf];
     let node = KnowledgeNode {
         id: "C-004".into(),
         depth: NodeDepth::Leaf,
@@ -20,8 +21,6 @@ fn types_compile() {
         importance: 0.7,
     };
     assert_eq!(node.id, "C-004");
-
-    static ALL: &[NodeDepth] = &[NodeDepth::Global, NodeDepth::Topic, NodeDepth::Leaf];
     let q = KnowledgeQuery {
         text: "atomic debit idempotency",
         tags: &[],
@@ -96,4 +95,44 @@ fn bm25plus_ranks_by_relevance() {
     let results = retriever.query("idempotency", 2);
     assert!(!results.is_empty());
     assert_eq!(results[0].id, "high");
+}
+
+#[test]
+fn bm25plus_len_and_is_empty() {
+    let empty = Bm25PlusRetriever::build(std::iter::empty::<(&str, &str)>());
+    assert_eq!(empty.len(), 0);
+    assert!(empty.is_empty());
+
+    let non_empty = Bm25PlusRetriever::build([("d1", "hello world rust")].into_iter());
+    assert_eq!(non_empty.len(), 1);
+    assert!(!non_empty.is_empty());
+}
+
+#[test]
+fn bm25plus_all_stopword_query_returns_empty() {
+    // All tokens in the query are stopwords (len < 3 or in stopword list).
+    // "the and for are" — all stopwords → tokenize returns empty map → early return.
+    let retriever = Bm25PlusRetriever::build([("doc1", "atomicity idempotency")].into_iter());
+    let results = retriever.query("the and for are", 10);
+    assert!(
+        results.is_empty(),
+        "all-stopword query must return empty results"
+    );
+}
+
+#[test]
+fn bm25plus_query_term_in_idf_but_zero_tf_skipped() {
+    // doc2 does NOT contain "idempotency" — tf=0 path inside bm25plus_score.
+    // doc1 DOES contain it. Both must work without panic.
+    let retriever = Bm25PlusRetriever::build(
+        [
+            ("doc1", "idempotency atomic debit"),
+            ("doc2", "audit trail logging"),
+        ]
+        .into_iter(),
+    );
+    let results = retriever.query("idempotency", 2);
+    // Only doc1 should match (doc2 has tf=0 for "idempotency")
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "doc1");
 }
