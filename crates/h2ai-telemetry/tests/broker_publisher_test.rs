@@ -209,7 +209,7 @@ async fn broker_publisher_flush_propagates_error() {
 // ── Live-NATS tests (skipped if NATS is unavailable) ─────────────────────────
 
 async fn nats_connect() -> Option<async_nats::Client> {
-    match async_nats::connect("nats://localhost:4222").await {
+    match async_nats::connect("nats://host.docker.internal:4222").await {
         Ok(c) => Some(c),
         Err(e) => {
             eprintln!("NATS unavailable — skipping live tests: {e}");

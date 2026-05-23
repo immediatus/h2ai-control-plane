@@ -51,8 +51,11 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
+use chrono::Utc;
 use h2ai_orchestrator::prompts::resolve_prompt;
+use h2ai_state::backend::OproStore;
 use h2ai_state::InMemoryStateBackend;
+use h2ai_types::prompt_variant::{PromptVariant, PromptVariantSource};
 
 // ── resolve_prompt: no-NATS fallback path ────────────────────────────────────
 
@@ -128,4 +131,67 @@ async fn resolve_prompt_idempotent_without_nats() {
     let r1 = resolve_prompt("adapter", key, default, None::<&InMemoryStateBackend>).await;
     let r2 = resolve_prompt("adapter", key, default, None::<&InMemoryStateBackend>).await;
     assert_eq!(r1, r2);
+}
+
+// ── resolve_prompt: NATS variant path + cache hit ────────────────────────────
+
+/// When NATS has an active variant, resolve_prompt must return that variant text.
+/// The second call must hit the in-process cache (same variant text, no NATS roundtrip).
+#[tokio::test]
+async fn resolve_prompt_uses_nats_variant_and_caches_it() {
+    let backend = InMemoryStateBackend::new();
+
+    // Wire up: active variant ptr → variant
+    let variant = PromptVariant {
+        variant_id: "v-nats-test-unique-123".into(),
+        adapter_name: "nats-adapter-unique".into(),
+        prompt_key: "nats_prompt_unique".into(),
+        text: "NATS variant text".into(),
+        source: PromptVariantSource::Opro,
+        created_at: Utc::now(),
+        score: None,
+    };
+    backend.put_prompt_variant(&variant).await.unwrap();
+    backend
+        .set_active_variant_ptr(
+            "nats-adapter-unique",
+            "nats_prompt_unique",
+            "v-nats-test-unique-123",
+        )
+        .await
+        .unwrap();
+
+    // First call: NATS path → returns variant text and inserts into cache
+    let r1 = resolve_prompt(
+        "nats-adapter-unique",
+        "nats_prompt_unique",
+        "fallback",
+        Some(&backend),
+    )
+    .await;
+    assert_eq!(r1, "NATS variant text");
+
+    // Second call: cache hit (TTL is 30s, so still valid)
+    let r2 = resolve_prompt(
+        "nats-adapter-unique",
+        "nats_prompt_unique",
+        "fallback",
+        Some(&backend),
+    )
+    .await;
+    assert_eq!(r2, "NATS variant text");
+}
+
+/// When NATS client is provided but has no active variant ptr, falls back to default.
+#[tokio::test]
+async fn resolve_prompt_falls_back_when_no_active_variant() {
+    let backend = InMemoryStateBackend::new();
+    let result = resolve_prompt(
+        "adapter-no-variant",
+        "missing_key",
+        "default-fallback",
+        Some(&backend),
+    )
+    .await;
+    assert_eq!(result, "default-fallback");
 }

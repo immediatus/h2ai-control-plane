@@ -467,13 +467,20 @@ impl<'a> ExecutionPipeline<'a> {
         }
 
         // ── Phase 3.5: Verification (LLM-as-Judge) ──────────────────────────────
+        // Apply adaptive threshold relaxation: scale Hard thresholds by 0.9^retry_count.
+        let verify_verification_config = {
+            let scale = 0.9_f64.powi(retry_count as i32);
+            let mut vc = params.verification_config.clone();
+            vc.constraint_threshold_scale = scale;
+            vc
+        };
         let verify_out = phase!(
             phases::verify::run(
                 gen_out.proposals,
                 phases::verify::Input {
                     engine_input: self.input,
                     task_id,
-                    verification_config: params.verification_config.clone(),
+                    verification_config: verify_verification_config,
                     provisioned,
                     task_eval_cache: std::sync::Arc::clone(&self.task_eval_cache),
                     turn1_map: turn1_map.clone(),

@@ -47,8 +47,8 @@ fn word_order_does_not_affect_similarity() {
     );
 }
 
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop};
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::TaoConfig;
 use h2ai_types::identity::{ExplorerId, TaskId};

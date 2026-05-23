@@ -1,3 +1,4 @@
+#![allow(clippy::missing_panics_doc)]
 use h2ai_orchestrator::payload_store::{
     offload_if_large, resolve_context, MemoryPayloadStore, PayloadStore, StoreError,
 };
@@ -86,6 +87,43 @@ async fn two_large_offloads_of_same_content_share_one_store_entry() {
         }
         _ => panic!("both should be Ref"),
     }
+}
+
+#[tokio::test]
+async fn memory_store_default_works_same_as_new() {
+    let store = MemoryPayloadStore::default();
+    let hash = store.put("default store test").await.unwrap();
+    let val = store.get(&hash).await.unwrap();
+    assert_eq!(val, "default store test");
+}
+
+#[tokio::test]
+async fn resolve_ref_with_invalid_hex_returns_backend_error() {
+    let store = MemoryPayloadStore::new();
+    let bad_ref = ContextPayload::Ref {
+        hash: "not-valid-hex!!".to_string(),
+        byte_len: 0,
+    };
+    let result = resolve_context(&bad_ref, &store).await;
+    assert!(
+        matches!(result, Err(StoreError::Backend(_))),
+        "invalid hex must produce Backend error"
+    );
+}
+
+#[tokio::test]
+async fn resolve_ref_with_wrong_length_hash_returns_backend_error() {
+    let store = MemoryPayloadStore::new();
+    // 31 bytes → hex is 62 chars, not 64 → length check fails
+    let bad_ref = ContextPayload::Ref {
+        hash: "aa".repeat(31),
+        byte_len: 0,
+    };
+    let result = resolve_context(&bad_ref, &store).await;
+    assert!(
+        matches!(result, Err(StoreError::Backend(_))),
+        "wrong-length hash must produce Backend error"
+    );
 }
 
 #[tokio::test]

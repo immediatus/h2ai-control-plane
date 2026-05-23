@@ -104,6 +104,17 @@ fn load_corpus_deduplicates_same_id() {
     assert_eq!(corpus.len(), 1, "duplicate IDs must be deduplicated");
 }
 
+// ── Lines 23-24: YamlDirSource non-existent dir returns empty ────────────────
+
+#[test]
+fn yaml_dir_source_missing_dir_returns_empty() {
+    let source = YamlDirSource::new("/tmp/h2ai-test-nonexistent-xyz-abc");
+    let specs = source
+        .load_all()
+        .expect("non-existent dir must return Ok([])");
+    assert!(specs.is_empty(), "non-existent dir must produce empty vec");
+}
+
 // ── Lines 50-51: deprecated predicates: array warning ────────────────────────
 
 #[test]

@@ -8,9 +8,13 @@
 pub mod audit_channel;
 pub mod calibration;
 pub mod checker;
+pub mod coherence_probe;
+pub mod drift;
 pub mod epistemic;
+pub mod knowledge_gap;
 pub mod merger;
 pub mod planner;
 pub mod repair;
 pub mod retry;
 pub mod retry_accumulator;
+pub mod spec_repair;

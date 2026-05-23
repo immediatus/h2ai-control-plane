@@ -194,6 +194,10 @@ pub struct ShadowAuditorConfig {
     /// Automatically remove a domain from majority-vote set when its disagreement
     /// rate drops below `promotion_threshold / 2` over `2 * promotion_window` obs.
     pub auto_demotion: bool,
+    /// When true, shadow vote is binding (AND with primary) on every proposal regardless
+    /// of domain promotion history. Set to true by Production and Strict safety profiles.
+    #[serde(default)]
+    pub strict: bool,
 }
 
 impl Default for ShadowAuditorConfig {
@@ -203,6 +207,7 @@ impl Default for ShadowAuditorConfig {
             promotion_threshold: 0.05,
             promotion_window: 30,
             auto_demotion: true,
+            strict: false,
         }
     }
 }
@@ -297,18 +302,15 @@ pub struct SraniConfig {
     /// Also used for `cold_start_midpoint()` when adaptive=true. Default 0.6.
     #[serde(default = "srani_default_inject_threshold")]
     pub inject_threshold: f64,
-    /// Maximum characters of raw web-search text fed into the distillation step.
-    /// Larger = more context for the distiller LLM. Default 4000.
-    #[serde(default = "srani_default_grounding_raw_max_chars")]
-    pub grounding_raw_max_chars: usize,
-    /// Maximum characters of the (optionally distilled) grounding statement
-    /// injected into the explorer hint block. Default 1200.
-    #[serde(default = "srani_default_grounding_hint_max_chars")]
-    pub grounding_hint_max_chars: usize,
     /// When true (default) and a researcher adapter is available, distill raw
     /// web-search results with the LLM before injecting them as grounding context.
     #[serde(default = "srani_default_grounding_distill")]
     pub grounding_distill: bool,
+    /// Minimum character count that triggers LLM distillation.
+    /// Results shorter than this are already compact and skip compression.
+    /// Default 800.
+    #[serde(default = "srani_default_grounding_compress_threshold")]
+    pub grounding_compress_threshold: usize,
 }
 
 const fn srani_default_enabled() -> bool {
@@ -332,14 +334,11 @@ const fn srani_default_warn_threshold() -> f64 {
 const fn srani_default_inject_threshold() -> f64 {
     0.6
 }
-const fn srani_default_grounding_raw_max_chars() -> usize {
-    4000
-}
-const fn srani_default_grounding_hint_max_chars() -> usize {
-    1200
-}
 const fn srani_default_grounding_distill() -> bool {
     true
+}
+const fn srani_default_grounding_compress_threshold() -> usize {
+    800
 }
 
 /// Configuration for OPRO (Optimization by Prompt Retrieval).
@@ -521,9 +520,8 @@ impl Default for SraniConfig {
             gate_threshold: srani_default_gate_threshold(),
             warn_threshold: srani_default_warn_threshold(),
             inject_threshold: srani_default_inject_threshold(),
-            grounding_raw_max_chars: srani_default_grounding_raw_max_chars(),
-            grounding_hint_max_chars: srani_default_grounding_hint_max_chars(),
             grounding_distill: srani_default_grounding_distill(),
+            grounding_compress_threshold: srani_default_grounding_compress_threshold(),
         }
     }
 }
@@ -773,6 +771,76 @@ impl Default for ThinkingLoopConfig {
             model_tiers: ThinkingModelTiers::default(),
             oracle_timeout_secs: default_oracle_timeout_secs(),
             oracle_confidence_bonus: default_oracle_confidence_bonus(),
+        }
+    }
+}
+
+/// Configuration for GAP-I1: knowledge-gap detection and domain synthesis.
+///
+/// When `enabled = true`, the MAPE-K loop fires a researcher adapter on checks
+/// whose historical pass rate is at or below `cold_check_threshold`. Synthesised
+/// domain knowledge is accepted only when the LlmJudge scores it above
+/// `synthesis_min_confidence`. At most `max_gap_records_per_wave` researcher
+/// calls are issued per MAPE-K wave to bound latency.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GapI1Config {
+    /// Enable the GAP-I1 researcher loop. Default: false.
+    pub enabled: bool,
+    /// Only fire researcher on checks with pass rate ≤ this threshold. Default: 0.0.
+    pub cold_check_threshold: f64,
+    /// LlmJudge confidence score required to accept a `DomainSynthesis`. Default: 0.7.
+    pub synthesis_min_confidence: f64,
+    /// Maximum researcher calls issued per MAPE-K wave. Default: 3.
+    pub max_gap_records_per_wave: usize,
+    /// Seconds budget for web search + distillation per researcher call. Default: 90.
+    pub researcher_timeout_secs: u64,
+}
+
+impl Default for GapI1Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cold_check_threshold: 0.0,
+            synthesis_min_confidence: 0.7,
+            max_gap_records_per_wave: 3,
+            researcher_timeout_secs: 90,
+        }
+    }
+}
+
+/// Configuration for GAP-K1 constraint coherence — pre-flight coherence probe and
+/// runtime instability circuit breaker with automated spec repair.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GapK1Config {
+    /// Enable the pre-flight coherence probe and runtime instability detection. Default: false.
+    pub enabled: bool,
+    /// Enable automated spec repair via `SpecRepairAdvisor`. Default: false.
+    pub auto_repair_enabled: bool,
+    /// Minimum LlmJudge pass rate on the constraint's `pass` rubric to consider a check coherent. Default: 0.80.
+    pub coherence_threshold: f64,
+    /// Max Jaccard similarity between rejection reasons across waves before instability fires. Default: 0.10.
+    pub instability_threshold: f64,
+    /// Minimum self-consistency after repair to accept the rewrite. Default: 0.90.
+    pub repair_acceptance_threshold: f64,
+    /// Number of LlmJudge calls per check during coherence probe. Default: 5.
+    pub probe_runs: usize,
+    /// Number of candidate rewrites to generate per ambiguous check. Default: 3.
+    pub repair_candidates: usize,
+    /// TTL in seconds for coherence probe cache entries. Default: 86400 (24 h).
+    pub probe_cache_ttl_secs: u64,
+}
+
+impl Default for GapK1Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_repair_enabled: false,
+            coherence_threshold: 0.80,
+            instability_threshold: 0.10,
+            repair_acceptance_threshold: 0.90,
+            probe_runs: 5,
+            repair_candidates: 3,
+            probe_cache_ttl_secs: 86400,
         }
     }
 }
@@ -1186,6 +1254,9 @@ pub struct H2AIConfig {
     /// Enable the synthesis phase. When false, the engine uses the selection chain exclusively.
     /// Default: true. Set false to reproduce pre-synthesis behavior for benchmarking.
     pub synthesis_enabled: bool,
+    /// Enable the GAP-F1 synthesis wave — one terminal LLM call after all retries exhaust.
+    /// Fires only when partial-pass proposals exist. Default: true.
+    pub synthesis_wave_enabled: bool,
     /// Minimum number of verified proposals required to attempt synthesis.
     /// Default: 2. Raising to 3+ reserves synthesis for richer ensembles.
     pub synthesis_min_proposals: usize,
@@ -1196,6 +1267,37 @@ pub struct H2AIConfig {
     pub synthesis_critique_max_tokens: u64,
     /// Max tokens for the synthesis call. Default: 2048.
     pub synthesis_max_tokens: u64,
+    /// Overhead factor used in the partial-pass truncation budget formula:
+    /// `chars_per_partial = model_max_tokens * 4 / (max_k + partial_pass_overhead_factor)`.
+    /// Represents non-partial content (system prompt, task description, repair context) in
+    /// units of partial-slot equivalents. Default: 5.0.
+    pub partial_pass_overhead_factor: f64,
+    /// Enable sequential constraint grafting in the synthesis wave (GAP-H1).
+    /// When true, the engine iteratively integrates one constraint cluster per LLM call
+    /// starting from the highest-scoring partial as the seed. Each round includes
+    /// intermediate verification with rollback — destructive grafts are discarded.
+    /// When false (default), the existing single-shot `build_synthesis_context` path is used.
+    pub sequential_grafting_enabled: bool,
+    /// Maximum graft rounds before stopping the loop.
+    /// Each round is one focused LLM call + one verification pass.
+    /// Default: 4. Setting to 1 returns only the seed partial without grafting.
+    pub sequential_grafting_max_rounds: usize,
+    /// DDM sliding window size in tasks. Default: 20.
+    pub drift_ddm_window: usize,
+    /// DDM detection threshold in standard deviations. Default: 2.5.
+    pub drift_ddm_k: f64,
+    /// BOCPD geometric hazard rate: P(changepoint now) per observation. Default: 0.01.
+    pub drift_bocpd_hazard_rate: f64,
+    /// BOCPD posterior mass threshold on run-lengths {0..=4} to fire CalibrationChangepoint. Default: 0.90.
+    pub drift_bocpd_changepoint_threshold: f64,
+    /// When true, POST /calibrate is triggered automatically on CalibrationChangepoint.
+    /// Default: false — recalibration costs LLM calls; require explicit operator opt-in.
+    pub auto_recalibrate_on_drift: bool,
+    /// Max seconds before a stale-calibration tracing::warn is emitted. Default: 3600.
+    pub drift_staleness_ttl_secs: u64,
+    /// ORCA conformal margin subtracted from VerificationConfig::threshold during active drift.
+    /// Widens the gate (more proposals pass) as a conservative coverage guarantee. Default: 0.05.
+    pub drift_conformal_margin: f64,
     /// Commands permitted in Normal-mode waves. Empty = unrestricted (unsafe in production).
     pub shell_allowlist: Vec<String>,
     /// Commands permitted in Hardened-mode waves. Should be a subset of `shell_allowlist`.
@@ -1336,6 +1438,12 @@ pub struct H2AIConfig {
     /// Default: "`H2AI_ORACLE_HUMAN`".
     #[serde(default = "default_oracle_human_bucket")]
     pub oracle_human_bucket: String,
+    /// GAP-I1 knowledge-gap detection and domain synthesis configuration.
+    #[serde(default)]
+    pub gap_i1: GapI1Config,
+    /// GAP-K1 constraint coherence configuration.
+    #[serde(default)]
+    pub gap_k1: GapK1Config,
 }
 
 fn default_oracle_human_bucket() -> String {
@@ -1698,6 +1806,7 @@ pub const fn apply_safety_profile(cfg: &mut H2AIConfig) {
             cfg.safety.family_constraint = FamilyConstraint::SingleFamilyOk;
             cfg.safety.require_bivariate_cg = false;
             cfg.safety.shadow_auditor.enabled = false;
+            cfg.safety.shadow_auditor.strict = false;
         }
         SafetyProfile::Production => {
             cfg.safety.krum_fault_tolerance = 1;
@@ -1706,6 +1815,7 @@ pub const fn apply_safety_profile(cfg: &mut H2AIConfig) {
             cfg.safety.family_constraint = FamilyConstraint::RequireDiverse;
             cfg.safety.require_bivariate_cg = false;
             cfg.safety.shadow_auditor.enabled = true;
+            cfg.safety.shadow_auditor.strict = true;
         }
         SafetyProfile::Strict => {
             cfg.safety.krum_fault_tolerance = 2;
@@ -1714,7 +1824,78 @@ pub const fn apply_safety_profile(cfg: &mut H2AIConfig) {
             cfg.safety.family_constraint = FamilyConstraint::RequireDiverse;
             cfg.safety.require_bivariate_cg = true;
             cfg.safety.shadow_auditor.enabled = true;
+            cfg.safety.shadow_auditor.strict = true;
         }
         SafetyProfile::Custom => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gap_i1_config_defaults() {
+        let cfg = GapI1Config::default();
+        assert!(!cfg.enabled, "I1 must be off by default");
+        assert_eq!(cfg.cold_check_threshold, 0.0);
+        assert!(cfg.synthesis_min_confidence > 0.5);
+        assert!(cfg.max_gap_records_per_wave >= 1);
+        assert!(cfg.researcher_timeout_secs > 0);
+    }
+
+    #[test]
+    fn h2ai_config_has_gap_i1_field() {
+        let cfg = H2AIConfig::default();
+        let _ = cfg.gap_i1; // field must exist
+    }
+
+    #[test]
+    fn gap_k1_config_defaults() {
+        let cfg = GapK1Config::default();
+        assert!(!cfg.enabled);
+        assert!(!cfg.auto_repair_enabled);
+        assert!((cfg.coherence_threshold - 0.80).abs() < 1e-9);
+        assert!((cfg.instability_threshold - 0.10).abs() < 1e-9);
+        assert!((cfg.repair_acceptance_threshold - 0.90).abs() < 1e-9);
+        assert_eq!(cfg.probe_runs, 5);
+        assert_eq!(cfg.repair_candidates, 3);
+        assert_eq!(cfg.probe_cache_ttl_secs, 86400);
+    }
+
+    #[test]
+    fn h2ai_config_has_gap_k1_field() {
+        let cfg = H2AIConfig::default();
+        let _ = cfg.gap_k1;
+    }
+
+    #[test]
+    fn shadow_auditor_config_strict_default_is_false() {
+        let cfg = ShadowAuditorConfig::default();
+        assert!(!cfg.strict, "strict must be false by default");
+    }
+
+    #[test]
+    fn apply_safety_profile_sets_strict_for_production() {
+        let mut cfg = H2AIConfig::default();
+        cfg.safety.profile = SafetyProfile::Production;
+        apply_safety_profile(&mut cfg);
+        assert!(cfg.safety.shadow_auditor.strict);
+    }
+
+    #[test]
+    fn apply_safety_profile_sets_strict_for_strict_profile() {
+        let mut cfg = H2AIConfig::default();
+        cfg.safety.profile = SafetyProfile::Strict;
+        apply_safety_profile(&mut cfg);
+        assert!(cfg.safety.shadow_auditor.strict);
+    }
+
+    #[test]
+    fn apply_safety_profile_keeps_strict_false_for_development() {
+        let mut cfg = H2AIConfig::default();
+        cfg.safety.profile = SafetyProfile::Development;
+        apply_safety_profile(&mut cfg);
+        assert!(!cfg.safety.shadow_auditor.strict);
     }
 }

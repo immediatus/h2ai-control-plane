@@ -1,0 +1,136 @@
+{
+  "_benchmark": "tau2-bench",
+  "_h2ai_validates": "GAP-D7 SemanticSpec IR \u2014 compiled constraint bytecode must remain uncompromising as business rules change across dynamic, non-deterministic interactions",
+  "_tenant_id": "saas-platform-team",
+  "description": "A multi-tenant SaaS API enforces per-tenant rate limits. Tenant quotas are stored in Redis and cached per API node with a 60-second TTL. An ops engineer needs to immediately reduce tenant 'acme-corp' from 10,000 req/min to 2,000 req/min because they are causing noisy-neighbour load. Design the quota change mechanism so that: (1) the change takes effect atomically across all 8 API nodes within one cache TTL (60 seconds), (2) no API node can simultaneously enforce both the old and new limit for the same tenant, (3) every quota change is recorded in an immutable audit log. The tenant_id for access control must come from the authenticated JWT, not from the request body.",
+  "pareto_weights": {
+    "diversity": 0.3,
+    "containment": 0.5,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 5,
+    "tau_min": 0.2,
+    "tau_max": 0.8,
+    "slot_configs": [
+      {
+        "role_frame": "You are a Redis Lua atomicity specialist who has replaced every distributed lock in a high-traffic SaaS platform with single-script Lua EVAL operations. You know that WATCH/MULTI/EXEC can cause retry storms and SETNX is a locking primitive, so your rule is: every quota state mutation uses exactly one Lua EVAL that reads the old value and writes the new value atomically in a single round-trip.",
+        "cot_style": "devils_advocate",
+        "focus_mandate": "Every quota operation (admin quota change AND rate-check enforcement path) must use a single Lua EVAL script. No WATCH/MULTI/EXEC anywhere in the design. No SETNX anywhere. No plain GET followed by SET outside a Lua script. Cache invalidation uses Redis Streams (XADD to a stream, nodes read with XREAD) which guarantees delivery, unlike pub/sub which silently drops messages when subscribers are disconnected. The Lua script atomically reads old_limit, writes new_limit, and returns old_limit.",
+        "rejection_criteria": "Reject designs that: (1) use WATCH/MULTI/EXEC for quota updates or rate-checks even with bounded retries, (2) use SETNX for any purpose, (3) read quota_limit with a plain GET outside of a Lua script, (4) use Redis pub/sub for cache invalidation, (5) use any advisory lock or Redlock.",
+        "constraint_domains": [
+          "atomicity",
+          "concurrency"
+        ]
+      },
+      {
+        "role_frame": "You are a PostgreSQL audit compliance engineer who has implemented SOC 2 Type II audit trails for SaaS platforms. You focus on whether the audit log schema is truly immutable, whether actor_id comes exclusively from the JWT sub claim, and whether the write path guarantees audit durability even under concurrent admin requests.",
+        "cot_style": "backward_chaining",
+        "focus_mandate": "The audit log must be written to PostgreSQL with INSERT-only semantics (no UPDATE, no DELETE on audit rows). Each audit record must contain: tenant_id (from JWT 'tid' claim), actor_id (from JWT 'sub' claim), old_limit, new_limit, and timestamp_ms. The audit write should be decoupled from the Redis Lua EVAL to avoid making the critical path depend on PostgreSQL latency — the Lua script commits first, then the audit is written asynchronously. The tenant_id must come exclusively from the authenticated JWT validated by middleware — never from X-Tenant-ID header or request body.",
+        "rejection_criteria": "Reject designs that: (1) accept tenant_id from request headers or body for access control, (2) write audit logs to Redis lists or RPUSH queues (data can be lost), (3) allow actor_id to come from request body, (4) do not include old_limit in the audit record, (5) use mutable audit storage with UPDATE or DELETE on audit rows.",
+        "constraint_domains": [
+          "audit",
+          "compliance"
+        ]
+      },
+      {
+        "role_frame": "You are a distributed systems engineer who has debugged split-brain enforcement bugs where different API nodes simultaneously enforced different quota limits for the same tenant. You know Redis pub/sub is unreliable (messages are lost when subscribers reconnect) and the only reliable push-based invalidation is Redis Streams with at-least-once delivery.",
+        "cot_style": "step_by_step",
+        "focus_mandate": "After a quota limit is updated via Lua EVAL, all 8 API nodes must observe the new limit within one cache TTL (60 seconds). Use Redis Streams (XADD to 'quota-invalidate-stream') for push-based invalidation: all API nodes run XREAD in a background loop and drop their in-process cache entry for the affected tenant when they receive a message. As a safety net, set the in-process cache TTL to 60 seconds so even a node that never receives the stream message will refresh within the TTL. The rate-check enforcement path reads the quota limit inside a Lua script, not via a plain GET before entering the script.",
+        "rejection_criteria": "Reject designs that: (1) rely on TTL expiry alone without active push-based invalidation, (2) use Redis pub/sub for invalidation (messages can be lost), (3) do not bound the convergence window to ≤ the quota cache TTL, (4) require a service restart or rolling deployment to propagate quota changes to all nodes.",
+        "constraint_domains": [
+          "consistency",
+          "distributed-systems"
+        ]
+      },
+      {
+        "role_frame": "You are a multi-tenant isolation architect who has investigated cross-tenant data leakage incidents in Redis-backed SaaS systems. The root cause in every incident was a non-namespaced Redis key that allowed one tenant's write to overwrite another tenant's data.",
+        "cot_style": "step_by_step",
+        "focus_mandate": "Every Redis key that stores per-tenant quota state must be prefixed with the tenant_id extracted from the JWT: 'quota:limit:{tenant_id}', 'quota:version:{tenant_id}', 'quota:counter:{tenant_id}'. Use Redis hash-tagging {tenant_id} to ensure keys for the same tenant route to the same Redis cluster slot. The tenant_id must come from the authenticated JWT 'tid' claim validated by auth middleware — not from the X-Tenant-ID HTTP header, not from the request body, not from the URL path parameter. Rate limit counters must be fully per-tenant so that one tenant's traffic cannot exhaust another's quota budget.",
+        "rejection_criteria": "Reject designs that: (1) use non-namespaced Redis keys for tenant-specific data, (2) extract tenant_id from any user-supplied request field for access control decisions, (3) use a global or shared audit queue without per-tenant scoping, (4) allow a tenant to enumerate or influence another tenant's quota keys.",
+        "constraint_domains": [
+          "multi-tenancy",
+          "security"
+        ]
+      },
+      {
+        "role_frame": "You are an integration architect who survived a cascade failure where replica lag, admin API bugs, and retry storms all happened simultaneously. You design quota change systems where all three constraints — atomic Lua-only updates, bounded-convergence invalidation, and immutable tenant-scoped audit — are satisfied concurrently with no exceptions and no fallback paths that weaken any guarantee.",
+        "cot_style": "step_by_step",
+        "focus_mandate": "Design the complete quota change mechanism so that all five requirements are met simultaneously: (1) admin endpoint derives tenant_id ONLY from JWT 'tid' claim; (2) quota change executes a single Lua EVAL that atomically reads old_limit and writes new_limit; (3) cache invalidation uses Redis Stream XADD after the Lua commit; (4) PostgreSQL audit INSERT contains {tenant_id, actor_id from JWT sub, old_limit, new_limit, timestamp_ms}; (5) rate-check enforcement reads quota_limit inside a Lua script, not a plain GET. No WATCH/MULTI/EXEC, no SETNX, no pub/sub, no advisory locks anywhere in the design.",
+        "rejection_criteria": "Reject designs missing even one of: (a) Lua EVAL for quota update, (b) Redis Stream for invalidation, (c) PostgreSQL INSERT for audit, (d) tenant_id exclusively from JWT, (e) Lua-based quota read on rate-check path. Reject designs using WATCH/MULTI/EXEC, SETNX, RPUSH for audit, Redis pub/sub, advisory locks, or plain GET+SET for quota operations.",
+        "constraint_domains": [
+          "atomicity",
+          "audit",
+          "multi-tenancy",
+          "consistency"
+        ]
+      }
+    ],
+    "roles": [
+      {
+        "agent_id": "exp_A",
+        "role": "Executor",
+        "tau": 0.2
+      },
+      {
+        "agent_id": "exp_B",
+        "role": "Executor",
+        "tau": 0.35
+      },
+      {
+        "agent_id": "exp_C",
+        "role": "Executor",
+        "tau": 0.5
+      },
+      {
+        "agent_id": "exp_D",
+        "role": "Executor",
+        "tau": 0.65
+      },
+      {
+        "agent_id": "exp_E",
+        "role": "Executor",
+        "tau": 0.8
+      }
+    ]
+  },
+  "constraints": [
+    "CONSTRAINT-TAU-1",
+    "CONSTRAINT-TAU-2",
+    "CONSTRAINT-008"
+  ],
+  "context": "Infrastructure: Redis 7.2 (quota counters, quota limits), 8 API nodes behind a load balancer, PostgreSQL (audit log). Current broken design: quota change uses a Redis GET to read the current limit, then a SET to write the new limit (read-then-write sequence). Under concurrent quota changes for multiple tenants, two SET calls can race and one silently overwrites the other. The 8 API nodes cache the quota limit in-process with no invalidation signal \u2014 some nodes may enforce the old limit for up to 60 seconds after the change. The tenant_id is accepted from the X-Tenant-ID request header (not the JWT) \u2014 a malicious client can impersonate another tenant. No audit log exists for quota changes.",
+  "_timeout_s": 7200,
+  "_compare_semantics": "no_regression",
+  "_expected": {
+    "terminal": "MergeResolved",
+    "valid_proposals_min": 1,
+    "should_prune": [
+      {
+        "description": "Proposal that updates the quota with Redis GET + SET sequence with an optimistic lock (WATCH/MULTI/EXEC) but does not guarantee that all 8 API nodes invalidate their cache within one TTL",
+        "violates": "CONSTRAINT-TAU-2 \u2014 convergence window may exceed one quota-cache TTL; split-view enforcement is possible"
+      },
+      {
+        "description": "Proposal that reads tenant_id from the X-Tenant-ID HTTP header and trusts it for access control",
+        "violates": "CONSTRAINT-TAU-1 \u2014 user-supplied tenant_id allows tenant impersonation; must be derived from the authenticated JWT"
+      }
+    ],
+    "should_pass": [
+      "Quota change uses a Redis Lua EVAL script: EVAL 'local old = redis.call(GET, KEYS[1]); redis.call(SET, KEYS[1], ARGV[1]); return old' 1 quota:{tenant_id} {new_limit}. The script returns the old value atomically. After the Lua EVAL commits, publish a Redis pub/sub invalidation message on channel quota-invalidate:{tenant_id} \u2014 all 8 API nodes subscribe and immediately drop their in-process cache entry for that tenant, forcing a re-fetch from Redis on the next request. This bounds the convergence window to network RTT, well within the 60-second TTL. Audit: write {tenant_id, actor_id from JWT sub claim, old_limit, new_limit, timestamp_ms} to PostgreSQL quota_audit table with INSERT (no UPDATE or DELETE on audit rows). tenant_id is extracted from the JWT 'tid' claim validated by the auth middleware \u2014 the X-Tenant-ID header is ignored for access control."
+    ],
+    "_review_checklist": [
+      {
+        "id": "TAU/1",
+        "text": "Does the proposed design use a Redis Lua EVAL script (or CAS/compare-and-swap) to atomically update the quota limit \u2014 not a separate GET followed by SET \u2014 so that concurrent quota changes cannot race and silently overwrite each other?"
+      },
+      {
+        "id": "TAU/2",
+        "text": "Does the proposed design derive the tenant_id from the authenticated JWT (e.g., from a 'tid' claim validated by the auth middleware) \u2014 not from a user-supplied request header or body parameter?"
+      },
+      {
+        "id": "TAU/3",
+        "text": "Does the proposed design record every quota change in an immutable audit log with: old quota value, new quota value, tenant_id, actor identity (who made the change), and timestamp?"
+      }
+    ]
+  }
+}

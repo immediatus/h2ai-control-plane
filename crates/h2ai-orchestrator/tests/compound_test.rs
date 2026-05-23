@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use h2ai_adapters::MockAdapter;
 use h2ai_orchestrator::compound::{CompoundError, CompoundTaskEngine, CompoundTaskInput};
 use h2ai_orchestrator::scheduler::{SchedulerError, SubtaskExecutor};
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::config::ParetoWeights;
 use h2ai_types::identity::{SubtaskId, TaskId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};

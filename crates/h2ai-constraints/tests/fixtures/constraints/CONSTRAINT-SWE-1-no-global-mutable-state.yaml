@@ -1,0 +1,25 @@
+id: CONSTRAINT-SWE-1
+title: "No Global Mutable State — Pure Function Correctness"
+severity: hard
+threshold: 0.6
+domains:
+  - software-engineering
+  - code-correctness
+remediation_hint: "Functions must be deterministic: same inputs always produce same outputs. Avoid global variables, class-level mutable state, and thread-unsafe singleton patterns. Side effects (I/O, DB writes) must be explicitly declared and isolated from the logic under repair."
+criteria:
+  pass: |
+    All of the following are true:
+    - No global mutable variables are created or modified by the fix
+    - Function output depends only on its inputs (referential transparency preserved)
+    - Concurrent calls to the fixed function produce identical results (no shared mutable state race)
+    - The test suite passes deterministically across N consecutive runs with no ordering dependency
+  partial: "Function is mostly pure but introduces an optional mutable cache or lazy-init singleton that could cause flakiness under concurrency."
+  fail: |
+    Any of the following:
+    - Fix introduces a new global variable that accumulates state across calls
+    - Two concurrent invocations of the fixed function return different results for identical inputs
+    - Fix relies on execution ordering of tests to produce a correct result
+  checks:
+    - Does the proposed fix avoid creating or modifying any global or class-level mutable variable?
+    - Can the fixed function be called concurrently from multiple goroutines/threads without producing different results for identical inputs?
+    - Does the fix avoid adding any new global caches, counters, or singletons?

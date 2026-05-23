@@ -347,6 +347,7 @@ fn apply_branch_pruned_increments_proposals_pruned() {
             task_id: tid.clone(),
             explorer_id: explorer_id(),
             reason: "constraint violation".into(),
+            raw_output: String::new(),
             constraint_error_cost: RoleErrorCost::new(0.8).unwrap(),
             violated_constraints: vec![],
             timestamp: Utc::now(),

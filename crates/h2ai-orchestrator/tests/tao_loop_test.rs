@@ -51,8 +51,8 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop, TaoMultiplierEstimator};
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::{OutputSchemaConfig, TaoConfig};
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -381,6 +381,77 @@ fn tao_multiplier_estimator_negative_q_before_skipped() {
     assert_eq!(estimator.sample_count(), 0);
 }
 
+// ── bypass_tao ────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn tao_bypass_skips_retry_loop_and_returns_single_turn() {
+    let adapter = MockAdapter::new("bypass output".into());
+    let cfg = TaoConfig {
+        max_turns: 3,
+        verify_pattern: Some("NEVER_MATCHES".into()), // would fail if TAO ran
+        ..Default::default()
+    };
+    let result = TaoLoop::run(TaoInput {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        adapter: &adapter as &dyn IComputeAdapter,
+        initial_request: ComputeRequest {
+            system_context: "ctx".into(),
+            task: "task".into(),
+            tau: TauValue::new(0.5).unwrap(),
+            max_tokens: 128,
+        },
+        config: cfg,
+        schema_config: None,
+        generation: 0,
+        bypass_tao: true, // key: skip TAO
+    })
+    .await;
+    let proposal = result.expect("bypass_tao must succeed unconditionally");
+    assert_eq!(
+        proposal.tao_turns, 1,
+        "bypass must return after exactly 1 turn"
+    );
+    assert!(
+        proposal.iterations.is_empty(),
+        "bypass must not emit iteration events"
+    );
+    assert!(
+        proposal.turn1_output.is_none(),
+        "bypass has no multi-turn turn1"
+    );
+    assert!(proposal.event.raw_output.contains("bypass output"));
+}
+
+#[tokio::test]
+async fn tao_proposal_debug_format() {
+    let adapter = MockAdapter::new("answer".into());
+    let result = TaoLoop::run(TaoInput {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        adapter: &adapter as &dyn IComputeAdapter,
+        initial_request: ComputeRequest {
+            system_context: "ctx".into(),
+            task: "task".into(),
+            tau: TauValue::new(0.5).unwrap(),
+            max_tokens: 64,
+        },
+        config: TaoConfig {
+            max_turns: 1,
+            verify_pattern: None,
+            ..Default::default()
+        },
+        schema_config: None,
+        generation: 0,
+        bypass_tao: false,
+    })
+    .await
+    .unwrap();
+    let dbg = format!("{result:?}");
+    assert!(dbg.contains("TaoProposal"));
+    assert!(dbg.contains("tao_turns"));
+}
+
 #[test]
 fn persist_state_respects_configured_warmup() {
     let mut est = TaoMultiplierEstimator::new_with_alpha(0.1).with_warmup(3);
@@ -408,5 +479,284 @@ fn persist_state_respects_configured_warmup() {
     assert!(
         est2.persist_state().is_some(),
         "at warmup=5: should be Some after 5 samples"
+    );
+}
+
+// ── TAO timeout retry ─────────────────────────────────────────────────────────
+
+/// Mock adapter that sleeps on the first call (simulating a slow LLM) then returns
+/// immediately on subsequent calls, recording the `max_tokens` of each request.
+#[derive(Debug)]
+struct SlowFirstCallAdapter {
+    call_count: std::sync::Arc<std::sync::Mutex<u32>>,
+    recorded_max_tokens: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    slow_duration_secs: u64,
+    output: String,
+    kind: h2ai_types::config::AdapterKind,
+}
+
+impl SlowFirstCallAdapter {
+    fn new(slow_duration_secs: u64, output: impl Into<String>) -> Self {
+        Self {
+            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
+            recorded_max_tokens: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            slow_duration_secs,
+            output: output.into(),
+            kind: h2ai_types::config::AdapterKind::CloudGeneric {
+                endpoint: "mock://slow-first".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IComputeAdapter for SlowFirstCallAdapter {
+    async fn execute(
+        &self,
+        req: ComputeRequest,
+    ) -> Result<h2ai_types::adapter::ComputeResponse, h2ai_types::adapter::AdapterError> {
+        let call_num = {
+            let mut c = self.call_count.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        {
+            let mut toks = self.recorded_max_tokens.lock().unwrap();
+            toks.push(req.max_tokens);
+        }
+        if call_num == 1 {
+            tokio::time::sleep(std::time::Duration::from_secs(self.slow_duration_secs)).await;
+        }
+        Ok(h2ai_types::adapter::ComputeResponse {
+            output: self.output.clone(),
+            token_cost: 0,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    }
+
+    fn kind(&self) -> &h2ai_types::config::AdapterKind {
+        &self.kind
+    }
+}
+
+#[test]
+fn retry_on_timeout_true_fields_in_default() {
+    let cfg = TaoConfig::default();
+    assert!(
+        cfg.retry_on_timeout,
+        "default retry_on_timeout must be true"
+    );
+    assert_eq!(
+        cfg.timeout_retry_max_tokens, 512,
+        "default timeout_retry_max_tokens must be 512"
+    );
+}
+
+#[tokio::test]
+async fn retry_on_timeout_false_propagates_error() {
+    // Adapter always sleeps for 3 s; timeout is 1 s → first call times out.
+    // With retry_on_timeout=false the error must propagate immediately.
+    let adapter = SlowFirstCallAdapter::new(3, "would succeed");
+    let cfg = TaoConfig {
+        max_turns: 1,
+        verify_pattern: None,
+        per_turn_timeout_secs: 1,
+        retry_on_timeout: false,
+        ..Default::default()
+    };
+    let result = TaoLoop::run(TaoInput {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        adapter: &adapter as &dyn IComputeAdapter,
+        initial_request: ComputeRequest {
+            system_context: "ctx".into(),
+            task: "task".into(),
+            tau: TauValue::new(0.5).unwrap(),
+            max_tokens: 1024,
+        },
+        config: cfg,
+        schema_config: None,
+        generation: 0,
+        bypass_tao: false,
+    })
+    .await;
+    assert!(result.is_err(), "expected Err on timeout with retry=false");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("TAO timeout"),
+        "expected 'TAO timeout' in error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn retry_on_timeout_true_retries_with_reduced_max_tokens() {
+    // First call sleeps 3 s (past 1 s timeout); second call returns immediately.
+    // retry_on_timeout=true → loop retries with max_tokens=512.
+    let adapter = SlowFirstCallAdapter::new(3, "fast retry output");
+    let recorded = adapter.recorded_max_tokens.clone();
+    let cfg = TaoConfig {
+        max_turns: 1,
+        verify_pattern: None,
+        per_turn_timeout_secs: 1,
+        retry_on_timeout: true,
+        timeout_retry_max_tokens: 512,
+        ..Default::default()
+    };
+    let result = TaoLoop::run(TaoInput {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        adapter: &adapter as &dyn IComputeAdapter,
+        initial_request: ComputeRequest {
+            system_context: "ctx".into(),
+            task: "task".into(),
+            tau: TauValue::new(0.5).unwrap(),
+            max_tokens: 1024,
+        },
+        config: cfg,
+        schema_config: None,
+        generation: 0,
+        bypass_tao: false,
+    })
+    .await;
+    assert!(result.is_ok(), "expected Ok after retry, got: {result:?}");
+    let proposal = result.unwrap();
+    assert!(
+        proposal.event.raw_output.contains("fast retry output"),
+        "output must come from retry call"
+    );
+    let toks = recorded.lock().unwrap();
+    assert_eq!(toks.len(), 2, "exactly 2 adapter calls expected");
+    assert_eq!(toks[0], 1024, "first call uses original max_tokens");
+    assert_eq!(toks[1], 512, "retry call must use timeout_retry_max_tokens");
+}
+
+#[tokio::test]
+async fn retry_on_timeout_bypass_path_retries_with_reduced_max_tokens() {
+    // Same as above but via bypass_tao=true path.
+    let adapter = SlowFirstCallAdapter::new(3, "bypass retry output");
+    let recorded = adapter.recorded_max_tokens.clone();
+    let cfg = TaoConfig {
+        max_turns: 1,
+        verify_pattern: None,
+        per_turn_timeout_secs: 1,
+        retry_on_timeout: true,
+        timeout_retry_max_tokens: 512,
+        ..Default::default()
+    };
+    let result = TaoLoop::run(TaoInput {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        adapter: &adapter as &dyn IComputeAdapter,
+        initial_request: ComputeRequest {
+            system_context: "ctx".into(),
+            task: "task".into(),
+            tau: TauValue::new(0.5).unwrap(),
+            max_tokens: 2048,
+        },
+        config: cfg,
+        schema_config: None,
+        generation: 0,
+        bypass_tao: true,
+    })
+    .await;
+    assert!(
+        result.is_ok(),
+        "expected Ok after bypass retry, got: {result:?}"
+    );
+    let proposal = result.unwrap();
+    assert!(proposal.event.raw_output.contains("bypass retry output"));
+    let toks = recorded.lock().unwrap();
+    assert_eq!(toks.len(), 2, "exactly 2 adapter calls expected for bypass");
+    assert_eq!(toks[0], 2048, "first bypass call uses original max_tokens");
+    assert_eq!(
+        toks[1], 512,
+        "bypass retry call must use timeout_retry_max_tokens"
+    );
+}
+
+/// Mock adapter that ALWAYS sleeps for `slow_duration_secs` regardless of call count.
+#[derive(Debug)]
+struct AlwaysSlowAdapter {
+    slow_duration_secs: u64,
+    kind: h2ai_types::config::AdapterKind,
+}
+
+impl AlwaysSlowAdapter {
+    fn new(slow_duration_secs: u64) -> Self {
+        Self {
+            slow_duration_secs,
+            kind: h2ai_types::config::AdapterKind::CloudGeneric {
+                endpoint: "mock://always-slow".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IComputeAdapter for AlwaysSlowAdapter {
+    async fn execute(
+        &self,
+        _req: ComputeRequest,
+    ) -> Result<h2ai_types::adapter::ComputeResponse, h2ai_types::adapter::AdapterError> {
+        tokio::time::sleep(std::time::Duration::from_secs(self.slow_duration_secs)).await;
+        Ok(h2ai_types::adapter::ComputeResponse {
+            output: "never reached".into(),
+            token_cost: 0,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    }
+
+    fn kind(&self) -> &h2ai_types::config::AdapterKind {
+        &self.kind
+    }
+}
+
+#[tokio::test]
+async fn retry_on_timeout_double_timeout_propagates_error() {
+    // Adapter always sleeps 3 s; timeout is 1 s.
+    // With retry_on_timeout=true on the bypass path: first call times out,
+    // retry is attempted, second call ALSO times out → must return Err containing
+    // "TAO timeout".
+    let adapter = AlwaysSlowAdapter::new(3);
+    let cfg = TaoConfig {
+        max_turns: 1,
+        verify_pattern: None,
+        per_turn_timeout_secs: 1,
+        retry_on_timeout: true,
+        timeout_retry_max_tokens: 512,
+        ..Default::default()
+    };
+    let result = TaoLoop::run(TaoInput {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        adapter: &adapter as &dyn IComputeAdapter,
+        initial_request: ComputeRequest {
+            system_context: "ctx".into(),
+            task: "task".into(),
+            tau: TauValue::new(0.5).unwrap(),
+            max_tokens: 1024,
+        },
+        config: cfg,
+        schema_config: None,
+        generation: 0,
+        bypass_tao: true,
+    })
+    .await;
+    assert!(
+        result.is_err(),
+        "expected Err when both calls time out, got Ok"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("TAO timeout"),
+        "expected 'TAO timeout' in error, got: {msg}"
     );
 }

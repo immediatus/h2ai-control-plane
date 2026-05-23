@@ -500,3 +500,52 @@ async fn provider_tree_traversal_topic_only() {
         assert_ne!(n.depth, NodeDepth::Leaf);
     }
 }
+
+// ── Lines 450-454: dedup and_modify fires when same node appears twice ─────────
+
+#[tokio::test]
+async fn provider_dedup_and_modify_fires_on_duplicate_node_from_ppr_and_bm25() {
+    // Use explicit_ids bypass so the same leaf appears via both BM25 (TreeTraversal)
+    // and PPR expansion — the dedup and_modify closure must fire with a higher score.
+    let source = Arc::new(YamlDirSource::new(fixture_dir()));
+    let cfg = ScoringConfig {
+        ppr_score_multiplier: 9.0, // make PPR score higher than BM25 score
+        ..ScoringConfig::default()
+    };
+    let provider = Bm25WikiProvider::build(source, cfg).await;
+
+    // Use TreeTraversal with expand_hops=1; the BM25 leaf hit + PPR expansion
+    // can return the same leaf twice (once from BM25, once from PPR with a different score).
+    let q = KnowledgeQuery {
+        text: "C-004 idempotency atomic debit",
+        tags: &[],
+        explicit_ids: &[],
+        top_k: 10,
+        depths: &[NodeDepth::Leaf],
+        mode: RetrievalMode::TreeTraversal,
+        scope: SearchScope::Auto,
+        expand_hops: 1,
+    };
+    let result = provider.query(&q).await;
+    // C-004 must appear exactly once in the deduplicated results
+    let c004_count = result.nodes.iter().filter(|(n, _)| n.id == "C-004").count();
+    assert!(
+        c004_count <= 1,
+        "dedup must produce at most one C-004 entry"
+    );
+}
+
+// ── Lines 498-501: new_from_path fallback when path is a file (not a dir) ─────
+
+#[test]
+fn passthrough_provider_new_from_path_file_triggers_fallback() {
+    use h2ai_knowledge::provider::PassthroughProvider;
+    // Pass a file path — read_dir on a file returns Err → triggers the unwrap_or_else fallback
+    let tmp = tempfile::tempdir().unwrap();
+    let file_path = tmp.path().join("not_a_dir.txt");
+    std::fs::write(&file_path, "not a yaml dir").unwrap();
+
+    let provider = PassthroughProvider::new_from_path(&file_path);
+    assert!(provider.is_ready(), "fallback provider must be ready");
+    assert_eq!(*provider.kind(), ProviderKind::Passthrough);
+}

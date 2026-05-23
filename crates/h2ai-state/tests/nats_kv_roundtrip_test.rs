@@ -904,7 +904,7 @@ async fn task_meta_state_put_get_roundtrip() {
     let Some(client) = connect().await else {
         return;
     };
-    let tenant = TenantId::default_tenant();
+    let tenant = TenantId::from("test-meta-putget");
     client
         .ensure_tenant_reasoning_buckets(&tenant, TEST_CHECKPOINT_PREFIX, TEST_META_PREFIX)
         .await
@@ -934,7 +934,7 @@ async fn task_meta_state_get_returns_none_when_absent() {
     let Some(client) = connect().await else {
         return;
     };
-    let tenant = TenantId::default_tenant();
+    let tenant = TenantId::from("test-meta-absent");
     client
         .ensure_tenant_reasoning_buckets(&tenant, TEST_CHECKPOINT_PREFIX, TEST_META_PREFIX)
         .await
@@ -952,11 +952,23 @@ async fn list_task_meta_states_includes_written_entries() {
     let Some(client) = connect().await else {
         return;
     };
-    let tenant = TenantId::default_tenant();
+    let tenant = TenantId::from("test-meta-list");
     client
         .ensure_tenant_reasoning_buckets(&tenant, TEST_CHECKPOINT_PREFIX, TEST_META_PREFIX)
         .await
         .expect("ensure buckets");
+
+    // Delete and recreate the meta bucket so this test is isolated from
+    // state accumulated by previous test runs.
+    let meta_bucket = h2ai_state::nats::tenant_bucket_name(TEST_META_PREFIX, &tenant);
+    client
+        .delete_kv_bucket(&meta_bucket)
+        .await
+        .expect("delete meta bucket");
+    client
+        .ensure_tenant_reasoning_buckets(&tenant, TEST_CHECKPOINT_PREFIX, TEST_META_PREFIX)
+        .await
+        .expect("recreate buckets");
 
     let task_id = TaskId::new();
     let meta = make_task_meta_state(task_id.clone(), tenant.clone());
@@ -966,7 +978,7 @@ async fn list_task_meta_states_includes_written_entries() {
         .expect("put_task_meta_state");
 
     let list = client
-        .list_task_meta_states(&tenant, TEST_META_PREFIX, 100)
+        .list_task_meta_states(&tenant, TEST_META_PREFIX, 10)
         .await;
     let ids: Vec<String> = list.iter().map(|m| m.task_id.to_string()).collect();
     assert!(ids.contains(&task_id.to_string()));

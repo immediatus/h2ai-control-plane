@@ -1,0 +1,73 @@
+# Benchmark: OSWorld-Verified — long-horizon multi-step agentic pipeline
+# Validates: USL-based capacity planning + AIMD slow-start throttle
+# Safety profile "production": krum=1 (n≥2f+3=5 required), diversity=0.15, shadow_auditor enabled + strict=true (AND-vote always binding)
+
+nats_url = "nats://host.docker.internal:4222"
+verifier_consensus_passes = 1
+max_autonomic_retries = 4
+
+[safety]
+profile = "production"
+
+[constraint_wiki]
+mode = "fs"
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-4"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-5"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 3
+coverage_threshold = 0.75
+
+debug_log_path = "/tmp/h2ai-debug-osworld-long-horizon.ndjson"
+
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 300

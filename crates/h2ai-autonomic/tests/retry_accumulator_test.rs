@@ -7,6 +7,10 @@ fn v(id: &str) -> ConstraintViolation {
         score: 0.0,
         severity_label: "Hard".to_string(),
         remediation_hint: Some(format!("Fix {id}")),
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }
 }
 

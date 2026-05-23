@@ -41,6 +41,27 @@ impl DispatchLoop {
     /// Returns an error if subscribing to the NATS task subject or terminate
     /// subject fails.
     pub async fn run(self) -> anyhow::Result<()> {
+        self.run_inner(None).await
+    }
+
+    /// Like [`run`], but fires `ready_tx` after both subscriptions are established.
+    /// Use in tests to synchronise the spawned loop before sending tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if subscribing to the NATS task subject or terminate
+    /// subject fails.
+    pub async fn run_with_ready(
+        self,
+        ready_tx: tokio::sync::oneshot::Sender<()>,
+    ) -> anyhow::Result<()> {
+        self.run_inner(Some(ready_tx)).await
+    }
+
+    async fn run_inner(
+        self,
+        ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> anyhow::Result<()> {
         let mut sub = self
             .client
             .subscribe("h2ai.tasks.ephemeral.>".to_owned())
@@ -48,6 +69,10 @@ impl DispatchLoop {
 
         let terminate_subject = h2ai_nats::subjects::agent_terminate_subject(&self.agent_id);
         let mut terminate_sub = self.client.subscribe(terminate_subject).await?;
+
+        if let Some(tx) = ready_tx {
+            let _ = tx.send(());
+        }
 
         loop {
             tokio::select! {

@@ -1,0 +1,28 @@
+id: CONSTRAINT-BFT-2
+title: "Migration Rollback — Every Step Must Have a Tested, Timed Rollback Path"
+severity: hard
+threshold: 0.6
+domains:
+  - production-safety
+  - database
+  - devops
+related_to:
+  - CONSTRAINT-BFT-1
+remediation_hint: "Each migration step must have a corresponding rollback script that has been executed in a staging environment with production-scale data volumes. The rollback must complete in under 5 minutes. A backup with checksum verification must be confirmed before any destructive-adjacent step begins."
+criteria:
+  pass: |
+    All of the following are true:
+    - A backup is taken and its checksum verified before any schema change begins
+    - Every forward migration step has a corresponding rollback script
+    - The rollback is executable in under 5 minutes without manual data reconstruction
+    - Both the forward migration and the rollback have been tested against a staging replica of the production database
+  partial: "Rollback scripts exist but have not been tested against a production-scale data volume, or rollback time is not bounded."
+  fail: |
+    Any of the following:
+    - No rollback procedure is documented for any migration step
+    - Rollback requires manual data reconstruction or point-in-time restore (not a scripted procedure)
+    - Migration proceeds without a prior backup checksum verification
+  checks:
+    - Does the plan confirm a backup (with checksum or restore-test verification) before beginning any schema change?
+    - Does every migration step have a specific, executable rollback script that requires no manual reconstruction?
+    - Is the rollback designed and tested to complete in under 5 minutes at production data scale?

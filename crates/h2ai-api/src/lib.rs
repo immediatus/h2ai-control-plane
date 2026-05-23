@@ -39,6 +39,7 @@ pub mod error;
 pub mod metrics;
 pub mod opro;
 pub mod oracle;
+pub mod oracle_worker;
 pub mod recovery;
 pub mod rho_ema;
 pub mod routes;

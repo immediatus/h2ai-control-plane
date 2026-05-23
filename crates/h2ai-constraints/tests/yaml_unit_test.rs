@@ -195,3 +195,145 @@ fn yaml_soft_severity_with_threshold() {
         other => panic!("expected Soft, got {other:?}"),
     }
 }
+
+// ── Lines 234-235: build_rubric includes domain context ──────────────────────
+
+#[test]
+fn yaml_build_rubric_appends_domains() {
+    let yaml = "id: C-DOM\ntitle: Domain Constraint\nseverity: hard\ndomains:\n  - payments\n  - compliance\ncriteria:\n  pass: ok\n  fail: bad\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(
+        rubric.contains("Domain: payments, compliance"),
+        "rubric must include domain context"
+    );
+}
+
+// ── Lines 237-239: build_rubric includes remediation_hint ────────────────────
+
+#[test]
+fn yaml_build_rubric_appends_remediation_hint() {
+    let yaml = "id: C-HINT\ntitle: Hint Constraint\nseverity: hard\nremediation_hint: 'Use exponential backoff'\ncriteria:\n  pass: ok\n  fail: bad\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(
+        rubric.contains("Remediation hint: Use exponential backoff"),
+        "rubric must include remediation hint"
+    );
+}
+
+// ── Lines 256-260: build_rubric failure_modes with impact field ───────────────
+
+#[test]
+fn yaml_build_rubric_failure_modes_with_impact() {
+    let yaml = "id: C-FM\ntitle: Failure Modes\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\nfailure_modes:\n  - id: FM-1\n    name: Timeout\n    description: Request times out\n    impact: Revenue loss\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(
+        rubric.contains("Failure Modes"),
+        "rubric must have failure modes section"
+    );
+    assert!(
+        rubric.contains("Impact: Revenue loss"),
+        "rubric must include impact"
+    );
+}
+
+// ── Lines 264-278: build_rubric negative_examples with all optional fields ───
+
+#[test]
+fn yaml_build_rubric_negative_examples_with_label_code_rationale() {
+    let yaml = "id: C-NEG\ntitle: Negative Examples\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\nnegative_examples:\n  - scenario: 'Blocking sync call'\n    code: 'db.query()'\n    why_wrong: 'Blocks the event loop'\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(rubric.contains("Negative Examples"), "must have section");
+    assert!(
+        rubric.contains("Blocking sync call"),
+        "must have scenario label"
+    );
+    assert!(rubric.contains("db.query()"), "must have code");
+    assert!(
+        rubric.contains("Why wrong: Blocks the event loop"),
+        "must have rationale"
+    );
+}
+
+#[test]
+fn yaml_build_rubric_negative_examples_empty_label_and_rationale_skipped() {
+    // Example with no scenario, no code, no why_wrong → label and rationale writes are skipped
+    let yaml = "id: C-NEG-EMPTY\ntitle: Negative Empty\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\nnegative_examples:\n  - {}\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(
+        rubric.contains("Negative Examples"),
+        "section must still appear"
+    );
+}
+
+// ── Lines 280-294: build_rubric positive_examples with all optional fields ───
+
+#[test]
+fn yaml_build_rubric_positive_examples_with_label_code_rationale() {
+    let yaml = "id: C-POS\ntitle: Positive Examples\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\npositive_examples:\n  - scenario: 'Async handler'\n    code: 'async fn handle()'\n    why_correct: 'Non-blocking'\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(rubric.contains("Positive Examples"), "must have section");
+    assert!(rubric.contains("Async handler"), "must have scenario label");
+    assert!(rubric.contains("async fn handle()"), "must have code");
+    assert!(
+        rubric.contains("Why correct: Non-blocking"),
+        "must have rationale"
+    );
+}
+
+#[test]
+fn yaml_build_rubric_positive_examples_empty_label_skipped() {
+    // Positive example with no scenario/why_correct → label and rationale skipped (empty string branch)
+    let yaml = "id: C-POS-EMPTY\ntitle: Positive Empty\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\npositive_examples:\n  - code: 'let x = 1;'\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let rubric = parsed.build_rubric();
+    assert!(rubric.contains("Positive Examples"), "section must appear");
+    assert!(rubric.contains("let x = 1;"), "code must appear");
+    assert!(
+        !rubric.contains("Scenario:"),
+        "empty label must not produce Scenario: line"
+    );
+}
+
+// ── Lines 307-310: Hard severity with n>=2 checks → threshold = (n-1)/n ──────
+
+#[test]
+fn yaml_hard_severity_with_two_binary_checks_computes_fractional_threshold() {
+    // 2 checks → threshold = (2-1)/2 = 0.5
+    let yaml = "id: C-BIN2\ntitle: Binary Checks\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\n  checks:\n    - Check A\n    - Check B\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let doc = parsed.into_constraint_doc();
+    match doc.severity {
+        ConstraintSeverity::Hard { threshold } => {
+            let expected = 1.0_f64 / 2.0_f64;
+            assert!(
+                (threshold - expected).abs() < 1e-9,
+                "2-check threshold must be 0.5, got {threshold}"
+            );
+        }
+        other => panic!("expected Hard, got {other:?}"),
+    }
+}
+
+#[test]
+fn yaml_hard_severity_with_three_binary_checks_computes_fractional_threshold() {
+    // 3 checks → threshold = (3-1)/3 ≈ 0.667
+    let yaml = "id: C-BIN3\ntitle: Three Checks\nseverity: hard\ncriteria:\n  pass: ok\n  fail: bad\n  checks:\n    - Check A\n    - Check B\n    - Check C\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let doc = parsed.into_constraint_doc();
+    match doc.severity {
+        ConstraintSeverity::Hard { threshold } => {
+            let expected = 2.0_f64 / 3.0_f64;
+            assert!(
+                (threshold - expected).abs() < 1e-9,
+                "3-check threshold must be 2/3, got {threshold}"
+            );
+        }
+        other => panic!("expected Hard, got {other:?}"),
+    }
+}

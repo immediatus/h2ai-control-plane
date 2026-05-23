@@ -1,0 +1,103 @@
+{
+  "_benchmark": "HLE",
+  "_h2ai_validates": "Byzantine-robust aggregation (Krum and Weiszfeld) \u2014 framework must synthesize a consensus backbone across multiple expert proposals that exceeds single-model accuracy",
+  "_tenant_id": "research-team",
+  "description": "Design a Byzantine Fault Tolerant (BFT) consensus protocol for a system of n nodes where up to f nodes may be Byzantine (equivocating \u2014 sending conflicting messages to different correct nodes). Prove: (1) the minimum n required for safety under f Byzantine faults, explaining why n=3f is insufficient, (2) that two honest nodes cannot commit different values in the same view even when f Byzantine nodes send conflicting votes, (3) that the protocol terminates after GST (Global Stabilization Time) under the partial synchrony model even if f nodes are Byzantine, and (4) that a crashed or Byzantine leader can be replaced by a view-change mechanism that terminates in O(f) rounds.",
+  "pareto_weights": {
+    "diversity": 0.25,
+    "containment": 0.55,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 5,
+    "tau_min": 0.15,
+    "tau_max": 0.9,
+    "slot_configs": [
+      {
+        "role_frame": "You are a distributed systems theorist who has formally verified BFT protocols using TLA+ and Coq. You focus on verifying that quorum intersection arguments are tight \u2014 that the n\u22653f+1 bound is both necessary and sufficient \u2014 and that the impossibility proof for n=3f constructs a concrete attack.",
+        "cot_style": "first_principles",
+        "focus_mandate": "Formal correctness of the quorum intersection proof for safety, and whether the impossibility construction for n=3f is valid (constructs two quorums whose intersection contains only Byzantine nodes).",
+        "rejection_criteria": "Loose quorum bounds, missing impossibility construction for n=3f, conflating crash-fault tolerance with Byzantine fault tolerance.",
+        "constraint_domains": [
+          "formal-methods",
+          "safety"
+        ]
+      },
+      {
+        "role_frame": "You are a protocol engineer who implemented PBFT and HotStuff in production and has deep experience with partial synchrony models. You focus on whether the liveness proof correctly uses GST and whether the view-change mechanism terminates in O(f) not O(n\u00b2) rounds.",
+        "cot_style": "devils_advocate",
+        "focus_mandate": "Liveness proof correctness under partial synchrony \u2014 whether the GST assumption is used properly, whether the view-change terminates in O(f) rounds, and whether the protocol is immune to Byzantine leaders during the view-change phase.",
+        "rejection_criteria": "Liveness proof that assumes synchrony before GST, view-change that requires O(n\u00b2) messages, leader-election that can be stalled by f Byzantine nodes.",
+        "constraint_domains": [
+          "liveness",
+          "protocol-design"
+        ]
+      }
+    ],
+    "roles": [
+      {
+        "agent_id": "exp_A",
+        "role": "Executor",
+        "tau": 0.2
+      },
+      {
+        "agent_id": "exp_B",
+        "role": "Executor",
+        "tau": 0.35
+      },
+      {
+        "agent_id": "exp_C",
+        "role": "Executor",
+        "tau": 0.5
+      },
+      {
+        "agent_id": "exp_D",
+        "role": "Executor",
+        "tau": 0.65
+      },
+      {
+        "agent_id": "exp_E",
+        "role": "Executor",
+        "tau": 0.8
+      }
+    ]
+  },
+  "constraints": [
+    "CONSTRAINT-HLE-1",
+    "CONSTRAINT-HLE-2"
+  ],
+  "context": "This is a formal reasoning task. The proposed protocol must provide mathematical arguments, not just intuition. Key definitions: n = total nodes, f = maximum Byzantine faults, quorum = minimum set of nodes whose votes suffice to commit a value. A Byzantine node may send any message, including conflicting messages to different correct nodes (equivocation). GST = Global Stabilization Time: before GST, message delays are arbitrary; after GST, messages are delivered within a known bound \u0394. The FLP impossibility result shows that consensus is impossible in a purely asynchronous system \u2014 partial synchrony (GST existence) is the correct model for liveness proofs. A common mistake: claiming n \u2265 2f+1 is sufficient for Byzantine safety. This is only sufficient for crash faults (non-equivocating). Under equivocation, the quorum intersection argument fails at n=3f.",
+  "_timeout_s": 7200,
+  "_compare_semantics": "no_regression",
+  "_expected": {
+    "terminal": "MergeResolved",
+    "valid_proposals_min": 2,
+    "should_prune": [
+      {
+        "description": "Protocol that claims n=2f+1 is sufficient for Byzantine safety without proving that equivocation is prevented",
+        "violates": "CONSTRAINT-HLE-1 \u2014 n=2f+1 is sufficient only for crash faults; a Byzantine node can equivocate and cause two quorums of size f+1 to commit different values when n=2f+1"
+      },
+      {
+        "description": "Protocol whose liveness proof assumes a fully synchronous network (all messages delivered within a known bound \u0394 at all times, including before GST)",
+        "violates": "CONSTRAINT-HLE-2 \u2014 FLP impossibility: liveness cannot be guaranteed in a fully asynchronous system; the correct model is partial synchrony with GST; a proof that requires synchrony before GST is not a valid partial-synchrony liveness proof"
+      }
+    ],
+    "should_pass": [
+      "Safety proof: With n \u2265 3f+1 and quorum size Q = \u2308(n+f+1)/2\u2309, any two quorums Q1, Q2 satisfy |Q1 \u2229 Q2| \u2265 |Q1| + |Q2| - n = 2\u2308(n+f+1)/2\u2309 - n \u2265 f+1. Since at most f nodes are Byzantine, at least one node in Q1 \u2229 Q2 is honest. An honest node votes for at most one value per view, so Q1 and Q2 cannot commit different values. Impossibility for n=3f: with n=3f, Q = \u2308(3f+f+1)/2\u2309 = 2f+1. Construct Q1 = f Byzantine + f honest group A, Q2 = f Byzantine + f honest group B. Q1 \u2229 Q2 = f Byzantine \u2014 no honest node in intersection, breaking agreement. Liveness proof: after GST, all messages delivered within \u0394. Correct leader broadcasts PREPARE; Q correct nodes respond with PROMISE within \u0394; leader sends COMMIT; Q nodes accept. If leader is faulty, correct nodes timeout after 2\u0394 and broadcast LEADER-CHANGE. After f+1 LEADER-CHANGE messages from distinct correct nodes, a new leader is elected. New leader needs one LEADER-CHANGE round per faulty node = O(f) rounds total."
+    ],
+    "_review_checklist": [
+      {
+        "id": "HLE/1",
+        "text": "Does the proposed protocol prove that n \u2265 3f+1 nodes are required for BFT safety, AND provide an impossibility argument for n=3f \u2014 specifically showing that with n=3f nodes and f Byzantine nodes, two disjoint quorums of size \u2308(n+f+1)/2\u2309 can be constructed such that their intersection contains only Byzantine nodes, breaking the agreement property?"
+      },
+      {
+        "id": "HLE/2",
+        "text": "Does the proposed protocol prove the agreement property \u2014 that two honest nodes cannot commit different values in the same view \u2014 specifically by showing that any two quorums of size \u2308(n+f+1)/2\u2309 in a system of n \u2265 3f+1 nodes share at least one honest node, even when f nodes equivocate?"
+      },
+      {
+        "id": "HLE/3",
+        "text": "Does the proposed protocol prove liveness under partial synchrony \u2014 that the protocol commits a value after GST even if f nodes are Byzantine \u2014 and specify a view-change (leader rotation) mechanism that terminates in O(f) rounds after a faulty leader is detected (not O(n\u00b2))?"
+      }
+    ]
+  }
+}

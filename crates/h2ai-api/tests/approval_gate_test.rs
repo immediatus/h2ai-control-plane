@@ -66,10 +66,10 @@ const SIGNAL_TEST_TASK_ID: &str = "00000000-0000-0000-0000-000000000001";
 /// Uses `AppState::new_for_tests()` with an in-memory backend so no NATS connection
 /// is required. The task `SIGNAL_TEST_TASK_ID` is pre-seeded into the store as active.
 async fn build_test_app() -> axum::Router {
-    use h2ai_adapters::mock::MockAdapter;
     use h2ai_api::{routes::task_router, state::AppState};
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::task_store::TaskState;
+    use h2ai_test_utils::MockAdapter;
     use h2ai_types::identity::TaskId;
     use std::sync::Arc;
 

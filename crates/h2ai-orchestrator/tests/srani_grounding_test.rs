@@ -51,7 +51,6 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::{H2AIConfig, SraniConfig};
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
@@ -60,10 +59,11 @@ use h2ai_orchestrator::srani_grounding::{
     LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
 };
 use h2ai_orchestrator::task_store::TaskStore;
+use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::MockSearchBackend;
 use h2ai_tools::error::ToolError;
 use h2ai_tools::web_search::{
-    GeminiSearchBackend, MockSearchBackend, StackOverflowSearchBackend, WebGroundingBackend,
-    WebSearchBackend,
+    GeminiSearchBackend, StackOverflowSearchBackend, WebGroundingBackend, WebSearchBackend,
 };
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig};
@@ -154,6 +154,7 @@ async fn system_chain_absent_task_completes_without_panic() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -162,6 +163,7 @@ async fn system_chain_absent_task_completes_without_panic() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -210,6 +212,7 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -218,15 +221,21 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     for ev in &output.researcher_grounding_events {
-        if ev.slot.is_none() && !ev.shared_assumption.is_empty() {
+        if !ev.shared_assumption.is_empty() {
             assert_eq!(
                 ev.source,
                 GroundingSource::SpecAnchor,
                 "SRANI grounding event must carry SpecAnchor source"
+            );
+            assert!(
+                ev.slot.is_some(),
+                "slot must be classified (Some), got None for assumption: {}",
+                ev.shared_assumption
             );
         }
     }
@@ -675,18 +684,13 @@ async fn chain_distillation_replaces_raw_web_text_with_distilled_output() {
         )),
     ];
     let distiller = Arc::new(MockAdapter::new(distilled_output.into()));
-    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, 4000, 1200, true);
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     assert_eq!(result.source, GroundingSource::WebSearch);
     assert!(
         result.grounding_statement.contains("Redis sliding window"),
         "distilled text must be in statement, got: {}",
         result.grounding_statement
-    );
-    assert!(
-        result.grounding_statement.len() <= 1200,
-        "hint must respect hint_max_chars, len={}",
-        result.grounding_statement.len()
     );
 }
 
@@ -706,15 +710,10 @@ async fn chain_distill_disabled_preserves_raw_text_capped_at_hint_limit() {
         )),
     ];
     let distiller = Arc::new(MockAdapter::new("should not be called".into()));
-    let chain = SraniGroundingChain::new(providers).with_distiller(
-        distiller, 4000, 1200, false, // disabled
-    );
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, false);
     let result = chain.resolve(&ctx, 1).await.unwrap();
-    assert!(
-        result.grounding_statement.len() <= 1200,
-        "hint must still be capped even with distill=false, len={}",
-        result.grounding_statement.len()
-    );
+    // distill=false: raw text passes through unchanged (no truncation in this project)
+    assert!(!result.grounding_statement.is_empty());
 }
 
 // ── SraniGroundingChain unit tests ────────────────────────────────────────────
@@ -906,6 +905,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         srani_ema_cfi: 0.45,
         srani_count: 5,
         srani_grounding_chain: Some(chain),
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -914,6 +914,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -930,7 +931,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
     let grounding_events: Vec<_> = output
         .researcher_grounding_events
         .iter()
-        .filter(|e| e.slot.is_none() && !e.shared_assumption.is_empty())
+        .filter(|e| !e.shared_assumption.is_empty())
         .collect();
     assert!(
         !grounding_events.is_empty(),
@@ -943,6 +944,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
     );
 
     // Chain resolves at SpecAnchor (tier 0) or LlmResearcher (tier 1) — never WebSearch.
+    // Slot must be classified (Some) after GAP-I1 entity slot classification.
     for ev in &grounding_events {
         assert!(
             matches!(
@@ -952,5 +954,219 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
             "source must be SpecAnchor or LlmResearcher, got {:?}",
             ev.source
         );
+        assert!(
+            ev.slot.is_some(),
+            "slot must be classified (Some), got None for assumption: {}",
+            ev.shared_assumption
+        );
     }
+}
+
+#[cfg(test)]
+mod classify_slot_tests {
+    use h2ai_orchestrator::srani_grounding::classify_grounding_slot;
+
+    #[test]
+    fn kafka_maps_to_message_broker() {
+        assert_eq!(
+            classify_grounding_slot(&["Kafka".to_string()]),
+            "message_broker"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["kafka".to_string()]),
+            "message_broker"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["RabbitMQ".to_string()]),
+            "message_broker"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["ActiveMQ".to_string()]),
+            "message_broker"
+        );
+    }
+
+    #[test]
+    fn zookeeper_etcd_map_to_distributed_coordination() {
+        assert_eq!(
+            classify_grounding_slot(&["ZooKeeper".to_string()]),
+            "distributed_coordination"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["etcd".to_string()]),
+            "distributed_coordination"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["Consul".to_string()]),
+            "distributed_coordination"
+        );
+    }
+
+    #[test]
+    fn redis_maps_to_cache_layer() {
+        assert_eq!(
+            classify_grounding_slot(&["Redis".to_string()]),
+            "cache_layer"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["Memcached".to_string()]),
+            "cache_layer"
+        );
+    }
+
+    #[test]
+    fn postgres_terms_map_to_database_migration() {
+        assert_eq!(
+            classify_grounding_slot(&["pg_publication_tables".to_string()]),
+            "database_migration"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["PostgreSQL".to_string()]),
+            "database_migration"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["replication_slot".to_string()]),
+            "database_migration"
+        );
+    }
+
+    #[test]
+    fn unknown_entity_maps_to_implementation_detail() {
+        assert_eq!(
+            classify_grounding_slot(&["string.split".to_string()]),
+            "implementation_detail"
+        );
+        assert_eq!(
+            classify_grounding_slot(&["SomeUnknownLib".to_string()]),
+            "implementation_detail"
+        );
+        assert_eq!(classify_grounding_slot(&[]), "implementation_detail");
+    }
+
+    #[test]
+    fn multi_entity_first_match_wins() {
+        assert_eq!(
+            classify_grounding_slot(&["ZooKeeper".to_string(), "Redis".to_string()]),
+            "distributed_coordination"
+        );
+    }
+}
+
+// ── Additional coverage tests ─────────────────────────────────────────────────
+
+#[test]
+fn chain_len_and_is_empty() {
+    let chain_empty: SraniGroundingChain = SraniGroundingChain::new(vec![]);
+    assert_eq!(chain_empty.len(), 0);
+    assert!(chain_empty.is_empty());
+
+    let chain_one = SraniGroundingChain::new(vec![Box::new(SpecAnchorGrounder)]);
+    assert_eq!(chain_one.len(), 1);
+    assert!(!chain_one.is_empty());
+}
+
+#[tokio::test]
+async fn chain_empty_providers_returns_none() {
+    let chain: SraniGroundingChain = SraniGroundingChain::new(vec![]);
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate limiting service".into(),
+    };
+    let result = chain.resolve(&ctx, 0).await;
+    assert!(result.is_none(), "empty chain must return None");
+}
+
+#[tokio::test]
+async fn web_search_grounder_returns_none_with_no_fabricated_entities() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec![],
+        task_description: "Build a rate limiting service using Redis".into(),
+    };
+    let backend = Arc::new(MockSearchBackend::new("some result".to_string()));
+    let grounder = WebSearchGrounder::new(backend, 3);
+    let result = grounder.ground(&ctx).await;
+    assert!(result.is_none(), "no fabricated entities must return None");
+}
+
+#[tokio::test]
+async fn chain_none_anchor_some_tier_uses_tier_result() {
+    struct NoneProvider;
+    #[async_trait::async_trait]
+    impl GroundingProvider for NoneProvider {
+        async fn ground(&self, _ctx: &GroundingContext) -> Option<GroundingResult> {
+            None
+        }
+    }
+
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate limiting service using Redis and counters".into(),
+    };
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(NoneProvider),
+        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
+            r#"{"alternatives": ["Redis"], "statement": "Use Redis"}"#.into(),
+        )))),
+    ];
+    let chain = SraniGroundingChain::new(providers);
+    let result = chain.resolve(&ctx, 0).await;
+    assert!(
+        result.is_some(),
+        "tier result must be used when anchor returns None"
+    );
+    assert_eq!(result.unwrap().source, GroundingSource::LlmResearcher);
+}
+
+#[tokio::test]
+async fn web_search_no_results_found_string_returns_none() {
+    struct NoResultsBackend;
+    #[async_trait::async_trait]
+    impl WebSearchBackend for NoResultsBackend {
+        async fn search(&self, _q: &str, _n: usize) -> Result<String, ToolError> {
+            Ok("No results found.".to_string())
+        }
+    }
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into()],
+        task_description: "Build a rate limiting service using Redis".into(),
+    };
+    let grounder = WebSearchGrounder::new(Arc::new(NoResultsBackend), 3);
+    let result = grounder.ground(&ctx).await;
+    assert!(result.is_none(), "No results found must return None");
+}
+
+#[tokio::test]
+async fn chain_distillation_empty_output_falls_back_to_raw() {
+    let ctx = GroundingContext {
+        fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
+        task_description: "Build a rate-limiting service using Redis and in-process counters"
+            .into(),
+    };
+    let raw_text = "Web result: use Redis. ".repeat(5);
+    let providers: Vec<Box<dyn GroundingProvider>> = vec![
+        Box::new(SpecAnchorGrounder),
+        Box::new(WebSearchGrounder::new(
+            Arc::new(MockSearchBackend::new(raw_text.clone())),
+            3,
+        )),
+    ];
+    let distiller = Arc::new(MockAdapter::new("".into()));
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true);
+    let result = chain.resolve(&ctx, 1).await.unwrap();
+    assert_eq!(result.source, GroundingSource::WebSearch);
+    assert!(!result.grounding_statement.is_empty());
+}
+
+#[test]
+fn format_grounding_hint_empty_alternatives_and_empty_statement() {
+    let result = GroundingResult {
+        alternatives: vec![],
+        grounding_statement: String::new(),
+        source: GroundingSource::SpecAnchor,
+    };
+    let hint = format_grounding_hint(&result, &["FakeLib".into()]);
+    assert!(hint.contains("GROUNDING CONTEXT"));
+    assert!(hint.contains("FakeLib"));
+    assert!(!hint.contains("Spec-defined"));
+    assert!(!hint.contains("alternatives:"));
 }

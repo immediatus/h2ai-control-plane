@@ -1,5 +1,4 @@
 use h2ai_adapters::factory::AdapterFactory;
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_agent::dispatch;
 use h2ai_agent::heartbeat::HeartbeatTask;
 use h2ai_agent::tools::agent_tools;
@@ -52,16 +51,19 @@ async fn main() -> anyhow::Result<()> {
     let _hb_handle = hb_task.start();
 
     let thinking = cfg.adapter_enable_thinking;
-    let adapter: Arc<dyn IComputeAdapter> = cfg.adapter_profiles.first().map_or_else(
-        || Arc::new(MockAdapter::new(String::new())) as Arc<dyn IComputeAdapter>,
-        |p| match AdapterFactory::build_with_thinking(&p.kind, thinking) {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!("adapter build failed ({e}) — falling back to MockAdapter");
-                Arc::new(MockAdapter::new(String::new()))
-            }
-        },
-    );
+    let adapter: Arc<dyn IComputeAdapter> = cfg
+        .adapter_profiles
+        .first()
+        .map(|p| AdapterFactory::build_with_thinking(&p.kind, thinking))
+        .transpose()
+        .unwrap_or_else(|e| {
+            tracing::error!("adapter build failed ({e}) — cannot start without a valid adapter");
+            std::process::exit(1);
+        })
+        .unwrap_or_else(|| {
+            tracing::error!("no adapter_profiles configured — cannot start");
+            std::process::exit(1);
+        });
 
     dispatch::run(client, agent_id, adapter, active_tasks, cfg).await
 }

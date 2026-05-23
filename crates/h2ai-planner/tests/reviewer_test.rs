@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use h2ai_adapters::MockAdapter;
 use h2ai_planner::decomposer::PlannerError;
 use h2ai_planner::reviewer::{PlanReviewer, ReviewOutcome};
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::{SubtaskId, TaskId};

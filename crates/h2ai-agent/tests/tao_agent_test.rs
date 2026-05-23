@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use h2ai_adapters::mock::{MockAdapter, SequencedMockAdapter};
 use h2ai_agent::tao_agent::{TaoAgent, TaoAgentInput};
 use h2ai_config::H2AIConfig;
+use h2ai_test_utils::{MockAdapter, SequencedMockAdapter};
 use h2ai_tools::registry::ToolRegistry;
 use h2ai_tools::shell::ShellExecutor;
 use h2ai_types::adapter::IComputeAdapter;

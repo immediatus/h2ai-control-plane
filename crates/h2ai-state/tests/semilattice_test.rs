@@ -84,6 +84,7 @@ fn pruned(explorer_id: ExplorerId, task_id: TaskId) -> BranchPrunedEvent {
         task_id,
         explorer_id,
         reason: "ADR-004".into(),
+        raw_output: String::new(),
         constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
         violated_constraints: vec![],
         timestamp: Utc::now(),

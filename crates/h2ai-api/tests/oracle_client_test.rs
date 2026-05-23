@@ -194,3 +194,17 @@ async fn oracle_client_request_body_contains_task_id_and_domain() {
     assert_eq!(body["output"], "my output");
     assert!(body.get("domain").is_some());
 }
+
+#[tokio::test]
+async fn oracle_client_default_constructs_successfully() {
+    use h2ai_api::oracle::client::OracleClient;
+    let client = OracleClient::default();
+    let s = OracleSpec {
+        runner_uri: String::new(),
+        timeout_ms: 1000,
+        domain: h2ai_types::sizing::OracleDomain::Code,
+    };
+    let resp = client.evaluate(&s, &task_id(), "test").await;
+    // empty runner_uri always returns passed=false
+    assert!(!resp.passed);
+}

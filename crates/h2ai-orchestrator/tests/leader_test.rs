@@ -308,9 +308,9 @@ fn build_follower_prefix_out_of_range_slot_uses_default_aspect() {
 
 #[tokio::test]
 async fn generate_socratic_question_with_mock_adapter_returns_non_empty() {
-    use h2ai_adapters::mock::MockAdapter;
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::leader::generate_socratic_question;
+    use h2ai_test_utils::MockAdapter;
 
     let adapter = MockAdapter::new("What if the retry logic is fundamentally broken?".into());
     let cfg = H2AIConfig::default();
@@ -329,9 +329,9 @@ async fn generate_socratic_question_with_mock_adapter_returns_non_empty() {
 
 #[tokio::test]
 async fn generate_socratic_question_with_dup_in_buffer_uses_fallback() {
-    use h2ai_adapters::mock::MockAdapter;
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::leader::{generate_socratic_question, BeliefRecord};
+    use h2ai_test_utils::MockAdapter;
 
     let question_text = "What if the retry logic is fundamentally broken?";
     let adapter = MockAdapter::new(question_text.into());

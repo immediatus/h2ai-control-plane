@@ -1,0 +1,16 @@
+[package]
+name        = "h2ai-test-utils"
+description = "Shared test mocks and utilities for H2AI crates (dev-dependency only)"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+h2ai-types    = { path = "../h2ai-types" }
+h2ai-tools    = { path = "../h2ai-tools" }
+h2ai-adapters = { path = "../h2ai-adapters" }
+async-trait   = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

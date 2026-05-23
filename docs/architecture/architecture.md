@@ -119,7 +119,7 @@ Before `EngineInput` is constructed, `run_decomposition_agent()` derives a motiv
 
 **Operator context (additive):** If the manifest carries `slot_configs`, they are appended to the Path C result after the LLM response is parsed, then the combined set is re-pruned by orthogonality. They do not bypass decomposition.
 
-**Orthogonality pruning:** If the produced N exceeds the USL cost ceiling `N_max`, `prune_by_orthogonality()` drops the slot with the highest mean cosine similarity to all retained peers — the least independent perspective — until `len ≤ N_max`. Never pads to fill the budget. `N_max` is the **cost ceiling** (from USL calibration), not the quality target — see math.md §2 and §5.1. The quality target is `n_it_optimal`; A planned improvement would change the pruning bound to `min(n_it_optimal, N_max)` — applying both the quality-optimal ceiling (`n_it_optimal`, where marginal information gain drops below half per-adapter entropy) and the cost ceiling (`N_max`) simultaneously. That change is not yet implemented: the current code targets `N_max` only.
+**Orthogonality pruning:** If the produced N exceeds the USL cost ceiling `N_max`, `prune_by_orthogonality()` drops the slot with the highest mean cosine similarity to all retained peers — the least independent perspective — until `len ≤ N_max`. Never pads to fill the budget. `N_max` is the **cost ceiling** (from USL calibration), not the quality target — see math.md §2 and §5.1. The quality target is `n_it_optimal` (information-theoretic, `EnsembleCalibration::n_it_optimal()`); the planner uses `min(n_it_optimal, N_max)` as the quality-bounded cost ceiling before applying eigen-cap and quadrant overrides. **Implemented 2026-05-26 (INNOVATION-4).**
 
 **Context injection:** The engine prepends `[MANDATE]: {focus_mandate}` and `[FIND]: {rejection_criteria}` before each agent's system context when those fields are non-empty.
 
@@ -171,6 +171,8 @@ Three conditions must hold before the system commits compute. All three are eval
 
 Failure produces `MultiplicationConditionFailed` with one of `InsufficientCompetence`, `InsufficientDecorrelation`, or `CommonGroundBelowFloor`. The retry policy then selects the next topology or fails the task.
 
+A fifth condition — **`QuorumDegradedBelowMinimum`** — is checked at Phase 2.6 by `phases/complexity.rs`. When the unclamped `N_max < 3.0` (AIMD degradation), `n_max_degraded()` returns `true`. Outside shadow mode, this fails fast before generating any proposals. In shadow mode, a `WARN` trace with `unclamped_n_max` is emitted and execution continues — the type-system floor in `n_max_ci()` ensures N≥3 is used regardless. See math.md §2.7 and §4 for the quorum floor derivation.
+
 ### Phase 2.6 — Pool Diversity Guard
 
 A separate gate, evaluated only when `cfg.diversity_threshold > 0`. Compares the calibration's `n_eff_cosine_prior` against `1.0 + diversity_threshold`. When the pool's effective independent-adapter count is below the floor, the engine emits a synthetic `ZeroSurvival` with `failure_mode = ModeCollapse` and routes through `RetryPolicy`. This is the fourth multiplication condition: `InsufficientPoolDiversity`. It exists because Hamming CG can mark constraint-profile agreement as "high coordination" while the pool remains semantically near-degenerate (correlated hallucination risk).
@@ -187,6 +189,8 @@ N explorers run their TAO (Thought–Action–Observation) loops in parallel thr
 - Iterates up to `cfg.agent_max_tool_iterations` times, emitting `TaoIteration` per turn.
 - On each turn: calls the LLM adapter, parses the output for a structured `{"tool": ..., "input": {...}}` JSON tool call, executes the tool locally via its `ToolRegistry`, appends the observation to the running message history, and continues until the output contains no tool call or the iteration cap is reached.
 - Produces a `Proposal` event with raw output and token cost — or a `ProposalFailed` event on timeout, OOM, or adapter error.
+
+**Timeout retry:** When `tao_config.retry_on_timeout = true` (default) and the adapter call times out on turn 1 or on the bypass path (reasoning models), the engine retries exactly once with `max_tokens = tao_config.timeout_retry_max_tokens` (default 512). The reduced token budget forces a concise response and recovers proposals that would otherwise fail on verbose slow models. Turns 2+ always propagate timeouts immediately without retry, to prevent double-timeout penalty in multi-turn loops. If the retry call also times out, the error propagates as normal.
 
 `GenerationPhaseCompleted` summarises success/failure counts. Adapter rotation offset (set by `ModeCollapse` retries) is applied at adapter selection time so a retry sees a rotated subset of the pool.
 
@@ -216,7 +220,9 @@ When `injection_pressure ≥ srani_gate_threshold`: `SraniGroundingChain::resolv
 
 **EMA persistence:** `srani_ema_cfi` and `srani_count` are loaded from NATS KV bucket `H2AI_ESTIMATOR` key `"srani_adaptive_state"` at startup and persisted after each task. The EMA tracks the system's operating regime — tasks in low-CFI regimes use a low baseline, letting genuine spikes trigger grounding; tasks in high-CFI regimes raise the baseline so not every wave triggers.
 
-Emits `CorrelatedFabricationEvent { cfi, injection_pressure, shared_ungrounded_entities, hint_injected }` and optionally `ResearcherGroundingEvent { source: GroundingSource, ... }`.
+Emits `CorrelatedFabricationEvent { cfi, injection_pressure, shared_ungrounded_entities, hint_injected }` and optionally `ResearcherGroundingEvent { source: GroundingSource, slot: Option<String>, ... }`.
+
+**Slot classification:** `ResearcherGroundingEvent.slot` is populated by `classify_grounding_slot(shared_ungrounded_entities)` — a keyword classifier that maps fabricated entity names to named repair context injection slots: `"message_broker"` (Kafka, RabbitMQ, ActiveMQ), `"distributed_coordination"` (ZooKeeper, etcd, Consul, Chubby), `"cache_layer"` (Redis, Memcached, Dragonfly), `"database_migration"` (Postgres system objects, `replication_slot`), or `"implementation_detail"` for unknowns. First-match wins over the entity list. The slot is used by `build_repair_context()` to inject the grounding summary into the structurally correct section of the repair prompt rather than appending it as free-form text.
 
 ### Phase 3.5 — Verification
 
@@ -233,6 +239,8 @@ A multi-variant **judge panel** (`JudgePanel`) scores every proposal against the
 ### Phase 4 — Auditor Gate
 
 A separate auditor adapter (typically a stronger reasoning model than the verifier) is the final non-negotiable gate. Its output is required to be JSON `{approved, reason}`. Non-JSON output is treated as rejection (fail-safe). Rejected proposals become additional `BranchPruned` events.
+
+**Shadow auditor strict mode:** When `safety.shadow_auditor.enabled = true`, a second concurrent auditor call produces a shadow vote alongside the primary. The AND-vote (both must approve) is only binding by default for task domains that appear in the `promoted_domains` set — domains accumulate there after a configurable number of disagreements. When `safety.shadow_auditor.strict = true` (set automatically for `SafetyProfile::Production` and `SafetyProfile::Strict`), the AND-vote is binding on every proposal regardless of promotion history. This ensures the shadow auditor acts as a hard gate from the first task, which is essential in benchmark and production deployments where there is no prior disagreement history to warm the promotion set. The `strict` flag has no effect when `shadow_auditor.enabled = false`; a startup warning is emitted if both are set inconsistently.
 
 ### Phase 4.5 — Oracle Gate (optional)
 
@@ -276,6 +284,21 @@ Emits `SelectionResolved` and either `MergeResolved` (success) or `ZeroSurvival`
 ### Phase 5a — Synthesis (optional)
 
 When `synthesis_enabled` and at least `synthesis_min_proposals` have survived audit, the synthesis adapter performs a critique→synthesis→re-verify pass over the candidate set. The re-verified score is compared against `max(individual_scores)`; the difference is recorded as `synthesis_gain` on `HarnessAttribution`. If synthesis improves the maximum, its output replaces the merge result.
+
+### GAP-D6: Constraint-Informed Synthesis Wave (terminal, closed 2026-05-24)
+
+When all MAPE-K retries exhaust with `verified=0` (constraint dispersion — each proposal passes a different subset of binary checks), the engine fires one terminal synthesis wave before returning `MaxRetriesExhausted`. This path is guarded by `synthesis_wave_enabled` (default `true`).
+
+**Three-mechanism approach:**
+
+- **B1 — Compliance checklist injection** (`repair.rs`, `F1_COMPLIANCE_CHECKLIST` prompt template): at retry ≥ 1, `ConstraintDoc.binary_checks` (preserved through YAML compilation) are injected verbatim as a numbered checklist into the generation system prompt. The LLM sees each binary requirement as a distinct enumerated item.
+
+- **B2 — Orthogonal partial-pass examples** (`repair.rs`, `select_orthogonal_partials`): pruned proposals carrying `BranchPrunedEvent.violated_constraints` are scored as `PartialPass` structs (passed-check bitmask + score + text, 1500-char line-safe truncation). Greedy set-cover selects the max_k=2 most diverse partials (maximises newly-covered constraint indices per selection step; index 0 = widest coverage, exploits primacy bias). Each partial is labelled with per-check PASS ✓ / FAIL ✗ markers in the repair context.
+
+- **A — Terminal synthesis wave** (`engine.rs` post-retry block): `select_orthogonal_partials(controller.all_pruned(), &all_checks, 3)` builds the synthesis context. Two execution paths:
+  - **Sequential grafting (when `sequential_grafting_enabled = true` and ≥2 sorted partials):** Iterative grafting loop — seed `base` from highest-scoring partial; each round: `missing_constraint_ids(base, candidate, offsets)` identifies constraint clusters covered by the candidate but not yet in the base; `build_graft_context` builds a focused prompt (base + candidate text for those clusters only); one LLM call; intermediate `VerificationPhase::run` checks `new_score ≥ base_score` (Monotonicity Invariant — rollback if regression). Loop terminates after at most `sequential_grafting_max_rounds` iterations. Eliminates "Lost in the Middle" attention diffusion on long multi-partial contexts — each call sees at most O(|base| + |candidate|) tokens. Literature: Sequential Edge (Xie et al. 2025) — 46.7% improvement in constraint satisfaction vs. parallel merge.
+  - **Single-shot synthesis (default):** `build_synthesis_context` (system context + B1 checklist + ≤3 partial examples + Coherence Mandate). One LLM call (synthesis adapter or first explorer adapter).
+  - Both paths re-verify: `verif_out.passed` non-empty → `Ok(EngineOutput)` via `controller.finalize()`; empty → `MaxRetriesExhausted { best_partial_text: Some(global_best) }` where `global_best` is the highest-scored partial across **all** pruned events, surfaced for HITL via `tasks.rs` log.
 
 ### Coherence State (per-wave)
 
@@ -321,7 +344,7 @@ The `h2ai-orchestrator` crate implements the MAPE-K loop as three distinct layer
 |-------|------|----------------|
 | **Phase modules** | `src/phases/` (16 modules) | Pure data transformations. Each module exposes an `Input` struct, an `Output` struct, and a `run()` function returning `StepResult<Output>`. No retry state; no cross-wave memory. |
 | **ExecutionPipeline** | `src/pipeline.rs` | Sequences the 16 phase modules for one wave. Stateless — receives `PipelineParams` each wave, returns `PipelineWaveResult`. Can be tested in isolation without a running controller. |
-| **MapeKController** | `src/mape_k.rs` | Owns all retry state. Implements `observe(wave)` (aggregates events across waves — also updates `global_best_proposal: Option<(f64, String)>` cross-wave accumulator), `params()` (projects current state into `PipelineParams` for the next wave), and `decide(outcome)` (maps `PipelineOutcome` to `MapeKDecision`). Carries `conflict_graph: ConstraintConflictGraph` (built once at task start). When `cspr.enabled = true`, `apply_retry_action` uses `build_repair_context()` (CSPR-v2) instead of the legacy tombstone+hints format — anchors repair on the best prior proposal, emits per-violated-constraint REPAIR TARGET instructions, and adds a `[COMPETING CONSTRAINTS DETECTED]` MetaRepair block when two violated constraints are in the conflict graph. |
+| **MapeKController** | `src/mape_k.rs` | Owns all retry state. Implements `observe(wave)` (aggregates events across waves — also updates `global_best_proposal: Option<(f64, String)>` cross-wave accumulator), `params()` (projects current state into `PipelineParams` for the next wave), and `decide(outcome)` (maps `PipelineOutcome` to `MapeKDecision`). Carries `conflict_graph: ConstraintConflictGraph` (built once at task start) and `binary_checks: Vec<String>` (flat list of all `ConstraintDoc.binary_checks` across the corpus — used by B1 and B2 injection). Exposes `all_pruned() -> &[BranchPrunedEvent]` and `system_context_with_rubric() -> &str` for the terminal synthesis wave. When `cspr.enabled = true`, `apply_retry_action` handles `RetryWithTargets { topology, targets: Vec<RepairTarget> }` from `RetryPolicy::decide()`: calls `build_repair_context(RepairInput { targets, conflict_graph, checks, partial_passes, prior_best_score, … })`. Each `RepairTarget.verifier_reasons: Vec<(f64, String)>` carries scored, Jaccard-deduped reasons selected by `top_k_unique_reasons(k=tried_topologies.len()+1, dedup_j=0.7)` — wave 1 → top-1, wave 2 → top-2, wave 3+ → all unique. Slot A emits a `TARGET BEHAVIOR` block when `RepairTarget.criteria_pass` is non-empty (sourced from `ConstraintDoc.rubric.pass`, propagated `ComplianceResult → ConstraintViolation → RepairTarget`), then "VERIFIER INTERPRETATION (best attempt: N% compliance)" with secondary reasons as "ALTERNATIVE DIAGNOSIS"; when `criteria_pass` is None the YOUR TASK text reads "satisfies the constraint requirement" (positive framing, not prohibition-forward — see Mayne et al. arXiv 2605.13829). Slot B falls back to "GUIDANCE" (remediation_hint); Slot C uses constraint description only. `prior_best_score` emits a global compliance header. Adds `[COMPETING CONSTRAINTS DETECTED]` MetaRepair block when two violated constraints are in the conflict graph. B1 checklist and B2 partial-pass examples appended when `checks` is non-empty and `retry_count >= 1`. |
 | **Coordinator** | `src/engine.rs` (~30 lines) | Creates controller and pipeline, runs the `loop { pipeline.run → controller.observe → controller.decide }` cycle, routes `MapeKDecision` to return/continue/error. |
 
 ### Phase execution sequence
@@ -1539,6 +1562,20 @@ acme_corp/{task_id}   ← approval records
 ### 12.3 Calibration: global-by-design
 
 Calibration measures the adapter pool, not individual tenant workloads. A single global `CalibrationCompletedEvent` lives in `H2AI_CALIBRATION` KV (no tenant prefix). On first task submission for a non-default tenant, `AppState::seed_calibration_from_default_if_needed` copies the default tenant's calibration into the new tenant's `TenantState`. This gives new tenants an immediate N_max budget without requiring a dedicated calibration run.
+
+### GAP-H2: Calibration Drift Detection (closed 2026-05-26)
+
+LLM API providers silently update model weights and RLHF profiles. Without detection, `EnsembleCalibration` stays stale indefinitely. The three-layer `DriftMonitor` (`crates/h2ai-autonomic/src/drift.rs`) detects distribution shifts online:
+
+**Layer 1 — DDM fast layer** (`DdmDetector`, O(1)): sliding window of `consensus_agreement_rate` (fraction of tasks where all verification calls agree). Fires `CalibrationDriftWarning` when `|mean_recent − mean_reference| > drift_ddm_k × std_reference` (default window=20, k=2.5).
+
+**Layer 2 — BOCPD** (`BocpdDetector`, O(t)): Bayesian Online Changepoint Detection (Adams & MacKay 2007) with Normal-Inverse-Gamma conjugate prior updated per observation. Posterior probability P(run_length ≤ 4) > `drift_bocpd_changepoint_threshold` (default 0.90) fires `CalibrationChangepoint`. A guard prevents false positives until ≥5 observations accumulate.
+
+**Layer 3 — ORCA conformal margin**: when a changepoint is active and `drift_staleness_ttl_secs` has not expired, `DriftMonitor::active_conformal_margin()` returns `drift_conformal_margin`. `run_offline` in `engine.rs` subtracts this value from `verification_config.threshold` at task start, widening the gate to preserve coverage during drift. The margin is removed once TTL expires or recalibration occurs.
+
+**Data flow**: `tasks.rs` reads `active_conformal_margin()` → passed as `EngineInput.conformal_margin` → engine applies margin → engine computes `consensus_agreement_rate_from_events(output.verification_events)` → `tasks.rs` calls `drift_monitor.observe(rate)`. On `CalibrationDriftWarning` or `CalibrationChangepoint`, a `tracing::warn!` event is emitted.
+
+`DriftMonitor` is stored in `AppState` as `Arc<tokio::sync::Mutex<DriftMonitor>>`, initialised from config via `DriftMonitor::from_config(&cfg)`. Config fields: `drift_ddm_window`, `drift_ddm_k`, `drift_bocpd_hazard_rate`, `drift_bocpd_changepoint_threshold`, `auto_recalibrate_on_drift = false` (operator opt-in), `drift_staleness_ttl_secs`, `drift_conformal_margin`.
 
 ### 12.4 Adding a tenant
 

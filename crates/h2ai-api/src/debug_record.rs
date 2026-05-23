@@ -4,7 +4,7 @@ use h2ai_types::events::{CorrelatedFabricationEvent, VerificationScoredEvent};
 use serde::Serialize;
 use std::io::Write;
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct SraniConfigSnapshot {
     adaptive: bool,
     ema_alpha: f64,
@@ -14,7 +14,7 @@ struct SraniConfigSnapshot {
     inject_threshold: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct VerificationRecord {
     explorer_id: String,
     score: f64,
@@ -23,7 +23,7 @@ struct VerificationRecord {
     reason: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct SraniRecord {
     cfi: f64,
     injection_pressure: f64,
@@ -32,7 +32,7 @@ struct SraniRecord {
     hint_injected: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct TaskDebugRecord {
     task_id: String,
     timestamp: String,

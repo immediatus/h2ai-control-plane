@@ -1,0 +1,19 @@
+depth: global
+synthesis: >
+  This corpus enforces distributed systems safety for billing, streaming, and latency-sensitive
+  workloads. Hard constraints prevent race conditions (C-004), audit gaps (C-005), distributed
+  lock bottlenecks (C-008), and timeout budget violations (C-003). Constraints are domain-grouped:
+  financial (C-004, C-005, C-007, C-008), RTB latency (C-003), and JVM runtime (C-006).
+domains_covered:
+  - billing
+  - consistency
+  - rtb
+  - latency
+  - audit
+  - distributed_systems
+key_invariants:
+  - "Every budget debit is atomic, idempotent, and TTL-protected"
+  - "No distributed lock on the critical charge path"
+  - "Every billing event is published to Kafka before the charge completes"
+  - "RTB global deadline T_global never exceeds 100ms"
+  - "Per-DSP adaptive timeouts require ≥100 warm-up samples before activation"

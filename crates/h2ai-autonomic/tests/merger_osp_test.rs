@@ -41,6 +41,10 @@ fn v(cid: &str, hint: &str) -> ConstraintViolation {
         score: 0.0,
         severity_label: "Hard".to_string(),
         remediation_hint: Some(hint.to_string()),
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }
 }
 

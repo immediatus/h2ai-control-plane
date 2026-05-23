@@ -118,3 +118,11 @@ async fn replay_empty_journal_returns_empty_vec() {
     let events = journal.replay(0).await.unwrap();
     assert!(events.is_empty());
 }
+
+#[tokio::test]
+async fn in_memory_backend_default_impl_works() {
+    let backend = InMemoryBackend::default();
+    let journal = EventJournal::new(backend);
+    let events = journal.replay(0).await.unwrap();
+    assert!(events.is_empty());
+}

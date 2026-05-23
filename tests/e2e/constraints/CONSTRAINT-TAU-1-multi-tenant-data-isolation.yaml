@@ -1,0 +1,25 @@
+id: CONSTRAINT-TAU-1
+title: "Multi-Tenant Data Isolation — Strict Tenant Scope Enforcement"
+severity: hard
+domains:
+  - saas
+  - multi-tenancy
+  - security
+remediation_hint: "Every data access, cache entry, and rate limit counter must be scoped to a tenant_id derived from the authenticated JWT — always from the JWT, not from user-supplied request fields. Shared infrastructure (Redis, message queues) must namespace all keys with the tenant identifier. The architecture must make cross-tenant reads structurally impossible without explicit admin authorization."
+criteria:
+  pass: |
+    All of the following are true:
+    - Every cache key in shared infrastructure is prefixed with tenant_id
+    - The tenant_id used for access control is always derived from the authenticated token, not from user-supplied body or query parameters
+    - Rate limit counters are fully scoped per-tenant: one tenant's traffic cannot exhaust another tenant's quota
+    - A tenant cannot read, modify, or infer another tenant's data through any API endpoint
+  partial: "Tenant isolation is enforced at the application layer but shared infrastructure (Redis, queues) keys are not namespaced — cross-tenant cache hits are theoretically possible."
+  fail: |
+    Any of the following:
+    - Cache keys in Redis or any shared store are not namespaced by tenant_id
+    - The tenant_id is accepted from a user-supplied request field rather than from the authenticated JWT
+    - One tenant's traffic can exhaust another tenant's rate limit quota
+  checks:
+    - Are all shared-infrastructure keys (Redis, queues, caches) namespaced with the tenant_id derived from the authenticated token?
+    - Is the tenant_id used for access control sourced exclusively from the authenticated JWT — not from user-supplied request parameters?
+    - Is it structurally impossible for one tenant's traffic to consume another tenant's rate limit budget?

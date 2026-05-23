@@ -1,0 +1,25 @@
+id: CONSTRAINT-OSW-1
+title: "Pipeline Backpressure — Bounded Queue Depth at Every Stage"
+severity: hard
+domains:
+  - streaming
+  - pipeline
+  - reliability
+remediation_hint: "Every inter-stage queue must have a hard maximum depth. When a downstream stage cannot keep up, backpressure must propagate upstream to throttle the producer — not silently drop messages and not grow the queue unboundedly until OOM. Queue depth must be exposed as a metric with an alert at 80% capacity."
+criteria:
+  pass: |
+    All of the following are true:
+    - Every inter-stage queue has a hard maximum depth (not unbounded)
+    - When a stage's queue exceeds 80% capacity, backpressure propagates upstream to slow or block the producer
+    - No stage can cause an OOM condition by accepting work faster than it can process it
+    - Queue depth is exposed as a metric with an alert threshold at or before 80% full
+  partial: "Queues are bounded but backpressure is implemented as message-drop rather than upstream throttling — the producer is not slowed."
+  fail: |
+    Any of the following:
+    - Any inter-stage queue is unbounded or has no hard maximum depth configured
+    - A fast upstream producer can fill all available heap by overrunning a slow downstream stage
+    - Queue depth is not monitored or has no alert threshold
+  checks:
+    - Does every inter-stage queue have a hard maximum depth (a configured bounded buffer)?
+    - When a downstream stage's queue reaches 80% capacity, does backpressure propagate upstream to slow the producer (not drop messages)?
+    - Is queue depth exposed as a metric with a defined alert threshold so operators know before the queue is full?

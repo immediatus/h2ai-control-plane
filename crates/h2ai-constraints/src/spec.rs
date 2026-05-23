@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use crate::types::{CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SemanticSpec {
     pub id: String,
     pub title: String,
@@ -16,28 +16,36 @@ pub struct SemanticSpec {
     pub requirements: Vec<Requirement>,
     pub orderings: Vec<Ordering>,
     pub rubric: QualityRubric,
+    #[serde(default = "default_spec_version")]
+    pub version: u64,
+    #[serde(default)]
+    pub repair_provenance: Option<crate::versioned::RepairProvenance>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+fn default_spec_version() -> u64 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Exclusion {
     pub pattern: String,
     pub passes: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Requirement {
     pub concept: String,
     pub passes: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ordering {
     pub first: String,
     pub then: String,
     pub passes: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct QualityRubric {
     pub pass: String,
     pub partial: Option<String>,
@@ -48,7 +56,7 @@ pub struct QualityRubric {
     pub positive_examples: Vec<Example>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct FailureMode {
     pub id: String,
     pub name: String,
@@ -56,7 +64,7 @@ pub struct FailureMode {
     pub impact: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Example {
     pub label: String,
     pub code: Option<String>,
@@ -69,7 +77,7 @@ impl SemanticSpec {
             id: id.into(),
             title: String::new(),
             source_file: String::new(),
-            severity: ConstraintSeverity::Hard { threshold: 0.45 },
+            severity: ConstraintSeverity::Hard { threshold: 0.5 },
             domains: vec![],
             mandatory_for_tags: vec![],
             related_to: vec![],
@@ -185,6 +193,12 @@ impl SemanticSpec {
         children.push(ConstraintPredicate::LlmJudge {
             rubric: rubric_text,
         });
+        let binary_checks = self.rubric.checks;
+        let pass_criteria = if self.rubric.pass.is_empty() {
+            None
+        } else {
+            Some(self.rubric.pass.clone())
+        };
         ConstraintDoc {
             id: self.id,
             source_file: self.source_file,
@@ -198,6 +212,38 @@ impl SemanticSpec {
             domains: self.domains,
             mandatory_for_tags: self.mandatory_for_tags,
             related_to: self.related_to,
+            binary_checks,
+            version: self.version,
+            repair_provenance: self.repair_provenance,
+            pass_criteria,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn default_for_test(id: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            source_file: format!("{id}.yaml"),
+            severity: crate::types::ConstraintSeverity::Hard { threshold: 0.5 },
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+            remediation_hint: None,
+            exclusions: vec![],
+            requirements: vec![],
+            orderings: vec![],
+            rubric: QualityRubric {
+                pass: "pass".into(),
+                partial: None,
+                fail: "fail".into(),
+                checks: vec![],
+                failure_modes: vec![],
+                negative_examples: vec![],
+                positive_examples: vec![],
+            },
+            version: 1,
+            repair_provenance: None,
         }
     }
 }
@@ -344,6 +390,8 @@ impl SemanticSpecBuilder {
             requirements: self.requirements,
             orderings: self.orderings,
             rubric: self.rubric,
+            version: 1,
+            repair_provenance: None,
         }
     }
 }

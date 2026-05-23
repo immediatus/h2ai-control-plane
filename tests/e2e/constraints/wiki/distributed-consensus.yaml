@@ -1,0 +1,52 @@
+id: topic:distributed-consensus
+depth: topic
+domains:
+  - distributed-systems
+  - consensus
+  - formal-methods
+synthesis: >
+  HLE (Humanity's Last Exam) maps to graduate-level expert reasoning where the answer must
+  be formally correct, not just plausible. The two consensus constraints enforce the classical
+  BFT safety and liveness theorems. CONSTRAINT-HLE-1 (Quorum Safety) requires that any
+  proposed protocol prove n ≥ 3f+1 — not just state it — and show why n=3f is insufficient:
+  a quorum of size ⌈(n+f+1)/2⌉ from a universe of n=3f can be constructed without any honest
+  node, breaking agreement. Equivocating Byzantine nodes (those sending conflicting messages
+  to different correct nodes) are the key attack vector — the quorum intersection proof must
+  hold even when f nodes equivocate simultaneously. CONSTRAINT-HLE-2 (Liveness Guarantee)
+  requires that liveness holds under the partial synchrony model (Fischer-Lynch-Paterson
+  impossibility applies under pure asynchrony; partial synchrony with GST is the correct
+  model). A protocol that achieves liveness only under full synchrony — known message delivery
+  bound at all times — is scored partial, not pass. The view-change mechanism (leader rotation)
+  must terminate in O(f) rounds after a faulty leader is detected, not O(n²). Both constraints
+  are scored by LLM judge reading the proposed protocol description — mathematical precision
+  in the proposal is required, not just correct intuition.
+invariants:
+  - "n ≥ 3f+1 proven with impossibility argument for n=3f"
+  - "Quorum size ⌈(n+f+1)/2⌉: any two quorums share ≥1 honest node even with f Byzantine"
+  - "Agreement property: two honest nodes cannot commit different values in the same view"
+  - "Equivocation handled: Byzantine node sending conflicting votes cannot cause split commit"
+  - "Liveness under partial synchrony: protocol commits after GST even if f nodes Byzantine"
+  - "View-change mechanism: faulty leader replaced in O(f) rounds — not O(n²)"
+  - "Progress not blocked indefinitely by f Byzantine nodes sending arbitrary messages"
+failure_modes_covered:
+  - "FM-HLE-1-1: Protocol claims n=2f+1 sufficient for Byzantine safety — equivocation attack works"
+  - "FM-HLE-1-2: Quorum intersection proof assumes synchrony — invalid under message delay"
+  - "FM-HLE-2-1: No view-change mechanism — single crashed leader permanently halts protocol"
+  - "FM-HLE-2-2: View-change O(n²) rounds — does not terminate within bounded time after GST"
+  - "FM-HLE-2-3: Liveness proof requires fully synchronous network — fails under partial synchrony"
+entry_points:
+  - CONSTRAINT-HLE-1
+  - CONSTRAINT-HLE-2
+constraints:
+  - CONSTRAINT-HLE-1
+  - CONSTRAINT-HLE-2
+cross_references:
+  - id: CONSTRAINT-BFT-1
+    domain: production-safety
+    reason: "Both are adversarial: BFT consensus tolerates Byzantine nodes; Terminal-Bench tolerates adversarial proposers"
+  - id: CONSTRAINT-TAU-1
+    domain: saas
+    reason: "Multi-tenant isolation is a safety property analogous to agreement — one tenant cannot observe another's state"
+related:
+  - CONSTRAINT-HLE-1
+  - CONSTRAINT-HLE-2

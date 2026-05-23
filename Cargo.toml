@@ -16,8 +16,8 @@ members = [
     "crates/h2ai-tools",
     "crates/h2ai-agent",
     "crates/h2ai-constraints",
-    "crates/h2ai-eval",
     "crates/h2ai-knowledge",
+    "crates/h2ai-test-utils",
 ]
 resolver = "2"
 

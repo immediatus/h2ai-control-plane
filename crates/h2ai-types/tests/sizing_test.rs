@@ -1,7 +1,8 @@
 use h2ai_types::sizing::{
     condorcet_quality, n_it_optimal, tau_alignment, CoherencyCoefficients, CoordinationThreshold,
     EigenCalibration, EnsembleCalibration, MergeStrategy, MultiplicationCondition,
-    MultiplicationConditionFailure, PredictionBasis, RoleErrorCost, TauValue, CG_HALFLIFE_SECS,
+    MultiplicationConditionFailure, OracleDomain, OracleFamily, PredictionBasis, RoleErrorCost,
+    TauValue, CG_HALFLIFE_SECS,
 };
 
 #[test]
@@ -1083,4 +1084,86 @@ fn from_cosine_matrix_zero_matrix_n_eff_is_one() {
         "zero cosine matrix → n_eff=1 (underflow branch), got {}",
         ec.n_effective
     );
+}
+
+// ── Fix A: N_max hard floor (quorum invariant) ────────────────────────────────
+
+#[test]
+fn n_max_ci_applies_hard_floor_of_three_when_degraded() {
+    // alpha=0.9, beta_base=0.1, cg=[0.4] → n_max ≈ 1 (below BFT quorum)
+    let cc = CoherencyCoefficients::new(0.9, 0.1, vec![0.4]).unwrap();
+    let (lo, hi) = cc.n_max_ci();
+    assert!(lo >= 3.0, "n_max_ci lo must be floored at 3, got {lo}");
+    assert!(hi >= 3.0, "n_max_ci hi must be floored at 3, got {hi}");
+    assert!(lo <= hi, "lo must not exceed hi");
+}
+
+#[test]
+fn n_max_ci_does_not_alter_healthy_values() {
+    // alpha=0.1, beta_base=0.01, cg=[0.7] → n_max >> 3
+    let cc = CoherencyCoefficients::new(0.1, 0.01, vec![0.7]).unwrap();
+    let (lo, hi) = cc.n_max_ci();
+    assert!(
+        lo > 3.0,
+        "healthy n_max_ci lo should exceed floor, got {lo}"
+    );
+    assert!(hi >= lo, "hi must be >= lo");
+}
+
+#[test]
+fn n_max_degraded_returns_true_when_below_quorum() {
+    // alpha=0.9, beta_base=0.1, cg=[0.4] → unclamped n_max ≈ 1 < 3
+    let cc = CoherencyCoefficients::new(0.9, 0.1, vec![0.4]).unwrap();
+    assert!(
+        cc.n_max_degraded(),
+        "must detect degradation below quorum floor"
+    );
+}
+
+#[test]
+fn n_max_degraded_returns_false_in_healthy_regime() {
+    let cc = CoherencyCoefficients::new(0.1, 0.01, vec![0.7]).unwrap();
+    assert!(
+        !cc.n_max_degraded(),
+        "healthy calibration must not report degradation"
+    );
+}
+
+#[test]
+fn quorum_degraded_multiplication_condition_failure_variant_is_constructible() {
+    let failure = MultiplicationConditionFailure::QuorumDegradedBelowMinimum {
+        unclamped_n_max: 1.0,
+    };
+    let msg = failure.to_string();
+    assert!(
+        msg.contains("1"),
+        "error message must include the unclamped value"
+    );
+}
+
+// ── Fix D: OracleFamily mapping ───────────────────────────────────────────────
+
+#[test]
+fn oracle_family_code_maps_to_syntactic() {
+    assert_eq!(OracleDomain::Code.family(), OracleFamily::Syntactic);
+}
+
+#[test]
+fn oracle_family_factual_maps_to_semantic() {
+    assert_eq!(OracleDomain::Factual.family(), OracleFamily::Semantic);
+}
+
+#[test]
+fn oracle_family_reasoning_maps_to_semantic() {
+    assert_eq!(OracleDomain::Reasoning.family(), OracleFamily::Semantic);
+}
+
+#[test]
+fn oracle_family_human_maps_to_human() {
+    assert_eq!(OracleDomain::Human.family(), OracleFamily::Human);
+}
+
+#[test]
+fn oracle_family_unknown_maps_to_semantic() {
+    assert_eq!(OracleDomain::Unknown.family(), OracleFamily::Semantic);
 }

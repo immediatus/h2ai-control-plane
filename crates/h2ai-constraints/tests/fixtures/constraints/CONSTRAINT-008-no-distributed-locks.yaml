@@ -1,0 +1,163 @@
+id: CONSTRAINT-008
+title: "No Distributed Locks on Critical Charge Path"
+severity: hard
+domains:
+  - concurrency
+  - latency
+  - distributed-systems
+related_to:
+  - CONSTRAINT-004  # use atomic Redis operations instead of locks
+remediation_hint: "Use lock-free atomic operations: Redis Lua EVAL for check-and-debit in one round-trip, or Redis WATCH/MULTI/EXEC for optimistic concurrency. Distributed locks (Redlock, SETNX-based advisory locks, PostgreSQL advisory locks) add unbounded wait time under contention and are prohibited on the critical path."
+semantic:
+  exclusions:
+    - pattern: "Redlock or advisory lock on the charge path"
+      passes: 3
+  requirements:
+    - concept: "lock-free Redis atomic operation"
+      passes: 3
+criteria:
+  pass: |
+    The proposal uses only lock-free atomicity mechanisms on the critical charge path:
+    Redis Lua EVAL, MULTI/EXEC, or CAS operations. No distributed lock acquisition
+    (SETNX-based Redlock, ZooKeeper locks, database advisory locks, mutex services)
+    appears on the path from receiving a charge request to completing the debit.
+  partial: "The proposal uses a distributed lock for a narrow subset of operations (e.g. only during cold-start) with a clear latency bound and a documented fallback."
+  fail: |
+    The proposal acquires a distributed lock before performing the budget deduction
+    or any other operation on the critical charge path. This violates the ≤0.5ms P99
+    latency requirement because lock acquisition requires at least one additional
+    network round-trip (150µs–1ms in Redis deployments) with unbounded wait under contention.
+  checks:
+    - Does the proposal avoid SETNX-based advisory locks or Redlock on the charge path?
+    - Does the proposal avoid database-level advisory locks (PostgreSQL pg_try_advisory_lock, etc.)?
+    - Does the proposal avoid ZooKeeper or etcd distributed locks on the charge path?
+    - Are all critical-path atomicity requirements satisfied by Redis atomic operations (Lua EVAL, MULTI/EXEC)?
+
+failure_modes:
+  - id: FM-008-1
+    trigger: "Redlock for budget debit serialization under high concurrency"
+    consequence: |
+      At 50k TPS, each Redlock acquisition requires 2× round-trips to N/2+1 Redis nodes
+      (~300–600µs). Under moderate contention (10% of requests racing the same campaign),
+      lock wait queues form. P99 latency exceeds 5ms. At higher contention the lock
+      holder pod can be OOM-killed while holding the lock, causing the lock to expire
+      only after TTL (~10s), blocking all charge requests for that campaign for 10 seconds.
+    correct_handling: |
+      Replace Redlock with a single Redis Lua EVAL that atomically checks balance and
+      debits in one round-trip. No lock needed: Lua scripts are serialized by Redis
+      execution model — concurrent scripts on the same key are queued at the server.
+      Round-trip cost: ~150µs. No contention-induced wait. No lock expiry risk.
+  - id: FM-008-2
+    trigger: "PostgreSQL advisory lock on charge path to prevent double-spend"
+    consequence: |
+      Advisory lock acquisition requires a CockroachDB round-trip (1–5ms latency).
+      Under contention, sessions queue behind the lock holder. CockroachDB session
+      limits (max_connections) become the bottleneck. A slow lock holder blocks all
+      charge requests for that campaign. Lock release requires explicit UNLOCK or
+      session close — a crashed worker leaves the lock held until session timeout.
+    correct_handling: |
+      Use Redis Lua EVAL for atomicity — no PostgreSQL/CockroachDB on the charge path.
+      CockroachDB is only updated asynchronously by a Kafka consumer to reconcile the
+      operational ledger. Budget enforcement lives entirely in Redis.
+  - id: FM-008-3
+    trigger: "Optimistic WATCH/MULTI/EXEC with unbounded retry loop"
+    consequence: |
+      WATCH/MULTI/EXEC is lock-free but aborts the transaction on any concurrent write
+      to the watched key. At 50k TPS on a hot campaign, the abort rate can reach 30–70%.
+      An unbounded retry loop converts aborts into CPU spin — under high contention,
+      requests retry indefinitely, P99 latency is unbounded, and the retry storm
+      amplifies contention further.
+    correct_handling: |
+      Use a single Lua EVAL instead of WATCH/MULTI/EXEC. Lua scripts execute atomically
+      within Redis — no abort, no retry loop needed. If WATCH/MULTI/EXEC is used, cap
+      retries at 3 and return a 429 (rate limited) on exhaustion rather than spinning.
+
+negative_examples:
+  - description: "Redlock acquisition before budget debit"
+    code: |
+      # WRONG — distributed lock on critical path, unbounded wait under contention
+      lock = redlock.acquire(f"lock:budget:{campaign_id}", ttl=5000)
+      if not lock:
+          return Error("could not acquire lock")
+      try:
+          balance = redis.get(f"budget:{campaign_id}")
+          if balance < amount:
+              return Error("insufficient budget")
+          redis.decrby(f"budget:{campaign_id}", amount)
+      finally:
+          redlock.release(lock)
+    why_wrong: |
+      Two extra Redis round-trips per request (acquire + release). Under contention,
+      lock wait time is unbounded. If the holder crashes, all requests for this campaign
+      block until TTL expires (up to 5s). At 50k TPS this violates the ≤0.5ms P99 SLA.
+  - description: "PostgreSQL advisory lock for serialization"
+    code: |
+      -- WRONG — database lock on critical path, 1-5ms latency, connection pool exhaustion
+      SELECT pg_advisory_lock(campaign_id::bigint);
+      UPDATE budgets SET balance = balance - $1 WHERE campaign_id = $2 AND balance >= $1;
+      SELECT pg_advisory_unlock(campaign_id::bigint);
+    why_wrong: |
+      Each charge requires a CockroachDB round-trip for the lock. Under load, the
+      connection pool saturates before the CPU. A crashed client leaves the lock held
+      until pg_advisory_unlock_all() is called on session close, blocking all concurrent
+      charges for that campaign.
+  - description: "WATCH/MULTI/EXEC with unbounded retry"
+    code: |
+      # WRONG — retry loop amplifies contention at high TPS
+      while True:
+          redis.watch(f"budget:{campaign_id}")
+          balance = int(redis.get(f"budget:{campaign_id}") or 0)
+          if balance < amount:
+              redis.unwatch()
+              return Error("insufficient budget")
+          pipe = redis.pipeline(True)
+          pipe.decrby(f"budget:{campaign_id}", amount)
+          try:
+              pipe.execute()
+              break   # success
+          except WatchError:
+              continue  # retry forever
+    why_wrong: |
+      On a hot key at 50k TPS, WatchError rate can reach 70%. The infinite retry loop
+      turns every abort into a CPU spin, amplifying the contention it's trying to avoid.
+      P99 latency is unbounded. Memory and CPU grow with the retry depth.
+
+positive_examples:
+  - description: "Single Lua EVAL — atomic check-and-debit, no lock"
+    code: |
+      -- CORRECT — atomic, lock-free, single round-trip (~150µs)
+      local budget_key = KEYS[1]          -- "budget:{campaign_id}"
+      local amount     = tonumber(ARGV[1])
+      local balance    = tonumber(redis.call('GET', budget_key) or 0)
+      if balance < amount then
+          return {-1, balance}            -- insufficient budget, no debit
+      end
+      local new_balance = redis.call('DECRBY', budget_key, amount)
+      return {1, new_balance}            -- success
+    why_correct: |
+      Redis serializes Lua scripts — no two scripts interleave on the same key.
+      One network round-trip. No lock acquisition, no contention queue, no TTL expiry
+      risk. P99 latency stays ≤0.5ms up to Redis throughput limits (~500k ops/s).
+  - description: "WATCH/MULTI/EXEC with bounded retry and 429 fallback"
+    code: |
+      # ACCEPTABLE — lock-free with bounded retries; use only if Lua is not available
+      MAX_RETRIES = 3
+      for attempt in range(MAX_RETRIES):
+          redis.watch(f"budget:{campaign_id}")
+          balance = int(redis.get(f"budget:{campaign_id}") or 0)
+          if balance < amount:
+              redis.unwatch()
+              return Error("insufficient budget")
+          pipe = redis.pipeline(True)
+          pipe.decrby(f"budget:{campaign_id}", amount)
+          try:
+              pipe.execute()
+              return Success()
+          except WatchError:
+              if attempt == MAX_RETRIES - 1:
+                  return Error("rate limited", status=429)
+      return Error("rate limited", status=429)
+    why_correct: |
+      Bounded retries prevent the retry storm. Returning 429 on exhaustion lets the
+      client back off. Still lock-free — no blocking wait. Prefer Lua EVAL when
+      available since it eliminates retries entirely.

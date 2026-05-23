@@ -1,10 +1,11 @@
-use h2ai_adapters::mock::SequencedMockAdapter;
 use h2ai_agent::tao_agent::{TaoAgent, TaoAgentInput};
 use h2ai_config::H2AIConfig;
-use h2ai_tools::mcp::{McpExecutor, MockMcpBackend};
+use h2ai_test_utils::SequencedMockAdapter;
+use h2ai_test_utils::{MockMcpBackend, MockSearchBackend, MockWasmBackend};
+use h2ai_tools::mcp::McpExecutor;
 use h2ai_tools::registry::ToolRegistry;
-use h2ai_tools::wasm::{MockWasmBackend, WasmExecutor};
-use h2ai_tools::web_search::{MockSearchBackend, WebSearchExecutor};
+use h2ai_tools::wasm::WasmExecutor;
+use h2ai_tools::web_search::WebSearchExecutor;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::agent::AgentTool;
 use h2ai_types::sizing::TauValue;

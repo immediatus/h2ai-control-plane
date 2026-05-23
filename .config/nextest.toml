@@ -1,0 +1,24 @@
+# Nextest configuration for h2ai-control-plane.
+#
+# NATS integration tests share a live NATS server and must not run concurrently.
+# Parallel execution causes wildcard subscribers to steal messages across tests,
+# and shared KV keys (e.g., "promoted", "observations") to overwrite each other.
+[test-groups]
+serial-nats = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = '''
+  binary_id(h2ai-orchestrator::engine_nats_dispatch_test) |
+  binary_id(h2ai-orchestrator::induction_store_test)      |
+  binary_id(h2ai-orchestrator::nats_dispatch_adapter_test)|
+  binary_id(h2ai-orchestrator::nats_dispatch_e2e_test)    |
+  binary_id(h2ai-orchestrator::pipeline_await_test)       |
+  binary_id(h2ai-orchestrator::pipeline_test)             |
+  binary_id(h2ai-orchestrator::session_journal_test)      |
+  binary_id(h2ai-state::nats_delta_test)                  |
+  binary_id(h2ai-state::nats_infra_test)                  |
+  binary_id(h2ai-state::nats_kv_roundtrip_test)           |
+  binary_id(h2ai-state::nats_kv_test)                     |
+  binary_id(h2ai-state::nats_test)
+'''
+test-group = 'serial-nats'

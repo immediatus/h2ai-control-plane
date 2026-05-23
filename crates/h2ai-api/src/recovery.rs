@@ -206,6 +206,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             srani_ema_cfi: 0.45,
             srani_count: 0,
             srani_grounding_chain: None,
+            gap_research_chain: None,
             nats_raw: None,
             tenant_id,
             nats: state.nats.clone(),
@@ -214,6 +215,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             stable_cache: None,
             knowledge_provider: Some(state.knowledge_provider.clone()),
             induction_store: None,
+            conformal_margin: state.drift_monitor.lock().await.active_conformal_margin(),
         };
 
         match ExecutionEngine::run_from_checkpoint(input, checkpoint.clone()).await {

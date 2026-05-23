@@ -72,7 +72,7 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
     let majority_vote_active = engine_input
         .shadow_audit_ctx
         .as_ref()
-        .is_some_and(|ctx| ctx.promoted_domains.contains(&task_domain));
+        .is_some_and(|ctx| ctx.strict || ctx.promoted_domains.contains(&task_domain));
     let mut shadow_events_this_wave: Vec<ShadowAuditorResultEvent> = Vec::new();
 
     // In single-family mode the auditor is the same model as the explorer.
@@ -195,6 +195,7 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
                 task_id: task_id.clone(),
                 explorer_id,
                 reason: audit_reason,
+                raw_output: String::new(),
                 constraint_error_cost: cost,
                 violated_constraints: audit_violated
                     .iter()
@@ -203,6 +204,10 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
                         score: 0.0,
                         severity_label: "Hard".to_string(),
                         remediation_hint: None,
+                        constraint_description: String::new(),
+                        verifier_reason: None,
+                        check_verdicts: vec![],
+                        criteria_pass: None,
                     })
                     .collect(),
                 timestamp: Utc::now(),

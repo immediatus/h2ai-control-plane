@@ -79,6 +79,10 @@ fn make_doc(id: &str, domains: &[&str], tags: &[&str]) -> ConstraintDoc {
             .collect(),
         mandatory_for_tags: tags.iter().map(std::string::ToString::to_string).collect(),
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 

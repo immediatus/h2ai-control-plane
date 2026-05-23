@@ -114,6 +114,11 @@ eigen_n_eff_delta = 0.05
 # Raise to 50–100 for high-variance task distributions.
 tao_estimator_warmup = 20
 
+# TaoConfig per-request fields (set in task payloads, not in this global config).
+# Documented here for reference:
+#   retry_on_timeout = true         — retry once on turn-1 or bypass-path timeout with reduced max_tokens
+#   timeout_retry_max_tokens = 512  — max_tokens cap for the single retry request after a timeout
+
 # Initial N_max used to seed the Thompson Sampling bandit warm prior at first startup.
 # Clamped to [1, bandit_n_max_arms] by the bandit. Default 4 — conservative mid-range prior.
 bandit_n_max_initial = 4
@@ -291,8 +296,8 @@ listen_addr = "0.0.0.0:8080"
 # ── NATS ──────────────────────────────────────────────────────────────────────
 
 # NATS server URL for the API server, edge agents, and integration tests.
-# Override via H2AI_NATS_URL env var or the nats_url field in your override TOML.
-nats_url = "nats://localhost:4222"
+# In Toolbox/podman containers NATS runs on the host — use host.docker.internal.
+nats_url = "nats://host.docker.internal:4222"
 
 # Enable NATS agent dispatch mode. When true, explorer slots are dispatched to
 # TaoAgent processes via NATS rather than calling the in-process LLM adapter.
@@ -349,6 +354,7 @@ adapter_profiles = []
 # Enable the two-stage critique-then-write synthesis phase.
 # Set false to use the selection chain exclusively (pre-synthesis behaviour).
 synthesis_enabled = true
+synthesis_wave_enabled = true
 
 # Minimum verified proposals needed before synthesis is attempted.
 # Critique of a single proposal is degenerate (no contradictions possible).
@@ -363,6 +369,38 @@ synthesis_critique_max_tokens = 32768
 
 # Max tokens for the synthesis call (Stage 2).
 synthesis_max_tokens = 32768
+
+# Overhead factor for the partial-pass truncation budget formula:
+#   chars_per_partial = model_max_tokens * 4 / (max_k + partial_pass_overhead_factor)
+# Represents system prompt + task description + repair scaffolding in units of
+# partial-slot equivalents. At model_max_tokens=32768 and max_k=3: 32768*4/(3+5) = 16384 chars/partial.
+partial_pass_overhead_factor = 5.0
+
+# Enable sequential constraint grafting in the synthesis wave (GAP-H1).
+# When true the synthesis wave iteratively integrates one constraint cluster per LLM call.
+# Each round includes intermediate verification; destructive grafts are rolled back.
+# Default: false (opt-in; single-shot synthesis is the stable path).
+sequential_grafting_enabled = false
+
+# Maximum graft rounds before stopping.
+# Each round = one focused LLM call + one verification pass.
+sequential_grafting_max_rounds = 4
+
+# ── Calibration Drift Detection (GAP-H2) ──────────────────────────────────────
+# DDM sliding window size in tasks.
+drift_ddm_window = 20
+# DDM detection threshold in standard deviations (k × σ_reference).
+drift_ddm_k = 2.5
+# BOCPD hazard rate: P(changepoint at this observation). 0.01 ≈ 1 shift per 100 tasks.
+drift_bocpd_hazard_rate = 0.01
+# BOCPD posterior mass threshold on run-lengths {0,1,2,3,4} to fire CalibrationChangepoint.
+drift_bocpd_changepoint_threshold = 0.90
+# Trigger POST /calibrate automatically on CalibrationChangepoint (operator opt-in).
+auto_recalibrate_on_drift = false
+# Max seconds to operate with stale calibration before a tracing::warn is emitted.
+drift_staleness_ttl_secs = 3600
+# ORCA conformal margin subtracted from VerificationConfig::threshold when drift is active.
+drift_conformal_margin = 0.05
 
 # ── Shell Tool ────────────────────────────────────────────────────────────────
 
@@ -538,12 +576,11 @@ gate_threshold   = 0.50
 # Used when adaptive=false and as cold-start midpoint when adaptive=true.
 warn_threshold   = 0.30
 inject_threshold = 0.60
-# Max chars of raw web-search text fed to the distillation LLM. Larger = richer context.
-grounding_raw_max_chars  = 4000
-# Max chars of the (distilled) grounding statement injected into the explorer hint.
-grounding_hint_max_chars = 1200
 # Use the researcher adapter to distill web results before hint injection. Default true.
 grounding_distill        = true
+# Minimum character count in a grounding statement to trigger LLM distillation.
+# Compact results (below this threshold) skip compression. Default 800.
+grounding_compress_threshold = 800
 
 # ── Precision-mode slot budget ────────────────────────────────────────────────
 # Maximum explorer slots for Precision-quadrant tasks (Self-MoA).
@@ -603,6 +640,7 @@ enabled = false
 promotion_threshold = 0.05
 promotion_window = 30
 auto_demotion = true
+strict = false
 
 # ── Oracle Gate ───────────────────────────────────────────────────────────────
 # Phase 3 → Phase 4 oracle verification gate. Calls oracle service to verify
@@ -726,6 +764,31 @@ enabled           = true
 base_interval     = 10
 cache_ttl_secs    = 60
 cache_max_entries = 200
+
+# ── GAP-I1: Knowledge-Gap Detection and Domain Synthesis ─────────────────────
+# When enabled, fires a researcher adapter on checks with pass rate ≤ cold_check_threshold.
+# Synthesised domain knowledge is accepted only when LlmJudge scores ≥ synthesis_min_confidence.
+# At most max_gap_records_per_wave researcher calls are issued per MAPE-K wave.
+[gap_i1]
+enabled                   = false
+cold_check_threshold      = 0.0
+synthesis_min_confidence  = 0.7
+max_gap_records_per_wave  = 3
+researcher_timeout_secs   = 90
+
+# ── GAP-K1: Constraint Coherence & Automated Spec Repair ──────────────────────
+# Pre-flight coherence probe detects incoherent/unstable checks via repeated LlmJudge calls.
+# Runtime instability circuit breaker monitors rejection-reason consistency across waves.
+# When instability fires, SpecRepairAdvisor generates candidate rewrites.
+[gap_k1]
+enabled                     = false
+auto_repair_enabled         = false
+coherence_threshold         = 0.80
+instability_threshold       = 0.10
+repair_acceptance_threshold = 0.90
+probe_runs                  = 5
+repair_candidates           = 3
+probe_cache_ttl_secs        = 86400
 
 # ── CSPR-v2: Conflict-Aware Constraint-Scoped Prior Repair ───────────────────
 [cspr]

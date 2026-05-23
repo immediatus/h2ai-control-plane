@@ -141,6 +141,9 @@ async fn nats_dispatch_adapter_round_trip() {
         offload_threshold_bytes: 524_288,
     });
 
+    // ready_tx fires after the agent subscribes so the main task doesn't publish before the sub exists.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+
     // Spawn a mock edge agent that subscribes to ephemeral task subjects and publishes results.
     let agent_handle = tokio::spawn(async move {
         use h2ai_types::agent::TaskResult;
@@ -151,6 +154,9 @@ async fn nats_dispatch_adapter_round_trip() {
             .subscribe("h2ai.tasks.ephemeral.>".to_owned())
             .await
             .expect("subscribe");
+
+        // Signal subscription is live before waiting for the message.
+        let _ = ready_tx.send(());
 
         // Wait for the task payload
         let msg = tokio::time::timeout(Duration::from_secs(5), sub.next())
@@ -179,6 +185,9 @@ async fn nats_dispatch_adapter_round_trip() {
             .await
             .expect("ack publish");
     });
+
+    // Wait for the agent to be subscribed before publishing.
+    ready_rx.await.expect("agent ready signal");
 
     let request = ComputeRequest {
         system_context: "test context".into(),

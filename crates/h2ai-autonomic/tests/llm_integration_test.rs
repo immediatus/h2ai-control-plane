@@ -10,10 +10,10 @@
 //!   - With no corpus, CG equals `cfg.calibration_cg_fallback`
 //!   - With a corpus, CG is measured (not the fallback)
 
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::CoherencyCoefficients;

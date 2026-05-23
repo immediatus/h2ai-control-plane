@@ -302,7 +302,18 @@ impl ConstraintYaml {
         let rubric = self.build_rubric();
         let severity = match self.severity {
             SeverityKind::Hard => ConstraintSeverity::Hard {
-                threshold: self.threshold.unwrap_or(0.45),
+                threshold: self.threshold.unwrap_or_else(|| {
+                    let n = self.criteria.checks.len();
+                    if n >= 2 {
+                        // Binary checks: allow at most 1 missed check.
+                        // Scores are k/n for integer k; threshold (n-1)/n means ≥ n-1 must be PRESENT.
+                        (n - 1) as f64 / n as f64
+                    } else {
+                        // 0 or 1 checks (LLM judge or single check): 0.5 blocks score=0.0 (Fail)
+                        // while passing score=0.5 (Partial) and score=1.0 (Pass).
+                        0.5
+                    }
+                }),
             },
             SeverityKind::Soft => ConstraintSeverity::Soft {
                 weight: self.threshold.unwrap_or(1.0),
@@ -375,6 +386,13 @@ impl ConstraintYaml {
             children,
         };
 
+        let binary_checks = self.criteria.checks;
+        let pass_criteria = if self.criteria.pass.is_empty() {
+            None
+        } else {
+            Some(self.criteria.pass.clone())
+        };
+
         ConstraintDoc {
             id: self.id.clone(),
             source_file: self.id.clone(),
@@ -385,6 +403,10 @@ impl ConstraintYaml {
             domains: self.domains,
             mandatory_for_tags: self.mandatory_for_tags,
             related_to: self.related_to,
+            binary_checks,
+            version: 1,
+            repair_provenance: None,
+            pass_criteria,
         }
     }
 
@@ -494,6 +516,8 @@ impl ConstraintYaml {
                 negative_examples,
                 positive_examples,
             },
+            version: 1,
+            repair_provenance: None,
         })
     }
 }

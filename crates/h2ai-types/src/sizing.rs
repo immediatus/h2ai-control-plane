@@ -202,6 +202,10 @@ impl CoherencyCoefficients {
     /// `n_max_lo` is the pessimistic bound (high CG → low `β_eff` → high `N_max` reversal);
     /// `n_max_hi` is the optimistic bound. The pair bounds the true `N_max` under measurement
     /// uncertainty.
+    ///
+    /// Both bounds are floored at **3.0** — the minimum quorum required for BFT/Krum/SRANI.
+    /// When the unclamped value falls below 3, call `n_max_degraded()` to detect the
+    /// degradation and trigger a circuit-breaker rather than silently using a 1–2 agent pool.
     #[must_use]
     pub fn n_max_ci(&self) -> (f64, f64) {
         let sigma = self.cg_std_dev();
@@ -214,7 +218,23 @@ impl CoherencyCoefficients {
         };
         let n_hi = n_at_cg(cg_mean + sigma);
         let n_lo = n_at_cg(cg_mean - sigma);
-        (n_lo.min(n_hi), n_lo.max(n_hi))
+        // Hard floor: BFT/Krum/SRANI require N ≥ 3. Unclamped values < 3 indicate
+        // adapter degradation; callers should check n_max_degraded() and trip the
+        // circuit breaker rather than proceeding with a sub-quorum pool.
+        let lo = n_lo.min(n_hi).max(3.0);
+        let hi = n_lo.max(n_hi).max(lo);
+        (lo, hi)
+    }
+
+    /// Returns `true` when the **unclamped** `N_max` point estimate falls below 3.0,
+    /// indicating the adapter is too degraded to maintain BFT/Krum/SRANI quorum.
+    ///
+    /// When this is `true`, callers in non-shadow-mode should fail fast with
+    /// `MultiplicationConditionFailure::QuorumDegradedBelowMinimum` rather than
+    /// proceeding with a clamped-but-meaningless pool of 1–2 agents.
+    #[must_use]
+    pub fn n_max_degraded(&self) -> bool {
+        self.n_max() < 3.0
     }
 
     /// `N_max` adjusted for context-window pressure (attention-degradation model).
@@ -917,6 +937,8 @@ pub enum MultiplicationConditionFailure {
         explorer_family: String,
         verifier_family: String,
     },
+    #[error("adapter N_max={unclamped_n_max:.1} < 3 — model too degraded to maintain BFT/Krum/SRANI quorum; adapter must be marked Offline")]
+    QuorumDegradedBelowMinimum { unclamped_n_max: f64 },
 }
 
 impl MultiplicationCondition {
@@ -995,6 +1017,22 @@ pub enum ProbeSkipReason {
     AmbiguousBandProbeDeferred,
 }
 
+/// Structural family of an oracle type — used for FUSE worst-of-family reduction.
+///
+/// Oracles in the same family share a correlated failure mode (e.g., both JSON Schema
+/// and Z3 Symbolic fail on malformed JSON). Grouping by family and taking the min score
+/// within each family before averaging across families prevents a single syntactic defect
+/// from registering as multiple independent failures in the MMSE calibration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OracleFamily {
+    /// Structural/syntax-level checks (JSON Schema, AST parsing, Z3 pre-parse).
+    Syntactic,
+    /// Semantic evaluation (free-form LLM judge, multiple-choice, test suites).
+    Semantic,
+    /// Human reviewer gate — always independent from automated families.
+    Human,
+}
+
 /// Geographic/semantic domain of an oracle evaluation.
 ///
 /// Used to stratify calibration residuals per-domain when `n_domain` ≥ 15.
@@ -1007,6 +1045,20 @@ pub enum OracleDomain {
     Reasoning,
     Human,
     Unknown,
+}
+
+impl OracleDomain {
+    /// Map this domain to its structural family for FUSE worst-of-family reduction.
+    #[must_use]
+    pub fn family(&self) -> OracleFamily {
+        match self {
+            OracleDomain::Code => OracleFamily::Syntactic,
+            OracleDomain::Factual | OracleDomain::Reasoning | OracleDomain::Unknown => {
+                OracleFamily::Semantic
+            }
+            OracleDomain::Human => OracleFamily::Human,
+        }
+    }
 }
 
 /// Configuration for Phase 6 async oracle evaluation.

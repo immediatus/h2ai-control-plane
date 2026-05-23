@@ -165,6 +165,7 @@ fn branch_pruned_event_includes_error_cost() {
         task_id: task_id(),
         explorer_id: explorer_id(),
         reason: "Violates ADR-004: Stateless Auth requirement".into(),
+        raw_output: String::new(),
         constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
         violated_constraints: vec![],
         timestamp: Utc::now(),
@@ -354,6 +355,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             task_id: task_id(),
             explorer_id: explorer_id(),
             reason: "ADR-004".into(),
+            raw_output: String::new(),
             constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
             violated_constraints: vec![],
             timestamp: Utc::now(),
@@ -515,6 +517,7 @@ mod oracle_event_tests {
             n_used: 3,
             oracle_spec: make_oracle_spec(),
             domain: OracleDomain::Code,
+            oracle_specs: vec![],
             tenant_id: TenantId::default(),
         };
         let json = serde_json::to_string(&ev).unwrap();
@@ -582,6 +585,7 @@ mod oracle_event_tests {
             n_used: 2,
             oracle_spec: make_oracle_spec(),
             domain: OracleDomain::Factual,
+            oracle_specs: vec![],
             tenant_id: TenantId::default(),
         });
         let json = serde_json::to_string(&ev).unwrap();

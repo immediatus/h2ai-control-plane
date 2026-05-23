@@ -1,0 +1,25 @@
+id: CONSTRAINT-SWE-2
+title: "Deterministic Output — No Undefined Behavior on Edge Cases"
+severity: hard
+threshold: 0.6
+domains:
+  - software-engineering
+  - code-correctness
+remediation_hint: "Handle all edge cases explicitly: empty inputs, single elements, duplicates, and integer overflow boundaries. Return a well-defined value (or raise a documented exception) for every possible input. Never allow a null dereference, out-of-bounds access, or integer overflow on valid inputs."
+criteria:
+  pass: |
+    All of the following are true:
+    - Function handles empty input without panic, crash, or undefined return value
+    - Duplicate values are handled deterministically with a documented contract (error, update, or ignore)
+    - Maximum and minimum boundary values of the input domain are handled correctly
+    - No integer overflow, array index out-of-bounds, or null/nil dereference is possible on valid inputs
+  partial: "Most edge cases are handled but one boundary condition (e.g., INT_MAX overflow or null on empty container) is undocumented or coincidentally safe."
+  fail: |
+    Any of the following:
+    - Empty input causes a panic, crash, or an undefined return value
+    - Duplicate values produce non-deterministic ordering without a documented contract
+    - Integer overflow or out-of-bounds access is reachable on inputs that satisfy the function's documented preconditions
+  checks:
+    - Does the fix handle an empty input without panicking or returning an undefined/garbage value?
+    - Does the fix handle duplicate values with a deterministic, documented contract (error, update, or skip)?
+    - Does the fix correctly handle both the minimum and maximum boundary values of the input domain without overflow or null dereference?

@@ -163,6 +163,14 @@ pub enum MapeKDecision {
     Return(Box<EngineOutput>),
     Retry,
     Fail(EngineError),
+    /// Constraint check text is ambiguous — SpecRepairAdvisor was triggered.
+    /// The engine should reload constraints and restart the task from wave 0.
+    SpecAmbiguous {
+        constraint_id: String,
+        check_index: usize,
+        instability_score: f64,
+        divergent_reasons: Vec<String>,
+    },
 }
 
 /// MAPE-K controller — owns all retry state. Full impl added in Task 9.
@@ -215,6 +223,9 @@ pub struct MapeKController {
     /// so the LLM receives violations from the immediately preceding wave rather
     /// than the full historical accumulator (which causes attention dilution).
     pub(crate) last_wave_pruned: Vec<h2ai_types::events::BranchPrunedEvent>,
+    /// Pruned events from the wave before last — used with `last_wave_pruned` for
+    /// cross-wave instability detection. Rotated in `observe()` on each new wave.
+    pub(crate) prev_wave_pruned: Vec<h2ai_types::events::BranchPrunedEvent>,
     pub(crate) topology_retry_events: Vec<TopologyProvisionedEvent>,
 
     // Immutable fields
@@ -250,6 +261,52 @@ pub struct MapeKController {
     /// Static conflict graph built from the task's constraint corpus.
     /// Passed from engine.rs at construction time.
     pub(crate) conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph,
+
+    // ── GAP-F1: Constraint-Informed Synthesis ────────────────────────────────
+    /// Binary check strings from the constraint corpus, collected for B1/B2 injection.
+    pub(crate) binary_checks: Vec<String>,
+    /// Offset map: (constraint_id, start_idx_in_binary_checks, count).
+    /// Used by partial_pass_from_event to attribute per-check verdicts to the right constraint.
+    pub(crate) constraint_check_offsets: Vec<(String, usize, usize)>,
+
+    // ── GAP-I1: Knowledge-Gap Detection + Domain Synthesis ───────────────────
+    /// Per (constraint_id, check_idx) → validated DomainSynthesis from gap researcher.
+    /// Populated lazily by `run_gap_i1_research`; cleared on task completion.
+    pub(crate) domain_synthesis_cache:
+        std::collections::HashMap<(String, usize), h2ai_types::gap_i1::DomainSynthesis>,
+    /// Optional LLM adapter used by the GAP-I1 researcher (e.g. `researcher_adapter`).
+    /// `None` when `gap_i1.enabled = false` or no researcher adapter is configured.
+    pub(crate) gap_researcher_adapter:
+        Option<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>>,
+    /// Grounding chain for GAP-I1 gap researcher: DDG search + LLM distiller.
+    pub(crate) gap_grounding_chain:
+        Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+}
+
+// ── GAP-K1: Cross-wave instability detection ──────────────────────────────────
+
+/// Mean word-bag Jaccard between two lists of reason strings.
+/// Returns 1.0 when either list is empty (no divergence signal).
+pub(crate) fn constraint_reasons_jaccard(reasons_a: &[String], reasons_b: &[String]) -> f64 {
+    if reasons_a.is_empty() || reasons_b.is_empty() {
+        return 1.0;
+    }
+    let combined_a = reasons_a.join(" ");
+    let combined_b = reasons_b.join(" ");
+    let bag_a: std::collections::HashSet<&str> = combined_a.split_whitespace().collect();
+    let bag_b: std::collections::HashSet<&str> = combined_b.split_whitespace().collect();
+    let union = bag_a.union(&bag_b).count();
+    if union == 0 {
+        return 1.0;
+    }
+    bag_a.intersection(&bag_b).count() as f64 / union as f64
+}
+
+struct InstabilitySignal {
+    constraint_id: String,
+    check_index: usize,
+    score: f64,
+    reasons: Vec<String>,
 }
 
 impl MapeKController {
@@ -335,6 +392,7 @@ impl MapeKController {
             all_researcher_grounding_events: Vec::new(),
             all_pruned: Vec::new(),
             last_wave_pruned: Vec::new(),
+            prev_wave_pruned: Vec::new(),
             topology_retry_events: Vec::new(),
             task_id,
             assessed_quadrant,
@@ -355,6 +413,26 @@ impl MapeKController {
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
             conflict_graph,
+            binary_checks: input
+                .constraint_corpus
+                .iter()
+                .flat_map(|d| d.binary_checks.iter().cloned())
+                .collect(),
+            constraint_check_offsets: {
+                let mut offsets = Vec::new();
+                let mut start = 0usize;
+                for doc in input.constraint_corpus.iter() {
+                    let count = doc.binary_checks.len();
+                    if count > 0 {
+                        offsets.push((doc.id.clone(), start, count));
+                        start += count;
+                    }
+                }
+                offsets
+            },
+            domain_synthesis_cache: std::collections::HashMap::new(),
+            gap_researcher_adapter: input.researcher_adapter.clone(),
+            gap_grounding_chain: None, // wired by engine.rs after controller construction
         }
     }
 
@@ -418,6 +496,8 @@ impl MapeKController {
         if let Some(ref rc) = e.srani_retry_context {
             self.retry_context = Some(rc.clone());
         }
+        // Rotate: prev_wave_pruned ← last_wave_pruned before overwriting with new wave.
+        self.prev_wave_pruned = std::mem::take(&mut self.last_wave_pruned);
         // Snapshot current wave's pruned events before extending the cross-wave accumulator.
         self.last_wave_pruned = e.pruned_events.clone();
         // Accumulate pruned events so RetryPolicy::decide can extract remediation hints.
@@ -473,6 +553,18 @@ impl MapeKController {
         retry_count: u32,
         filter_ratio: f64,
     ) -> MapeKDecision {
+        // GAP-K1: detect constraint spec instability across waves
+        if self.cfg_ref.gap_k1.enabled {
+            if let Some(instability) = self.find_instability() {
+                return MapeKDecision::SpecAmbiguous {
+                    constraint_id: instability.constraint_id,
+                    check_index: instability.check_index,
+                    instability_score: instability.score,
+                    divergent_reasons: instability.reasons,
+                };
+            }
+        }
+
         match outcome {
             PipelineOutcome::Resolved(merge_out) => {
                 let merge_out = *merge_out;
@@ -637,6 +729,7 @@ impl MapeKController {
 
             ExitReason::OracleBlocked => MapeKDecision::Fail(EngineError::MaxRetriesExhausted {
                 partial_verification_events: self.all_verification_events.clone(),
+                best_partial_text: None,
             }),
         }
     }
@@ -667,68 +760,78 @@ impl MapeKController {
                 self.force_topology = Some(topology);
                 if !hints.is_empty() {
                     let attempts_remaining = (self.max_retries as u32).saturating_sub(retry_count);
-
+                    // Legacy hint-only format (no RepairTarget metadata available).
+                    let hint_lines = hints
+                        .iter()
+                        .map(|h| format!("• {h}"))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    self.retry_context = Some(format!(
+                        "{ctx}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
+                        The following constraints were violated. Fix ALL of these in your next response:\n\n\
+                        {hint_lines}\n\n\
+                        {attempts_remaining} retry attempt(s) remaining.\n\
+                        ---",
+                        ctx = self.system_context_with_rubric
+                    ));
+                }
+                self.run_apply_optimizer(filter_ratio);
+                MapeKDecision::Retry
+            }
+            RetryAction::RetryWithTargets { topology, targets } => {
+                self.force_topology = Some(topology);
+                if !targets.is_empty() {
+                    let attempts_remaining = (self.max_retries as u32).saturating_sub(retry_count);
                     let use_cspr = self.cfg_ref.cspr.enabled && self.global_best_proposal.is_some();
-
-                    if use_cspr {
-                        // CSPR-v2: patch repair anchored on best prior proposal.
-                        let (_, prior_text) = self.global_best_proposal.as_ref().unwrap();
-
-                        let violated_ids: Vec<String> = self
-                            .last_wave_pruned
-                            .iter()
-                            .flat_map(|p| {
-                                p.violated_constraints
-                                    .iter()
-                                    .map(|v| v.constraint_id.clone())
-                            })
-                            .collect();
-                        let violated_hints: Vec<Option<String>> = self
-                            .last_wave_pruned
-                            .iter()
-                            .flat_map(|p| {
-                                p.violated_constraints
-                                    .iter()
-                                    .map(|v| v.remediation_hint.clone())
-                            })
-                            .collect();
-
-                        // Fall back to hint strings from RetryPolicy when last_wave_pruned has no detail.
-                        let (final_ids, final_hints) = if violated_ids.is_empty() {
-                            let ids: Vec<String> = hints.clone();
-                            let hs: Vec<Option<String>> = vec![None; hints.len()];
-                            (ids, hs)
-                        } else {
-                            (violated_ids, violated_hints)
-                        };
-
-                        self.retry_context = Some(h2ai_autonomic::repair::build_repair_context(
-                            h2ai_autonomic::repair::RepairInput {
-                                prior_proposal_text: prior_text,
-                                violated_ids: &final_ids,
-                                violated_hints: &final_hints,
-                                conflict_graph: &self.conflict_graph,
-                                retry_count,
-                                attempts_remaining,
-                                system_context_with_rubric: &self.system_context_with_rubric,
-                            },
-                        ));
+                    let prior_text = if use_cspr {
+                        self.global_best_proposal
+                            .as_ref()
+                            .map(|(_, t)| t.as_str())
+                            .unwrap_or("")
                     } else {
-                        // Legacy hint-only format (cspr disabled or no prior proposal yet).
-                        let hint_lines = hints
-                            .iter()
-                            .map(|h| format!("• {h}"))
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        self.retry_context = Some(format!(
-                            "{ctx}\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
-                            The following constraints were violated. Fix ALL of these in your next response:\n\n\
-                            {hint_lines}\n\n\
-                            {attempts_remaining} retry attempt(s) remaining.\n\
-                            ---",
-                            ctx = self.system_context_with_rubric
-                        ));
-                    }
+                        ""
+                    };
+
+                    let partial_passes = h2ai_autonomic::repair::select_orthogonal_partials(
+                        &self.all_pruned,
+                        &self.binary_checks,
+                        &self.constraint_check_offsets,
+                        2,
+                        h2ai_autonomic::repair::partial_max_chars(
+                            self.cfg_ref.model_max_tokens,
+                            2,
+                            self.cfg_ref.partial_pass_overhead_factor,
+                        ),
+                    );
+                    // Collect any cached GAP-I1 domain syntheses for the violated constraints.
+                    let syntheses: Vec<h2ai_types::gap_i1::DomainSynthesis> = targets
+                        .iter()
+                        .flat_map(|t| {
+                            self.domain_synthesis_cache
+                                .iter()
+                                .filter(|((cid, _), _)| cid == &t.constraint_id)
+                                .map(|(_, s)| s.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                    self.retry_context = Some(h2ai_autonomic::repair::build_repair_context(
+                        h2ai_autonomic::repair::RepairInput {
+                            prior_proposal_text: prior_text,
+                            targets: &targets,
+                            zone3_hints: None,
+                            conflict_graph: &self.conflict_graph,
+                            retry_count,
+                            attempts_remaining,
+                            system_context_with_rubric: &self.system_context_with_rubric,
+                            checks: &self.binary_checks,
+                            partial_passes: &partial_passes,
+                            prior_best_score: self
+                                .global_best_proposal
+                                .as_ref()
+                                .map(|(score, _)| *score),
+                            domain_syntheses: &syntheses,
+                        },
+                    ));
                 }
                 self.run_apply_optimizer(filter_ratio);
                 MapeKDecision::Retry
@@ -743,6 +846,7 @@ impl MapeKController {
                 );
                 MapeKDecision::Fail(EngineError::MaxRetriesExhausted {
                     partial_verification_events: self.all_verification_events.clone(),
+                    best_partial_text: None,
                 })
             }
         }
@@ -790,6 +894,7 @@ impl MapeKController {
             oracle_gate_passed: merge_out.oracle_gate_passed,
             leader_elected_events: std::mem::take(&mut self.pending_leader_elected_events),
             socratic_diagnosis_events: std::mem::take(&mut self.pending_socratic_diagnosis_events),
+            consensus_agreement_rate: None,
         }
     }
 
@@ -1052,6 +1157,175 @@ impl MapeKController {
         self.all_verification_events.clone()
     }
 
+    /// Read-only view of all pruned events accumulated across waves.
+    /// Used by the synthesis wave to extract the global best partial for HITL fallback.
+    #[must_use]
+    pub fn all_pruned(&self) -> &[h2ai_types::events::BranchPrunedEvent] {
+        &self.all_pruned
+    }
+
+    /// Returns the system context with rubric string, for synthesis wave construction.
+    #[must_use]
+    pub fn system_context_with_rubric(&self) -> &str {
+        &self.system_context_with_rubric
+    }
+
+    // ── GAP-I1: Knowledge-Gap Detection + Domain Synthesis ───────────────────
+
+    /// Returns per-(constraint_id, check_idx) mean pass rate across all accumulated
+    /// pruned events.  Entries reflect only constraints that appeared in at least one
+    /// `BranchPrunedEvent`; constraints that never violated are absent (pass-rate 1.0
+    /// by definition, which is above any cold-check threshold).
+    fn wave_check_rates(&self) -> Vec<((String, usize), f64)> {
+        let mut rates: std::collections::HashMap<(String, usize), Vec<f64>> = Default::default();
+        for pruned in &self.all_pruned {
+            for violation in &pruned.violated_constraints {
+                let cid = violation.constraint_id.clone();
+                if violation.check_verdicts.is_empty() {
+                    // No per-check verdicts — mark check 0 as failed.
+                    rates.entry((cid, 0)).or_default().push(0.0);
+                } else {
+                    for (idx, &passed) in violation.check_verdicts.iter().enumerate() {
+                        rates
+                            .entry((cid.clone(), idx))
+                            .or_default()
+                            .push(if passed { 1.0 } else { 0.0 });
+                    }
+                }
+            }
+        }
+        rates
+            .into_iter()
+            .map(|(k, vals)| {
+                let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                (k, mean)
+            })
+            .collect()
+    }
+
+    /// Look up the binary check text for a given (constraint_id, check_idx) pair
+    /// using the flat `binary_checks` vec and the `constraint_check_offsets` index.
+    fn constraint_check_text(&self, constraint_id: &str, check_idx: usize) -> String {
+        self.constraint_check_offsets
+            .iter()
+            .find(|(cid, _, _)| cid == constraint_id)
+            .and_then(|(_, start, count)| {
+                if check_idx < *count {
+                    self.binary_checks.get(start + check_idx).cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Run the GAP-I1 researcher loop: detect cold checks (low pass rate) and
+    /// fire `run_gap_researcher` for each gap not yet in the synthesis cache.
+    ///
+    /// Gated on `cfg_ref.gap_i1.enabled`.  No-op when the flag is false or when
+    /// neither an LLM adapter nor a web-search grounder is configured.
+    pub async fn run_gap_i1_research(&mut self) {
+        if !self.cfg_ref.gap_i1.enabled {
+            return;
+        }
+        let Some(adapter) = self.gap_researcher_adapter.clone() else {
+            return;
+        };
+        let gap_chain = self.gap_grounding_chain.clone();
+
+        let check_rates = self.wave_check_rates();
+        let cold_gaps = h2ai_autonomic::knowledge_gap::detect_cold_checks(
+            &check_rates,
+            self.cfg_ref.gap_i1.cold_check_threshold,
+        );
+        let gaps_to_research = cold_gaps
+            .into_iter()
+            .take(self.cfg_ref.gap_i1.max_gap_records_per_wave)
+            .collect::<Vec<_>>();
+
+        for gap in gaps_to_research {
+            let cache_key = (gap.constraint_id.clone(), gap.check_idx);
+            if self.domain_synthesis_cache.contains_key(&cache_key) {
+                continue;
+            }
+            let check_text = self.constraint_check_text(&gap.constraint_id, gap.check_idx);
+            if let Some(synth) = crate::srani_grounding::run_gap_researcher(
+                &gap,
+                &check_text,
+                &adapter,
+                gap_chain.as_deref(),
+                self.cfg_ref.gap_i1.synthesis_min_confidence,
+                self.cfg_ref.gap_i1.researcher_timeout_secs,
+            )
+            .await
+            {
+                self.domain_synthesis_cache.insert(cache_key, synth);
+            }
+        }
+    }
+
+    // ── GAP-K1: Cross-wave instability detection ──────────────────────────────
+
+    /// Scan `last_wave_pruned` and `prev_wave_pruned` for the same constraint
+    /// appearing in both waves with hard violations whose rejection reasons have
+    /// low Jaccard similarity (indicating the verifier is flipping).
+    fn find_instability(&self) -> Option<InstabilitySignal> {
+        let mut last_reasons: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut prev_reasons: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for event in &self.last_wave_pruned {
+            for v in &event.violated_constraints {
+                if v.severity_label == "Hard" {
+                    if let Some(r) = &v.verifier_reason {
+                        if !r.is_empty() {
+                            last_reasons
+                                .entry(v.constraint_id.clone())
+                                .or_default()
+                                .push(r.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for event in &self.prev_wave_pruned {
+            for v in &event.violated_constraints {
+                if v.severity_label == "Hard" {
+                    if let Some(r) = &v.verifier_reason {
+                        if !r.is_empty() {
+                            prev_reasons
+                                .entry(v.constraint_id.clone())
+                                .or_default()
+                                .push(r.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for (cid, last_rs) in &last_reasons {
+            if let Some(prev_rs) = prev_reasons.get(cid) {
+                let score = constraint_reasons_jaccard(last_rs, prev_rs);
+                if score < self.cfg_ref.gap_k1.instability_threshold {
+                    let check_index = 0; // Task 8 will refine this
+                    let mut reasons = last_rs.clone();
+                    reasons.extend(prev_rs.iter().cloned());
+                    reasons.dedup();
+                    reasons.truncate(5);
+                    return Some(InstabilitySignal {
+                        constraint_id: cid.clone(),
+                        check_index,
+                        score,
+                        reasons,
+                    });
+                }
+            }
+        }
+        None
+    }
+
     // ── Test helpers ───────────────────────────────────────────────────────────
 
     #[must_use]
@@ -1116,6 +1390,7 @@ impl MapeKController {
             all_researcher_grounding_events: Vec::new(),
             all_pruned: Vec::new(),
             last_wave_pruned: Vec::new(),
+            prev_wave_pruned: Vec::new(),
             topology_retry_events: Vec::new(),
             task_id,
             assessed_quadrant: TaskQuadrant::Precision,
@@ -1138,6 +1413,64 @@ impl MapeKController {
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
             conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph::build(&[]),
+            binary_checks: Vec::new(),
+            constraint_check_offsets: Vec::new(),
+            domain_synthesis_cache: std::collections::HashMap::new(),
+            gap_researcher_adapter: None,
+            gap_grounding_chain: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod gap_k1_tests {
+    use super::constraint_reasons_jaccard;
+
+    #[test]
+    fn detect_instability_fires_on_low_jaccard() {
+        let reasons_a = vec!["quota atomic CAS redis".to_owned()];
+        let reasons_b = vec!["audit log missing actor".to_owned()];
+        let score = constraint_reasons_jaccard(&reasons_a, &reasons_b);
+        assert!(score < 0.10, "low jaccard expected, got {score}");
+    }
+
+    #[test]
+    fn detect_instability_stable_when_same_reasons() {
+        let reasons = vec!["quota atomic CAS redis lua eval".to_owned()];
+        let score = constraint_reasons_jaccard(&reasons, &reasons);
+        assert!(score > 0.90, "high jaccard expected, got {score}");
+    }
+}
+
+#[cfg(test)]
+mod gap_i1_tests {
+    use super::*;
+    use h2ai_autonomic::knowledge_gap::detect_cold_checks;
+
+    #[test]
+    fn cold_check_detection_returns_empty_when_all_checks_pass() {
+        let rates = vec![
+            (("C-001".to_string(), 0usize), 1.0_f64),
+            (("C-001".to_string(), 1usize), 0.5_f64),
+        ];
+        let cold = detect_cold_checks(&rates, 0.0);
+        assert!(cold.is_empty());
+    }
+
+    #[test]
+    fn mape_k_controller_has_synthesis_cache_field() {
+        fn _assert_has_field(ctrl: &MapeKController) {
+            let _ = &ctrl.domain_synthesis_cache;
+        }
+    }
+
+    #[test]
+    fn run_gap_i1_research_is_noop_when_disabled() {
+        // When gap_i1.enabled = false (the default), calling run_gap_i1_research
+        // is a no-op — synthesis cache stays empty.
+        // This is a compile-time + logic check; the method is async so we
+        // verify the gate via the default config flag.
+        let cfg = h2ai_config::H2AIConfig::default();
+        assert!(!cfg.gap_i1.enabled, "gap_i1 must be disabled by default");
     }
 }

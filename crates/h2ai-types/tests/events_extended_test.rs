@@ -250,6 +250,10 @@ fn constraint_violation_serde_roundtrip() {
         score: 0.0,
         severity_label: "Hard".into(),
         remediation_hint: Some("use stateless auth".into()),
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     };
     let s = serde_json::to_string(&v).unwrap();
     let back: ConstraintViolation = serde_json::from_str(&s).unwrap();

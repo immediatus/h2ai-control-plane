@@ -1,0 +1,104 @@
+{
+  "_benchmark": "OSWorld-Verified",
+  "_h2ai_validates": "USL-based capacity planning and AIMD slow-start \u2014 agents that decohere in long-horizon agentic pipelines are autonomously throttled to protect system state",
+  "_tenant_id": "data-pipeline-team",
+  "description": "Design a 5-stage data processing pipeline for a real-time analytics platform. Each stage consumes from the previous stage's output queue and produces to the next stage's input queue. Stage 1: raw event ingestion (source: Kafka topic, 50k events/sec peak). Stage 2: schema normalization. Stage 3: enrichment via Redis lookup. Stage 4: aggregation (tumbling window, 10s). Stage 5: sink to ClickHouse. The pipeline must handle backpressure: when a downstream stage cannot keep up, the upstream producer must be throttled \u2014 not silently dropped. All inter-stage queues must have hard maximum depths with monitoring.",
+  "pareto_weights": {
+    "diversity": 0.35,
+    "containment": 0.4,
+    "throughput": 0.25
+  },
+  "explorers": {
+    "count": 5,
+    "tau_min": 0.15,
+    "tau_max": 0.75,
+    "slot_configs": [
+      {
+        "role_frame": "You are a Rust systems engineer who has built high-throughput tokio-based streaming pipelines and has deep knowledge of async backpressure mechanisms, including channel capacity tuning and Rust's async runtime behavior under backpressure.",
+        "cot_style": "backward_chaining",
+        "focus_mandate": "Whether the backpressure implementation uses tokio's native bounded mpsc channel awaiting (not dropping), whether capacity numbers are derived from worst-case latency budgets, and whether Stage 3 Redis timeout handling feeds back into the backpressure signal correctly.",
+        "rejection_criteria": "Drop-on-full implementations, unbounded queues masked as bounded by an external semaphore, missing timeout handling for Redis enrichment failures.",
+        "constraint_domains": [
+          "reliability",
+          "backpressure"
+        ]
+      },
+      {
+        "role_frame": "You are a ClickHouse and Kafka reliability engineer who has audited audit trail completeness for financial compliance. You focus on the Stage 5 sink durability \u2014 whether the audit trail is written atomically with the ClickHouse insert and whether the Kafka acks=all guarantee survives producer restarts.",
+        "cot_style": "step_by_step",
+        "focus_mandate": "Whether the audit trail is emitted to a durable Kafka topic before ClickHouse insert (preventing silent data loss), whether acks=all is set on the financial-events producer, and whether ClickHouse insert errors are retried without duplicating the audit event.",
+        "rejection_criteria": "Fire-and-forget Kafka produce, missing idempotency for ClickHouse retries, audit event emitted after ClickHouse insert (wrong order \u2014 loses audit on ClickHouse failure).",
+        "constraint_domains": [
+          "audit",
+          "durability"
+        ]
+      }
+    ],
+    "roles": [
+      {
+        "agent_id": "exp_A",
+        "role": "Executor",
+        "tau": 0.2
+      },
+      {
+        "agent_id": "exp_B",
+        "role": "Executor",
+        "tau": 0.35
+      },
+      {
+        "agent_id": "exp_C",
+        "role": "Executor",
+        "tau": 0.5
+      },
+      {
+        "agent_id": "exp_D",
+        "role": "Executor",
+        "tau": 0.65
+      },
+      {
+        "agent_id": "exp_E",
+        "role": "Executor",
+        "tau": 0.8
+      }
+    ]
+  },
+  "constraints": [
+    "CONSTRAINT-OSW-1",
+    "CONSTRAINT-008",
+    "CONSTRAINT-004"
+  ],
+  "context": "Infrastructure: Kafka (source), Redis 7.2 (enrichment lookups, budget counters), ClickHouse (sink). Language: Rust with tokio. Current broken design: each stage uses an unbounded tokio::sync::mpsc channel. Under load spikes, Stage 3 (enrichment) falls behind because Redis latency spikes to 50ms. The unbounded queue between Stage 2 and Stage 3 grows until OOM. No backpressure propagates upstream. Stage 4 (aggregation) holds a distributed lock on the window state \u2014 this causes a 3ms lock wait at 50k TPS. The audit trail for budget events is missing from Stage 5.",
+  "_timeout_s": 7200,
+  "_compare_semantics": "no_regression",
+  "_expected": {
+    "terminal": "MergeResolved",
+    "valid_proposals_min": 1,
+    "should_prune": [
+      {
+        "description": "Proposal that replaces unbounded channels with bounded channels but implements backpressure by dropping messages when the channel is full",
+        "violates": "CONSTRAINT-OSW-1 \u2014 message drop is not backpressure; the producer is not throttled and upstream stages continue at full speed"
+      },
+      {
+        "description": "Proposal that adds a distributed lock (Redlock or SETNX) on the Stage 4 aggregation window state",
+        "violates": "CONSTRAINT-008 \u2014 distributed locks on the hot aggregation path block at 50k TPS; use Redis atomic MULTI/EXEC or per-key partitioning instead"
+      }
+    ],
+    "should_pass": [
+      "Replace all 4 inter-stage channels with tokio::sync::mpsc::channel(4096). Stage producers await the channel send (blocking on full channel) \u2014 this is native backpressure in tokio. Add a tokio::select! health check that monitors queue depth via channel.capacity() and emits a Prometheus gauge per stage. Alert threshold at channel.capacity() <= 4096 * 0.20 (i.e., 80% full). For Stage 4 aggregation: use Redis MULTI/EXEC with hash-tagged window keys {window_id} to co-locate all window state on the same shard \u2014 eliminates distributed lock. For Stage 5 audit: emit each aggregated event to Kafka financial-events topic with acks=all before ClickHouse insert."
+    ],
+    "_review_checklist": [
+      {
+        "id": "OSW/1",
+        "text": "Does the proposed design replace unbounded tokio::sync::mpsc channels with bounded channels (specifying a concrete capacity, e.g., 1024 or 4096 per stage), so that no single stage can grow the queue unboundedly to OOM?"
+      },
+      {
+        "id": "OSW/2",
+        "text": "Does the proposed design implement backpressure propagation \u2014 specifically: when Stage 3's input queue exceeds 80% capacity, does it block or throttle Stage 2's producer (not drop messages), which in turn propagates back to Stage 1?"
+      },
+      {
+        "id": "OSW/3",
+        "text": "Does the proposed design expose queue depth as a metric (e.g., Prometheus gauge per stage queue) with an alert threshold at or before 80% capacity, so operators know before the queue is full?"
+      }
+    ]
+  }
+}

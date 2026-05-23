@@ -1,7 +1,7 @@
 use chrono::Utc;
-use h2ai_adapters::mock::{MockAdapter, SequencedMockAdapter};
 use h2ai_constraints::types::aggregate_compliance_score;
 use h2ai_orchestrator::verification::{new_eval_cache, VerificationInput, VerificationPhase};
+use h2ai_test_utils::{MockAdapter, SequencedMockAdapter};
 use h2ai_types::config::{AdapterKind, VerificationConfig};
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -326,6 +326,10 @@ async fn verification_json_schema_predicate_passes_valid_json() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(TaskId::new(), r#"{"result": "ok"}"#);
@@ -364,6 +368,10 @@ async fn verification_length_range_predicate_rejects_long_output() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(
@@ -403,6 +411,10 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
     let proposal = make_proposal(TaskId::new(), "some output");
@@ -454,6 +466,10 @@ async fn eval_cache_reuses_score_for_similar_proposals() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let cache = new_eval_cache();
@@ -510,6 +526,10 @@ async fn eval_cache_does_not_reuse_for_dissimilar_proposals() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let cache = new_eval_cache();
@@ -619,6 +639,10 @@ async fn semantic_presence_yes_majority_passes() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec![
         "YES, concept present".into(),
@@ -657,6 +681,10 @@ async fn semantic_presence_no_majority_fails() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator =
         SequencedMockAdapter::new(vec!["YES".into(), "NO, not mentioned".into(), "NO".into()]);
@@ -698,6 +726,10 @@ async fn semantic_ordering_correct_order_passes() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec![
         "YES, debit happens first then Kafka publish".into(),
@@ -739,6 +771,10 @@ async fn semantic_ordering_wrong_order_fails() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec![
         "NO, Kafka publish happens before the debit".into(),
@@ -781,6 +817,10 @@ async fn semantic_ordering_no_kafka_mention_fails() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec![
         "NO, no Kafka mentioned — uses Redis sorted set instead".into(),
@@ -827,6 +867,10 @@ async fn semantic_exclusion_pattern_absent_passes() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec![
         "NO, no distributed lock present".into(),
@@ -867,6 +911,10 @@ async fn semantic_exclusion_pattern_present_fails() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec![
         "YES, Redlock distributed lock is used".into(),
@@ -909,6 +957,10 @@ async fn majority_vote_tie_is_conservative_fail() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let evaluator = SequencedMockAdapter::new(vec!["YES".into(), "NO".into()]);
     let proposal = make_proposal(TaskId::new(), "Ambiguous proposal.");
@@ -943,6 +995,10 @@ async fn majority_vote_single_pass_requires_unanimous() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     // YES path
@@ -1007,6 +1063,10 @@ fn predicate_tier_semantic_variants_are_light() {
             domains: vec![],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         };
         assert_eq!(
             doc.tier(),
@@ -1194,6 +1254,10 @@ async fn panel_two_variants_both_fail_hard_constraint() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let proposal = make_proposal(TaskId::new(), "Poor proposal");
@@ -1257,6 +1321,10 @@ async fn panel_two_variants_disagreement_uncertain_constraint() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let proposal = make_proposal(TaskId::new(), "Ambiguous proposal");
@@ -1337,6 +1405,10 @@ async fn composite_and_both_pass() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
@@ -1388,6 +1460,10 @@ async fn composite_and_static_fails_skips_llm() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     // LlmJudge would return 0.9, but short-circuit means it won't be called.
@@ -1447,6 +1523,10 @@ async fn composite_or_first_passes_short_circuits() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
@@ -1498,6 +1578,10 @@ async fn composite_or_both_fail() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
@@ -1543,6 +1627,10 @@ async fn composite_not_inverts_pass_to_fail() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
@@ -1592,6 +1680,10 @@ async fn composite_not_inverts_fail_to_pass() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
@@ -1636,6 +1728,10 @@ async fn composite_not_empty_children_returns_zero() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
 
     let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());

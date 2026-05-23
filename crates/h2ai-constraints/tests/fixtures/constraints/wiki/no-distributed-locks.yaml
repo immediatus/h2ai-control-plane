@@ -1,0 +1,39 @@
+id: topic:no-distributed-locks
+depth: topic
+domains:
+  - billing
+  - consistency
+synthesis: >
+  C-008 (No Distributed Locks on Critical Charge Path): Distributed locking mechanisms
+  (Redlock, SETNX advisory lock, database-level advisory lock, ZooKeeper EPHEMERAL) must
+  NOT be placed on the charge path for budget enforcement. At 50k TPS, a distributed lock
+  adds 1-3ms of network round-trips per request, exceeding the 0.5ms P99 budget. Instead,
+  use Redis atomic operations (Lua EVAL, MULTI/EXEC) that are inherently serialized by Redis
+  without cross-node coordination. Partition scenarios should be handled via read-from-primary
+  routing in Redis Cluster (READONLY off for budget keys), not distributed locks. Idempotency
+  keys (C-004) eliminate the need for locks on retry paths. Leader election for audit
+  co-ordination is acceptable when it is NOT on the hot charge path.
+invariants:
+  - "No Redlock on charge path"
+  - "No SETNX advisory lock on charge path"
+  - "No database advisory lock on charge path"
+  - "Use Redis atomic ops (Lua, MULTI/EXEC) instead of locks"
+  - "Partition handling via primary routing, not distributed locking"
+failure_modes_covered:
+  - FM-008-1
+tensions:
+  - domain: consistency
+    reason: >
+      Lock-free atomicity requires Redis Cluster with hash-tag co-location. Split-brain
+      under partition can cause inconsistency — accept with circuit breaker, not locks.
+entry_points:
+  - CONSTRAINT-008
+constraints:
+  - CONSTRAINT-008
+cross_references:
+  - id: CONSTRAINT-004
+    domain: billing
+    reason: "Idempotency (C-004) is the lock-free alternative for dedup"
+related:
+  - CONSTRAINT-004
+  - CONSTRAINT-008

@@ -148,9 +148,11 @@ async fn nats_dispatch_e2e_full_pipeline() {
         active_tasks,
         Arc::new(h2ai_config::H2AIConfig::default()),
     );
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        dispatch_loop.run().await.unwrap();
+        dispatch_loop.run_with_ready(ready_tx).await.unwrap();
     });
+    ready_rx.await.expect("dispatch loop subscription ready");
 
     // Step 3: Register the mock agent with NatsAgentProvider.
     let descriptor = AgentDescriptor {

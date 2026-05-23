@@ -372,6 +372,7 @@ pub async fn submit_task(
             h2ai_orchestrator::engine::ShadowAuditCtx {
                 adapter: adapter.clone(),
                 promoted_domains: promoted_snap,
+                strict: state_clone.cfg.safety.shadow_auditor.strict,
             }
         });
 
@@ -448,6 +449,7 @@ pub async fn submit_task(
             srani_ema_cfi,
             srani_count,
             srani_grounding_chain: state_clone.srani_grounding_chain.clone(),
+            gap_research_chain: state_clone.gap_research_chain.clone(),
             nats_raw: None,
             tenant_id: manifest_clone.tenant_id.clone(),
             nats: state_clone.nats.clone(),
@@ -456,6 +458,11 @@ pub async fn submit_task(
             stable_cache: None,
             knowledge_provider: Some(state_clone.knowledge_provider.clone()),
             induction_store: None,
+            conformal_margin: state_clone
+                .drift_monitor
+                .lock()
+                .await
+                .active_conformal_margin(),
         };
 
         match ExecutionEngine::run_offline(input).await {
@@ -982,6 +989,32 @@ pub async fn submit_task(
                     });
                 }
                 state_clone.store.mark_resolved(&output.task_id);
+                // GAP-H2: feed consensus_agreement_rate to drift monitor after each task.
+                if let Some(rate) = output.consensus_agreement_rate {
+                    let events = state_clone.drift_monitor.lock().await.observe(rate);
+                    for event in events {
+                        match event {
+                            h2ai_autonomic::drift::DriftEvent::Warning(w) => {
+                                tracing::warn!(
+                                    target: "h2ai.calibration.drift",
+                                    metric = %w.metric,
+                                    recent_mean = w.recent_mean,
+                                    reference_mean = w.reference_mean,
+                                    deviation_sigmas = w.deviation_sigmas,
+                                    "CalibrationDriftWarning"
+                                );
+                            }
+                            h2ai_autonomic::drift::DriftEvent::Changepoint(cp) => {
+                                tracing::warn!(
+                                    target: "h2ai.calibration.drift",
+                                    bocpd_mass = cp.bocpd_run_length_posterior_mass,
+                                    conformal_margin = cp.conformal_margin_applied,
+                                    "CalibrationChangepoint — ORCA margin active for next tasks"
+                                );
+                            }
+                        }
+                    }
+                }
                 // GC: delete checkpoint now that task is permanently resolved.
                 if let Err(e) = state_clone
                     .nats
@@ -1008,6 +1041,7 @@ pub async fn submit_task(
                 // clients tracking Phase 3 can observe them even on TaskFailed.
                 if let EngineError::MaxRetriesExhausted {
                     partial_verification_events,
+                    best_partial_text,
                 } = &e
                 {
                     for event in partial_verification_events {
@@ -1021,6 +1055,14 @@ pub async fn submit_task(
                         {
                             tracing::warn!("failed to publish partial VerificationScoredEvent on failure: {pub_err}");
                         }
+                    }
+                    if let Some(ref partial) = best_partial_text {
+                        tracing::info!(
+                            target: "h2ai.tasks",
+                            task_id = %task_id_for_failure,
+                            partial_chars = partial.len(),
+                            "GAP-F1: best partial surfaced for HITL gate"
+                        );
                     }
                 }
 
@@ -1042,6 +1084,8 @@ pub async fn submit_task(
                     tracing::warn!("failed to publish TaskFailedEvent: {pub_err}");
                 }
                 state_clone.store.mark_failed(&task_id_for_failure);
+                // GAP-H2: low agreement rate on failure signals degraded LLM quality.
+                state_clone.drift_monitor.lock().await.observe(0.0);
                 // GC: delete checkpoint on failure.
                 if let Err(e) = state_clone
                     .nats

@@ -1,0 +1,74 @@
+# Benchmark: HLE (Humanity's Last Exam) — expert graduate-level BFT reasoning
+# Validates: Byzantine-robust aggregation (Krum + Weiszfeld) across 5 explorers
+# Safety profile "production": krum=1 (n≥2f+3=5 required), shadow_auditor enabled + strict=true (AND-vote always binding)
+# Note: "strict" (krum=2) requires n≥7 proposals — use separate config with 7 adapter_profiles
+
+nats_url = "nats://host.docker.internal:4222"
+verifier_consensus_passes = 1
+max_autonomic_retries = 4
+
+[safety]
+profile = "production"
+
+[constraint_wiki]
+mode = "fs"
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-4"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "local-5"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 5
+coverage_threshold = 0.80
+
+debug_log_path = "/tmp/h2ai-debug-hle-expert-consensus.ndjson"
+
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 300

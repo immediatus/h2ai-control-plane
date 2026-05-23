@@ -49,7 +49,6 @@ mod tenant_registry;
 
 use axum::Router;
 use h2ai_adapters::factory::AdapterFactory;
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_config::{FamilyConstraint, H2AIConfig};
 use h2ai_provisioner::nats_provider::NatsAgentProvider;
 use h2ai_state::nats::NatsClient;
@@ -60,14 +59,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn build_adapter(kind: &AdapterKind, enable_thinking: bool) -> Arc<dyn IComputeAdapter> {
-    match AdapterFactory::build_with_thinking(kind, enable_thinking) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(target: "h2ai.startup", adapter = ?kind, error = %e,
-                "adapter could not be built; falling back to MockAdapter");
-            Arc::new(MockAdapter::new("mock fallback output".into()))
-        }
-    }
+    AdapterFactory::build_with_thinking(kind, enable_thinking).unwrap_or_else(|e| {
+        tracing::error!(target: "h2ai.startup", adapter = ?kind, error = %e,
+                "adapter could not be built; cannot start without a valid adapter");
+        std::process::exit(1);
+    })
 }
 
 /// Resolve the config file path: `H2AI_CONFIG` env var takes priority (test/task override),
@@ -212,6 +208,14 @@ async fn main() {
     tracing::info!(target: "h2ai.startup", adapter = ?shadow_auditor_kind_opt, "shadow adapter");
     tracing::info!(target: "h2ai.startup", adapter = ?researcher_kind_opt, "researcher adapter");
 
+    if cfg.safety.shadow_auditor.strict && !cfg.safety.shadow_auditor.enabled {
+        tracing::warn!(
+            target: "h2ai.startup",
+            "shadow_auditor.strict = true but shadow_auditor.enabled = false; \
+             strict mode has no effect without an enabled shadow auditor"
+        );
+    }
+
     let mut app_state = AppState::new(nats, cfg, adapter_pool, auditor_adapter);
     if let Some(sa) = scoring_adapter {
         app_state.scoring_adapter = Some(sa);
@@ -243,15 +247,11 @@ async fn main() {
         if let Some(ref r) = app_state.researcher_adapter {
             tiers.push(Box::new(LlmResearcherGrounder::new(r.clone())));
         }
-        let chain = SraniGroundingChain::new(tiers);
+        let chain = SraniGroundingChain::new(tiers)
+            .with_compress_threshold(srani_cfg.grounding_compress_threshold);
         // Wire distiller from the researcher adapter if distillation is enabled.
         let chain = if let Some(ref r) = app_state.researcher_adapter {
-            chain.with_distiller(
-                r.clone(),
-                srani_cfg.grounding_raw_max_chars,
-                srani_cfg.grounding_hint_max_chars,
-                srani_cfg.grounding_distill,
-            )
+            chain.with_distiller(r.clone(), srani_cfg.grounding_distill)
         } else {
             chain
         };
@@ -259,10 +259,28 @@ async fn main() {
         tracing::info!(
             target: "h2ai.startup",
             distill = srani_cfg.grounding_distill,
-            raw_max = srani_cfg.grounding_raw_max_chars,
-            hint_max = srani_cfg.grounding_hint_max_chars,
             "SRANI grounding chain built"
         );
+    }
+
+    // ── GAP-I1 gap research chain: DuckDuckGo + LLM distiller ───────────────
+    {
+        use h2ai_orchestrator::srani_grounding::{SraniGroundingChain, WebSearchGrounder};
+        use h2ai_tools::web_search::DuckDuckGoSearchBackend;
+        let backend = std::sync::Arc::new(DuckDuckGoSearchBackend::new());
+        let web_grounder = WebSearchGrounder::new(backend, 5);
+        let providers: Vec<Box<dyn h2ai_orchestrator::srani_grounding::GroundingProvider>> =
+            vec![Box::new(web_grounder)];
+        let srani_cfg = &app_state.cfg.srani;
+        let chain = SraniGroundingChain::new(providers)
+            .with_compress_threshold(srani_cfg.grounding_compress_threshold);
+        let chain = if let Some(ref r) = app_state.researcher_adapter {
+            chain.with_distiller(r.clone(), srani_cfg.grounding_distill)
+        } else {
+            chain
+        };
+        app_state.gap_research_chain = Some(std::sync::Arc::new(chain));
+        tracing::info!(target: "h2ai.startup", "GAP-I1 gap research chain built (DuckDuckGo + distiller)");
     }
 
     // Wire knowledge provider
@@ -442,7 +460,7 @@ async fn main() {
         tokio::spawn(accumulator.run());
     }
 
-    // Spawn oracle worker — subscribes to h2ai.oracle.pending, runs tests via
+    // Spawn oracle worker — subscribes to h2ai.oracle.*.pending, runs tests via
     // ShellExecutor, and publishes OracleResultEvent to h2ai.oracle.results.
     {
         let oracle_worker = crate::oracle_worker::OracleWorker::new(

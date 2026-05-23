@@ -230,6 +230,83 @@ curl -sN http://localhost:8080/calibrate/cal_.../events
 
 ---
 
+## 3a. Calibration Drift Monitoring (GAP-H2)
+
+The `DriftMonitor` (`crates/h2ai-autonomic/src/drift.rs`) runs online alongside every task. It tracks `consensus_agreement_rate` — the fraction of verification events per task that passed — and detects when the LLM API distribution has shifted without an explicit recalibration.
+
+### Events
+
+Two events are emitted as `tracing::warn!` in `routes/tasks.rs` and to NATS telemetry (`h2ai.telemetry.calibration`):
+
+| Event | Meaning | Urgency |
+|-------|---------|---------|
+| `CalibrationDriftWarning` | DDM sliding-window mean deviated by `drift_ddm_k` σ from reference | Watch — check in 24 h |
+| `CalibrationChangepoint` | BOCPD posterior P(run_length ≤ 4) exceeded `drift_bocpd_changepoint_threshold` | Act — schedule recalibration |
+
+`CalibrationDriftWarning` fires early (fast layer, O(1), window=20 tasks). It may recover on its own if the deviation was transient. `CalibrationChangepoint` is the structural signal — it means the distribution has shifted persistently.
+
+### ORCA conformal margin
+
+Immediately after a `CalibrationChangepoint`, the engine automatically widens the verification pass threshold by `drift_conformal_margin` (default 0.05). This preserves coverage while the system operates on stale calibration:
+
+```
+effective_threshold = base_threshold − active_conformal_margin()
+```
+
+The margin stays active for `drift_staleness_ttl_secs` (default 3600 s = 1 hour). After TTL expiry the margin drops to 0.0 and the system reverts to the base threshold — this is intentional to prevent indefinitely widened gates.
+
+### Responding to drift events
+
+**On `CalibrationDriftWarning`:**
+1. Check recent task error rates and LLM provider status pages for reported incidents.
+2. If the warning clears within a few hours, no action needed.
+3. If it persists for > 24 h or `mode_collapse` counters are also rising, treat it as a changepoint and recalibrate.
+
+**On `CalibrationChangepoint`:**
+1. The ORCA margin is already active — tasks continue to run with widened gates.
+2. Trigger recalibration as soon as possible:
+   ```bash
+   curl -X POST http://localhost:8080/v1/default/calibrate
+   ```
+3. After `CalibrationCompletedEvent` appears in the event stream, the `DriftMonitor` resets (`reset_after_recalibration()` is called automatically).
+4. Verify the `consensus_agreement_rate` signal recovers in the subsequent 20–30 tasks.
+
+### Automatic recalibration (opt-in)
+
+`auto_recalibrate_on_drift = false` by default. Set to `true` to trigger `POST /calibrate` automatically on every `CalibrationChangepoint`. This costs LLM calls (one calibration run) but eliminates manual operator intervention:
+
+```toml
+# reference.toml
+auto_recalibrate_on_drift = true
+```
+
+Only enable this if the calibration corpus is fast (< 2 min) and LLM API costs are not a constraint. In production the default is `false` because an unexpected changepoint during a release window should not silently burn calibration budget.
+
+### Tuning guidance
+
+| Symptom | Adjustment |
+|---------|-----------|
+| Too many `CalibrationDriftWarning` false positives (transient noise) | Increase `drift_ddm_k` (e.g. 3.0) or `drift_ddm_window` (e.g. 30) |
+| `CalibrationChangepoint` fires too slowly (delayed detection) | Decrease `drift_bocpd_hazard_rate` (e.g. 0.005) — models longer runs; OR decrease `drift_bocpd_changepoint_threshold` (e.g. 0.85) |
+| `CalibrationChangepoint` fires too often (noise sensitivity) | Increase `drift_bocpd_hazard_rate` (e.g. 0.05) — expects more frequent drift and is less surprised | 
+| ORCA margin gates too wide during drift (quality degradation) | Decrease `drift_conformal_margin` (e.g. 0.02); accept narrower coverage guarantee |
+| ORCA margin expires before recalibration completes | Increase `drift_staleness_ttl_secs` (e.g. 7200) |
+
+### Config fields
+
+```toml
+# Calibration Drift Detection (GAP-H2) — reference.toml defaults
+drift_ddm_window = 20                    # DDM sliding window (tasks)
+drift_ddm_k = 2.5                        # DDM sigma threshold for warning
+drift_bocpd_hazard_rate = 0.01           # per-step changepoint prior probability
+drift_bocpd_changepoint_threshold = 0.90 # posterior mass threshold for CalibrationChangepoint
+auto_recalibrate_on_drift = false        # trigger POST /calibrate on changepoint
+drift_staleness_ttl_secs = 3600          # ORCA margin TTL after changepoint (seconds)
+drift_conformal_margin = 0.05            # threshold reduction applied during active changepoint
+```
+
+---
+
 ## 4. Observability
 
 The `/metrics` endpoint exposes exactly five Prometheus series — the bivariate-CG control-loop signals. See `crates/h2ai-api/src/metrics.rs` for the source of truth.
@@ -248,6 +325,7 @@ The `/metrics` endpoint exposes exactly five Prometheus series — the bivariate
 - **`mode_collapse` rate climbing.** Pool is semantically near-degenerate — the runtime is rotating adapters but the pool is too small or too correlated for rotation to help. Add a different model family.
 - **`constrained_exploration` rate climbing.** Generation is diverse, but the constraint corpus rejects everything. Either the corpus thresholds are too strict, or the task domain is outside the corpus's coverage. Check `BranchPruned.violated_constraints` for patterns.
 - **`n_eff_prior` drops over successive calibrations.** Adapter pool is converging — add diversity before tasks start failing the Phase 2.6 guard.
+- **`QuorumDegradedBelowMinimum` errors in the log.** NATS trace log emits `h2ai.engine WARN unclamped_n_max=<value>` when the USL ceiling collapses below 3. In shadow mode the task continues (the type-system floor guarantees N≥3 is still used). Outside shadow mode the task fails fast — the adapter should be taken offline and recalibrated. Root cause is typically: (a) β₀ spiked due to model degradation, (b) CG_mean dropped unexpectedly, or (c) the adapter was calibrated on stale/insufficient data. Run `POST /calibrate` and check `n_max` in `CalibrationCompletedEvent` — if `n_max < 3.0`, the adapter pool needs remediation before production traffic resumes.
 
 The OpenTelemetry pipeline (`crates/h2ai-telemetry`) provides per-phase tracing spans for adapter latency, merge time, verification scoring, and synthesis. These are higher-cardinality and intended for distributed tracing rather than alerting.
 
@@ -266,6 +344,7 @@ The control loop runs after every `ZeroSurvival` event. Operators do not configu
 
 - **`diversity_threshold`** is the load-bearing knob. At `0.0` (the default), Phase 2.6 is disabled and the MAPE-K classifier always returns `ConstrainedExploration` for any wave with `n_eff > 0`. Production deployments should set it to `0.5`.
 - **`max_autonomic_retries`** caps the loop at 2 retries per task by default. `TaskFailed` is emitted on exhaustion with a record of every topology and τ vector tried.
+- **`synthesis_wave_enabled`** (default `true`) — when all retries exhaust with `verified=0`, the engine fires one terminal synthesis wave: orthogonal partial-pass examples (greedy set-cover) + compliance checklist + Coherence Mandate → single LLM call → re-verify. On full pass returns resolved output; on partial pass surfaces `best_partial_text` in `MaxRetriesExhausted` for HITL. Set to `false` to skip entirely (useful when the synthesis adapter is unavailable or latency budget is tight).
 - **`adapter_rotation_offset`** is task-local. Two consecutive `ModeCollapse` retries advance the offset by 2; the next wave samples a rotated subset of the pool. The offset resets on task completion.
 - **The Constraint Violation Tombstone** is written into `TopologyProvisionedEvent.constraint_tombstone` *only* on `ConstrainedExploration` retries. It contains constraint IDs, severity labels, and per-constraint scores — never raw proposal text. The orchestrator reads this back into the next wave's `system_context` so the explorers see what the previous wave failed.
 

@@ -9,27 +9,6 @@ pub trait WebSearchBackend: Send + Sync {
     async fn search(&self, query: &str, max_results: usize) -> Result<String, ToolError>;
 }
 
-// ── Mock ─────────────────────────────────────────────────────────────────────
-
-pub struct MockSearchBackend {
-    response: String,
-}
-
-impl MockSearchBackend {
-    pub fn new(response: impl Into<String>) -> Self {
-        Self {
-            response: response.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl WebSearchBackend for MockSearchBackend {
-    async fn search(&self, _query: &str, _max_results: usize) -> Result<String, ToolError> {
-        Ok(self.response.clone())
-    }
-}
-
 // ── Live: Google Custom Search API ───────────────────────────────────────────
 
 pub struct GoogleSearchBackend {

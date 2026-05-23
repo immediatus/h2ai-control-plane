@@ -54,14 +54,19 @@
 //! Direct tests of `InMemoryStateBackend` against the backend traits.
 
 use chrono::Utc;
-use h2ai_state::backend::{CalibrationStore, EventPublisher, SnapshotStore, StateBackend};
+use h2ai_state::backend::{
+    CalibrationStore, EstimatorStore, EventPublisher, OproStore, SignalPublisher, SnapshotStore,
+    StateBackend, TailEvents,
+};
 use h2ai_state::in_memory::InMemoryStateBackend;
 use h2ai_types::calibration::{AuditorCircuitState, CalibrationRecord, ProbeSource};
 use h2ai_types::events::{
     CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode, H2AIEvent,
     TaskSnapshot,
 };
-use h2ai_types::identity::TaskId;
+use h2ai_types::identity::{TaskId, TenantId};
+use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
+use h2ai_types::signal::{ResumeSignal, SignalPayload};
 use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold};
 
 fn cal_event() -> CalibrationCompletedEvent {
@@ -173,4 +178,225 @@ async fn blanket_state_backend_impl_covers_in_memory() {
     fn requires_state_backend<T: StateBackend>(_t: &T) {}
     let backend = InMemoryStateBackend::new();
     requires_state_backend(&backend);
+}
+
+// ── EventPublisher::publish_event and publish_to ──────────────────────────────
+
+#[tokio::test]
+async fn publish_event_stores_event() {
+    let backend = InMemoryStateBackend::new();
+    let task_id = TaskId::new();
+    let event = H2AIEvent::CalibrationCompleted(cal_event());
+    backend.publish_event(&task_id, &event).await.unwrap();
+    assert_eq!(backend.events().await.len(), 1);
+}
+
+#[tokio::test]
+async fn publish_to_stores_event_under_subject() {
+    let backend = InMemoryStateBackend::new();
+    let task_id = TaskId::new();
+    let event = H2AIEvent::CalibrationCompleted(cal_event());
+    backend.publish_to("custom.subject", &event).await.unwrap();
+    // InMemoryStateBackend accumulates all published events in its event log.
+    assert_eq!(backend.events().await.len(), 1);
+    // The task_id-keyed path also still works independently.
+    backend.publish_event(&task_id, &event).await.unwrap();
+    assert_eq!(backend.events().await.len(), 2);
+}
+
+// ── Arc<T>: OproStore forwarding impl ────────────────────────────────────────
+
+#[tokio::test]
+async fn arc_wrapped_backend_put_get_adapter_opro_state() {
+    use std::sync::Arc;
+    let backend = Arc::new(InMemoryStateBackend::new());
+
+    let state = AdapterOproState {
+        adapter_name: "arc-adapter".into(),
+        j_eff_ema: 0.75,
+        n_tasks_total: 5,
+        n_tasks_since_last_opro: 0,
+        last_opro_started_at: None,
+        suppress_until_n_tasks: 0,
+        bandit_arms: Default::default(),
+    };
+    backend.put_adapter_opro_state(&state).await.unwrap();
+
+    let loaded = backend
+        .get_adapter_opro_state("arc-adapter")
+        .await
+        .unwrap()
+        .expect("state must exist");
+
+    assert!((loaded.j_eff_ema - 0.75).abs() < 1e-9);
+    assert_eq!(loaded.n_tasks_total, 5);
+}
+
+#[tokio::test]
+async fn arc_wrapped_backend_put_get_prompt_variant() {
+    use std::sync::Arc;
+    let backend = Arc::new(InMemoryStateBackend::new());
+
+    use h2ai_types::prompt_variant::PromptVariantSource;
+    let variant = PromptVariant {
+        adapter_name: "arc-adapter".into(),
+        prompt_key: "explore".into(),
+        variant_id: "v1".into(),
+        text: "You are a test agent.".into(),
+        source: PromptVariantSource::Seed,
+        created_at: Utc::now(),
+        score: Some(0.8),
+    };
+    backend.put_prompt_variant(&variant).await.unwrap();
+
+    let loaded = backend
+        .get_prompt_variant("arc-adapter", "explore", "v1")
+        .await
+        .unwrap()
+        .expect("variant must exist");
+
+    assert_eq!(loaded.text, "You are a test agent.");
+    assert!((loaded.score.unwrap() - 0.8).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn arc_wrapped_backend_active_variant_ptr_roundtrip() {
+    use std::sync::Arc;
+    let backend = Arc::new(InMemoryStateBackend::new());
+
+    // Initially absent.
+    let initial = backend
+        .get_active_variant_ptr("arc-adapter", "explore")
+        .await
+        .unwrap();
+    assert!(initial.is_none());
+
+    backend
+        .set_active_variant_ptr("arc-adapter", "explore", "v2")
+        .await
+        .unwrap();
+
+    let loaded = backend
+        .get_active_variant_ptr("arc-adapter", "explore")
+        .await
+        .unwrap()
+        .expect("ptr must exist after set");
+
+    assert_eq!(loaded, "v2");
+}
+
+// ── EstimatorStore (tao, srani, bandit) ──────────────────────────────────────
+
+#[tokio::test]
+async fn estimator_store_tao_roundtrip() {
+    let backend = InMemoryStateBackend::new();
+    let tenant = TenantId::default_tenant();
+    assert!(backend
+        .get_tao_estimator_state(&tenant)
+        .await
+        .unwrap()
+        .is_none());
+    backend
+        .put_tao_estimator_state(&tenant, 0.42, 7)
+        .await
+        .unwrap();
+    let (ema, count) = backend
+        .get_tao_estimator_state(&tenant)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!((ema - 0.42).abs() < 1e-9);
+    assert_eq!(count, 7);
+}
+
+#[tokio::test]
+async fn estimator_store_srani_roundtrip() {
+    let backend = InMemoryStateBackend::new();
+    let tenant = TenantId::default_tenant();
+    assert!(backend.get_srani_state(&tenant).await.unwrap().is_none());
+    backend.put_srani_state(&tenant, 0.75, 3).await.unwrap();
+    let (cfi, count) = backend.get_srani_state(&tenant).await.unwrap().unwrap();
+    assert!((cfi - 0.75).abs() < 1e-9);
+    assert_eq!(count, 3);
+}
+
+#[tokio::test]
+async fn estimator_store_bandit_roundtrip() {
+    let backend = InMemoryStateBackend::new();
+    let tenant = TenantId::default_tenant();
+    assert!(backend.get_bandit_state(&tenant).await.unwrap().is_none());
+    let bytes = b"bandit-state-bytes".to_vec();
+    backend
+        .put_bandit_state(&tenant, bytes.clone())
+        .await
+        .unwrap();
+    let loaded = backend.get_bandit_state(&tenant).await.unwrap().unwrap();
+    assert_eq!(loaded, bytes);
+}
+
+// ── TailEvents::tail_task_events_boxed ───────────────────────────────────────
+
+#[tokio::test]
+async fn tail_task_events_returns_events_after_seq() {
+    use futures::StreamExt;
+    let backend = InMemoryStateBackend::new();
+    let tid = TaskId::new();
+    let event = H2AIEvent::TaskFailed(h2ai_types::events::TaskFailedEvent {
+        task_id: tid.clone(),
+        pruned_events: vec![],
+        topologies_tried: vec![],
+        tau_values_tried: vec![],
+        multiplication_condition_failure: None,
+        timestamp: Utc::now(),
+    });
+    backend.publish_event(&tid, &event).await.unwrap();
+    backend.publish_event(&tid, &event).await.unwrap();
+
+    let mut stream = backend.tail_task_events_boxed(&tid, 1).await.unwrap();
+    let item = stream.next().await.unwrap().unwrap();
+    assert_eq!(item.0, 2); // seq=2 is the second event
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn tail_task_events_empty_stream_from_seq_beyond_end() {
+    use futures::StreamExt;
+    let backend = InMemoryStateBackend::new();
+    let tid = TaskId::new();
+    let mut stream = backend.tail_task_events_boxed(&tid, 100).await.unwrap();
+    assert!(stream.next().await.is_none());
+}
+
+// ── SignalPublisher::publish_signal ──────────────────────────────────────────
+
+#[tokio::test]
+async fn signal_publisher_publish_signal_succeeds() {
+    let backend = InMemoryStateBackend::new();
+    let signal = ResumeSignal {
+        task_id: TaskId::new(),
+        tenant_id: TenantId::default_tenant(),
+        payload: SignalPayload::Unknown,
+        timeout_at_ms: 9_999_999,
+        issued_at_ms: 1_000_000,
+    };
+    backend.publish_signal(&signal).await.unwrap();
+}
+
+// ── publish_event_seq ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn publish_event_seq_returns_increasing_seq() {
+    let backend = InMemoryStateBackend::new();
+    let tid = TaskId::new();
+    let event = H2AIEvent::TaskFailed(h2ai_types::events::TaskFailedEvent {
+        task_id: tid.clone(),
+        pruned_events: vec![],
+        topologies_tried: vec![],
+        tau_values_tried: vec![],
+        multiplication_condition_failure: None,
+        timestamp: Utc::now(),
+    });
+    let s1 = backend.publish_event_seq(&tid, &event).await.unwrap();
+    let s2 = backend.publish_event_seq(&tid, &event).await.unwrap();
+    assert!(s2 > s1);
 }

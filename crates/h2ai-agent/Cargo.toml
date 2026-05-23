@@ -34,6 +34,8 @@ uuid          = { workspace = true }
 
 [dev-dependencies]
 tokio         = { workspace = true }
+h2ai-tools      = { path = "../h2ai-tools" }
+h2ai-test-utils = { path = "../h2ai-test-utils" }
 h2ai-config   = { path = "../h2ai-config" }
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-state    = { path = "../h2ai-state" }

@@ -267,6 +267,20 @@ pub struct ConstraintViolation {
     /// "Hard", "Soft", or "Advisory"
     pub severity_label: String,
     pub remediation_hint: Option<String>,
+    /// Natural-language constraint statement from ConstraintDoc.description.
+    #[serde(default)]
+    pub constraint_description: String,
+    /// Dynamic verifier interpretation from the LLM judge for this constraint.
+    /// None for static predicates or when contradiction was detected across proposals.
+    #[serde(default)]
+    pub verifier_reason: Option<String>,
+    /// Per-check verdicts parsed from LlmJudge CoT: `true` = PRESENT, `false` = MISSING.
+    /// Empty when there are no binary checks or when the reason could not be parsed.
+    #[serde(default)]
+    pub check_verdicts: Vec<bool>,
+    /// Pass-criteria text from the constraint YAML `criteria.pass` field.
+    #[serde(default)]
+    pub criteria_pass: Option<String>,
 }
 
 /// Emitted when an explorer's proposal is eliminated by the verification or auditor gate.
@@ -275,6 +289,10 @@ pub struct BranchPrunedEvent {
     pub task_id: TaskId,
     pub explorer_id: ExplorerId,
     pub reason: String,
+    /// The full proposal text that was pruned. Used by GAP-F1 synthesis to build
+    /// partial-pass examples from the actual proposal rather than the status string.
+    #[serde(default)]
+    pub raw_output: String,
     pub constraint_error_cost: RoleErrorCost,
     pub violated_constraints: Vec<ConstraintViolation>,
     pub timestamp: DateTime<Utc>,
@@ -512,7 +530,9 @@ pub struct ResearcherGroundingEvent {
     pub shared_assumption: String,
     /// Summary of what external literature says about this topic.
     pub literature_summary: String,
-    /// `Some("slot_N")` for proactive pre-steps; `None` for reactive C1 groundings.
+    /// Domain slot for this grounding event. For SRANI reactive grounding, classified from
+    /// fabricated entity names (e.g. `"message_broker"`, `"cache_layer"`). `None` only for
+    /// events deserialised from storage predating slot classification.
     pub slot: Option<String>,
     /// Which grounding tier produced this event. Defaults to `LlmResearcher` for
     /// backward-compatible deserialisation of pre-existing events.
@@ -772,6 +792,28 @@ pub struct ConstraintAmbiguityEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted when verifier reasons for the same constraint contradict across proposals in a wave.
+///
+/// Distinct from `ConstraintAmbiguityEvent` (which tracks judge panel uncertain votes).
+/// Fires when dynamic reason strings from different pruned proposals for the same
+/// `constraint_id` have pairwise Jaccard word-bag similarity below 0.35.
+/// The repair prompt falls back to static `remediation_hint` for this constraint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifierReasonContradictionEvent {
+    pub task_id: TaskId,
+    /// MAPE-K wave index in which the contradiction was detected.
+    pub wave: u32,
+    /// Constraint whose verifier reasons contradicted across proposals.
+    pub constraint_id: String,
+    /// All verifier reason strings collected (one per pruned proposal with Some reason).
+    pub reasons: Vec<String>,
+    /// Minimum pairwise Jaccard similarity that triggered the fallback (< 0.35).
+    pub min_jaccard: f64,
+    /// Static remediation_hint used as fallback. None when hint was also absent.
+    pub fallback_hint: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Emitted when the oracle gate finishes evaluating proposed solutions before merge.
 ///
 /// The gate runs synchronously before `MergeResolvedEvent` is emitted. When
@@ -809,7 +851,7 @@ pub struct PendingClarificationEvent {
 
 /// Async Phase 6 oracle evaluation request.
 ///
-/// Published to `h2ai.oracle.pending` (NATS core) immediately after task completion.
+/// Published to `h2ai.oracle.{tenant_id}.pending` (NATS core) immediately after task completion.
 /// Non-blocking — the orchestrator does not wait for the oracle result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OraclePendingEvent {
@@ -821,6 +863,12 @@ pub struct OraclePendingEvent {
     pub n_used: u32,
     pub oracle_spec: OracleSpec,
     pub domain: OracleDomain,
+    /// Additional oracle specs for multi-oracle FUSE evaluation.
+    /// When non-empty, `oracle_worker` runs all specs and applies worst-of-family
+    /// reduction before publishing the final `OracleResultEvent`.
+    /// `oracle_spec` is always included as the primary spec.
+    #[serde(default)]
+    pub oracle_specs: Vec<OracleSpec>,
     #[serde(default)]
     pub tenant_id: crate::identity::TenantId,
 }
@@ -999,6 +1047,64 @@ pub struct SocraticDiagnosisEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Emitted pre-flight when a binary check's LlmJudge pass rate on the constraint's
+/// `pass` rubric falls below `gap_k1.coherence_threshold`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintCoherenceWarning {
+    pub constraint_id: String,
+    pub check_index: usize,
+    /// Fraction of probe runs that returned Pass (0.0–1.0).
+    pub consistency: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted at runtime when Jaccard similarity between rejection reasons for the same
+/// constraint across consecutive waves falls below `gap_k1.instability_threshold`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifierInstabilityEvent {
+    pub task_id: TaskId,
+    pub constraint_id: String,
+    /// Mean pairwise Jaccard of divergent rejection reasons — lower = more divergent.
+    pub instability_score: f64,
+    pub wave_a: u32,
+    pub wave_b: u32,
+    /// Up to 5 semantically distinct rejection reasons that showed divergence.
+    pub divergent_reasons: Vec<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when `SpecRepairAdvisor` starts generating candidate rewrites.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintRepairAttempted {
+    pub task_id: TaskId,
+    pub constraint_id: String,
+    pub check_index: usize,
+    pub candidate_count: usize,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when `create_next_version` CAS write succeeds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintVersionCreated {
+    pub task_id: TaskId,
+    pub constraint_id: String,
+    pub old_version: u64,
+    pub new_version: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when the best repair candidate scored below `repair_acceptance_threshold`.
+/// Causes fallthrough to HITL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintRepairFailed {
+    pub task_id: TaskId,
+    pub constraint_id: String,
+    pub check_index: usize,
+    /// Best candidate consistency score achieved.
+    pub best_score: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
 ///
 /// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
@@ -1112,6 +1218,18 @@ pub enum H2AIEvent {
     LeaderElected(LeaderElectedEvent),
     /// Wraps [`SocraticDiagnosisEvent`]: leader's Socratic diagnostic question for the current wave.
     SocraticDiagnosis(SocraticDiagnosisEvent),
+    /// Wraps [`VerifierReasonContradictionEvent`]: contradictory verifier reasons detected across proposals for the same constraint.
+    VerifierReasonContradiction(VerifierReasonContradictionEvent),
+    /// GAP-K1: constraint coherence warning — binary check consistency below threshold.
+    ConstraintCoherenceWarning(ConstraintCoherenceWarning),
+    /// GAP-K1: verifier instability event — rejection reasons diverge across waves.
+    VerifierInstability(VerifierInstabilityEvent),
+    /// GAP-K1: repair attempt started — SpecRepairAdvisor generating candidates.
+    ConstraintRepairAttempted(ConstraintRepairAttempted),
+    /// GAP-K1: version created — CAS write succeeded for new constraint version.
+    ConstraintVersionCreated(ConstraintVersionCreated),
+    /// GAP-K1: repair failed — best candidate below acceptance threshold.
+    ConstraintRepairFailed(ConstraintRepairFailed),
 }
 
 impl H2AIEvent {
@@ -1126,5 +1244,82 @@ impl H2AIEvent {
             }
             _ => format!("h2ai.tasks.{task_id}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod gap_k1_event_tests {
+    use super::*;
+
+    #[test]
+    fn constraint_coherence_warning_round_trips() {
+        let e = ConstraintCoherenceWarning {
+            constraint_id: "C-1".into(),
+            check_index: 0,
+            consistency: 0.4,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let back: ConstraintCoherenceWarning = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.check_index, 0);
+    }
+
+    #[test]
+    fn verifier_instability_event_round_trips() {
+        let e = VerifierInstabilityEvent {
+            task_id: TaskId::new(),
+            constraint_id: "C-1".into(),
+            instability_score: 0.034,
+            wave_a: 1,
+            wave_b: 2,
+            divergent_reasons: vec!["reason A".into(), "reason B".into()],
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let back: VerifierInstabilityEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.divergent_reasons.len(), 2);
+    }
+
+    #[test]
+    fn constraint_version_created_round_trips() {
+        let e = ConstraintVersionCreated {
+            task_id: TaskId::new(),
+            constraint_id: "C-1".into(),
+            old_version: 1,
+            new_version: 2,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let back: ConstraintVersionCreated = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.old_version, 1);
+        assert_eq!(back.new_version, 2);
+    }
+
+    #[test]
+    fn constraint_repair_attempted_round_trips() {
+        let e = ConstraintRepairAttempted {
+            task_id: TaskId::new(),
+            constraint_id: "C-1".into(),
+            check_index: 0,
+            candidate_count: 3,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let back: ConstraintRepairAttempted = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.candidate_count, 3);
+    }
+
+    #[test]
+    fn constraint_repair_failed_round_trips() {
+        let e = ConstraintRepairFailed {
+            task_id: TaskId::new(),
+            constraint_id: "C-1".into(),
+            check_index: 0,
+            best_score: 0.42,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let back: ConstraintRepairFailed = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.best_score, 0.42);
     }
 }

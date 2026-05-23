@@ -54,6 +54,19 @@ fn default_role_error_cost_values() {
     assert_eq!(c.cost_synthesizer, 0.1);
 }
 
+#[test]
+#[allow(clippy::float_cmp)]
+fn drift_detection_defaults_are_sane() {
+    let cfg = H2AIConfig::default();
+    assert_eq!(cfg.drift_ddm_window, 20);
+    assert!((cfg.drift_ddm_k - 2.5).abs() < 1e-9);
+    assert!((cfg.drift_bocpd_hazard_rate - 0.01).abs() < 1e-9);
+    assert!((cfg.drift_bocpd_changepoint_threshold - 0.90).abs() < 1e-9);
+    assert!(!cfg.auto_recalibrate_on_drift);
+    assert_eq!(cfg.drift_staleness_ttl_secs, 3600);
+    assert!((cfg.drift_conformal_margin - 0.05).abs() < 1e-9);
+}
+
 // ── JSON serialisation ────────────────────────────────────────────────────────
 
 #[test]
@@ -385,15 +398,11 @@ fn srani_new_fields_deserialise_from_json_without_them() {
 #[test]
 fn srani_grounding_defaults_are_sane() {
     let srani = &H2AIConfig::default().srani;
-    assert_eq!(
-        srani.grounding_raw_max_chars, 4000,
-        "raw cap default is 4000"
-    );
-    assert_eq!(
-        srani.grounding_hint_max_chars, 1200,
-        "hint cap default is 1200"
-    );
     assert!(srani.grounding_distill, "distill must default to true");
+    assert_eq!(
+        srani.grounding_compress_threshold, 800,
+        "compress threshold must default to 800"
+    );
 }
 
 #[test]
@@ -402,16 +411,12 @@ fn srani_grounding_fields_round_trip_json() {
     let json = serde_json::to_string(&original).unwrap();
     let restored: H2AIConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(
-        restored.srani.grounding_raw_max_chars,
-        original.srani.grounding_raw_max_chars
-    );
-    assert_eq!(
-        restored.srani.grounding_hint_max_chars,
-        original.srani.grounding_hint_max_chars
-    );
-    assert_eq!(
         restored.srani.grounding_distill,
         original.srani.grounding_distill
+    );
+    assert_eq!(
+        restored.srani.grounding_compress_threshold,
+        original.srani.grounding_compress_threshold
     );
 }
 
@@ -420,28 +425,22 @@ fn srani_grounding_missing_fields_use_defaults() {
     // Old JSON payloads without grounding fields must deserialise with defaults.
     let mut v: serde_json::Value = serde_json::to_value(H2AIConfig::default()).unwrap();
     let srani = v["srani"].as_object_mut().unwrap();
-    srani.remove("grounding_raw_max_chars");
-    srani.remove("grounding_hint_max_chars");
     srani.remove("grounding_distill");
+    srani.remove("grounding_compress_threshold");
     let cfg: H2AIConfig = serde_json::from_value(v).unwrap();
-    assert_eq!(cfg.srani.grounding_raw_max_chars, 4000);
-    assert_eq!(cfg.srani.grounding_hint_max_chars, 1200);
     assert!(cfg.srani.grounding_distill);
+    assert_eq!(cfg.srani.grounding_compress_threshold, 800);
 }
 
 #[test]
 fn srani_grounding_config_override_via_toml() {
     let toml = r"
 [srani]
-grounding_raw_max_chars  = 8000
-grounding_hint_max_chars = 600
 grounding_distill        = false
 ";
     let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
     f.write_all(toml.as_bytes()).unwrap();
     let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
-    assert_eq!(cfg.srani.grounding_raw_max_chars, 8000);
-    assert_eq!(cfg.srani.grounding_hint_max_chars, 600);
     assert!(!cfg.srani.grounding_distill);
 }
 
@@ -942,10 +941,24 @@ fn cspr_config_defaults_to_disabled() {
 fn synthesis_defaults_load_from_reference_toml() {
     let cfg = H2AIConfig::default();
     assert!(cfg.synthesis_enabled);
+    assert!(cfg.synthesis_wave_enabled);
     assert_eq!(cfg.synthesis_min_proposals, 2);
     assert!((cfg.synthesis_tau - 0.2).abs() < 1e-9);
     assert_eq!(cfg.synthesis_critique_max_tokens, 32768);
     assert_eq!(cfg.synthesis_max_tokens, 32768);
+}
+
+#[test]
+fn sequential_grafting_defaults_are_sane() {
+    let cfg = H2AIConfig::default();
+    assert!(
+        !cfg.sequential_grafting_enabled,
+        "grafting is opt-in, default false"
+    );
+    assert!(
+        cfg.sequential_grafting_max_rounds >= 1,
+        "max_rounds must be >= 1"
+    );
 }
 
 #[test]
@@ -1427,9 +1440,8 @@ fn srani_config_direct_default() {
     assert!((c.gate_threshold - 0.50).abs() < 1e-9);
     assert!((c.warn_threshold - 0.3).abs() < 1e-9);
     assert!((c.inject_threshold - 0.6).abs() < 1e-9);
-    assert_eq!(c.grounding_raw_max_chars, 4000);
-    assert_eq!(c.grounding_hint_max_chars, 1200);
     assert!(c.grounding_distill);
+    assert_eq!(c.grounding_compress_threshold, 800);
 }
 
 #[test]
@@ -1443,9 +1455,8 @@ fn srani_config_serde_empty() {
     assert!((c.gate_threshold - 0.50).abs() < 1e-9);
     assert!((c.warn_threshold - 0.3).abs() < 1e-9);
     assert!((c.inject_threshold - 0.6).abs() < 1e-9);
-    assert_eq!(c.grounding_raw_max_chars, 4000);
-    assert_eq!(c.grounding_hint_max_chars, 1200);
     assert!(c.grounding_distill);
+    assert_eq!(c.grounding_compress_threshold, 800);
 }
 
 // ── CsprConfig default ────────────────────────────────────────────────────────

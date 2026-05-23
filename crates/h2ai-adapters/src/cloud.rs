@@ -119,11 +119,16 @@ impl IComputeAdapter for CloudGenericAdapter {
             AdapterKind::CloudGeneric { model, .. } => model.clone(),
             _ => unreachable!(),
         };
+        let messages: Vec<serde_json::Value> = {
+            let mut msgs = Vec::with_capacity(2);
+            if !req.system_context.is_empty() {
+                msgs.push(serde_json::json!({"role": "system", "content": req.system_context}));
+            }
+            msgs.push(serde_json::json!({"role": "user", "content": req.task}));
+            msgs
+        };
         let mut body = serde_json::json!({
-            "messages": [
-                {"role": "system", "content": req.system_context},
-                {"role": "user",   "content": req.task}
-            ],
+            "messages": messages,
             "temperature": req.tau.value(),
             "max_tokens":  req.max_tokens
         });

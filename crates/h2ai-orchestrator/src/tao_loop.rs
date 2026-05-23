@@ -204,13 +204,28 @@ impl TaoLoop {
         // Reasoning models have built-in CoT; injecting TAO memory over their own trace
         // causes an α-spike.  Run exactly one turn and return unconditionally.
         if input.bypass_tao {
-            let resp = timeout(
+            let timeout_err = EngineError::Adapter("TAO timeout".into());
+            let resp = match timeout(
                 Duration::from_secs(input.config.per_turn_timeout_secs),
                 input.adapter.execute(input.initial_request.clone()),
             )
             .await
-            .map_err(|_| EngineError::Adapter("TAO timeout".into()))?
-            .map_err(|e| EngineError::Adapter(e.to_string()))?;
+            {
+                Ok(r) => r.map_err(|e| EngineError::Adapter(e.to_string()))?,
+                Err(_) if input.config.retry_on_timeout => {
+                    // Retry once with a reduced max_tokens cap.
+                    let mut retry_req = input.initial_request.clone();
+                    retry_req.max_tokens = u64::from(input.config.timeout_retry_max_tokens);
+                    timeout(
+                        Duration::from_secs(input.config.per_turn_timeout_secs),
+                        input.adapter.execute(retry_req),
+                    )
+                    .await
+                    .map_err(|_| timeout_err)?
+                    .map_err(|e| EngineError::Adapter(e.to_string()))?
+                }
+                Err(_) => return Err(timeout_err),
+            };
 
             return Ok(TaoProposal {
                 event: ProposalEvent {
@@ -244,6 +259,7 @@ impl TaoLoop {
             .map_err(|e| EngineError::Parse(format!("invalid TAO verify_pattern: {e}")))?;
 
         let mut req = input.initial_request.clone();
+        let timeout_msg = "TAO timeout";
         // Fix I-3: collect per-turn iteration events
         let mut iterations: Vec<TaoIterationEvent> = Vec::new();
         let mut memory: Vec<TaoMemoryEntry> = Vec::new();
@@ -251,13 +267,27 @@ impl TaoLoop {
         let mut turn1_output: Option<String> = None;
 
         for turn in 1..=input.config.max_turns {
-            let resp = timeout(
+            let resp = match timeout(
                 Duration::from_secs(input.config.per_turn_timeout_secs),
                 input.adapter.execute(req.clone()),
             )
             .await
-            .map_err(|_| EngineError::Adapter("TAO timeout".into()))?
-            .map_err(|e| EngineError::Adapter(e.to_string()))?;
+            {
+                Ok(r) => r.map_err(|e| EngineError::Adapter(e.to_string()))?,
+                Err(_) if turn == 1 && input.config.retry_on_timeout => {
+                    // Retry once on turn-1 timeout with a reduced max_tokens cap.
+                    let mut retry_req = req.clone();
+                    retry_req.max_tokens = u64::from(input.config.timeout_retry_max_tokens);
+                    timeout(
+                        Duration::from_secs(input.config.per_turn_timeout_secs),
+                        input.adapter.execute(retry_req),
+                    )
+                    .await
+                    .map_err(|_| EngineError::Adapter(timeout_msg.into()))?
+                    .map_err(|e| EngineError::Adapter(e.to_string()))?
+                }
+                Err(_) => return Err(EngineError::Adapter(timeout_msg.into())),
+            };
 
             if turn == 1 {
                 turn1_output = Some(resp.output.clone());

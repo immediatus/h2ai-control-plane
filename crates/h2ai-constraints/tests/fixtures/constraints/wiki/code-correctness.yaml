@@ -1,0 +1,41 @@
+id: topic:code-correctness
+depth: topic
+domains:
+  - code-correctness
+  - testing
+synthesis: >
+  SWE-bench Verified maps to autonomous code repair in complex codebases. The two correctness
+  constraints enforce what constitutes a valid fix. CONSTRAINT-SWE-1 (No Global Mutable State)
+  ensures that repairs do not introduce shared mutable globals — any function that reads or
+  writes global state makes concurrent test execution non-deterministic and breaks the SWE-bench
+  evaluation harness, which runs test suites in parallel. CONSTRAINT-SWE-2 (Deterministic
+  Function Output) ensures that fixed functions handle boundary values correctly: empty input
+  must not panic, duplicate keys must follow a documented contract, and numeric operations
+  must not overflow or dereference null. A repair that passes some test cases but crashes
+  on boundary values is scored partial, not pass. Both constraints are evaluated by the
+  LLM judge against the proposed patch, not by syntax analysis — the judge checks whether
+  the proposed logic, as described, satisfies each criterion.
+invariants:
+  - "No new global variables (var/let at module scope, static mut, singleton hidden state)"
+  - "Concurrent calls with identical inputs produce identical outputs"
+  - "Empty input returns empty/zero — never panics or throws"
+  - "Boundary values correct: numeric overflow impossible, no null dereference"
+  - "Duplicate key contract documented (last-write-wins or first-write-wins, not undefined)"
+failure_modes_covered:
+  - FM-SWE-1-1: "Global counter mutated by fix causes concurrent test interference"
+  - FM-SWE-1-2: "Cached singleton introduced by fix leaks state between test cases"
+  - FM-SWE-2-1: "Empty list/string input causes index-out-of-bounds panic"
+  - FM-SWE-2-2: "Integer overflow on max-value boundary silently wraps"
+entry_points:
+  - CONSTRAINT-SWE-1
+  - CONSTRAINT-SWE-2
+constraints:
+  - CONSTRAINT-SWE-1
+  - CONSTRAINT-SWE-2
+cross_references:
+  - id: CONSTRAINT-HLE-1
+    domain: formal-methods
+    reason: "Both require correctness proofs — SWE at function level, HLE at protocol level"
+related:
+  - CONSTRAINT-SWE-1
+  - CONSTRAINT-SWE-2

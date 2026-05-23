@@ -120,3 +120,33 @@ fn metas_from_store_returns_one_meta_per_doc() {
     assert!(ids.contains(&"C-META-1"));
     assert!(ids.contains(&"C-META-2"));
 }
+
+// ── load_many: mixed valid/invalid IDs ───────────────────────────────────────
+
+#[tokio::test]
+async fn load_many_skips_unknown_ids_and_returns_known() {
+    let specs = vec![make_spec("C-GOOD")];
+    let source = InMemorySource { specs };
+    let store = RuntimeConstraintStore::from_source(&source).expect("must load");
+
+    // "C-BAD" doesn't exist → error path (tracing::warn) is exercised internally.
+    let docs = store
+        .load_many(&["C-GOOD".to_string(), "C-BAD".to_string()])
+        .await;
+
+    assert_eq!(docs.len(), 1, "only the valid doc must be returned");
+    assert_eq!(docs[0].id, "C-GOOD");
+}
+
+#[tokio::test]
+async fn load_many_all_invalid_returns_empty() {
+    let specs = vec![make_spec("C-X")];
+    let source = InMemorySource { specs };
+    let store = RuntimeConstraintStore::from_source(&source).expect("must load");
+
+    let docs = store
+        .load_many(&["C-MISSING-1".to_string(), "C-MISSING-2".to_string()])
+        .await;
+
+    assert!(docs.is_empty(), "all-invalid IDs must return empty vec");
+}

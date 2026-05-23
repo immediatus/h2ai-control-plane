@@ -60,21 +60,67 @@
 //!   - The full engine pipeline (calibration → exploration → verification → synthesis)
 //!     runs end-to-end without panicking
 
-use h2ai_adapters::mock::{DecompositionMockAdapter, MockAdapter};
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_constraints::types::ConstraintDoc;
-use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
+use h2ai_constraints::types::{
+    CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+};
+use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::srani_grounding::{SpecAnchorGrounder, SraniGroundingChain};
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::{TaskState, TaskStore};
-use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
+use h2ai_test_utils::{DecompositionMockAdapter, MockAdapter};
+use h2ai_types::adapter::{
+    AdapterError, AdapterRegistry, ComputeRequest, ComputeResponse, IComputeAdapter,
+};
 use h2ai_types::config::{
     AdapterKind, AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig,
 };
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// Verification adapter that cycles between a low score (hard-gate fail) for constraint 1
+/// and a high score (pass) for constraint 2 — forces proposals to partially fail verification.
+#[derive(Debug)]
+struct CyclingVerifAdapter {
+    responses: Vec<String>,
+    call_count: Arc<Mutex<usize>>,
+    kind: AdapterKind,
+}
+
+impl CyclingVerifAdapter {
+    fn new(responses: Vec<String>) -> Self {
+        Self {
+            responses,
+            call_count: Arc::new(Mutex::new(0)),
+            kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://cycling".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IComputeAdapter for CyclingVerifAdapter {
+    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+        let mut count = self.call_count.lock().unwrap();
+        let idx = *count % self.responses.len();
+        *count += 1;
+        Ok(ComputeResponse {
+            output: self.responses[idx].clone(),
+            token_cost: 10,
+            adapter_kind: self.kind.clone(),
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    }
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
+}
 
 /// Proves:
 ///   1. CalibrationHarness with mock adapters → valid α, β₀, CG, β_eff, N_max
@@ -225,6 +271,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -233,6 +280,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let max_allowed_proposals = n_max_floor * (cfg.max_autonomic_retries + 1);
@@ -372,6 +420,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
         srani_ema_cfi: 0.45,
         srani_count: 5,
         srani_grounding_chain: Some(chain),
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -380,6 +429,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     match ExecutionEngine::run_offline(input).await {
@@ -401,6 +451,213 @@ async fn engine_full_pipeline_with_mock_adapters() {
             assert!(ts.is_some(), "task must exist in store after engine error");
             assert_eq!(ts.unwrap().status, "failed");
             eprintln!("  ✓ Task correctly marked 'failed' in store");
+        }
+    }
+}
+
+/// GAP-D6 Behavioral Validation — Synthesis Wave End-to-End
+///
+/// Proves that when the MAPE-K retry loop exhausts all attempts but produces
+/// proposals with partial constraint coverage, the terminal synthesis wave:
+///   1. Fires (synthesis_wave_enabled=true, binary_checks non-empty, partials exist)
+///   2. Generates a synthesis proposal via the explorer adapter
+///   3. Verifies the synthesis proposal (LlmJudge neutral fallback → 0.7 score, passes)
+///   4. Returns `Ok(EngineOutput)` instead of `Err(MaxRetriesExhausted)`
+///
+/// Setup:
+/// - 2 LlmJudge constraints each with 1 binary_check
+/// - CyclingVerifAdapter: constraint-1 always fails (score 0.1 < hard gate 0.5),
+///   constraint-2 always passes (score 0.7 ≥ hard gate 0.5)
+/// - Overall proposal fails because hard_gate = false (any Hard constraint fails)
+/// - violated_constraints = [c1 only] → violated_count=1 < checks.len()=2
+/// - PartialPass score = 0.5 → select_orthogonal_partials returns non-empty
+/// - Synthesis wave fires; explorer evaluates synthesis via JSON-parse fallback → 0.7 → passes
+#[tokio::test]
+async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
+    let cfg = H2AIConfig {
+        max_autonomic_retries: 1, // 2 waves total — faster exhaustion
+        synthesis_wave_enabled: true,
+        explorer_max_tokens: 256,
+        ..H2AIConfig::default()
+    };
+
+    let corpus = vec![
+        ConstraintDoc {
+            id: "c1-stateless".into(),
+            source_file: "c1.yaml".into(),
+            description: "stateless".into(),
+            severity: ConstraintSeverity::Hard { threshold: 0.5 },
+            predicate: ConstraintPredicate::Composite {
+                op: CompositeOp::And,
+                children: vec![ConstraintPredicate::LlmJudge {
+                    rubric: "Solution must be stateless.".into(),
+                }],
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+            binary_checks: vec!["stateless: no server-side sessions".into()],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
+        },
+        ConstraintDoc {
+            id: "c2-jwt".into(),
+            source_file: "c2.yaml".into(),
+            description: "jwt".into(),
+            severity: ConstraintSeverity::Hard { threshold: 0.5 },
+            predicate: ConstraintPredicate::Composite {
+                op: CompositeOp::And,
+                children: vec![ConstraintPredicate::LlmJudge {
+                    rubric: "Solution must use JWT tokens.".into(),
+                }],
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+            binary_checks: vec!["jwt: must issue signed JWT".into()],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
+        },
+    ];
+
+    eprintln!("\n── GAP-D6 Synthesis Wave Test ──────────────────────────────────");
+    eprintln!("  Corpus: 2 constraints each with 1 binary_check");
+
+    let cal_adapter = MockAdapter::new("Stateless JWT auth uses signed tokens.".into());
+    let cal_event = CalibrationHarness::run(CalibrationInput {
+        calibration_id: TaskId::new(),
+        task_prompts: vec!["Design a stateless auth system.".into()],
+        adapters: vec![&cal_adapter as &dyn IComputeAdapter],
+        cfg: &cfg,
+        constraint_corpus: &corpus,
+        embedding_model: None,
+    })
+    .await
+    .expect("calibration must succeed");
+
+    eprintln!("  ✓ Calibration done");
+
+    let task_id = TaskId::new();
+    let store = TaskStore::new();
+    store.insert(
+        task_id.clone(),
+        TaskState::new(task_id.clone(), TenantId::default_tenant()),
+    );
+
+    // Explorer: always returns proposal text (non-JSON → LlmJudge fallback 0.7 when used as evaluator)
+    let explorer = DecompositionMockAdapter::new(
+        "Use JWT tokens for stateless authentication. Sessions are stored client-side.".into(),
+    );
+    // Verifier: cycles [c1-fail, c2-pass, c1-fail, c2-pass, ...]
+    // c1 score 0.1 → fails Hard threshold 0.5 → hard_gate=false → overall=0.0 → proposal pruned
+    // c2 score 0.7 → passes Hard threshold 0.5 → NOT in violated_constraints
+    // violated_count=1 < checks.len()=2 → partial coverage → PartialPass score=0.5
+    let verifier = CyclingVerifAdapter::new(vec![
+        r#"{"score": 0.1, "reason": "lacks explicit stateless enforcement"}"#.into(),
+        r#"{"score": 0.7, "reason": "uses JWT correctly"}"#.into(),
+    ]);
+    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let registry =
+        AdapterRegistry::new(Arc::new(MockAdapter::new("reg".into())) as Arc<dyn IComputeAdapter>);
+
+    let manifest = TaskManifest {
+        description: "Design a stateless authentication system using JWT tokens.".into(),
+        pareto_weights: ParetoWeights::new(0.4, 0.4, 0.2).unwrap(),
+        topology: TopologyRequest {
+            kind: "ensemble".into(),
+            branching_factor: None,
+        },
+        explorers: ExplorerRequest {
+            count: 1,
+            tau_min: Some(0.2),
+            tau_max: Some(0.4),
+            roles: vec![],
+            review_gates: vec![],
+            slot_configs: vec![],
+            diversity_ids: vec![],
+        },
+        constraints: vec![],
+        context: None,
+        oracle: None,
+        require_approval: false,
+        constraint_tags: vec![],
+        measure_verifier_ab: false,
+        tenant_id: TenantId::default_tenant(),
+    };
+
+    let input = EngineInput {
+        task_id: task_id.clone(),
+        manifest,
+        calibration: cal_event,
+        explorer_adapters: vec![&explorer as &dyn IComputeAdapter],
+        verification_adapter: &verifier as &dyn IComputeAdapter,
+        auditor_adapter: &auditor as &dyn IComputeAdapter,
+        auditor_config: AuditorConfig::default(),
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: corpus,
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 1.0,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None, // falls back to explorer for both synthesis gen and eval
+        bandit_state: None,
+        shadow_audit_ctx: None,
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+        gap_research_chain: None,
+        nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
+        conformal_margin: 0.0,
+    };
+
+    let result = ExecutionEngine::run_offline(input).await;
+
+    eprintln!("\n── Result ─────────────────────────────────────────────────────");
+    match &result {
+        Ok(output) => {
+            eprintln!("  ✓ Engine returned Ok — synthesis wave succeeded");
+            eprintln!("  resolved_output len: {}", output.resolved_output.len());
+            assert!(
+                !output.resolved_output.is_empty(),
+                "synthesis wave output must be non-empty"
+            );
+        }
+        Err(EngineError::MaxRetriesExhausted {
+            best_partial_text, ..
+        }) => {
+            eprintln!(
+                "  Engine returned MaxRetriesExhausted (synthesis wave did not fire or failed)"
+            );
+            eprintln!(
+                "  best_partial_text: {:?}",
+                best_partial_text.as_deref().map(|s| &s[..s.len().min(80)])
+            );
+            panic!(
+                "GAP-D6 synthesis wave must produce Ok(EngineOutput) when partial constraint \
+                 coverage exists — got MaxRetriesExhausted instead"
+            );
+        }
+        Err(e) => {
+            eprintln!("  Unexpected engine error: {e}");
+            panic!("Unexpected engine error: {e}");
         }
     }
 }

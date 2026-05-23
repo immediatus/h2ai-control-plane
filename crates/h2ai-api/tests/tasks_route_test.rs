@@ -69,10 +69,10 @@ use axum::{
     Router,
 };
 use chrono::Utc;
-use h2ai_adapters::mock::DecompositionMockAdapter;
 use h2ai_api::{routes::task_router, state::AppState};
 use h2ai_config::H2AIConfig;
 use h2ai_orchestrator::task_store::TaskState;
+use h2ai_test_utils::DecompositionMockAdapter;
 use h2ai_types::{
     events::{CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode},
     identity::{TaskId, TenantId},
@@ -421,5 +421,180 @@ async fn task_status_returns_404_for_wrong_tenant() {
         response.status(),
         StatusCode::NOT_FOUND,
         "cross-tenant access must be denied"
+    );
+}
+
+// ── ExplorerBudgetExceeded ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn submit_task_returns_error_when_explorer_count_exceeds_n_max() {
+    let state = make_state();
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    *ts.calibration.write().await = Some(synthetic_calibration());
+    let app = make_router(state);
+
+    // n_max ≈ 12 for synthetic_calibration; request 20 explorers to exceed it.
+    let manifest = serde_json::json!({
+        "description": "High explorer count task",
+        "pareto_weights": {"diversity": 0.5, "containment": 0.3, "throughput": 0.2},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 20, "tau_min": 0.2, "tau_max": 0.9}
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/default/tasks")
+                .header("Content-Type", "application/json")
+                .body(Body::from(manifest.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "explorer count exceeding n_max must return 400"
+    );
+}
+
+// ── ServiceUnavailable (semaphore exhausted) ──────────────────────────────────
+
+#[tokio::test]
+async fn submit_task_returns_503_when_at_capacity() {
+    let cfg = H2AIConfig {
+        max_concurrent_tasks: 0, // no permits → immediately at capacity
+        ..H2AIConfig::default()
+    };
+    let adapter = Arc::new(DecompositionMockAdapter::new("mock response".into()));
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    *ts.calibration.write().await = Some(synthetic_calibration());
+    let app = make_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/default/tasks")
+                .header("Content-Type", "application/json")
+                .body(Body::from(valid_manifest_json().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "server at capacity must return 503"
+    );
+}
+
+// ── task_status invalid UUID ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn task_status_returns_400_for_invalid_uuid() {
+    let app = make_router(make_state());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/default/tasks/not-a-valid-uuid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "malformed UUID must return 400"
+    );
+}
+
+// ── merge_task: already resolved ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn merge_task_returns_409_for_already_resolved_task() {
+    let state = make_state();
+
+    let task_id = TaskId::new();
+    let tenant_id = TenantId::default_tenant();
+    state.store.insert(
+        task_id.clone(),
+        TaskState::new(task_id.clone(), tenant_id.clone()),
+    );
+    state.store.mark_resolved(&task_id);
+
+    let app = make_router(state);
+
+    let body = json!({
+        "resolution": "select",
+        "selected_proposals": ["answer"],
+        "final_output": "the final answer"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/default/tasks/{task_id}/merge"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "re-merging a resolved task must return 409"
+    );
+}
+
+// ── pareto_weights boundary ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn submit_task_accepts_weights_at_tolerance_boundary() {
+    let state = make_state();
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    *ts.calibration.write().await = Some(synthetic_calibration());
+
+    let app = make_router(state);
+
+    // Weights sum to 1.00009 — within 1e-4 tolerance → must accept.
+    let manifest = json!({
+        "description": "boundary test",
+        "pareto_weights": {"diversity": 0.33337, "containment": 0.33336, "throughput": 0.33336},
+        "topology": {"kind": "ensemble"},
+        "explorers": {"count": 2, "tau_min": 0.2, "tau_max": 0.9}
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/default/tasks")
+                .header("Content-Type", "application/json")
+                .body(Body::from(manifest.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "weights within 1e-4 tolerance must be accepted; got: {}",
+        response.status()
     );
 }

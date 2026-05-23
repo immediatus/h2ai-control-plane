@@ -60,15 +60,66 @@ The oracle service is fully responsible for evaluation strategy, internal config
 
 ---
 
+## Multi-Oracle FUSE
+
+A single task can be evaluated by multiple oracle services simultaneously. When `oracle_specs: Vec<OracleSpec>` is non-empty on `OraclePendingEvent`, `OracleWorker` runs the primary `oracle_spec` and all additional `oracle_specs` in sequence, then aggregates via **worst-of-family reduction** (`fuse_reduce_by_family` in `oracle_worker.rs`).
+
+### Oracle families
+
+`OracleFamily` partitions oracle types by their correlated failure mode:
+
+| Family | OracleDomain | Typical examples |
+|---|---|---|
+| `Syntactic` | `Code` | JSON Schema validator, Z3 symbolic, pytest runner |
+| `Semantic` | `Factual`, `Reasoning`, `Unknown` | LLM judge, factual QA verifier, reference-answer matcher |
+| `Human` | `Human` | Human rating gateway |
+
+Oracles in the same family share failure modes — a malformed JSON output will simultaneously fail a JSON Schema validator *and* a Z3 constraint that expects a valid document. Counting both failures as independent FUSE votes would double-penalise a single root cause.
+
+### FUSE reduction algorithm
+
+```
+fuse_reduce_by_family(verdicts: [(OracleFamily, bool, f64)]) → (bool, f64)
+
+1. Group verdicts by family.
+2. Within each family: take min(score)  — worst-case within a correlated group.
+3. Across families: take mean(family_min) — independent signals aggregate equally.
+4. pass ← final_score ≥ 0.5
+```
+
+An empty input returns `(false, 0.0)`. A single oracle follows the single-oracle path (backward-compatible — no FUSE overhead).
+
+### Configuration
+
+```json
+"oracle_spec": {
+  "runner_uri": "http://schema-oracle:9090/evaluate",
+  "timeout_ms": 5000,
+  "domain": "rtb"
+},
+"oracle_specs": [
+  {
+    "runner_uri": "http://semantic-oracle:9091/evaluate",
+    "timeout_ms": 3000,
+    "domain": "reasoning"
+  }
+]
+```
+
+`oracle_specs` defaults to `[]` (single-oracle path) — all existing deployments without this field are unaffected.
+
+---
+
 ## OracleWorker
 
 Thin NATS→HTTP bridge:
 
 1. Subscribe to `h2ai.oracle.*.pending`
 2. Deserialize `OraclePendingEvent`
-3. Call `OracleClient.evaluate(spec, task_id, output)`
-4. Build `OracleResultEvent` from response
-5. Publish to `h2ai.oracle.results` and reply subject
+3. Call `OracleClient.evaluate(spec, task_id, output)` — primary oracle
+4. If `oracle_specs` non-empty: call each additional spec; reduce all verdicts via `fuse_reduce_by_family`
+5. Build `OracleResultEvent` from aggregated `(passed, score)`
+6. Publish to `h2ai.oracle.results` and reply subject
 
 ---
 

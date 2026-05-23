@@ -52,10 +52,13 @@
     clippy::no_effect_underscore_binding
 )]
 use h2ai_api::opro::{
-    check_graduation, compute_ema, extract_template_variables, should_trigger_opro,
-    thompson_sample, validate_opro_response,
+    check_graduation, compute_ema, extract_template_variables, run_opro_trigger,
+    should_trigger_opro, thompson_sample, validate_opro_response,
 };
-use h2ai_config::OproConfig;
+use h2ai_config::{H2AIConfig, OproConfig};
+use h2ai_state::in_memory::InMemoryStateBackend;
+use h2ai_state::OproStore;
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::prompt_variant::PromptBanditArm;
 
 fn default_opro_cfg() -> OproConfig {
@@ -216,4 +219,173 @@ fn check_graduation_not_enough_tasks() {
     ];
     // n_tasks_total = 5 < graduation_tasks = 20 → false
     assert!(!check_graduation("v2", &arms, 5, &cfg));
+}
+
+#[test]
+fn check_graduation_candidate_not_found_returns_false() {
+    let mut cfg = default_opro_cfg();
+    cfg.graduation_tasks = 5;
+    let arms = vec![PromptBanditArm {
+        variant_id: "seed".to_string(),
+        alpha: 5.0,
+        beta: 5.0,
+    }];
+    assert!(!check_graduation("missing-id", &arms, 10, &cfg));
+}
+
+#[test]
+fn check_graduation_seed_not_found_returns_false() {
+    let mut cfg = default_opro_cfg();
+    cfg.graduation_tasks = 5;
+    let arms = vec![PromptBanditArm {
+        variant_id: "candidate".to_string(),
+        alpha: 9.0,
+        beta: 1.0,
+    }];
+    assert!(!check_graduation("candidate", &arms, 10, &cfg));
+}
+
+#[test]
+fn should_trigger_opro_j_eff_above_threshold() {
+    let mut cfg = default_opro_cfg();
+    cfg.enabled = true;
+    cfg.trigger_j_eff_threshold = 0.6;
+    cfg.min_tasks_before_trigger = 5;
+    // j_eff_ema 0.8 >= 0.6 → should NOT trigger
+    assert!(!should_trigger_opro(0.8, 20, 0, &cfg));
+}
+
+// ── run_opro_trigger: no trigger when j_eff above threshold ──────────────────
+
+#[tokio::test]
+async fn run_opro_trigger_updates_ema_when_no_trigger() {
+    let store = InMemoryStateBackend::new();
+    let adapter = MockAdapter::new("ignored".to_string());
+    let mut cfg = H2AIConfig::default();
+    cfg.opro.enabled = true;
+    cfg.opro.trigger_j_eff_threshold = 0.4; // j_eff=0.9 > 0.4 → no trigger
+    cfg.opro.min_tasks_before_trigger = 1;
+
+    run_opro_trigger(
+        "adapter-a".to_string(),
+        "task-prompt".to_string(),
+        0.9, // high j_eff — no trigger
+        &store,
+        &adapter,
+        &cfg,
+    )
+    .await
+    .expect("run_opro_trigger should not fail");
+
+    let state = store
+        .get_adapter_opro_state("adapter-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.n_tasks_total, 1);
+    assert!(state.j_eff_ema > 0.5, "EMA should reflect the high j_eff");
+}
+
+// ── run_opro_trigger: trigger fires, variant stored ────────────────────────────
+
+#[tokio::test]
+async fn run_opro_trigger_stores_variant_when_triggered() {
+    let store = InMemoryStateBackend::new();
+    // Adapter returns a valid candidate that preserves all template vars (none here).
+    let adapter = MockAdapter::new("Improved prompt for {task} using {context}.".to_string());
+    let mut cfg = H2AIConfig::default();
+    cfg.opro.enabled = true;
+    cfg.opro.trigger_j_eff_threshold = 0.9; // j_eff=0.1 < 0.9 → trigger
+    cfg.opro.min_tasks_before_trigger = 1;
+    cfg.opro.suppress_n_tasks = 5;
+
+    run_opro_trigger(
+        "adapter-b".to_string(),
+        "task-prompt".to_string(),
+        0.1, // low j_eff — triggers OPRO
+        &store,
+        &adapter,
+        &cfg,
+    )
+    .await
+    .expect("run_opro_trigger should not fail");
+
+    let state = store
+        .get_adapter_opro_state("adapter-b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.n_tasks_total, 1);
+    assert_eq!(
+        state.n_tasks_since_last_opro, 0,
+        "should be reset after trigger"
+    );
+    assert!(
+        state.suppress_until_n_tasks > 0,
+        "should be suppressed after trigger"
+    );
+
+    let arms = state.bandit_arms.get("task-prompt").unwrap();
+    assert!(!arms.is_empty(), "should have added a bandit arm");
+}
+
+// ── run_opro_trigger: validation failure suppresses ────────────────────────────
+
+#[tokio::test]
+async fn run_opro_trigger_suppresses_on_validation_failure() {
+    let store = InMemoryStateBackend::new();
+    // Current prompt has {required_var}; adapter returns candidate WITHOUT it.
+    // First we store an active variant so run_opro_trigger fetches a prompt with template vars.
+    use h2ai_types::prompt_variant::{PromptVariant, PromptVariantSource};
+    let seed_variant = PromptVariant {
+        variant_id: "seed".to_string(),
+        adapter_name: "adapter-c".to_string(),
+        prompt_key: "the-prompt".to_string(),
+        text: "Do {required_var} stuff.".to_string(),
+        source: PromptVariantSource::Seed,
+        created_at: chrono::Utc::now(),
+        score: None,
+    };
+    store.put_prompt_variant(&seed_variant).await.unwrap();
+    store
+        .set_active_variant_ptr("adapter-c", "the-prompt", "seed")
+        .await
+        .unwrap();
+
+    // Adapter returns a candidate that drops {required_var} → validation fails.
+    let adapter = MockAdapter::new("Improved prompt with no variables.".to_string());
+    let mut cfg = H2AIConfig::default();
+    cfg.opro.enabled = true;
+    cfg.opro.trigger_j_eff_threshold = 0.9;
+    cfg.opro.min_tasks_before_trigger = 1;
+    cfg.opro.suppress_n_tasks = 10;
+
+    run_opro_trigger(
+        "adapter-c".to_string(),
+        "the-prompt".to_string(),
+        0.1,
+        &store,
+        &adapter,
+        &cfg,
+    )
+    .await
+    .expect("run_opro_trigger should not fail");
+
+    let state = store
+        .get_adapter_opro_state("adapter-c")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        state.suppress_until_n_tasks >= 10,
+        "should be suppressed after validation failure"
+    );
+    // No bandit arms added since variant was discarded
+    assert!(
+        state
+            .bandit_arms
+            .get("the-prompt")
+            .is_none_or(|v| v.is_empty()),
+        "no bandit arm should be added when validation fails"
+    );
 }

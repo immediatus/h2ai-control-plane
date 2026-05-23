@@ -25,4 +25,5 @@ wasmtime    = { workspace = true, optional = true }
 libc = "0.2"
 
 [dev-dependencies]
+h2ai-test-utils = { path = "../h2ai-test-utils" }
 tokio = { workspace = true, features = ["test-util", "macros"] }

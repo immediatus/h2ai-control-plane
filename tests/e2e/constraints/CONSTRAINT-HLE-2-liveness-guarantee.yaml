@@ -1,0 +1,27 @@
+id: CONSTRAINT-HLE-2
+title: "Liveness Guarantee — Protocol Terminates Under Partial Synchrony After GST"
+severity: hard
+domains:
+  - distributed-systems
+  - consensus
+  - formal-methods
+related_to:
+  - CONSTRAINT-HLE-1
+remediation_hint: "Under the partial synchrony model, the protocol must eventually commit a value after GST (Global Stabilization Time) even if f nodes are Byzantine. A view-change (leader rotation) mechanism is required: a Byzantine or crashed leader must be replaceable in O(f) rounds after detection. Liveness must not assume a fully synchronous network."
+criteria:
+  pass: |
+    All of the following are true:
+    - Protocol terminates (commits a value) after GST even if f nodes are Byzantine
+    - A leader timeout and view-change mechanism exists to replace a crashed or Byzantine leader
+    - The view-change terminates in a bounded number of rounds (O(f)) after a faulty leader is detected
+    - Progress is not blocked indefinitely by f Byzantine nodes sending arbitrary or contradictory messages
+  partial: "Protocol terminates under a synchronous network model but liveness proof does not hold under partial synchrony (periods of asynchrony before GST)."
+  fail: |
+    Any of the following:
+    - Protocol can be stalled indefinitely by f Byzantine nodes with no view-change mechanism
+    - A single crashed or Byzantine leader permanently halts the protocol (no timeout or rotation)
+    - Liveness proof requires a fully synchronous network (known message delivery bound at all times)
+  checks:
+    - Does the protocol include a leader timeout and view-change mechanism to replace a crashed or Byzantine leader?
+    - Does the liveness proof hold under the partial synchrony model (not just under full synchrony)?
+    - Is the view-change mechanism bounded — does it provably terminate in O(f) rounds after a faulty leader is detected?

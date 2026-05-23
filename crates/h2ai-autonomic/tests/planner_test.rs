@@ -6,7 +6,8 @@ use h2ai_types::config::{
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::{
-    CoherencyCoefficients, EigenCalibration, MergeStrategy, TaskQuadrant, TauValue,
+    CoherencyCoefficients, EigenCalibration, EnsembleCalibration, MergeStrategy, PredictionBasis,
+    TaskQuadrant, TauValue,
 };
 
 fn cc() -> CoherencyCoefficients {
@@ -62,6 +63,7 @@ fn planner_selects_team_swarm_when_weights_balanced() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert_eq!(event.topology_kind, TopologyKind::TeamSwarmHybrid);
@@ -84,6 +86,7 @@ fn planner_selects_hierarchical_tree_when_containment_dominant() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert!(matches!(
@@ -113,6 +116,7 @@ fn planner_selects_team_swarm_hybrid_when_review_gates_present() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert_eq!(event.topology_kind, TopologyKind::TeamSwarmHybrid);
@@ -135,6 +139,7 @@ fn planner_computes_positive_n_max_and_beta_eff() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert!(event.n_max > 0.0);
@@ -158,6 +163,7 @@ fn planner_creates_one_explorer_config_per_role_spec() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert_eq!(event.explorer_configs.len(), 2);
@@ -186,6 +192,7 @@ fn planner_uses_role_default_tau_when_spec_has_none() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert!((event.explorer_configs[0].tau.value() - 0.05).abs() < 1e-9);
@@ -214,6 +221,7 @@ fn planner_uses_override_tau_when_spec_provides_one() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert!((event.explorer_configs[0].tau.value() - 0.2).abs() < 1e-9);
@@ -242,6 +250,7 @@ fn planner_selects_bft_consensus_when_evaluator_present() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert_eq!(event.merge_strategy, MergeStrategy::ConsensusMedian);
@@ -282,6 +291,7 @@ fn planner_eigen_caps_explorer_count_below_usl_ceiling() {
         retry_count: 0,
         cfg: &cfg,
         eigen: Some(&eigen),
+        ensemble: None,
         task_quadrant: None,
     });
     // With eigen.n_pruned = 3 and n_max_usl ≈ 17, the ceiling applied is 3.0.
@@ -323,6 +333,7 @@ fn planner_eigen_does_not_raise_below_usl_ceiling() {
         retry_count: 0,
         cfg: &cfg,
         eigen: Some(&eigen),
+        ensemble: None,
         task_quadrant: None,
     });
     let usl_n_max = cc.n_max();
@@ -359,6 +370,7 @@ fn planner_precision_quadrant_caps_n_max_at_three() {
         retry_count: 0,
         cfg: &cfg,
         eigen: Some(&eigen),
+        ensemble: None,
         task_quadrant: Some(TaskQuadrant::Precision),
     });
     assert!(
@@ -408,6 +420,7 @@ fn planner_complex_quadrant_bypasses_eigen_cap() {
         retry_count: 0,
         cfg: &cfg,
         eigen: Some(&eigen),
+        ensemble: None,
         task_quadrant: Some(TaskQuadrant::Complex),
     });
     // Complex bypasses eigen.n_pruned=3, so n_max must equal the uncapped USL value
@@ -444,6 +457,7 @@ fn planner_complex_quadrant_forces_ensemble_topology() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: Some(TaskQuadrant::Complex),
     });
     assert_eq!(
@@ -472,6 +486,7 @@ fn planner_complex_quadrant_force_topology_overrides_ensemble() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: Some(TaskQuadrant::Complex),
     });
     assert_eq!(
@@ -501,6 +516,7 @@ fn select_topology_diversity_heavy_gives_team_swarm() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     assert!(
@@ -531,6 +547,7 @@ fn planner_no_max_context_tokens_uses_n_max() {
         retry_count: 0,
         cfg: &cfg,
         eigen: None,
+        ensemble: None,
         task_quadrant: None,
     });
     let expected_n_max = cc.n_max();
@@ -538,5 +555,132 @@ fn planner_no_max_context_tokens_uses_n_max() {
         event.n_max <= expected_n_max + 0.5,
         "no context limit → n_max should use cc.n_max()={expected_n_max}, got {}",
         event.n_max
+    );
+}
+
+#[test]
+fn planner_uses_n_it_optimal_when_it_is_binding_constraint() {
+    // n_it_optimal(rho=0.70) = ceil(1 + log(0.5)/log(0.3)) = 2
+    // n_max_usl with alpha=0.05, beta_base=0.01, cg=0.30 is much larger (>5)
+    // So n_it should be the binding constraint here.
+    let cc = CoherencyCoefficients {
+        alpha: 0.05,
+        beta_base: 0.01,
+        beta_quality: None,
+        cg_samples: vec![0.30; 5],
+        sample_timestamps: vec![],
+    };
+    let ensemble = EnsembleCalibration {
+        p_mean: 0.65,
+        rho_mean: 0.70,
+        n_optimal: 2,
+        q_optimal: 0.7,
+        prediction_basis: PredictionBasis::Heuristic,
+    };
+    let result = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &ParetoWeights::new(0.34, 0.33, 0.33).unwrap(),
+        role_specs: &[],
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &H2AIConfig::default(),
+        eigen: None,
+        ensemble: Some(&ensemble),
+        task_quadrant: None,
+    });
+    let event = result.0;
+    assert!(
+        event.n_max <= 2.0,
+        "n_max={} should be ≤ n_it_optimal=2 when rho=0.70",
+        event.n_max
+    );
+}
+
+#[test]
+fn planner_uses_n_max_usl_when_it_is_binding_constraint() {
+    // n_it_optimal(rho=0.05) = 9 (capped); n_max with alpha=0.50, beta_base=0.20 ≈ 2
+    // So n_max_usl=2 is the binding constraint since n_it_optimal=9 > 2.
+    let cc = CoherencyCoefficients {
+        alpha: 0.50,
+        beta_base: 0.20,
+        beta_quality: None,
+        cg_samples: vec![0.95; 5],
+        sample_timestamps: vec![],
+    };
+    let ensemble = EnsembleCalibration {
+        p_mean: 0.975,
+        rho_mean: 0.05,
+        n_optimal: 9,
+        q_optimal: 0.99,
+        prediction_basis: PredictionBasis::Heuristic,
+    };
+    let result = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        pareto_weights: &ParetoWeights::new(0.34, 0.33, 0.33).unwrap(),
+        role_specs: &[],
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &H2AIConfig::default(),
+        eigen: None,
+        ensemble: Some(&ensemble),
+        task_quadrant: None,
+    });
+    let event = result.0;
+    let n_max_usl = cc.n_max();
+    assert!(
+        event.n_max <= n_max_usl + 0.01,
+        "n_max={} must not exceed n_max_usl={}",
+        event.n_max,
+        n_max_usl
+    );
+}
+
+#[test]
+fn planner_falls_back_to_n_max_usl_when_ensemble_absent() {
+    let cc = CoherencyCoefficients {
+        alpha: 0.05,
+        beta_base: 0.039,
+        beta_quality: None,
+        cg_samples: vec![0.70; 5],
+        sample_timestamps: vec![],
+    };
+    let cfg = H2AIConfig::default();
+    let result_no_ensemble = TopologyPlanner::provision(ProvisionInput {
+        task_id: TaskId::new(),
+        cc: &cc,
+        ensemble: None,
+        pareto_weights: &ParetoWeights::new(0.34, 0.33, 0.33).unwrap(),
+        role_specs: &[],
+        review_gates: vec![],
+        auditor_config: auditor(),
+        explorer_adapter: adapter(),
+        force_topology: None,
+        retry_count: 0,
+        cfg: &cfg,
+        eigen: None,
+        task_quadrant: None,
+    });
+    // Mirror planner's n_max_usl calculation (context-aware when max_context_tokens is set).
+    let expected_n_max = match cfg.max_context_tokens {
+        Some(max_tokens) => cc.n_max_context_aware(
+            cfg.explorer_max_tokens as f64,
+            max_tokens as f64,
+            cfg.context_pressure_gamma,
+        ),
+        None => cc.n_max(),
+    };
+    assert!(
+        (result_no_ensemble.0.n_max - expected_n_max).abs() < 0.01,
+        "Without ensemble, n_max={} should equal n_max_usl={}",
+        result_no_ensemble.0.n_max,
+        expected_n_max
     );
 }

@@ -58,13 +58,13 @@
 
 const TENANT: &str = "default";
 
-use h2ai_adapters::mock::{DecompositionMockAdapter, MockAdapter};
 use h2ai_api::{
     routes::{calibrate_router, health_router, task_router},
     state::AppState,
 };
 use h2ai_config::H2AIConfig;
 use h2ai_state::nats::NatsClient;
+use h2ai_test_utils::{DecompositionMockAdapter, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;

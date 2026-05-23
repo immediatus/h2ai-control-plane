@@ -47,6 +47,7 @@ bytes           = { workspace = true }
 [dev-dependencies]
 h2ai-adapters    = { path = "../h2ai-adapters" }
 h2ai-tools       = { path = "../h2ai-tools" }
+h2ai-test-utils  = { path = "../h2ai-test-utils" }
 h2ai-agent       = { path = "../h2ai-agent" }
 h2ai-config      = { path = "../h2ai-config" }
 h2ai-autonomic   = { path = "../h2ai-autonomic" }

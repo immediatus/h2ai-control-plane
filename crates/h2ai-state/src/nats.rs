@@ -998,6 +998,21 @@ impl NatsClient {
 
     // ── internal ────────────────────────────────────────────────────────────
 
+    /// Delete a KV bucket. Returns `Ok(())` if already absent.
+    pub async fn delete_kv_bucket(&self, bucket: &str) -> Result<(), NatsError> {
+        match self.jetstream.delete_key_value(bucket).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not found") || msg.contains("stream not found") {
+                    Ok(())
+                } else {
+                    Err(NatsError::KvError(msg))
+                }
+            }
+        }
+    }
+
     async fn ensure_kv_bucket(&self, config: kv::Config) -> Result<(), NatsError> {
         match self.jetstream.get_key_value(&config.bucket).await {
             Ok(_) => Ok(()),
@@ -1095,7 +1110,7 @@ impl NatsClient {
     /// Load all in-flight checkpoints from the bucket.
     /// Entries that fail to decompress or deserialize are skipped with a warning.
     pub async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint> {
-        use futures::TryStreamExt;
+        use futures::StreamExt;
 
         let kv = match self
             .jetstream
@@ -1109,7 +1124,7 @@ impl NatsClient {
             }
         };
         let keys: Vec<String> = match kv.keys().await {
-            Ok(stream) => stream.try_collect().await.unwrap_or_default(),
+            Ok(stream) => stream.filter_map(|r| async move { r.ok() }).collect().await,
             Err(e) => {
                 tracing::warn!("list_task_checkpoints: keys() failed: {e}");
                 return vec![];
@@ -1689,7 +1704,7 @@ impl NatsClient {
         meta_state_prefix: &str,
         limit: usize,
     ) -> Vec<TaskMetaState> {
-        use futures::TryStreamExt;
+        use futures::StreamExt;
 
         let bucket = tenant_bucket_name(meta_state_prefix, tenant_id);
         let kv = match self.jetstream.get_key_value(&bucket).await {
@@ -1700,7 +1715,7 @@ impl NatsClient {
             }
         };
         let keys: Vec<String> = match kv.keys().await {
-            Ok(stream) => stream.try_collect().await.unwrap_or_default(),
+            Ok(stream) => stream.filter_map(|r| async move { r.ok() }).collect().await,
             Err(e) => {
                 tracing::warn!("list_task_meta_states: keys() failed: {e}");
                 return vec![];
@@ -1988,5 +2003,65 @@ impl crate::backend::EstimatorStore for NatsClient {
         json_bytes: Vec<u8>,
     ) -> Result<(), NatsError> {
         self.put_bandit_state(tenant_id, json_bytes).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::ReasoningStore for NatsClient {
+    async fn ensure_reasoning_buckets(
+        &self,
+        tenant_id: &TenantId,
+        checkpoint_prefix: &str,
+        meta_state_prefix: &str,
+    ) -> Result<(), NatsError> {
+        self.ensure_tenant_reasoning_buckets(tenant_id, checkpoint_prefix, meta_state_prefix)
+            .await
+    }
+
+    async fn put_reasoning_checkpoint(
+        &self,
+        checkpoint: &TaskReasoningCheckpoint,
+        checkpoint_prefix: &str,
+    ) -> Result<(), NatsError> {
+        self.put_reasoning_checkpoint(checkpoint, checkpoint_prefix)
+            .await
+    }
+
+    async fn get_reasoning_checkpoint(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        checkpoint_prefix: &str,
+    ) -> Result<Option<TaskReasoningCheckpoint>, NatsError> {
+        self.get_reasoning_checkpoint(task_id, tenant_id, checkpoint_prefix)
+            .await
+    }
+
+    async fn put_task_meta_state(
+        &self,
+        meta: &TaskMetaState,
+        meta_state_prefix: &str,
+    ) -> Result<(), NatsError> {
+        self.put_task_meta_state(meta, meta_state_prefix).await
+    }
+
+    async fn get_task_meta_state(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        meta_state_prefix: &str,
+    ) -> Result<Option<TaskMetaState>, NatsError> {
+        self.get_task_meta_state(task_id, tenant_id, meta_state_prefix)
+            .await
+    }
+
+    async fn list_task_meta_states(
+        &self,
+        tenant_id: &TenantId,
+        meta_state_prefix: &str,
+        limit: usize,
+    ) -> Vec<TaskMetaState> {
+        self.list_task_meta_states(tenant_id, meta_state_prefix, limit)
+            .await
     }
 }

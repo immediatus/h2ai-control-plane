@@ -75,6 +75,7 @@ impl VerificationPhase {
         let evaluator = input.evaluator;
         let corpus = input.constraint_corpus;
         let threshold = input.config.threshold;
+        let ct_scale = input.config.constraint_threshold_scale;
         let rubric = input.config.rubric.clone();
         let sp = input.config.evaluator_system_prompt.clone();
         let tau = input.config.evaluator_tau;
@@ -115,9 +116,7 @@ impl VerificationPhase {
         let mut failed = Vec::new();
 
         for (proposal, results, any_cache_hit) in all {
-            let hard_gate = results
-                .iter()
-                .all(h2ai_constraints::types::ComplianceResult::hard_passes);
+            let hard_gate = results.iter().all(|r| r.hard_passes_scaled(ct_scale));
             let soft_score = aggregate_compliance_score(&results);
             let overall = if hard_gate { soft_score } else { 0.0 };
 
@@ -126,12 +125,16 @@ impl VerificationPhase {
             } else {
                 let violations: Vec<ConstraintViolation> = results
                     .iter()
-                    .filter(|r| !r.hard_passes() || r.score < threshold)
+                    .filter(|r| !r.hard_passes_scaled(ct_scale) || r.score < threshold)
                     .map(|r| ConstraintViolation {
                         constraint_id: r.constraint_id.clone(),
                         score: r.score,
                         severity_label: severity_label(&r.severity),
                         remediation_hint: r.remediation_hint.clone(),
+                        constraint_description: r.constraint_description.clone(),
+                        verifier_reason: r.verifier_reason.clone(),
+                        check_verdicts: r.check_verdicts.clone(),
+                        criteria_pass: r.criteria_pass.clone(),
                     })
                     .collect();
                 failed.push((proposal, results, violations, any_cache_hit));
@@ -253,6 +256,7 @@ impl VerificationPhase {
         // --- Multi-variant path ---
         let corpus = input.constraint_corpus;
         let threshold = input.config.threshold;
+        let ct_scale = input.config.constraint_threshold_scale;
         let rubric = input.config.rubric.clone();
         let base_sp = input.config.evaluator_system_prompt.clone();
         let tau = input.config.evaluator_tau;
@@ -320,7 +324,7 @@ impl VerificationPhase {
                 for vr in &variant_results {
                     let r = &vr[ci];
                     score_sum += r.score;
-                    if r.hard_passes() {
+                    if r.hard_passes_scaled(ct_scale) {
                         votes_pass += 1;
                     } else {
                         votes_fail += 1;
@@ -366,6 +370,10 @@ impl VerificationPhase {
                     score: final_score,
                     severity: ref_result.severity.clone(),
                     remediation_hint: ref_result.remediation_hint.clone(),
+                    constraint_description: ref_result.constraint_description.clone(),
+                    verifier_reason: ref_result.verifier_reason.clone(),
+                    check_verdicts: ref_result.check_verdicts.clone(),
+                    criteria_pass: ref_result.criteria_pass.clone(),
                 });
             }
 
@@ -375,10 +383,8 @@ impl VerificationPhase {
 
             // Route proposal: hard non-uncertain Fail → failed; otherwise apply threshold check.
             let soft_score = aggregate_compliance_score(&final_results);
-            let hard_gate = !hard_fail
-                && final_results
-                    .iter()
-                    .all(h2ai_constraints::types::ComplianceResult::hard_passes);
+            let hard_gate =
+                !hard_fail && final_results.iter().all(|r| r.hard_passes_scaled(ct_scale));
             let overall = if hard_gate { soft_score } else { 0.0 };
 
             if overall >= threshold {
@@ -386,12 +392,16 @@ impl VerificationPhase {
             } else {
                 let violations: Vec<ConstraintViolation> = final_results
                     .iter()
-                    .filter(|r| !r.hard_passes() || r.score < threshold)
+                    .filter(|r| !r.hard_passes_scaled(ct_scale) || r.score < threshold)
                     .map(|r| ConstraintViolation {
                         constraint_id: r.constraint_id.clone(),
                         score: r.score,
                         severity_label: severity_label(&r.severity),
                         remediation_hint: r.remediation_hint.clone(),
+                        constraint_description: r.constraint_description.clone(),
+                        verifier_reason: r.verifier_reason.clone(),
+                        check_verdicts: r.check_verdicts.clone(),
+                        criteria_pass: r.criteria_pass.clone(),
                     })
                     .collect();
                 failed.push((proposal, final_results, violations, false));
@@ -472,7 +482,7 @@ impl VerificationPhase {
             } else {
                 rubric
             };
-            let score =
+            let (score, reason) =
                 Self::llm_score_raw(effective_rubric, output, evaluator, sp, tau, max_tokens).await;
             return (
                 vec![ComplianceResult {
@@ -482,6 +492,14 @@ impl VerificationPhase {
                         threshold: rubric_threshold,
                     },
                     remediation_hint: None,
+                    constraint_description: String::new(),
+                    verifier_reason: if reason.is_empty() {
+                        None
+                    } else {
+                        Some(reason)
+                    },
+                    check_verdicts: vec![],
+                    criteria_pass: None,
                 }],
                 false,
             );
@@ -489,9 +507,12 @@ impl VerificationPhase {
 
         let futs = corpus.iter().map(|doc| {
             let constraint_id = doc.id.clone();
+            let constraint_description = doc.description.clone();
             let severity = doc.severity.clone();
             let remediation_hint = doc.remediation_hint.clone();
+            let criteria_pass = doc.pass_criteria.clone();
             let predicate = doc.predicate.clone();
+            let n_checks = doc.binary_checks.len();
             let output = output.to_owned();
             let cache = Arc::clone(cache);
             let sp = sp.to_owned();
@@ -513,16 +534,16 @@ impl VerificationPhase {
                     _ => 1,
                 };
 
-                let (score, hit) = if let Some(score) = cached_score {
+                let (score, verifier_reason, hit) = if let Some(score) = cached_score {
                     tracing::debug!(
                         target: "h2ai.verification.cache",
                         constraint_id = %constraint_id,
                         score,
                         "eval cache hit — reusing score for similar proposal"
                     );
-                    (score, true)
+                    (score, None, true)
                 } else {
-                    let score = Self::eval_predicate_async(
+                    let (score, reason) = Self::eval_predicate_async(
                         &predicate,
                         &output,
                         evaluator,
@@ -536,15 +557,23 @@ impl VerificationPhase {
                         .entry(constraint_id.clone())
                         .or_default()
                         .push((output.clone(), score));
-                    (score, false)
+                    (score, reason, false)
                 };
 
+                let check_verdicts = verifier_reason
+                    .as_deref()
+                    .map(|r| parse_check_verdicts(r, n_checks))
+                    .unwrap_or_default();
                 (
                     ComplianceResult {
                         constraint_id,
                         score,
                         severity,
                         remediation_hint,
+                        constraint_description,
+                        verifier_reason,
+                        check_verdicts,
+                        criteria_pass,
                     },
                     hit,
                 )
@@ -557,7 +586,8 @@ impl VerificationPhase {
     }
 
     /// Evaluate any predicate, including Composite trees that contain `LlmJudge` children.
-    /// Returns a score in [0.0, 1.0]. Uses `Box::pin` for recursive async support.
+    /// Returns `(score, reason)` where reason is `Some` only for `LlmJudge` arms.
+    /// Uses `Box::pin` for recursive async support.
     ///
     /// For `Composite { And, children }`, static children are evaluated first. If any
     /// returns 0.0 (hard failure — e.g. `NegativeKeyword` found a prohibited term), heavy
@@ -571,41 +601,51 @@ impl VerificationPhase {
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
         consensus_passes: u8,
-    ) -> Pin<Box<dyn Future<Output = f64> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = (f64, Option<String>)> + Send + 'a>> {
         Box::pin(async move {
             match pred {
                 ConstraintPredicate::LlmJudge { rubric } => {
                     let passes = consensus_passes.max(1) as usize;
-                    let mut scores = Vec::with_capacity(passes);
+                    let mut pairs: Vec<(f64, String)> = Vec::with_capacity(passes);
                     for _ in 0..passes {
-                        let s = if let Ok(score) = tokio::time::timeout(
+                        let pair = if let Ok(pair) = tokio::time::timeout(
                             std::time::Duration::from_mins(10),
                             Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens),
                         )
                         .await
                         {
-                            score
+                            pair
                         } else {
                             tracing::warn!(
                                 target: "h2ai.verification",
                                 "LlmJudge timed out (600s); skipping — score defaults to 0.5"
                             );
-                            0.5
+                            (0.5, String::new())
                         };
-                        scores.push(s);
+                        pairs.push(pair);
                     }
-                    scores.iter().sum::<f64>() / scores.len() as f64
+                    let avg = pairs.iter().map(|(s, _)| s).sum::<f64>() / pairs.len() as f64;
+                    // Use the reason from the lowest-scoring pass — most specific failure diagnosis.
+                    let reason = pairs
+                        .into_iter()
+                        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|(_, r)| r)
+                        .filter(|r| !r.is_empty());
+                    (avg, reason)
                 }
                 ConstraintPredicate::OracleExecution {
                     test_runner_uri,
                     test_suite,
                     timeout_secs,
-                } => Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
+                } => (
+                    Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
+                    None,
+                ),
                 ConstraintPredicate::SemanticOrdering {
                     first,
                     then,
                     passes,
-                } => {
+                } => (
                     Self::majority_binary_check(
                         &format!(
                             "Does the following response demonstrate that '{first}' occurs \
@@ -617,9 +657,10 @@ impl VerificationPhase {
                         *passes,
                         false,
                     )
-                    .await
-                }
-                ConstraintPredicate::SemanticPresence { concept, passes } => {
+                    .await,
+                    None,
+                ),
+                ConstraintPredicate::SemanticPresence { concept, passes } => (
                     Self::majority_binary_check(
                         &format!(
                             "Does the following response include or demonstrate '{concept}'? \
@@ -631,9 +672,10 @@ impl VerificationPhase {
                         *passes,
                         false,
                     )
-                    .await
-                }
-                ConstraintPredicate::SemanticExclusion { pattern, passes } => {
+                    .await,
+                    None,
+                ),
+                ConstraintPredicate::SemanticExclusion { pattern, passes } => (
                     Self::majority_binary_check(
                         &format!(
                             "Does the following response contain '{pattern}'? \
@@ -645,13 +687,15 @@ impl VerificationPhase {
                         *passes,
                         true,
                     )
-                    .await
-                }
+                    .await,
+                    None,
+                ),
                 ConstraintPredicate::Composite { op, children } => {
                     match op {
                         CompositeOp::And => {
                             // Evaluate static children first; short-circuit if any hits 0.0.
                             let mut min_score = 1.0_f64;
+                            let mut min_reason: Option<String> = None;
                             let mut deferred = Vec::new();
                             for child in children {
                                 match child {
@@ -664,16 +708,19 @@ impl VerificationPhase {
                                     }
                                     other => {
                                         let s = eval_sync(other, output);
-                                        min_score = min_score.min(s);
+                                        if s < min_score {
+                                            min_score = s;
+                                            min_reason = None; // static predicates produce no reason
+                                        }
                                         if min_score <= 0.0 {
-                                            return 0.0; // hard failure on static check
+                                            return (0.0, None); // hard failure on static check
                                         }
                                     }
                                 }
                             }
                             // Only call LlmJudge if static predicates all passed.
                             for child in deferred {
-                                let s = Self::eval_predicate_async(
+                                let (s, r) = Self::eval_predicate_async(
                                     child,
                                     output,
                                     evaluator,
@@ -683,17 +730,20 @@ impl VerificationPhase {
                                     consensus_passes,
                                 )
                                 .await;
-                                min_score = min_score.min(s);
+                                if s < min_score {
+                                    min_score = s;
+                                    min_reason = r;
+                                }
                                 if min_score <= 0.0 {
-                                    return 0.0;
+                                    return (0.0, min_reason);
                                 }
                             }
-                            min_score
+                            (min_score, min_reason)
                         }
                         CompositeOp::Or => {
                             let mut max_score = 0.0_f64;
                             for child in children {
-                                let s = Self::eval_predicate_async(
+                                let (s, _) = Self::eval_predicate_async(
                                     child,
                                     output,
                                     evaluator,
@@ -705,10 +755,10 @@ impl VerificationPhase {
                                 .await;
                                 max_score = max_score.max(s);
                                 if max_score >= 1.0 {
-                                    return 1.0;
+                                    return (1.0, None);
                                 }
                             }
-                            max_score
+                            (max_score, None)
                         }
                         CompositeOp::Not => {
                             let s = if let Some(child) = children.first() {
@@ -722,14 +772,15 @@ impl VerificationPhase {
                                     consensus_passes,
                                 )
                                 .await
+                                .0
                             } else {
                                 0.0
                             };
-                            1.0 - s
+                            (1.0 - s, None)
                         }
                     }
                 }
-                other => eval_sync(other, output),
+                other => (eval_sync(other, output), None),
             }
         })
     }
@@ -817,7 +868,7 @@ impl VerificationPhase {
         sp: &str,
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
-    ) -> f64 {
+    ) -> (f64, String) {
         // Separate criterion (what to check) from the proposal (what to score).
         // The JSON response format is owned by EVALUATOR_SYSTEM_PROMPT — rubrics must
         // not repeat it; they contain only behavioral pass/fail criteria.
@@ -837,7 +888,7 @@ impl VerificationPhase {
                         reason = %s.reason,
                         "LlmJudge scored"
                     );
-                    s.score.clamp(0.0, 1.0)
+                    (s.score.clamp(0.0, 1.0), s.reason)
                 }
                 // JSON parse failure: model did not emit a score object.
                 // Fall back to neutral (0.7) so static predicates remain the actual gate.
@@ -847,12 +898,12 @@ impl VerificationPhase {
                         raw = %resp.output,
                         "LlmJudge response did not contain JSON score object; using neutral 0.7"
                     );
-                    0.7
+                    (0.7, String::new())
                 }
             },
             Err(e) => {
                 tracing::warn!(target: "h2ai.verification", error = %e, "LlmJudge execute error; using neutral 0.7");
-                0.7
+                (0.7, String::new())
             }
         }
     }
@@ -966,4 +1017,53 @@ fn severity_label(s: &ConstraintSeverity) -> String {
         ConstraintSeverity::Soft { .. } => "Soft".into(),
         ConstraintSeverity::Advisory => "Advisory".into(),
     }
+}
+
+/// Parse per-check PRESENT/MISSING verdicts from a LlmJudge CoT reason string.
+///
+/// The EVALUATOR_SYSTEM_PROMPT instructs the model to emit lines of the form:
+///   `CHECK N: <text> → PRESENT`  or  `CHECK N: <text> → MISSING`
+///
+/// Returns a `Vec<bool>` of length `n_checks` where index `i` corresponds to CHECK `i+1`.
+/// - `true`  = CHECK was PRESENT (passed)
+/// - `false` = CHECK was MISSING (failed) or not found in the reason (conservative default)
+///
+/// When `n_checks == 0`, returns an empty vec.
+#[must_use]
+pub fn parse_check_verdicts(reason: &str, n_checks: usize) -> Vec<bool> {
+    if n_checks == 0 {
+        return vec![];
+    }
+    let mut verdicts = vec![false; n_checks];
+    for line in reason.lines() {
+        // Match: "CHECK N: ... → PRESENT" or "CHECK N: ... → MISSING"
+        // Allow leading whitespace, variable spacing around →.
+        let trimmed = line.trim();
+        let rest = if let Some(r) = trimmed.strip_prefix("CHECK ") {
+            r
+        } else {
+            continue;
+        };
+        // Extract check number (before the first ':')
+        let colon_pos = match rest.find(':') {
+            Some(p) => p,
+            None => continue,
+        };
+        let num_str = rest[..colon_pos].trim();
+        let check_num: usize = match num_str.parse() {
+            Ok(n) if n >= 1 => n,
+            _ => continue,
+        };
+        let idx = check_num - 1;
+        if idx >= n_checks {
+            continue;
+        }
+        // Determine PRESENT or MISSING from the part after →
+        let after_colon = &rest[colon_pos + 1..];
+        if let Some(arrow_pos) = after_colon.rfind('→') {
+            let verdict = after_colon[arrow_pos + '→'.len_utf8()..].trim();
+            verdicts[idx] = verdict.to_ascii_uppercase().starts_with("PRESENT");
+        }
+    }
+    verdicts
 }

@@ -147,11 +147,14 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
                             &grounding.shared_ungrounded,
                         );
                         retry_context = Some(retry_context.unwrap_or_default() + &hint);
+                        let grounding_slot = crate::srani_grounding::classify_grounding_slot(
+                            &grounding.shared_ungrounded,
+                        );
                         researcher_grounding_events.push(ResearcherGroundingEvent {
                             task_id: task_id.clone(),
                             shared_assumption: grounding.shared_ungrounded.join(", "),
                             literature_summary: result.grounding_statement.clone(),
-                            slot: None,
+                            slot: Some(grounding_slot),
                             source: result.source.clone(),
                         });
                     } else {

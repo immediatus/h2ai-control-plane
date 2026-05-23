@@ -20,6 +20,7 @@ use h2ai_types::calibration::CalibrationRecord;
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
+use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
 
 use crate::nats::NatsError;
 
@@ -169,6 +170,62 @@ pub trait EstimatorStore: Send + Sync {
         tenant_id: &TenantId,
         json_bytes: Vec<u8>,
     ) -> Result<(), NatsError>;
+}
+
+/// Persists and retrieves reasoning checkpoints and task meta-state records.
+///
+/// Implemented by `NatsClient` (NATS KV buckets) and `InMemoryStateBackend`
+/// (in-memory `HashMap`s) so that engine code can be tested without a live
+/// NATS server.
+#[async_trait]
+pub trait ReasoningStore: Send + Sync {
+    /// Create per-tenant KV buckets if they do not already exist.
+    /// On `InMemoryStateBackend` this is a no-op (always succeeds).
+    async fn ensure_reasoning_buckets(
+        &self,
+        tenant_id: &TenantId,
+        checkpoint_prefix: &str,
+        meta_state_prefix: &str,
+    ) -> Result<(), NatsError>;
+
+    /// Write (or overwrite) a reasoning checkpoint. Key: `task_id` string.
+    async fn put_reasoning_checkpoint(
+        &self,
+        checkpoint: &TaskReasoningCheckpoint,
+        checkpoint_prefix: &str,
+    ) -> Result<(), NatsError>;
+
+    /// Load a reasoning checkpoint by `task_id`. Returns `None` if not found.
+    async fn get_reasoning_checkpoint(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        checkpoint_prefix: &str,
+    ) -> Result<Option<TaskReasoningCheckpoint>, NatsError>;
+
+    /// Write (or overwrite) a task meta-state record. Key: `task_id` string.
+    async fn put_task_meta_state(
+        &self,
+        meta: &TaskMetaState,
+        meta_state_prefix: &str,
+    ) -> Result<(), NatsError>;
+
+    /// Load a task meta-state by `task_id`. Returns `None` if not found.
+    async fn get_task_meta_state(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        meta_state_prefix: &str,
+    ) -> Result<Option<TaskMetaState>, NatsError>;
+
+    /// List up to `limit` meta-state records for a tenant.
+    /// Entries that fail to deserialize are silently skipped.
+    async fn list_task_meta_states(
+        &self,
+        tenant_id: &TenantId,
+        meta_state_prefix: &str,
+        limit: usize,
+    ) -> Vec<TaskMetaState>;
 }
 
 // ── Arc<T> forwarding impls ───────────────────────────────────────────────────

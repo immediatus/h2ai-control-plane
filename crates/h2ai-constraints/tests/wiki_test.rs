@@ -78,6 +78,10 @@ fn predicate_kind_from_tier_static() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert_eq!(meta.predicate_kind, PredicateKind::Static);
@@ -99,6 +103,10 @@ fn predicate_kind_from_tier_llm_judge() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert_eq!(meta.predicate_kind, PredicateKind::LlmJudge);
@@ -125,6 +133,10 @@ fn predicate_kind_from_tier_oracle() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert_eq!(meta.predicate_kind, PredicateKind::Oracle);
@@ -253,6 +265,10 @@ fn wiki_cache_from_docs_builds_index() {
         domains: vec!["internal".into()],
         mandatory_for_tags: vec!["audit".into()],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let cache = WikiCache::from_docs(&[doc]);
     assert!(cache.metas.contains_key("ADR-X"));
@@ -293,6 +309,10 @@ fn make_doc(
             .iter()
             .map(std::string::ToString::to_string)
             .collect(),
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 
@@ -400,6 +420,10 @@ fn wiki_cache_rebuild_retriever_enables_search() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }];
 
     // Build normally (retriever present)
@@ -439,6 +463,10 @@ fn wiki_resolve_with_semantic_explicit_ids_and_tags() {
             domains: vec![],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
         h2ai_constraints::types::ConstraintDoc {
             id: "C-TAGGED".into(),
@@ -452,6 +480,10 @@ fn wiki_resolve_with_semantic_explicit_ids_and_tags() {
             domains: vec!["billing".into()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
     ];
     let cache = WikiCache::from_docs(&docs);
@@ -487,6 +519,10 @@ fn wiki_resolve_with_semantic_query_only() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }];
     let cache = WikiCache::from_docs(&docs);
 
@@ -518,6 +554,10 @@ fn wiki_search_returns_relevant_results() {
             domains: vec!["billing".into()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
         h2ai_constraints::types::ConstraintDoc {
             id: "C-GRP".into(),
@@ -531,6 +571,10 @@ fn wiki_search_returns_relevant_results() {
             domains: vec!["communication".into()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
     ];
     let cache = WikiCache::from_docs(&docs_rich);
@@ -576,6 +620,10 @@ fn wiki_resolve_with_semantic_merges_tag_and_bm25() {
             domains: vec!["billing".into()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
         h2ai_constraints::types::ConstraintDoc {
             id: "C-SEM".into(),
@@ -589,6 +637,10 @@ fn wiki_resolve_with_semantic_merges_tag_and_bm25() {
             domains: vec!["availability".into()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
     ];
     let cache = WikiCache::from_docs(&docs);

@@ -1,3 +1,4 @@
+use chrono;
 use serde::{Deserialize, Serialize};
 
 /// Source of the epistemic probe task.
@@ -44,6 +45,10 @@ pub struct CalibrationRecord {
     /// `unix_minutes` (u32 covers ~8000 years) is used instead of millis to keep
     /// the tuple compact (6 bytes/entry vs 10). Used by k-regression to exclude
     /// Open-interval entries where yields were measured against `PredicateChecker`.
+    ///
+    /// CAUTION: when the write-back engine path is wired, ALL writes MUST route through
+    /// a singleton JetStream aggregator (h2ai.calibration.telemetry) to prevent concurrent
+    /// CAS contention on the same NATS KV key across parallel task completions.
     pub n_useful_history: Vec<(u8, u8, u32)>,
     pub probe_source: ProbeSource,
     pub fingerprint: Option<Vec<f32>>,
@@ -66,4 +71,28 @@ pub struct AuditorHealth {
     /// Unix milliseconds since epoch, or None if circuit has never tripped.
     pub tripped_at: Option<u64>,
     pub recovery_probe_count: u32,
+}
+
+/// Emitted by the DDM fast-layer when |mean_recent − mean_reference| > k × std_reference.
+/// Indicates potential distributional shift; does not trigger recalibration on its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationDriftWarning {
+    pub detected_at: chrono::DateTime<chrono::Utc>,
+    /// Always `"consensus_agreement_rate"`.
+    pub metric: String,
+    pub recent_mean: f64,
+    pub reference_mean: f64,
+    /// |recent_mean − reference_mean| / reference_std
+    pub deviation_sigmas: f64,
+}
+
+/// Emitted by the BOCPD layer when P(run_length ≤ 4 | observations) > threshold.
+/// Activates ORCA conformal margin; optionally triggers automatic recalibration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationChangepoint {
+    pub detected_at: chrono::DateTime<chrono::Utc>,
+    /// Posterior mass on run-lengths {0,1,2,3,4} at detection time.
+    pub bocpd_run_length_posterior_mass: f64,
+    /// The `drift_conformal_margin` applied to `VerificationConfig::threshold` from this point.
+    pub conformal_margin_applied: f64,
 }

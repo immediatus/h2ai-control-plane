@@ -35,6 +35,9 @@ pub enum EngineError {
     #[error("max retries exhausted")]
     MaxRetriesExhausted {
         partial_verification_events: Vec<VerificationScoredEvent>,
+        /// Highest-scoring partial proposal from the entire session, for HITL surfacing.
+        /// `None` when no partial passes existed (all proposals scored 0 on every check).
+        best_partial_text: Option<String>,
     },
     /// An adapter call failed or timed out; the message contains the error detail.
     /// May be transient — retrying at the caller level is reasonable.
@@ -75,6 +78,20 @@ pub struct ShadowAuditCtx {
     pub adapter: std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>,
     /// Domains currently in AND-vote mode, loaded from `AppState` at task dispatch.
     pub promoted_domains: std::collections::HashSet<String>,
+    /// When true, shadow vote is always binding regardless of domain promotion history.
+    pub strict: bool,
+}
+
+/// Fraction of `VerificationScoredEvent`s where `passed == true`.
+/// Returns `1.0` for an empty slice (no information → assume stable).
+pub fn consensus_agreement_rate_from_events(
+    events: &[h2ai_types::events::VerificationScoredEvent],
+) -> f64 {
+    if events.is_empty() {
+        return 1.0;
+    }
+    let passed = events.iter().filter(|e| e.passed).count();
+    passed as f64 / events.len() as f64
 }
 
 /// All inputs required to run the multi-phase execution pipeline for a single task.
@@ -141,6 +158,8 @@ pub struct EngineInput<'a> {
     /// with a positive grounding context (spec anchor + LLM researcher / web search).
     /// When `None`, falls back to `SpecAnchorGrounder` inline (zero I/O).
     pub srani_grounding_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+    /// Dedicated grounding chain for GAP-I1 gap researcher (DDG search + distiller).
+    pub gap_research_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
     /// Raw NATS client for oracle gate NATS request/reply. `None` = oracle gate skipped
     /// even when `cfg.oracle_gate.enabled = true`.
     pub nats_raw: Option<std::sync::Arc<async_nats::Client>>,
@@ -165,6 +184,9 @@ pub struct EngineInput<'a> {
     /// Optional induction store for cross-task knowledge boosting.
     /// When None, induction is skipped and pure BM25 is used.
     pub induction_store: Option<std::sync::Arc<crate::induction_store::InductionStore>>,
+    /// ORCA conformal margin from `DriftMonitor::active_conformal_margin()`.
+    /// Subtracted from `verification_config.threshold` at engine start. Zero = no active drift.
+    pub conformal_margin: f64,
 }
 
 /// Successful result returned by `ExecutionEngine::run_offline` after all phases complete.
@@ -250,6 +272,8 @@ pub struct EngineOutput {
     pub leader_elected_events: Vec<h2ai_types::events::LeaderElectedEvent>,
     /// Socratic diagnosis events across all MAPE-K waves (empty when `leader_enabled = false`).
     pub socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
+    /// Fraction of verification events that passed. Fed to `DriftMonitor` by tasks.rs.
+    pub consensus_agreement_rate: Option<f64>,
 }
 
 async fn write_reasoning_checkpoint(
@@ -296,7 +320,12 @@ impl ExecutionEngine {
     /// live NATS connection — all events remain in-process via `TaskStore`.
     /// Returns `EngineOutput` on the first successful merge, or an `EngineError` when
     /// all retries are exhausted or a non-retryable condition is encountered.
-    pub async fn run_offline(input: EngineInput<'_>) -> Result<EngineOutput, EngineError> {
+    pub async fn run_offline(mut input: EngineInput<'_>) -> Result<EngineOutput, EngineError> {
+        // ORCA conformal margin: widen verification gate under active drift (GAP-H2).
+        if input.conformal_margin > 0.0 {
+            input.verification_config.threshold =
+                (input.verification_config.threshold - input.conformal_margin).max(0.0);
+        }
         let task_id = input.task_id.clone();
         input.store.insert(
             task_id.clone(),
@@ -378,7 +407,7 @@ impl ExecutionEngine {
         if let Some(acc) = &conflict_acc {
             let mut cc = input.calibration.coefficients.clone();
             cc.beta_quality = Some(acc.beta_quality);
-            let conflict_n_max = cc.n_max().floor().max(1.0) as u32;
+            let conflict_n_max = cc.n_max().floor().max(3.0) as u32;
             complexity_out.n_max_ceiling = conflict_n_max;
             tracing::debug!(
                 target: "h2ai.engine",
@@ -392,411 +421,1014 @@ impl ExecutionEngine {
         // Extract diversity_degraded_event before borrowing domain_cov_out for the pipeline.
         let diversity_degraded_event = domain_cov_out.diversity_degraded_event.clone();
 
-        let task_eval_cache = crate::verification::new_eval_cache();
-        let pipeline = crate::pipeline::ExecutionPipeline::new(
-            &input,
-            &bootstrap_out,
-            &complexity_out,
-            &domain_cov_out,
-            task_eval_cache,
-        );
-        let conflict_graph =
-            h2ai_constraints::conflict::ConstraintConflictGraph::build(&input.constraint_corpus);
-        let mut controller = crate::mape_k::MapeKController::new(
-            &input,
-            &bootstrap_out,
-            &complexity_out,
-            conflict_graph,
-        )
-        .await;
-        // Wire diversity degraded event from domain coverage into the controller so it
-        // is included in the final EngineOutput via MapeKController::finalize().
-        controller.diversity_degraded_event = diversity_degraded_event;
+        // GAP-K1: restart counter — capped at 1 to prevent infinite repair loops.
+        let mut spec_ambiguous_restarts: u32 = 0;
 
-        // Per-task OSP retry accumulator. Local variable — never stored in NATS KV or shared
-        // state. Reset on Resolved (spec §A.3: state-leakage prevention).
-        let mut osp_accumulator = RetryAccumulator::new();
-
-        for retry_count in 0..=input.cfg.max_autonomic_retries {
-            if let Some(dl) = controller.deadline() {
-                if std::time::Instant::now() >= dl {
-                    input.store.mark_failed(&task_id);
-                    return Err(EngineError::DeadlineExceeded {
-                        budget_secs: input.cfg.task_deadline_secs.unwrap_or(0),
-                    });
-                }
-            }
-
-            let wave = pipeline
-                .run(
-                    controller.params(),
-                    retry_count as usize,
-                    Some(&mut osp_accumulator),
-                    input.cfg.osp.as_ref(),
+        // ── GAP-K1 restart loop ───────────────────────────────────────────────
+        // Each iteration builds a fresh pipeline + controller from the (possibly
+        // repaired) `input.constraint_corpus`.  The loop exits via `return` on
+        // success/failure, or via `continue 'restart` after a successful spec
+        // repair.  The pipeline is enclosed in an inner block so it is dropped
+        // before `input.constraint_corpus` is mutated for the next iteration.
+        'restart: loop {
+            // ── Inner scope: pipeline borrows &input; dropped before repair ──────
+            // Returns (None, controller) when the retry loop exhausts all attempts
+            // normally, or (Some(sa_info), controller) on a SpecAmbiguous signal.
+            let (spec_ambiguous_signal, mut controller) = {
+                let task_eval_cache = crate::verification::new_eval_cache();
+                let pipeline = crate::pipeline::ExecutionPipeline::new(
+                    &input,
+                    &bootstrap_out,
+                    &complexity_out,
+                    &domain_cov_out,
+                    task_eval_cache,
+                );
+                let conflict_graph = h2ai_constraints::conflict::ConstraintConflictGraph::build(
+                    &input.constraint_corpus,
+                );
+                let mut controller = crate::mape_k::MapeKController::new(
+                    &input,
+                    &bootstrap_out,
+                    &complexity_out,
+                    conflict_graph,
                 )
                 .await;
-            controller.observe(&wave);
-            // ── Epistemic Leader Election ────────────────────────────────────
-            if input.cfg.leader_enabled && !input.explorer_adapters.is_empty() {
-                if let Some(plan) = controller.prepare_leader_election(input.cfg) {
-                    let adapter = input.explorer_adapters[0];
-                    let (question, eig_rank, dedup_tried) =
-                        crate::leader::generate_socratic_question(
-                            adapter,
-                            &plan.prior_proposal,
-                            &plan.violated_constraint_ids,
-                            &plan.existing_belief_buffer,
-                            input.cfg,
+                // Wire diversity degraded event from domain coverage into the controller so it
+                // is included in the final EngineOutput via MapeKController::finalize().
+                controller.diversity_degraded_event = diversity_degraded_event.clone();
+                if let Some(ref chain) = input.gap_research_chain {
+                    controller.gap_grounding_chain = Some(chain.clone());
+                }
+
+                // Per-task OSP retry accumulator. Local variable — never stored in NATS KV or shared
+                // state. Reset on Resolved (spec §A.3: state-leakage prevention).
+                let mut osp_accumulator = RetryAccumulator::new();
+
+                // Carry SpecAmbiguous info out of the inner block (pipeline-drop boundary).
+                let mut spec_ambiguous_signal: Option<(String, usize, Vec<String>)> = None;
+
+                'wave: for retry_count in 0..=input.cfg.max_autonomic_retries {
+                    if let Some(dl) = controller.deadline() {
+                        if std::time::Instant::now() >= dl {
+                            input.store.mark_failed(&task_id);
+                            return Err(EngineError::DeadlineExceeded {
+                                budget_secs: input.cfg.task_deadline_secs.unwrap_or(0),
+                            });
+                        }
+                    }
+
+                    let wave = pipeline
+                        .run(
+                            controller.params(),
+                            retry_count as usize,
+                            Some(&mut osp_accumulator),
+                            input.cfg.osp.as_ref(),
                         )
                         .await;
-                    controller.apply_leader_result(
-                        plan,
-                        question,
-                        eig_rank,
-                        dedup_tried,
-                        input.cfg,
-                    );
-                }
-            }
-            // Fire-and-forget: write conflict rate sample to per-tenant accumulator.
-            if input.cfg.conflict_beta.enabled {
-                if let Some(rate) = wave.events.conflict_rate {
-                    if let Some(nats) = &input.nats {
-                        let floor = input
-                            .calibration
-                            .beta_quality
-                            .unwrap_or(input.calibration.coefficients.beta_base);
-                        let mut acc = nats
-                            .get_conflict_accumulator(&input.tenant_id, &conflict_beta_prefix)
-                            .await
-                            .ok()
-                            .flatten()
-                            .unwrap_or_else(|| {
-                                ConflictRateAccumulator::new(input.tenant_id.clone(), floor)
-                            });
-                        let n_adapters = input.calibration.coefficients.cg_samples.len() as u32;
-                        acc.push_sample(
-                            rate,
-                            n_adapters,
-                            input.cfg.conflict_beta.max_samples,
-                            input.cfg.conflict_beta.halflife_secs,
-                            input.cfg.conflict_beta.min_samples_for_override,
-                        );
-                        if let Err(e) = nats
-                            .put_conflict_accumulator(&acc, &conflict_beta_prefix)
-                            .await
-                        {
-                            tracing::warn!(
-                                target: "h2ai.engine",
-                                "conflict accumulator write failed (non-fatal): {e}"
+                    controller.observe(&wave);
+                    // ── Epistemic Leader Election ────────────────────────────────────
+                    if input.cfg.leader_enabled && !input.explorer_adapters.is_empty() {
+                        if let Some(plan) = controller.prepare_leader_election(input.cfg) {
+                            let adapter = input.explorer_adapters[0];
+                            let (question, eig_rank, dedup_tried) =
+                                crate::leader::generate_socratic_question(
+                                    adapter,
+                                    &plan.prior_proposal,
+                                    &plan.violated_constraint_ids,
+                                    &plan.existing_belief_buffer,
+                                    input.cfg,
+                                )
+                                .await;
+                            controller.apply_leader_result(
+                                plan,
+                                question,
+                                eig_rank,
+                                dedup_tried,
+                                input.cfg,
                             );
                         }
                     }
-                }
-            }
-            if let Some(cp) = &mut reasoning_cp {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                cp.last_updated = now;
-                cp.phase = ReasoningCheckpointPhase::WaveCompleted(retry_count);
-                cp.completed_waves.push(CompletedWave {
-                    wave_index: retry_count,
-                    adapter_outputs: vec![],
-                });
-                if let Some(nats) = &input.nats {
-                    write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit).await?;
-                }
-            }
-            // TODO: wire WaveContinue injection when multi-wave loop is added.
-            // When signal_wave_window_ms > 0, open a brief tokio::select! window here
-            // to receive a ContinueToNextWave signal and thread grounding/mandate_override
-            // into the next ContextAssemblerInput before starting the next wave.
-
-            let filter_ratio = wave.events.filter_ratio;
-            match controller.decide(wave.outcome, retry_count, filter_ratio) {
-                crate::mape_k::MapeKDecision::Return(out) => {
-                    // Record knowledge patterns for cross-task induction (best-effort).
-                    if let Some(ref store) = input.induction_store {
-                        let domain_tags = input.manifest.constraint_tags.clone();
-                        if !domain_tags.is_empty() {
-                            let store_clone = store.clone();
-                            tokio::spawn(async move {
-                                let _ = store_clone
-                                    .record(
-                                        &domain_tags,
-                                        &h2ai_types::config::AgentRole::Executor,
-                                        &domain_tags,
+                    // Fire-and-forget: write conflict rate sample to per-tenant accumulator.
+                    if input.cfg.conflict_beta.enabled {
+                        if let Some(rate) = wave.events.conflict_rate {
+                            if let Some(nats) = &input.nats {
+                                let floor = input
+                                    .calibration
+                                    .beta_quality
+                                    .unwrap_or(input.calibration.coefficients.beta_base);
+                                let mut acc = nats
+                                    .get_conflict_accumulator(
+                                        &input.tenant_id,
+                                        &conflict_beta_prefix,
                                     )
-                                    .await;
-                            });
-                        }
-                    }
-
-                    // ── HITL approval gate ────────────────────────────────────
-                    // Fires when: hitl enabled AND NOT oracle task AND
-                    // (require_approval flag OR q_confidence < threshold).
-                    // Oracle tasks bypass — programmatic oracle verdict is sufficient.
-                    let hitl_oracle_bypass = input.manifest.oracle.is_some();
-                    let hitl_q = out.attribution.q_confidence;
-                    let needs_hitl = input.cfg.hitl.enabled
-                        && !hitl_oracle_bypass
-                        && (input.manifest.require_approval
-                            || hitl_q < input.cfg.hitl.confidence_threshold);
-                    if needs_hitl {
-                        use futures::StreamExt as _;
-
-                        let now_ms = || {
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64
-                        };
-
-                        // Compute adaptive timeout from hitl_timeouts_fired in checkpoint.
-                        let n_fired = reasoning_cp.as_ref().map_or(0, |cp| cp.hitl_timeouts_fired);
-                        let effective_ms = (input.cfg.hitl.timeout_ms as f64
-                            * input.cfg.hitl.timeout_decay.powi(n_fired as i32))
-                        .max(input.cfg.hitl.timeout_floor_ms as f64)
-                            as u64;
-
-                        let timeout_at_ms = now_ms() + effective_ms;
-
-                        // Update in-memory store so GET /tasks/{id} reflects the HITL state.
-                        input.store.set_awaiting_approval(&input.task_id);
-
-                        // Publish PendingApproval so harness/UI knows we're waiting.
-                        if let Some(ref nats) = input.nats {
-                            let q = out.attribution.q_confidence;
-                            let n_used = out.selection_resolved.n_input_proposals as u32;
-                            let triggered_by = h2ai_types::events::ApprovalTrigger::LowConfidence;
-                            let risk_level =
-                                h2ai_types::approval::compute_risk_level(&triggered_by, q);
-                            let pending_ev = H2AIEvent::PendingApproval(PendingApprovalEvent {
-                                task_id: input.task_id.clone(),
-                                proposed_output: out.resolved_output.clone(),
-                                q_confidence: q,
-                                prediction_basis: match out.attribution.prediction_basis {
-                                    h2ai_types::sizing::PredictionBasis::Heuristic => 0u8,
-                                    h2ai_types::sizing::PredictionBasis::Empirical => 2u8,
-                                },
-                                n_used,
-                                risk_level,
-                                triggered_by,
-                                timeout_at_ms,
-                                timestamp_ms: now_ms(),
-                            });
-                            if let Err(e) = nats.publish_event(&input.task_id, &pending_ev).await {
-                                tracing::warn!(
-                                    target: "h2ai.engine",
-                                    task_id = %input.task_id,
-                                    "failed to publish PendingApproval: {e}"
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or_else(|| {
+                                        ConflictRateAccumulator::new(input.tenant_id.clone(), floor)
+                                    });
+                                let n_adapters =
+                                    input.calibration.coefficients.cg_samples.len() as u32;
+                                acc.push_sample(
+                                    rate,
+                                    n_adapters,
+                                    input.cfg.conflict_beta.max_samples,
+                                    input.cfg.conflict_beta.halflife_secs,
+                                    input.cfg.conflict_beta.min_samples_for_override,
                                 );
-                            }
-                        }
-
-                        // Refresh the signal stream right before entering select!.
-                        // A durable pull consumer's messages() stream can terminate
-                        // (return None) when its internal fetch requests expire with
-                        // no messages — which happens routinely during the pipeline
-                        // phases before reaching this gate.  Recreating the stream
-                        // here gives select! a live consumer every time.
-                        if let Some(ref nats) = input.nats {
-                            match nats
-                                .subscribe_signals(&input.task_id, &input.tenant_id)
-                                .await
-                            {
-                                Ok(fresh) => {
-                                    signal_sub = Some(fresh);
-                                }
-                                Err(e) => {
+                                if let Err(e) = nats
+                                    .put_conflict_accumulator(&acc, &conflict_beta_prefix)
+                                    .await
+                                {
                                     tracing::warn!(
                                         target: "h2ai.engine",
-                                        task_id = %input.task_id,
-                                        "signal stream refresh failed (non-fatal): {e}"
+                                        "conflict accumulator write failed (non-fatal): {e}"
                                     );
                                 }
                             }
                         }
-
-                        // Wait for Finalize signal or timeout.
-                        let (signal_approved, signal_operator_id, signal_reviewer_note, timed_out) =
-                            if let Some(ref mut sub) = signal_sub {
-                                tokio::select! {
-                                    Some(Ok(sig)) = sub.next() => {
-                                        let expired = now_ms() > sig.timeout_at_ms;
-                                        if expired {
-                                            (true, "system:late-signal".to_string(), None, false)
-                                        } else {
-                                            match crate::signal_dispatch::resolve_action(sig.payload) {
-                                                crate::signal_dispatch::ResumeAction::Finalize {
-                                                    approved,
-                                                    reviewer_note,
-                                                    operator_id,
-                                                } => (approved, operator_id, reviewer_note, false),
-                                                _ => (true, "system:non-approve-signal".to_string(), None, false),
-                                            }
-                                        }
-                                    }
-                                    () = tokio::time::sleep(std::time::Duration::from_millis(effective_ms)) => {
-                                        (
-                                            true,
-                                            "system:timeout".to_string(),
-                                            Some("Auto-approved: review timeout exceeded".to_string()),
-                                            true,
-                                        )
-                                    }
-                                }
-                            } else {
-                                // HITL enabled but no signal subscriber — auto-approve.
-                                (true, "system:no-sub".to_string(), None, false)
-                            };
-
-                        // Update hitl_timeouts_fired in checkpoint.
-                        if let Some(ref mut cp) = reasoning_cp {
-                            if timed_out {
-                                cp.hitl_timeouts_fired += 1;
-                            } else {
-                                cp.hitl_timeouts_fired = 0;
-                            }
-                            if let Some(ref nats) = input.nats {
-                                let _ =
-                                    write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit)
-                                        .await;
-                            }
-                        }
-
-                        // Publish ApprovalResolved BEFORE MergeResolved.
-                        let decided_at_ms = now_ms();
-                        if let Some(ref nats) = input.nats {
-                            let approval_resolved_ev =
-                                H2AIEvent::ApprovalResolved(ApprovalResolvedEvent {
-                                    task_id: input.task_id.clone(),
-                                    approved: signal_approved,
-                                    operator_id: signal_operator_id.clone(),
-                                    reviewer_note: signal_reviewer_note.clone(),
-                                    decided_at_ms,
-                                });
-                            if let Err(e) = nats
-                                .publish_event(&input.task_id, &approval_resolved_ev)
-                                .await
-                            {
-                                tracing::warn!(
-                                    target: "h2ai.engine",
-                                    task_id = %input.task_id,
-                                    "failed to publish ApprovalResolved: {e}"
-                                );
-                            }
-                        }
-
-                        // On reject: mark failed, clean up consumer, return error.
-                        if !signal_approved {
-                            input.store.mark_failed(&task_id);
-                            // Clean up signal consumer.
-                            if let Some(ref nats) = input.nats {
-                                if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
-                                    tracing::warn!(
-                                        target: "h2ai.engine",
-                                        task_id = %input.task_id,
-                                        "failed to delete signal consumer on reject: {e}"
-                                    );
-                                }
-                            }
-                            return Err(EngineError::HitlRejected {
-                                operator_id: signal_operator_id,
-                                reviewer_note: signal_reviewer_note,
-                            });
-                        }
-                        // Approved: fall through to normal resolve path below.
                     }
-                    // ── End HITL gate ─────────────────────────────────────────
-
-                    if let Some(mut cp) = reasoning_cp.take() {
+                    if let Some(cp) = &mut reasoning_cp {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
                         cp.last_updated = now;
-                        cp.phase = ReasoningCheckpointPhase::Resolved;
-                        cp.retry_count = retry_count;
-                        cp.resolved_waste_ratio = Some(out.waste_ratio);
-                        cp.resolved_attribution_json = serde_json::to_string(&out.attribution).ok();
+                        cp.phase = ReasoningCheckpointPhase::WaveCompleted(retry_count);
+                        cp.completed_waves.push(CompletedWave {
+                            wave_index: retry_count,
+                            adapter_outputs: vec![],
+                        });
                         if let Some(nats) = &input.nats {
-                            write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit).await?;
-                            if let Some(meta) = cp.into_meta_state() {
-                                if let Err(e) = nats.put_task_meta_state(&meta, &ms_prefix).await {
-                                    tracing::warn!(
+                            write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit).await?;
+                        }
+                    }
+                    // TODO: wire WaveContinue injection when multi-wave loop is added.
+                    // When signal_wave_window_ms > 0, open a brief tokio::select! window here
+                    // to receive a ContinueToNextWave signal and thread grounding/mandate_override
+                    // into the next ContextAssemblerInput before starting the next wave.
+
+                    // ── GAP-I1: cold-check researcher (no-op when gap_i1.enabled = false) ──
+                    controller.run_gap_i1_research().await;
+
+                    let filter_ratio = wave.events.filter_ratio;
+                    match controller.decide(wave.outcome, retry_count, filter_ratio) {
+                        crate::mape_k::MapeKDecision::Return(out) => {
+                            // Record knowledge patterns for cross-task induction (best-effort).
+                            if let Some(ref store) = input.induction_store {
+                                let domain_tags = input.manifest.constraint_tags.clone();
+                                if !domain_tags.is_empty() {
+                                    let store_clone = store.clone();
+                                    tokio::spawn(async move {
+                                        let _ = store_clone
+                                            .record(
+                                                &domain_tags,
+                                                &h2ai_types::config::AgentRole::Executor,
+                                                &domain_tags,
+                                            )
+                                            .await;
+                                    });
+                                }
+                            }
+
+                            // ── HITL approval gate ────────────────────────────────────
+                            // Fires when: hitl enabled AND NOT oracle task AND
+                            // (require_approval flag OR q_confidence < threshold).
+                            // Oracle tasks bypass — programmatic oracle verdict is sufficient.
+                            let hitl_oracle_bypass = input.manifest.oracle.is_some();
+                            let hitl_q = out.attribution.q_confidence;
+                            let needs_hitl = input.cfg.hitl.enabled
+                                && !hitl_oracle_bypass
+                                && (input.manifest.require_approval
+                                    || hitl_q < input.cfg.hitl.confidence_threshold);
+                            if needs_hitl {
+                                use futures::StreamExt as _;
+
+                                let now_ms = || {
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64
+                                };
+
+                                // Compute adaptive timeout from hitl_timeouts_fired in checkpoint.
+                                let n_fired =
+                                    reasoning_cp.as_ref().map_or(0, |cp| cp.hitl_timeouts_fired);
+                                let effective_ms = (input.cfg.hitl.timeout_ms as f64
+                                    * input.cfg.hitl.timeout_decay.powi(n_fired as i32))
+                                .max(input.cfg.hitl.timeout_floor_ms as f64)
+                                    as u64;
+
+                                let timeout_at_ms = now_ms() + effective_ms;
+
+                                // Update in-memory store so GET /tasks/{id} reflects the HITL state.
+                                input.store.set_awaiting_approval(&input.task_id);
+
+                                // Publish PendingApproval so harness/UI knows we're waiting.
+                                if let Some(ref nats) = input.nats {
+                                    let q = out.attribution.q_confidence;
+                                    let n_used = out.selection_resolved.n_input_proposals as u32;
+                                    let triggered_by =
+                                        h2ai_types::events::ApprovalTrigger::LowConfidence;
+                                    let risk_level =
+                                        h2ai_types::approval::compute_risk_level(&triggered_by, q);
+                                    let pending_ev =
+                                        H2AIEvent::PendingApproval(PendingApprovalEvent {
+                                            task_id: input.task_id.clone(),
+                                            proposed_output: out.resolved_output.clone(),
+                                            q_confidence: q,
+                                            prediction_basis: match out.attribution.prediction_basis
+                                            {
+                                                h2ai_types::sizing::PredictionBasis::Heuristic => {
+                                                    0u8
+                                                }
+                                                h2ai_types::sizing::PredictionBasis::Empirical => {
+                                                    2u8
+                                                }
+                                            },
+                                            n_used,
+                                            risk_level,
+                                            triggered_by,
+                                            timeout_at_ms,
+                                            timestamp_ms: now_ms(),
+                                        });
+                                    if let Err(e) =
+                                        nats.publish_event(&input.task_id, &pending_ev).await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %input.task_id,
+                                            "failed to publish PendingApproval: {e}"
+                                        );
+                                    }
+                                }
+
+                                // Refresh the signal stream right before entering select!.
+                                // A durable pull consumer's messages() stream can terminate
+                                // (return None) when its internal fetch requests expire with
+                                // no messages — which happens routinely during the pipeline
+                                // phases before reaching this gate.  Recreating the stream
+                                // here gives select! a live consumer every time.
+                                if let Some(ref nats) = input.nats {
+                                    match nats
+                                        .subscribe_signals(&input.task_id, &input.tenant_id)
+                                        .await
+                                    {
+                                        Ok(fresh) => {
+                                            signal_sub = Some(fresh);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                target: "h2ai.engine",
+                                                task_id = %input.task_id,
+                                                "signal stream refresh failed (non-fatal): {e}"
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Wait for Finalize signal or timeout.
+                                let (
+                                    signal_approved,
+                                    signal_operator_id,
+                                    signal_reviewer_note,
+                                    timed_out,
+                                ) = if let Some(ref mut sub) = signal_sub {
+                                    tokio::select! {
+                                        Some(Ok(sig)) = sub.next() => {
+                                            let expired = now_ms() > sig.timeout_at_ms;
+                                            if expired {
+                                                (true, "system:late-signal".to_string(), None, false)
+                                            } else {
+                                                match crate::signal_dispatch::resolve_action(sig.payload) {
+                                                    crate::signal_dispatch::ResumeAction::Finalize {
+                                                        approved,
+                                                        reviewer_note,
+                                                        operator_id,
+                                                    } => (approved, operator_id, reviewer_note, false),
+                                                    _ => (true, "system:non-approve-signal".to_string(), None, false),
+                                                }
+                                            }
+                                        }
+                                        () = tokio::time::sleep(std::time::Duration::from_millis(effective_ms)) => {
+                                            (
+                                                true,
+                                                "system:timeout".to_string(),
+                                                Some("Auto-approved: review timeout exceeded".to_string()),
+                                                true,
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    // HITL enabled but no signal subscriber — auto-approve.
+                                    (true, "system:no-sub".to_string(), None, false)
+                                };
+
+                                // Update hitl_timeouts_fired in checkpoint.
+                                if let Some(ref mut cp) = reasoning_cp {
+                                    if timed_out {
+                                        cp.hitl_timeouts_fired += 1;
+                                    } else {
+                                        cp.hitl_timeouts_fired = 0;
+                                    }
+                                    if let Some(ref nats) = input.nats {
+                                        let _ = write_reasoning_checkpoint(
+                                            nats,
+                                            cp,
+                                            &rc_prefix,
+                                            strict_audit,
+                                        )
+                                        .await;
+                                    }
+                                }
+
+                                // Publish ApprovalResolved BEFORE MergeResolved.
+                                let decided_at_ms = now_ms();
+                                if let Some(ref nats) = input.nats {
+                                    let approval_resolved_ev =
+                                        H2AIEvent::ApprovalResolved(ApprovalResolvedEvent {
+                                            task_id: input.task_id.clone(),
+                                            approved: signal_approved,
+                                            operator_id: signal_operator_id.clone(),
+                                            reviewer_note: signal_reviewer_note.clone(),
+                                            decided_at_ms,
+                                        });
+                                    if let Err(e) = nats
+                                        .publish_event(&input.task_id, &approval_resolved_ev)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %input.task_id,
+                                            "failed to publish ApprovalResolved: {e}"
+                                        );
+                                    }
+                                }
+
+                                // On reject: mark failed, clean up consumer, return error.
+                                if !signal_approved {
+                                    input.store.mark_failed(&task_id);
+                                    // Clean up signal consumer.
+                                    if let Some(ref nats) = input.nats {
+                                        if let Err(e) =
+                                            nats.delete_signal_consumer(&input.task_id).await
+                                        {
+                                            tracing::warn!(
+                                                target: "h2ai.engine",
+                                                task_id = %input.task_id,
+                                                "failed to delete signal consumer on reject: {e}"
+                                            );
+                                        }
+                                    }
+                                    return Err(EngineError::HitlRejected {
+                                        operator_id: signal_operator_id,
+                                        reviewer_note: signal_reviewer_note,
+                                    });
+                                }
+                                // Approved: fall through to normal resolve path below.
+                            }
+                            // ── End HITL gate ─────────────────────────────────────────
+
+                            if let Some(mut cp) = reasoning_cp.take() {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                cp.last_updated = now;
+                                cp.phase = ReasoningCheckpointPhase::Resolved;
+                                cp.retry_count = retry_count;
+                                cp.resolved_waste_ratio = Some(out.waste_ratio);
+                                cp.resolved_attribution_json =
+                                    serde_json::to_string(&out.attribution).ok();
+                                if let Some(nats) = &input.nats {
+                                    write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit)
+                                        .await?;
+                                    if let Some(meta) = cp.into_meta_state() {
+                                        if let Err(e) =
+                                            nats.put_task_meta_state(&meta, &ms_prefix).await
+                                        {
+                                            tracing::warn!(
+                                                target: "h2ai.engine",
+                                                task_id = %task_id,
+                                                "TaskMetaState write failed (non-fatal): {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Clean up signal consumer on successful resolve.
+                            if let Some(ref nats) = input.nats {
+                                if signal_sub.is_some() {
+                                    if let Err(e) =
+                                        nats.delete_signal_consumer(&input.task_id).await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %input.task_id,
+                                            "failed to delete signal consumer on resolve: {e}"
+                                        );
+                                    }
+                                }
+                            }
+
+                            // Reset OSP accumulator on successful resolve (spec §A.3).
+                            // NOT called on ZeroSurvival — accumulation must persist across retries.
+                            osp_accumulator.reset();
+
+                            let mut out = *out;
+                            out.consensus_agreement_rate = Some(
+                                consensus_agreement_rate_from_events(&out.verification_events),
+                            );
+                            return Ok(out);
+                        }
+                        crate::mape_k::MapeKDecision::Retry => continue,
+                        crate::mape_k::MapeKDecision::Fail(e) => {
+                            input.store.mark_failed(&task_id);
+                            // Clean up signal consumer on engine failure.
+                            if let Some(ref nats) = input.nats {
+                                if signal_sub.is_some() {
+                                    if let Err(ce) =
+                                        nats.delete_signal_consumer(&input.task_id).await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %input.task_id,
+                                            "failed to delete signal consumer on fail: {ce}"
+                                        );
+                                    }
+                                }
+                            }
+                            return Err(e);
+                        }
+                        crate::mape_k::MapeKDecision::SpecAmbiguous {
+                            constraint_id,
+                            check_index,
+                            divergent_reasons,
+                            ..
+                        } => {
+                            // GAP-K1: signal the outer restart loop to attempt spec repair.
+                            spec_ambiguous_signal =
+                                Some((constraint_id, check_index, divergent_reasons));
+                            break 'wave;
+                        }
+                    }
+                } // end 'wave retry loop
+
+                // Return the signal and the controller together so the outer scope can
+                // run post-loop logic (synthesis wave, error return) with the controller
+                // after the pipeline borrow on `input` has been released.
+                (spec_ambiguous_signal, controller)
+            }; // ── end inner pipeline-borrow scope ─────────────────────────────────
+
+            // ── GAP-K1: spec repair handler ───────────────────────────────────────
+            // `input` is no longer borrowed by `pipeline` here; `constraint_corpus`
+            // can be mutated if the repair succeeds.
+            if let Some((constraint_id, check_index, divergent_reasons)) = spec_ambiguous_signal {
+                // Guard: cap restarts at 1 and respect auto_repair_enabled flag.
+                if spec_ambiguous_restarts >= 1 || !input.cfg.gap_k1.auto_repair_enabled {
+                    tracing::warn!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        constraint_id = %constraint_id,
+                        spec_ambiguous_restarts,
+                        auto_repair_enabled = input.cfg.gap_k1.auto_repair_enabled,
+                        "GAP-K1 SpecAmbiguous: repair limit reached or disabled; failing task"
+                    );
+                    return Err(EngineError::MaxRetriesExhausted {
+                        partial_verification_events: controller.take_verification_events(),
+                        best_partial_text: None,
+                    });
+                }
+
+                // Select repair adapter: prefer researcher, fall back to first explorer.
+                let repair_adapter: Option<&dyn h2ai_types::adapter::IComputeAdapter> = input
+                    .researcher_adapter
+                    .as_deref()
+                    .or_else(|| input.explorer_adapters.first().copied());
+
+                let Some(repair_adapter) = repair_adapter else {
+                    tracing::warn!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        "GAP-K1 SpecAmbiguous: no adapter available for repair; failing task"
+                    );
+                    return Err(EngineError::MaxRetriesExhausted {
+                        partial_verification_events: controller.take_verification_events(),
+                        best_partial_text: None,
+                    });
+                };
+
+                // Find the affected ConstraintDoc to extract check text and current version.
+                let maybe_doc = input
+                    .constraint_corpus
+                    .iter()
+                    .find(|d| d.id == constraint_id)
+                    .cloned();
+
+                let Some(doc) = maybe_doc else {
+                    tracing::warn!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        constraint_id = %constraint_id,
+                        "GAP-K1 SpecAmbiguous: constraint not found in corpus; failing task"
+                    );
+                    return Err(EngineError::MaxRetriesExhausted {
+                        partial_verification_events: controller.take_verification_events(),
+                        best_partial_text: None,
+                    });
+                };
+
+                let original_check_text = doc
+                    .binary_checks
+                    .get(check_index)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Build a minimal SemanticSpec from the ConstraintDoc so NatsVersionedSource
+                // can serve as the CAS-aware version store for the repair write.
+                let spec_for_repair = h2ai_constraints::spec::SemanticSpec {
+                    id: doc.id.clone(),
+                    title: doc.description.clone(),
+                    source_file: doc.source_file.clone(),
+                    severity: doc.severity.clone(),
+                    domains: doc.domains.clone(),
+                    mandatory_for_tags: doc.mandatory_for_tags.clone(),
+                    related_to: doc.related_to.clone(),
+                    remediation_hint: doc.remediation_hint.clone(),
+                    exclusions: vec![],
+                    requirements: vec![],
+                    orderings: vec![],
+                    rubric: h2ai_constraints::spec::QualityRubric {
+                        pass: doc.description.clone(),
+                        partial: None,
+                        fail: String::new(),
+                        checks: doc.binary_checks.clone(),
+                        failure_modes: vec![],
+                        negative_examples: vec![],
+                        positive_examples: vec![],
+                    },
+                    version: doc.version,
+                    repair_provenance: doc.repair_provenance.clone(),
+                };
+
+                let inner_source = h2ai_constraints::source::InMemorySource {
+                    specs: input
+                        .constraint_corpus
+                        .iter()
+                        .map(|d| {
+                            if d.id == constraint_id {
+                                spec_for_repair.clone()
+                            } else {
+                                h2ai_constraints::spec::SemanticSpec {
+                                    id: d.id.clone(),
+                                    title: d.description.clone(),
+                                    source_file: d.source_file.clone(),
+                                    severity: d.severity.clone(),
+                                    domains: d.domains.clone(),
+                                    mandatory_for_tags: d.mandatory_for_tags.clone(),
+                                    related_to: d.related_to.clone(),
+                                    remediation_hint: d.remediation_hint.clone(),
+                                    exclusions: vec![],
+                                    requirements: vec![],
+                                    orderings: vec![],
+                                    rubric: h2ai_constraints::spec::QualityRubric {
+                                        pass: d.description.clone(),
+                                        partial: None,
+                                        fail: String::new(),
+                                        checks: d.binary_checks.clone(),
+                                        failure_modes: vec![],
+                                        negative_examples: vec![],
+                                        positive_examples: vec![],
+                                    },
+                                    version: d.version,
+                                    repair_provenance: d.repair_provenance.clone(),
+                                }
+                            }
+                        })
+                        .collect(),
+                };
+
+                let versioned_source = std::sync::Arc::new(
+                    h2ai_constraints::nats_versioned::NatsVersionedSource::new_in_memory(
+                        inner_source,
+                    ),
+                );
+
+                let repair_input = h2ai_autonomic::spec_repair::RepairInput {
+                    task_id: task_id.to_string(),
+                    constraint_id: constraint_id.clone(),
+                    check_index,
+                    original_check_text,
+                    divergent_reasons,
+                    should_pass_example: doc.description.clone(),
+                    should_prune_example: None,
+                    current_version: doc.version,
+                };
+
+                let advisor =
+                    h2ai_autonomic::spec_repair::SpecRepairAdvisor::new(input.cfg.gap_k1.clone());
+                let outcome = advisor
+                    .run(repair_input, versioned_source.clone(), repair_adapter)
+                    .await;
+
+                match outcome {
+                    h2ai_autonomic::spec_repair::RepairOutcome::Repaired { new_version } => {
+                        tracing::info!(
+                            target: "h2ai.engine",
+                            task_id = %task_id,
+                            constraint_id = %constraint_id,
+                            new_version,
+                            "GAP-K1: spec repair succeeded; reloading corpus and restarting"
+                        );
+                        // Reload updated SemanticSpec list from the versioned source and
+                        // recompile each spec back into a ConstraintDoc.
+                        use h2ai_constraints::source::ConstraintSource as _;
+                        match versioned_source.load_all() {
+                            Ok(updated_specs) => {
+                                input.constraint_corpus = updated_specs
+                                    .into_iter()
+                                    .map(|s| s.into_constraint_doc())
+                                    .collect();
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "h2ai.engine",
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "GAP-K1: versioned source reload failed after repair; keeping old corpus"
+                                );
+                            }
+                        }
+                        spec_ambiguous_restarts += 1;
+                        continue 'restart;
+                    }
+                    h2ai_autonomic::spec_repair::RepairOutcome::Failed { best_score } => {
+                        tracing::warn!(
+                            target: "h2ai.engine",
+                            task_id = %task_id,
+                            constraint_id = %constraint_id,
+                            best_score,
+                            "GAP-K1: spec repair failed; returning MaxRetriesExhausted"
+                        );
+                        return Err(EngineError::MaxRetriesExhausted {
+                            partial_verification_events: controller.take_verification_events(),
+                            best_partial_text: None,
+                        });
+                    }
+                }
+            }
+            // ── End GAP-K1 handler ────────────────────────────────────────────────
+
+            input.store.mark_failed(&task_id);
+            // Clean up signal consumer on retry exhaustion.
+            if let Some(ref nats) = input.nats {
+                if signal_sub.is_some() {
+                    if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
+                        tracing::warn!(
+                            target: "h2ai.engine",
+                            task_id = %input.task_id,
+                            "failed to delete signal consumer on exhaustion: {e}"
+                        );
+                    }
+                }
+            }
+            tracing::warn!(
+                target: "h2ai.engine",
+                task_id = %task_id,
+                max_retries = input.cfg.max_autonomic_retries,
+                "retry loop exhausted all attempts"
+            );
+
+            // ── GAP-F1 Synthesis Wave (terminal, never retries) ───────────────────
+            if input.cfg.synthesis_wave_enabled {
+                let all_checks: Vec<String> = input
+                    .constraint_corpus
+                    .iter()
+                    .flat_map(|d| d.binary_checks.iter().cloned())
+                    .collect();
+                let check_offsets: Vec<(String, usize, usize)> = {
+                    let mut offsets = Vec::new();
+                    let mut start = 0usize;
+                    for doc in input.constraint_corpus.iter() {
+                        let count = doc.binary_checks.len();
+                        if count > 0 {
+                            offsets.push((doc.id.clone(), start, count));
+                            start += count;
+                        }
+                    }
+                    offsets
+                };
+                if !all_checks.is_empty() {
+                    let partial_passes = h2ai_autonomic::repair::select_orthogonal_partials(
+                        controller.all_pruned(),
+                        &all_checks,
+                        &check_offsets,
+                        3,
+                        h2ai_autonomic::repair::partial_max_chars(
+                            input.cfg.model_max_tokens,
+                            3,
+                            input.cfg.partial_pass_overhead_factor,
+                        ),
+                    );
+                    if !partial_passes.is_empty() {
+                        let synth_adapter = input
+                            .synthesis_adapter
+                            .or_else(|| input.explorer_adapters.first().copied());
+                        if let Some(adapter) = synth_adapter {
+                            use h2ai_types::adapter::ComputeRequest;
+                            use h2ai_types::sizing::TauValue;
+                            let tau = TauValue::new(input.cfg.synthesis_tau)
+                                .unwrap_or_else(|_| TauValue::new(0.2).unwrap());
+
+                            // Sort descending by score; seed from highest-scoring partial.
+                            let mut sorted_partials = partial_passes.clone();
+                            sorted_partials.sort_by(|a, b| {
+                                b.score
+                                    .partial_cmp(&a.score)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
+
+                            // Determine which synthesis path to take.
+                            let final_output: Option<String> = if input
+                                .cfg
+                                .sequential_grafting_enabled
+                                && sorted_partials.len() > 1
+                            {
+                                // ── GAP-H1 Sequential Constraint Grafting ──────────────
+                                let system_ctx = controller.system_context_with_rubric();
+                                let mut base_text = sorted_partials[0].proposal_text.clone();
+                                let mut base_partial = sorted_partials[0].clone();
+                                let mut base_score = base_partial.score;
+                                let max_rounds = input.cfg.sequential_grafting_max_rounds.max(1);
+                                let mut rounds_used = 0usize;
+
+                                for candidate in sorted_partials.iter().skip(1) {
+                                    if rounds_used >= max_rounds.saturating_sub(1) {
+                                        break;
+                                    }
+                                    let missing = h2ai_autonomic::repair::missing_constraint_ids(
+                                        &base_partial,
+                                        candidate,
+                                        &check_offsets,
+                                    );
+                                    if missing.is_empty() {
+                                        continue;
+                                    }
+                                    let graft_ctx = h2ai_autonomic::repair::build_graft_context(
+                                        &h2ai_autonomic::repair::GraftInput {
+                                            base_text: &base_text,
+                                            candidate_text: &candidate.proposal_text,
+                                            constraint_ids: &missing,
+                                            system_context: system_ctx,
+                                        },
+                                    );
+                                    let req = ComputeRequest {
+                                        system_context: graft_ctx,
+                                        task: input.manifest.description.clone(),
+                                        tau,
+                                        max_tokens: input.cfg.synthesis_max_tokens,
+                                    };
+                                    let graft_resp = match adapter.execute(req).await {
+                                        Ok(resp) => resp,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                target: "h2ai.engine",
+                                                task_id = %task_id,
+                                                error = %e,
+                                                "GAP-H1 graft round LLM call failed; stopping early"
+                                            );
+                                            break;
+                                        }
+                                    };
+
+                                    // ── Intermediate verification + rollback ───────────
+                                    let graft_proposal = h2ai_types::events::ProposalEvent {
+                                        task_id: task_id.clone(),
+                                        explorer_id: h2ai_types::identity::ExplorerId::new(),
+                                        tau,
+                                        generation: u64::MAX,
+                                        raw_output: graft_resp.output.clone(),
+                                        token_cost: graft_resp.token_cost,
+                                        adapter_kind: graft_resp.adapter_kind.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                    };
+                                    let verif = crate::verification::VerificationPhase::run(
+                                        crate::verification::VerificationInput {
+                                            proposals: vec![graft_proposal],
+                                            constraint_corpus: &input.constraint_corpus,
+                                            evaluator: input
+                                                .explorer_adapters
+                                                .first()
+                                                .copied()
+                                                .unwrap_or(adapter),
+                                            config: controller.params().verification_config,
+                                            eval_cache: crate::verification::new_eval_cache(),
+                                            consensus_passes: 1,
+                                        },
+                                    )
+                                    .await;
+
+                                    let new_score: f64 = if let Some((_, compliance, _)) =
+                                        verif.passed.first()
+                                    {
+                                        if compliance.is_empty() {
+                                            1.0
+                                        } else {
+                                            compliance.iter().map(|r| r.score).sum::<f64>()
+                                                / compliance.len() as f64
+                                        }
+                                    } else if let Some((_, compliance, _, _)) = verif.failed.first()
+                                    {
+                                        if compliance.is_empty() {
+                                            0.0
+                                        } else {
+                                            compliance.iter().map(|r| r.score).sum::<f64>()
+                                                / compliance.len() as f64
+                                        }
+                                    } else {
+                                        0.0
+                                    };
+
+                                    if new_score >= base_score {
+                                        base_text = graft_resp.output;
+                                        base_score = new_score;
+                                        for (idx, text, passed) in &candidate.check_results {
+                                            if *passed {
+                                                if let Some(entry) = base_partial
+                                                    .check_results
+                                                    .iter_mut()
+                                                    .find(|(i, _, _)| i == idx)
+                                                {
+                                                    *entry = (*idx, text.clone(), true);
+                                                }
+                                            }
+                                        }
+                                        rounds_used += 1;
+                                        tracing::debug!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            round = rounds_used,
+                                            new_score,
+                                            "GAP-H1 graft round accepted"
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            new_score,
+                                            base_score,
+                                            "GAP-H1 graft was destructive — rolling back"
+                                        );
+                                    }
+                                }
+                                Some(base_text)
+                            } else {
+                                // ── Single-shot synthesis (stable fallback) ────────────
+                                let synthesis_ctx = h2ai_autonomic::repair::build_synthesis_context(
+                                    h2ai_autonomic::repair::SynthesisInput {
+                                        partial_passes: &sorted_partials,
+                                        checks: &all_checks,
+                                        system_context_with_rubric: controller
+                                            .system_context_with_rubric(),
+                                    },
+                                );
+                                let req = ComputeRequest {
+                                    system_context: synthesis_ctx,
+                                    task: input.manifest.description.clone(),
+                                    tau,
+                                    max_tokens: input.cfg.synthesis_max_tokens,
+                                };
+                                match adapter.execute(req).await {
+                                    Ok(resp) => Some(resp.output),
+                                    Err(_) => None,
+                                }
+                            };
+
+                            // ── Terminal verification of final output ──────────────────
+                            if let Some(output_text) = final_output {
+                                let synth_proposal = h2ai_types::events::ProposalEvent {
+                                    task_id: task_id.clone(),
+                                    explorer_id: h2ai_types::identity::ExplorerId::new(),
+                                    tau,
+                                    generation: u64::MAX,
+                                    raw_output: output_text.clone(),
+                                    token_cost: 0,
+                                    adapter_kind: adapter.kind().clone(),
+                                    timestamp: chrono::Utc::now(),
+                                };
+                                let verif_out = crate::verification::VerificationPhase::run(
+                                    crate::verification::VerificationInput {
+                                        proposals: vec![synth_proposal.clone()],
+                                        constraint_corpus: &input.constraint_corpus,
+                                        evaluator: input
+                                            .explorer_adapters
+                                            .first()
+                                            .copied()
+                                            .unwrap_or(adapter),
+                                        config: controller.params().verification_config,
+                                        eval_cache: crate::verification::new_eval_cache(),
+                                        consensus_passes: 1,
+                                    },
+                                )
+                                .await;
+                                if !verif_out.passed.is_empty() {
+                                    tracing::info!(
                                         target: "h2ai.engine",
                                         task_id = %task_id,
-                                        "TaskMetaState write failed (non-fatal): {e}"
+                                        grafting = input.cfg.sequential_grafting_enabled,
+                                        "GAP-F1 synthesis wave succeeded"
                                     );
+                                    use crate::mape_k::MergeOutput;
+                                    use h2ai_types::events::SelectionResolvedEvent;
+                                    use h2ai_types::sizing::{MergeStrategy, PredictionBasis};
+                                    let explorer_id = synth_proposal.explorer_id.clone();
+                                    let merge_out = MergeOutput {
+                                        task_id: task_id.clone(),
+                                        resolved_output: output_text,
+                                        selection_resolved: true,
+                                        selection_resolved_event: SelectionResolvedEvent {
+                                            task_id: task_id.clone(),
+                                            valid_proposals: vec![explorer_id.clone()],
+                                            pruned_proposals: vec![],
+                                            merge_strategy: MergeStrategy::ScoreOrdered,
+                                            timestamp: chrono::Utc::now(),
+                                            merge_elapsed_secs: None,
+                                            n_input_proposals: 1,
+                                            n_failed_proposals: 0,
+                                        },
+                                        attribution: crate::attribution::HarnessAttribution {
+                                            baseline_quality: 0.0,
+                                            topology_gain: 0.0,
+                                            verification_gain: 0.0,
+                                            tao_gain: 0.0,
+                                            q_confidence: 1.0,
+                                            prediction_basis: PredictionBasis::Heuristic,
+                                            q_measured: None,
+                                            rho_adjusted: 0.0,
+                                            case_b_flag: false,
+                                            synthesis_gain: 0.0,
+                                        },
+                                        attribution_interval: None,
+                                        talagrand: None,
+                                        suggested_next_params: None,
+                                        waste_ratio: 0.0,
+                                        applied_optimizations: vec![],
+                                        epistemic_yield: None,
+                                        frontier_event: None,
+                                        adapter_correctness: vec![(explorer_id, true)],
+                                        coherence_state: crate::coherence::CoherenceState::default(
+                                        ),
+                                        comparison_events: vec![],
+                                        oracle_gate_passed: None,
+                                        tau_values: vec![input.cfg.synthesis_tau],
+                                        iteration_verification_events: vec![],
+                                    };
+                                    input.store.mark_resolved(&task_id);
+                                    let mut out = controller.finalize(merge_out);
+                                    out.consensus_agreement_rate =
+                                        Some(consensus_agreement_rate_from_events(
+                                            &out.verification_events,
+                                        ));
+                                    return Ok(out);
                                 }
                             }
                         }
+                        // Synthesis failed or scored < 1.0: extract global best partial for HITL.
+                        let best_partial_text = controller
+                            .all_pruned()
+                            .iter()
+                            .filter_map(|e| {
+                                h2ai_autonomic::repair::partial_pass_from_event(
+                                    e,
+                                    &all_checks,
+                                    &check_offsets,
+                                    h2ai_autonomic::repair::partial_max_chars(
+                                        input.cfg.model_max_tokens,
+                                        1,
+                                        input.cfg.partial_pass_overhead_factor,
+                                    ),
+                                )
+                            })
+                            .max_by(|a, b| {
+                                a.score
+                                    .partial_cmp(&b.score)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|p| p.proposal_text);
+                        return Err(EngineError::MaxRetriesExhausted {
+                            partial_verification_events: controller.take_verification_events(),
+                            best_partial_text,
+                        });
                     }
-
-                    // Clean up signal consumer on successful resolve.
-                    if let Some(ref nats) = input.nats {
-                        if signal_sub.is_some() {
-                            if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
-                                tracing::warn!(
-                                    target: "h2ai.engine",
-                                    task_id = %input.task_id,
-                                    "failed to delete signal consumer on resolve: {e}"
-                                );
-                            }
-                        }
-                    }
-
-                    // Reset OSP accumulator on successful resolve (spec §A.3).
-                    // NOT called on ZeroSurvival — accumulation must persist across retries.
-                    osp_accumulator.reset();
-
-                    return Ok(*out);
-                }
-                crate::mape_k::MapeKDecision::Retry => continue,
-                crate::mape_k::MapeKDecision::Fail(e) => {
-                    input.store.mark_failed(&task_id);
-                    // Clean up signal consumer on engine failure.
-                    if let Some(ref nats) = input.nats {
-                        if signal_sub.is_some() {
-                            if let Err(ce) = nats.delete_signal_consumer(&input.task_id).await {
-                                tracing::warn!(
-                                    target: "h2ai.engine",
-                                    task_id = %input.task_id,
-                                    "failed to delete signal consumer on fail: {ce}"
-                                );
-                            }
-                        }
-                    }
-                    return Err(e);
                 }
             }
-        }
 
-        input.store.mark_failed(&task_id);
-        // Clean up signal consumer on retry exhaustion.
-        if let Some(ref nats) = input.nats {
-            if signal_sub.is_some() {
-                if let Err(e) = nats.delete_signal_consumer(&input.task_id).await {
-                    tracing::warn!(
-                        target: "h2ai.engine",
-                        task_id = %input.task_id,
-                        "failed to delete signal consumer on exhaustion: {e}"
-                    );
-                }
-            }
-        }
-        tracing::warn!(
-            target: "h2ai.engine",
-            task_id = %task_id,
-            max_retries = input.cfg.max_autonomic_retries,
-            "retry loop exhausted all attempts"
-        );
-        Err(EngineError::MaxRetriesExhausted {
-            partial_verification_events: controller.take_verification_events(),
-        })
+            return Err(EngineError::MaxRetriesExhausted {
+                partial_verification_events: controller.take_verification_events(),
+                best_partial_text: None,
+            });
+        } // end 'restart: loop
     }
 
     /// Resume execution from a persisted checkpoint.
@@ -952,6 +1584,7 @@ impl ExecutionEngine {
                 oracle_gate_passed: None,
                 leader_elected_events: vec![],
                 socratic_diagnosis_events: vec![],
+                consensus_agreement_rate: None,
             })
         } else {
             // Earlier phase or unknown phase — restart from scratch

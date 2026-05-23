@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use h2ai_adapters::MockAdapter;
 use h2ai_planner::decomposer::{PlannerError, PlanningEngine};
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::config::{AgentRole, ParetoWeights};

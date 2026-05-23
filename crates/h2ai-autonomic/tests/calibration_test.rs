@@ -4,13 +4,13 @@
     clippy::cast_possible_truncation
 )]
 use async_trait::async_trait;
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{
     aimd_decay, aimd_reset, beta_from_merge_spans, beta_from_n_eff_adj, beta_from_token_spans,
     compute_conflict_rate, yield_from_history, CalibrationHarness, CalibrationInput,
 };
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
+use h2ai_test_utils::MockAdapter;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::TaskId;
@@ -388,6 +388,10 @@ async fn calibration_non_empty_corpus_computes_hamming() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }];
     let a = MockAdapter::new("jwt authentication token".into());
     let b = MockAdapter::new("session cookie storage".into());
@@ -485,10 +489,10 @@ async fn n_eff_cosine_prior_fallback_without_embedding_model() {
     .await
     .unwrap();
 
-    // Single adapter: fallback = 1.0 + cg_fallback × (1-1) = 1.0
+    // Single adapter without embedding model → 0.0 ("not measured" sentinel, diversity guard skips).
     assert!(
-        (result.n_eff_cosine_prior - 1.0).abs() < 0.01,
-        "single adapter no model → n_eff_cosine_prior=1.0, got {}",
+        result.n_eff_cosine_prior.abs() < 0.01,
+        "single adapter no model → n_eff_cosine_prior=0.0 (not measured), got {}",
         result.n_eff_cosine_prior
     );
 }
@@ -1146,6 +1150,10 @@ fn hard_length_range(id: &str, min: Option<usize>, max: Option<usize>) -> Constr
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 

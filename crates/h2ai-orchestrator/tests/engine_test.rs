@@ -51,12 +51,12 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::{FamilyConstraint, H2AIConfig, SafetyConfig};
 use h2ai_constraints::types::{
     ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
 };
+use h2ai_test_utils::MockAdapter;
 
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
@@ -216,6 +216,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -224,6 +225,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -314,6 +316,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -322,6 +325,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -406,6 +410,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -414,6 +419,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
@@ -498,6 +504,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -506,6 +513,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
@@ -585,6 +593,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -593,6 +602,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -703,6 +713,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -711,6 +722,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -787,6 +799,7 @@ async fn engine_output_contains_suggested_next_params() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -795,6 +808,7 @@ async fn engine_output_contains_suggested_next_params() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -865,6 +879,10 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
             domains: vec!["architecture".to_string()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
         ConstraintDoc {
             id: "SIG-JWT".to_string(),
@@ -879,6 +897,10 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
             domains: vec!["token-format".to_string()],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         },
     ];
     let manifest = TaskManifest {
@@ -952,6 +974,7 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -960,6 +983,7 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -981,6 +1005,10 @@ fn constrained_exploration_tombstone_synthesis_unit() {
         score: 0.0,
         severity_label: "Hard".into(),
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }];
     let tombstone = synthesize_tombstone(&violations);
     assert!(
@@ -1071,6 +1099,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1079,6 +1108,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1260,6 +1290,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1268,6 +1299,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let err = ExecutionEngine::run_offline(input).await.unwrap_err();
@@ -1360,6 +1392,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1368,6 +1401,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
@@ -1537,6 +1571,7 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1545,6 +1580,7 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -1670,6 +1706,7 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1678,6 +1715,7 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1701,6 +1739,7 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
     let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
         adapter: shadow_adapter,
         promoted_domains: Default::default(),
+        strict: false,
     };
     let input = EngineInput {
         task_id: TaskId::new(),
@@ -1736,6 +1775,7 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1744,6 +1784,7 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1772,6 +1813,7 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
     let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
         adapter: shadow_adapter,
         promoted_domains: Default::default(),
+        strict: false,
     };
     let input = EngineInput {
         task_id: TaskId::new(),
@@ -1807,6 +1849,7 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1815,6 +1858,7 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -1851,6 +1895,7 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
     let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
         adapter: shadow_adapter,
         promoted_domains: promoted,
+        strict: false,
     };
     let input = EngineInput {
         task_id: TaskId::new(),
@@ -1886,6 +1931,7 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1894,11 +1940,84 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
         result.is_err(),
         "task must fail when AND vote cannot be satisfied"
+    );
+}
+
+#[tokio::test]
+async fn strict_mode_rejects_when_shadow_disagrees_without_promoted_domains() {
+    // strict=true forces AND vote even without any promoted domain history.
+    // Primary approves, shadow rejects → all proposals pruned → MaxRetriesExhausted.
+    let manifest = make_manifest_with_constraint_tags(vec!["security".to_string()]);
+    let adapter = mock_adapter();
+    let scorer = verifier();
+    let primary_auditor = Arc::new(mock_adapter_approves()) as Arc<dyn IComputeAdapter>;
+    let shadow_adapter = Arc::new(shadow_reject_adapter()) as Arc<dyn IComputeAdapter>;
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter()) as Arc<dyn IComputeAdapter>);
+    let store = TaskStore::new();
+    let cfg = H2AIConfig::default();
+    let cal = calibration().await;
+
+    // promoted_domains is empty — strict mode must still engage AND vote.
+    let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
+        adapter: shadow_adapter,
+        promoted_domains: Default::default(),
+        strict: true,
+    };
+    let input = EngineInput {
+        task_id: TaskId::new(),
+        manifest,
+        calibration: cal,
+        explorer_adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
+        verification_adapter: &scorer as &dyn h2ai_types::adapter::IComputeAdapter,
+        auditor_adapter: primary_auditor.as_ref(),
+        auditor_config: AuditorConfig {
+            adapter: AdapterKind::CloudGeneric {
+                endpoint: "mock".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+            },
+            ..Default::default()
+        },
+        tao_config: TaoConfig::default(),
+        verification_config: VerificationConfig::default(),
+        constraint_corpus: vec![],
+        embedding_model: None,
+        cfg: &cfg,
+        store: store.clone(),
+        nats_dispatch: None,
+        registry: &registry,
+        tao_multiplier: 0.6,
+        tao_estimator: Arc::new(tokio::sync::RwLock::new(
+            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
+        )),
+        synthesis_adapter: None,
+        bandit_state: None,
+        shadow_audit_ctx: Some(ctx),
+        researcher_adapter: None,
+        srani_ema_cfi: 0.45,
+        srani_count: 0,
+        srani_grounding_chain: None,
+        gap_research_chain: None,
+        nats_raw: None,
+        tenant_id: TenantId::default_tenant(),
+        nats: None,
+        prev_assembled_contexts: Vec::new(),
+        compression_adapter: None,
+        stable_cache: None,
+        knowledge_provider: None,
+        induction_store: None,
+        conformal_margin: 0.0,
+    };
+    let result = ExecutionEngine::run_offline(input).await;
+    assert!(
+        result.is_err(),
+        "strict mode must fail when shadow disagrees even without promoted domains"
     );
 }
 
@@ -1937,6 +2056,7 @@ async fn shadow_failure_falls_back_to_primary_decision() {
     let ctx = h2ai_orchestrator::engine::ShadowAuditCtx {
         adapter: shadow_adapter,
         promoted_domains: Default::default(),
+        strict: false,
     };
     let input = EngineInput {
         task_id: TaskId::new(),
@@ -1972,6 +2092,7 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -1980,6 +2101,7 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2073,6 +2195,7 @@ async fn c3_no_event_when_corpus_empty() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2081,6 +2204,7 @@ async fn c3_no_event_when_corpus_empty() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2190,6 +2314,7 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2198,6 +2323,7 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2306,6 +2432,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2314,6 +2441,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
@@ -2442,6 +2570,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2450,6 +2579,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     let calls = researcher_calls.lock().unwrap();
@@ -2556,6 +2686,7 @@ async fn c1_no_warning_for_diverse_proposals() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2564,6 +2695,7 @@ async fn c1_no_warning_for_diverse_proposals() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
     assert!(
@@ -2693,6 +2825,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2701,6 +2834,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
     match result {
@@ -2736,9 +2870,8 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
     // Low thresholds so CFI=1.0 always triggers both warn and inject.
     let cfg = H2AIConfig {
         srani: h2ai_config::SraniConfig {
-            grounding_raw_max_chars: 4000,
-            grounding_hint_max_chars: 1200,
             grounding_distill: false,
+            grounding_compress_threshold: 800,
             enabled: true,
             warn_threshold: 0.1,
             inject_threshold: 0.5,
@@ -2815,6 +2948,7 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2823,6 +2957,7 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2871,9 +3006,8 @@ async fn srani_silent_when_entities_grounded_in_spec() {
 
     let cfg = H2AIConfig {
         srani: h2ai_config::SraniConfig {
-            grounding_raw_max_chars: 4000,
-            grounding_hint_max_chars: 1200,
             grounding_distill: false,
+            grounding_compress_threshold: 800,
             enabled: true,
             warn_threshold: 0.1,
             inject_threshold: 0.5,
@@ -2948,6 +3082,7 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -2956,6 +3091,7 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -2993,9 +3129,8 @@ async fn srani_adaptive_fires_and_updates_ema() {
     let store = TaskStore::new();
     let cfg = H2AIConfig {
         srani: h2ai_config::SraniConfig {
-            grounding_raw_max_chars: 4000,
-            grounding_hint_max_chars: 1200,
             grounding_distill: false,
+            grounding_compress_threshold: 800,
             enabled: true,
             adaptive: true,
             ema_alpha: 0.20,
@@ -3070,6 +3205,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
         srani_ema_cfi: 0.30, // warm EMA below CFI
         srani_count: 10,     // past cold-start threshold
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3078,6 +3214,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3132,9 +3269,8 @@ async fn srani_cold_start_uses_config_midpoint() {
     let store = TaskStore::new();
     let cfg = H2AIConfig {
         srani: h2ai_config::SraniConfig {
-            grounding_raw_max_chars: 4000,
-            grounding_hint_max_chars: 1200,
             grounding_distill: false,
+            grounding_compress_threshold: 800,
             enabled: true,
             adaptive: true,
             ema_alpha: 0.20,
@@ -3209,6 +3345,7 @@ async fn srani_cold_start_uses_config_midpoint() {
         srani_ema_cfi: 0.99, // artificially high — should NOT be used (count < 5)
         srani_count: 2,      // cold start: count < 5
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3217,6 +3354,7 @@ async fn srani_cold_start_uses_config_midpoint() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3250,9 +3388,8 @@ async fn srani_adaptive_false_uses_static_thresholds() {
     let store = TaskStore::new();
     let cfg = H2AIConfig {
         srani: h2ai_config::SraniConfig {
-            grounding_raw_max_chars: 4000,
-            grounding_hint_max_chars: 1200,
             grounding_distill: false,
+            grounding_compress_threshold: 800,
             enabled: true,
             adaptive: false, // static path
             warn_threshold: 0.10,
@@ -3325,6 +3462,7 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         srani_ema_cfi: 0.45,
         srani_count: 10,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3333,6 +3471,7 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3361,9 +3500,8 @@ async fn srani_ema_formula_verified_numerically() {
     let store = TaskStore::new();
     let cfg = H2AIConfig {
         srani: h2ai_config::SraniConfig {
-            grounding_raw_max_chars: 4000,
-            grounding_hint_max_chars: 1200,
             grounding_distill: false,
+            grounding_compress_threshold: 800,
             enabled: true,
             adaptive: true,
             ema_alpha: 0.20,
@@ -3439,6 +3577,7 @@ async fn srani_ema_formula_verified_numerically() {
         srani_ema_cfi: initial_ema,
         srani_count: 10,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3447,6 +3586,7 @@ async fn srani_ema_formula_verified_numerically() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
 
@@ -3476,7 +3616,7 @@ use h2ai_orchestrator::srani_grounding::{
     GroundingSource, LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain,
     WebSearchGrounder,
 };
-use h2ai_tools::web_search::MockSearchBackend;
+use h2ai_test_utils::MockSearchBackend;
 
 fn cockroachdb_manifest() -> TaskManifest {
     TaskManifest {
@@ -3570,6 +3710,7 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3578,6 +3719,7 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -3627,6 +3769,7 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3635,6 +3778,7 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3695,6 +3839,7 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3703,6 +3848,7 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3761,6 +3907,7 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: Some(chain),
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -3769,6 +3916,7 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     };
 
     let result = ExecutionEngine::run_offline(input).await;
@@ -3836,4 +3984,80 @@ fn conflict_beta_disabled_skips_accumulator_load() {
     let mut cfg = h2ai_config::H2AIConfig::default();
     cfg.conflict_beta.enabled = false;
     assert!(!cfg.conflict_beta.enabled);
+}
+
+// ── GAP-K1 Task 8 tests ────────────────────────────────────────────────────
+
+/// Verify that `auto_repair_enabled = false` is the default and serves as the
+/// guard that prevents unbounded SpecAmbiguous restart loops.
+#[test]
+fn gap_k1_auto_repair_disabled_by_default() {
+    let cfg = h2ai_config::GapK1Config::default();
+    assert!(
+        !cfg.auto_repair_enabled,
+        "auto_repair_enabled must be false by default"
+    );
+    assert!(!cfg.enabled, "gap_k1.enabled must be false by default");
+}
+
+/// Verify the corpus rebuild round-trip: ConstraintDoc → SemanticSpec →
+/// into_constraint_doc() preserves `binary_checks` and `id`.
+///
+/// This is the critical invariant for the SpecAmbiguous restart path in engine.rs:
+/// after `versioned_source.load_all()`, each SemanticSpec is converted back to a
+/// ConstraintDoc via `into_constraint_doc()` and must retain the check list.
+#[test]
+fn gap_k1_corpus_rebuild_roundtrip_preserves_binary_checks() {
+    use h2ai_constraints::source::ConstraintSource as _;
+    use h2ai_constraints::types::ConstraintSeverity;
+    use h2ai_constraints::{
+        nats_versioned::NatsVersionedSource, source::InMemorySource, spec::QualityRubric,
+        spec::SemanticSpec,
+    };
+
+    let original_checks = vec![
+        "The output must include a JWT token".to_owned(),
+        "No session cookies are permitted".to_owned(),
+    ];
+
+    // Simulate what engine.rs does: build SemanticSpec from ConstraintDoc fields
+    let spec = SemanticSpec {
+        id: "C-repair-001".to_owned(),
+        title: "Stateless auth required".to_owned(),
+        source_file: "C-repair-001.yaml".to_owned(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+        remediation_hint: None,
+        exclusions: vec![],
+        requirements: vec![],
+        orderings: vec![],
+        rubric: QualityRubric {
+            pass: "Stateless auth required".to_owned(),
+            partial: None,
+            fail: String::new(),
+            checks: original_checks.clone(),
+            failure_modes: vec![],
+            negative_examples: vec![],
+            positive_examples: vec![],
+        },
+        version: 1,
+        repair_provenance: None,
+    };
+
+    let inner = InMemorySource { specs: vec![spec] };
+    let versioned = NatsVersionedSource::new_in_memory(inner);
+
+    // Simulate load_all() + into_constraint_doc() that happens after repair
+    let reloaded = versioned.load_all().expect("load_all must succeed");
+    assert_eq!(reloaded.len(), 1, "must reload exactly 1 spec");
+
+    let rebuilt_doc = reloaded.into_iter().next().unwrap().into_constraint_doc();
+    assert_eq!(rebuilt_doc.id, "C-repair-001");
+    assert_eq!(
+        rebuilt_doc.binary_checks, original_checks,
+        "binary_checks must be preserved through the roundtrip"
+    );
+    assert_eq!(rebuilt_doc.version, 1);
 }

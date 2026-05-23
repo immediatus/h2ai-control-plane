@@ -398,3 +398,115 @@ pub const DECOMPOSITION_CONSTRAINT_ENTRY: PromptTemplate = PromptTemplate(concat
     "Rubric: {rubric}\n",
     "Remediation hint: {hint}"
 ));
+
+// ── GAP-I1: Semantic Repair Operator ──────────────────────────────────────────
+
+/// System prompt for gap extractor LLM call.
+/// No variables. Instructs the LLM to identify the incorrect belief from verifier rejection reasons.
+pub const I1_GAP_EXTRACTOR_SYSTEM: &str = "\
+You are a constraint violation analyst. Given a constraint check text and a set of verifier \
+rejection reasons, identify the specific incorrect belief the author held. \
+Output exactly two fields: \
+1. incorrect_concept: one sentence naming the wrong pattern or assumption the author used \
+2. gap_query: a precise web search query that would find authoritative documentation \
+   explaining the correct approach \
+Be specific and technical. Do not summarize the check — identify the belief gap.";
+
+/// Task prompt for gap extractor LLM call.
+/// Variables: `{check_text}`, `{verifier_reasons}`.
+pub const I1_GAP_EXTRACTOR_TASK: &str = "\
+Constraint check:
+{check_text}
+
+Verifier rejection reasons across attempts:
+{verifier_reasons}
+
+Identify the incorrect concept the proposal author held that caused all attempts to fail this check.
+
+Respond in JSON:
+{{
+  \"incorrect_concept\": \"<one sentence — the wrong belief>\",
+  \"gap_query\": \"<web search query for authoritative correct documentation>\"
+}}";
+
+/// Task prompt for synthesis validator LLM call.
+/// Variables: `{check_text}`, `{incorrect_pattern}`, `{correct_pattern}`, `{mechanistic_reason}`.
+pub const I1_SYNTHESIS_VALIDATOR_TASK: &str = "\
+You are validating whether a domain synthesis correctly addresses a constraint check failure.
+
+Constraint check:
+{check_text}
+
+Proposed belief replacement:
+- PRIOR APPROACH: {incorrect_pattern}
+- CORRECT BELIEF: {correct_pattern}
+- MECHANISTIC REASON: {mechanistic_reason}
+
+Score from 0.0 to 1.0: does the correct belief, if held by the proposal author, \
+make it structurally impossible to repeat the wrong belief in a new proposal?
+
+A score of 1.0 means the correct belief fully prevents the violation. \
+A score below 0.5 means the synthesis is too vague to guide concrete implementation.
+
+Respond in JSON: {{\"score\": <float>, \"reason\": \"<one sentence>\"}}";
+
+/// Template string injected into repair context for semantic repair slot.
+/// Variables: `{incorrect_pattern}`, `{correct_pattern}`, `{mechanistic_reason}`, `{source_line}` (optional).
+pub const I1_SEMANTIC_REPAIR_SLOT: &str = "\
+══ DOMAIN KNOWLEDGE CORRECTION ══════════════════════════════════════════════════
+The following beliefs were identified as INCORRECT in your prior attempt.
+You MUST replace these beliefs before generating a new proposal.
+Proposals that repeat the wrong belief will be rejected.
+
+PRIOR APPROACH: {incorrect_pattern}
+CORRECT BELIEF: {correct_pattern}
+WHY THIS MATTERS: {mechanistic_reason}
+{source_line}
+══════════════════════════════════════════════════════════════════════════════════
+";
+
+#[cfg(test)]
+mod gap_i1_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn gap_extractor_prompts_defined() {
+        assert!(!I1_GAP_EXTRACTOR_SYSTEM.is_empty());
+        assert!(I1_GAP_EXTRACTOR_TASK.contains("{check_text}"));
+        assert!(I1_GAP_EXTRACTOR_TASK.contains("{verifier_reasons}"));
+    }
+
+    #[test]
+    fn synthesis_validator_prompt_defined() {
+        assert!(!I1_SYNTHESIS_VALIDATOR_TASK.is_empty());
+        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{check_text}"));
+        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{incorrect_pattern}"));
+        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{correct_pattern}"));
+        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{mechanistic_reason}"));
+    }
+
+    #[test]
+    fn semantic_repair_slot_template_defined() {
+        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{incorrect_pattern}"));
+        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{correct_pattern}"));
+        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{mechanistic_reason}"));
+    }
+
+    #[test]
+    fn i1_semantic_repair_slot_uses_prior_approach_not_wrong_belief() {
+        assert!(
+            !I1_SEMANTIC_REPAIR_SLOT.contains("WRONG BELIEF"),
+            "I1_SEMANTIC_REPAIR_SLOT must use PRIOR APPROACH, not WRONG BELIEF"
+        );
+        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("PRIOR APPROACH"));
+    }
+
+    #[test]
+    fn i1_synthesis_validator_task_uses_prior_approach_not_wrong_belief() {
+        assert!(
+            !I1_SYNTHESIS_VALIDATOR_TASK.contains("WRONG BELIEF"),
+            "I1_SYNTHESIS_VALIDATOR_TASK must use PRIOR APPROACH, not WRONG BELIEF"
+        );
+        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("PRIOR APPROACH"));
+    }
+}

@@ -1,7 +1,10 @@
 use async_nats::jetstream::{self, kv};
+use async_trait::async_trait;
 use futures::StreamExt;
 use h2ai_types::config::AgentRole;
 use h2ai_types::knowledge::KnowledgeNodePattern;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,8 +19,75 @@ pub enum InductionStoreError {
     Serialize(String),
 }
 
-pub struct InductionStore {
+#[async_trait]
+pub trait KvBackend: Send + Sync {
+    async fn get(&self, key: &str) -> Option<bytes::Bytes>;
+    async fn put(&self, key: &str, value: bytes::Bytes) -> Result<(), InductionStoreError>;
+    async fn all_keys(&self) -> Result<Vec<String>, InductionStoreError>;
+}
+
+/// In-memory KV backend for unit tests — no NATS, no I/O.
+/// Stores entries in a `HashMap` protected by a `Mutex`.
+#[derive(Default)]
+pub struct InMemoryKvBackend {
+    data: Mutex<HashMap<String, bytes::Bytes>>,
+}
+
+#[async_trait]
+impl KvBackend for InMemoryKvBackend {
+    async fn get(&self, key: &str) -> Option<bytes::Bytes> {
+        self.data.lock().unwrap().get(key).cloned()
+    }
+
+    async fn put(&self, key: &str, value: bytes::Bytes) -> Result<(), InductionStoreError> {
+        self.data.lock().unwrap().insert(key.to_string(), value);
+        Ok(())
+    }
+
+    async fn all_keys(&self) -> Result<Vec<String>, InductionStoreError> {
+        Ok(self.data.lock().unwrap().keys().cloned().collect())
+    }
+}
+
+struct NatsKvBackend {
     kv: kv::Store,
+}
+
+#[async_trait]
+impl KvBackend for NatsKvBackend {
+    async fn get(&self, key: &str) -> Option<bytes::Bytes> {
+        match self.kv.get(key).await {
+            Ok(Some(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    async fn put(&self, key: &str, value: bytes::Bytes) -> Result<(), InductionStoreError> {
+        self.kv
+            .put(key, value)
+            .await
+            .map(|_| ())
+            .map_err(|e| InductionStoreError::Put(e.to_string()))
+    }
+
+    async fn all_keys(&self) -> Result<Vec<String>, InductionStoreError> {
+        let mut stream = self
+            .kv
+            .keys()
+            .await
+            .map_err(|e| InductionStoreError::Keys(e.to_string()))?;
+        let mut keys = Vec::new();
+        while let Some(result) = stream.next().await {
+            if let Ok(k) = result {
+                keys.push(k);
+            }
+        }
+        Ok(keys)
+    }
+}
+
+pub struct InductionStore {
+    backend: Arc<dyn KvBackend>,
 }
 
 impl InductionStore {
@@ -36,7 +106,14 @@ impl InductionStore {
             })
             .await
             .map_err(|e| InductionStoreError::Create(e.to_string()))?;
-        Ok(Self { kv: store })
+        Ok(Self {
+            backend: Arc::new(NatsKvBackend { kv: store }),
+        })
+    }
+
+    /// Construct from a custom backend (used in tests).
+    pub fn from_backend(backend: Arc<dyn KvBackend>) -> Self {
+        Self { backend }
     }
 
     const fn role_str(role: &AgentRole) -> &'static str {
@@ -49,9 +126,6 @@ impl InductionStore {
     }
 
     /// Key format: `knowledge.{node_id}.{role_str}`
-    /// Uses dots as NATS `JetStream` KV hierarchy separator (not slashes — dots are the
-    /// canonical separator for KV prefix/watch operations in async-nats).
-    /// `node_id` slashes are replaced with hyphens as a safety measure.
     fn key(node_id: &str, role: &AgentRole) -> String {
         format!(
             "knowledge.{}.{}",
@@ -61,8 +135,6 @@ impl InductionStore {
     }
 
     /// Record a successful retrieval: increment `hit_rate` for each `node_id` under this role.
-    /// Non-fatal — errors are returned to the caller; task execution is never gated on this.
-    /// No CAS — `hit_rate` loss under concurrent writes is acceptable (additive best-effort).
     pub async fn record(
         &self,
         node_ids: &[String],
@@ -89,34 +161,22 @@ impl InductionStore {
             let bytes: bytes::Bytes = serde_json::to_vec(&pattern)
                 .map_err(|e| InductionStoreError::Serialize(e.to_string()))?
                 .into();
-            self.kv
-                .put(&key, bytes)
-                .await
-                .map_err(|e| InductionStoreError::Put(e.to_string()))?;
+            self.backend.put(&key, bytes).await?;
         }
         Ok(())
     }
 
     /// Load patterns matching role + any `domain_tag` overlap. Returns top-10 by `hit_rate`.
-    /// Empty `domain_tags` returns nothing (no overlap is possible).
     pub async fn load_patterns(
         &self,
         domain_tags: &[String],
         role: &AgentRole,
     ) -> Result<Vec<KnowledgeNodePattern>, InductionStoreError> {
         let role_suffix = format!(".{}", Self::role_str(role));
-        let mut keys_stream = self
-            .kv
-            .keys()
-            .await
-            .map_err(|e| InductionStoreError::Keys(e.to_string()))?;
+        let keys = self.backend.all_keys().await?;
 
         let mut matched: Vec<KnowledgeNodePattern> = Vec::new();
-        while let Some(key_result) = keys_stream.next().await {
-            let key = match key_result {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
+        for key in keys {
             if !key.ends_with(&role_suffix) {
                 continue;
             }
@@ -136,13 +196,11 @@ impl InductionStore {
     }
 
     async fn get_pattern(&self, key: &str) -> Option<KnowledgeNodePattern> {
-        match self.kv.get(key).await {
-            Ok(Some(bytes)) => serde_json::from_slice::<KnowledgeNodePattern>(&bytes)
-                .map_err(|e| {
-                    tracing::warn!("InductionStore: corrupt pattern at key {key}: {e}");
-                })
-                .ok(),
-            _ => None,
-        }
+        let bytes = self.backend.get(key).await?;
+        serde_json::from_slice::<KnowledgeNodePattern>(&bytes)
+            .map_err(|e| {
+                tracing::warn!("InductionStore: corrupt pattern at key {key}: {e}");
+            })
+            .ok()
     }
 }

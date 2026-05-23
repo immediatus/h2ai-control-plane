@@ -17,6 +17,8 @@ mathematical improvement, and simulation protocol for every open gap.
 | [Group B — Math Apparatus](#brainstorm-group-b--mathematical-formula-validity) | Are the formulas principled or arbitrary? |
 | [Group D — Infrastructure](#brainstorm-group-d--infrastructure-and-operational-gaps) | Do the inputs to the math arrive correctly? |
 | [Group E — Quality Measurement](#brainstorm-group-e--quality-measurement-infrastructure) | Can we measure what we claim to optimise? |
+| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | Two open production gaps: per-task cost enforcement (GAP-H3) and small-N human rating calibration (GAP-H4) |
+| [Group J — Complexity-Aware Execution](#brainstorm-group-j--complexity-aware-execution) | Retry loop cannot distinguish complexity ceiling from quality ceiling (GAP-J1) |
 | [Shared Infrastructure](#shared-infrastructure-required-for-group-a) | Pre-work that blocks Group A experiments |
 
 ---
@@ -28,21 +30,21 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-A1 Self-MoA vs. multi-family routing** | 🟡 PARTIAL | **Critical** | H2-P vs. B3 experiment runnable today |
 | **GAP-A2 USL N_max vs. quality curve** | 🔴 OPEN | **Critical** | Replace USL with N_IT as primary sizer; USL → cost cap only |
 | **GAP-A6 Self-MoA as direct empirical competitor** | 🔴 OPEN | **Critical** | Structured experiment with constraint compliance as primary metric |
-
 | **GAP-B1 β_eff functional form** | 🟡 PARTIAL | Medium | Epistemic β₀ wired 2026-05-20 — empirical validation of linear β_eff still open |
 | GAP-B3 Attribution self-referential | 🟡 PARTIAL | Medium | Conformal prediction once oracle data exists |
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🔴 OPEN | **High** | Three interconnected heuristic proxies; online ρ_EMA mitigates rho after 30 obs |
 | **GAP-B6 LLM-as-Judge validity — Krum on biased scores** | 🔴 OPEN | **High** | Pairwise ranking + adversarial critique; oracle calibration (blocked on GAP-A6) |
 | **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🔴 OPEN | **High** | Multi-family committee enforcement on ModeCollapse retry; structural pre-generation family diversity gate |
-
 | **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🔴 OPEN | Medium | Hierarchical tournament merge; bounded context |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
-
 | **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🔴 OPEN | **High** | BM25 retrieval is wired but there is no measurement of whether it helps; solve with contrastive task pairs (with/without knowledge augmentation) isolating knowledge network contribution |
 | **GAP-F5 Constraint violations don't reshape retrieval routing** | 🔴 OPEN | Medium | Violation signals reach `conflict_beta` bandit but never update knowledge graph edge weights; closed-loop propagation (Solvita-style) would make the retrieval layer learn from failures |
-
+| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🔴 OPEN | Medium | Phase 1 live (checkpoint + TaskMetaState); Phases 2 (Induction), 3 (thinking loop priors), 4 (hybrid retrieval) designed below — not yet implemented |
+| **GAP-H3 Astronomical Cost — no per-task budget or early stopping** | 🔴 OPEN | Medium | 60+ LLM calls per compound task with no warning; AgentDropout consensus gate + FrugalGPT cascade + token-budget prompts |
+| **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | N<10 ratings give noisy calibration; Dirichlet-Categorical posterior + credible-interval circuit breaker |
+| **GAP-J1 Complexity-Ceiling vs Quality-Ceiling Retry Conflation** | 🔴 OPEN | **High** | Retry loop treats all exhaustion as quality failure; structural complexity ceiling requires task decomposition (H1 grafting), not repair-context retries |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
@@ -94,88 +96,7 @@ Config additions to `reference.toml`: `reasoning_memory_tag_gate_threshold = 0.2
 
 ## Innovations Roadmap
 
-Three cross-cutting innovations that each close multiple gaps without requiring new infrastructure.
-Implement these before running any Group A experiments — the experiments will produce better-
-grounded data if the math inputs are correct.
-
-### INNOVATION-4 — N_IT as Primary Sizer; USL as Cost Cap
-
-**Closes:** GAP-A2 (reframes rather than abandons USL).  
-**Cost:** 1 week (routing logic change; no new math).  
-**Why now:** `n_it_optimal` is already implemented in math.md §5.1 and matches `condorcet_n_optimal`
-within ±1 for ρ ∈ [0.3, 0.95]. The information-theoretic framing is self-contained and valid
-without the USL domain-transfer assumption. USL's role should be cost cap, not quality target.
-
-**Current state:**
-
-```
-target N = n_optimal (Condorcet, maximises marginal Q gain)
-ceiling N = N_max (USL, throughput model applied to quality)
-```
-
-Both are "quality" functions. USL's quality claim is unvalidated (no arXiv paper applies USL to
-LLM agent ensembles — confirmed by our search). n_it_optimal is derived from independent
-information theory and is correct on its own terms.
-
-**Proposed state:**
-
-```
-target N = n_it_optimal = ceil(log(0.5) / log(1 - ρ))   [information-theoretic target]
-ceiling N = N_max_USL                                     [cost ceiling, not quality target]
-final N   = min(target_N, ceiling_N, calibration_max_ensemble_size)
-```
-
-The USL ceiling prevents runaway token cost when ρ is underestimated (which it currently is due
-to the proxy chain). It is honest as a cost heuristic. It is not honest as a quality predictor.
-Documents and code should describe N_max as a cost cap explicitly.
-
-**Why information-theoretic N is sound:**
-
-Marginal information gain of agent k in an N-agent ensemble with pairwise correlation ρ:
-
-```
-I_k = H(X) × (1 - ρ)^(k-1)     [geometric decay due to shared information]
-```
-
-Summing: total information = H(X) × (1 - (1-ρ)^N) / ρ
-
-N_IT = min N: (1-ρ)^(N-1) < 0.5  →  N_IT = ceil(log(2) / log(1/(1-ρ)))
-
-This is the point where the marginal information drops below half the per-agent entropy. Adding
-more agents beyond this gives diminishing returns regardless of cost.
-
-**Simulation — N_IT vs N_max across ρ values:**
-
-```python
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-alpha = 0.12
-beta0 = 0.039
-
-def n_max_usl(cg_mean):
-    beta_eff = beta0 * (1 - cg_mean)
-    return max(1, round(np.sqrt((1 - alpha) / beta_eff)))
-
-def n_it_optimal(rho):
-    if rho <= 0: return 100
-    return max(1, int(np.ceil(np.log(0.5) / np.log(max(1e-9, 1 - rho)))))
-
-rho_values = np.linspace(0.05, 0.90, 50)
-cg_values  = 1 - rho_values    # rho_proxy = 1 - CG_mean
-
-n_usl = [n_max_usl(cg) for cg in cg_values]
-n_it  = [n_it_optimal(rho) for rho in rho_values]
-
-print("rho | N_IT | N_max_USL | gap")
-for rho, n_i, n_u in zip(rho_values[::5], n_it[::5], n_usl[::5]):
-    print(f"{rho:.2f} | {n_i:4d} | {n_u:9d} | {n_u - n_i:+4d}")
-# Expected: N_max_USL >> N_IT for low ρ; USL is too permissive
-```
-
----
+One cross-cutting innovation that requires implementation before running Group A experiments — the experiments will produce better-grounded data if the math inputs are correct.
 
 ### INNOVATION-5 — Structured Self-MoA Experiment Protocol
 
@@ -338,11 +259,11 @@ arXiv 2509.19489 (Nowak, 2025) — derives optimal compute allocation for self-c
 budget B = m×n: optimum is m,n ∝ √B, not n→∞. Directly constrains the ensemble budget
 allocation, independent of USL.
 
-**Innovative solution — INNOVATION-4: N_IT as primary sizer.**
+**Innovative solution — N_IT as primary sizer (implemented 2026-05-26).**
 
 Promote `n_it_optimal` to primary N recommendation. Demote N_max_USL to cost cap. The
-information-theoretic formula has a self-contained derivation (see INNOVATION-4 above) and does
-not require the USL domain-transfer assumption. In code: rename or document N_max as
+information-theoretic formula has a self-contained derivation (see math.md §5.1) and does
+not require the USL domain-transfer assumption. **Implemented 2026-05-26.** In code: N_max is
 `n_max_cost_ceiling` and adjust the planning logic:
 
 ```rust
@@ -588,8 +509,6 @@ for rho_formula, label in [(cg, "rho=CG"), (1-cg, "rho=1-CG")]:
 
 ## Brainstorm Group C — Correlated Failure Modes
 
-GAP-C1 through GAP-C4 are implemented (documented in research-state.md §3.3). GAP-C5 is new.
-
 ---
 
 ### GAP-C5: Krum Selection Fails Under Majority Correlated Hallucination 🔴 OPEN — **High**
@@ -808,11 +727,9 @@ Solvita is a four-agent closed loop (Planner → Solver → Oracle → Hacker) w
 
 The architecture maps closely to H2AI:
 
-| Solvita | H2AI equivalent | Gap |
+| Solvita | H2AI equivalent | Open gap |
 |---|---|---|
 | Planner (strategy retrieval) | Context assembler + knowledge provider | GAP-F4 |
-| Solver (patch-based repair) | Explorer adapters + MAPE-K retry + **CSPR-v2 repair context** + **SemanticSpec IR** | Closed (GAP-D7, 2026-05-20) |
-| Oracle (certified test generation) | Verifier + oracle gate + domain oracle types | Closed |
 | Hacker (adversarial attack) | Auditor / constraint eval | GAP-B6, GAP-C5 |
 | Trainable edge weights (REINFORCE) | Bandit state / `conflict_beta` | GAP-F4, GAP-F5 |
 
@@ -890,12 +807,124 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 
 ---
 
+## Brainstorm Group J — Complexity-Aware Execution
+
+---
+
+### GAP-J1: Complexity-Ceiling vs Quality-Ceiling Retry Conflation 🔴 OPEN — **High**
+
+**Gap statement.**
+
+The `max_autonomic_retries` loop treats all retry exhaustion uniformly: surface `best_partial_text` to the HITL gate. This design assumes every `ZeroSurvival` or low-score outcome is a *quality* problem — solvable by better repair context, SRANI grounding, knowledge augmentation, or synthesis. It is wrong for a distinct failure class: the *complexity ceiling*.
+
+Sikka & Sikka (arXiv 2507.07505, 2025) — *"Hallucination Stations"* — prove **Theorem 1**: given a prompt of length N containing a task of complexity O(n³) or higher (n < N), an LLM will unavoidably hallucinate. Retrying with better prompts does not change the computation budget — it hits the same wall N times. The correct intervention is *task decomposition* — breaking the task into sub-problems each below the O(n³) threshold — not iterative repair.
+
+**Two failure modes, same observable signal.**
+
+| Signal | Quality ceiling (addressable) | Complexity ceiling (structural) |
+|---|---|---|
+| `ZeroSurvival` after retry 1 | Wrong grounding; repair context + SRANI helps | Same structural failure class every retry |
+| Verifier scores: mixed (0.0–0.5) | Judge is uncertain; cross-family panel helps | Judge is beyond its own verification budget |
+| Verifier scores: 0.0 with long explanations | Judge identified failure mode | Judge understands the problem but cannot compute the verification |
+| `partial_chars=0` on `MaxRetriesExhausted` | Partial synthesis failed | No partial exists at any complexity budget slice |
+
+The framework currently routes both to HITL. The HLE benchmark observed this directly: the liveness-proof task (`partial_chars=0`, `max_retries=4`, all retries `ZeroSurvival`) was a complexity-ceiling hit — the proposal generation and the liveness-proof verification both required more computation than one forward pass can provide.
+
+**Literature grounding.**
+
+Sikka & Sikka (arXiv 2507.07505, 2025) — **Theorem 1**: *"Given a prompt of length N, which includes a computational task within it of complexity O(n³) or higher, where n < N, an LLM, or an LLM-based agent, will unavoidably hallucinate in its response."* The mechanism: self-attention is O(n²); tasks requiring O(n³)+ computation cannot be solved or verified in a single forward pass. Critically, the theorem applies to verification as well as generation — the LlmJudge verifier faces the same ceiling. Retrying does not change the computation budget; it is not the cure for this failure class.
+
+FrugalGPT (Chen et al., 2023, arXiv 2305.05176) — cascade routing based on complexity estimation: simpler tasks routed to cheap models; hard tasks escalated. The key architectural insight: route *before* burning full-ensemble compute, based on a complexity estimate, not after exhaustion.
+
+TAO thinking loop (`max_iterations`) — H2AI's existing acknowledgement that O(n²) budget can be multiplied by iterative refinement. The connection to GAP-J1: if `max_iterations=5` and `max_retries=4` still exhaust, the combined compute budget is insufficient — decomposition is required, not a sixth iteration.
+
+GAP-H1 (sequential grafting, closed 2026-05-26) — provides the decomposition mechanism. The gap is that grafting is never *preferentially selected* over retry for tasks above the complexity threshold. Grafting is only available as the terminal synthesis path after retry exhaustion, not as the first-choice intervention for hard tasks.
+
+GAP-D2 (compound task cost probe, open) — a lightweight complexity probe before dispatch would address both GAP-D2 (cost control) and GAP-J1 (routing). One cheap small-model call to rate task complexity 1–5 is the shared solution.
+
+**Why verifier reliability degrades at the complexity ceiling.**
+
+The LlmJudge verifier is itself a transformer with the same O(n²) ceiling. For tasks where *verification* requires more computation than the verifier's forward-pass budget — checking whether a distributed-systems liveness proof is correct under partial synchrony, verifying a cryptographic construction, checking NP-hard combinatorial properties — the verifier's scores are structurally unreliable. No amount of cross-family judge rotation, adversarial prompting, or panel voting resolves this: the bottleneck is computation budget, not bias.
+
+Observable signature: verifier produces score=0.0 with a sophisticated multi-paragraph explanation that accurately identifies the proof gap but cannot close it. The verifier *understands* the domain but cannot *compute* the verification. This is distinguishable from bias (which produces consistent preferences regardless of content) and from calibration failure (which produces confident-but-wrong scores).
+
+**Innovative solution — pre-dispatch complexity classification + routing.**
+
+Three-tier implementation:
+
+**Tier 1 — Complexity probe (cheap, immediate).**
+Before dispatching the full N-explorer ensemble, route the task through a lightweight adapter call:
+
+```
+Given this task description, rate its computational complexity on a 1–5 scale:
+1 = factual lookup, direct answer
+2 = multi-step reasoning, clear structure
+3 = constructive proof or algorithm design
+4 = formal proof with multiple sub-claims (liveness, safety, correctness under adversarial conditions)
+5 = requires verification beyond what a single reasoning pass can provide (NP-hard verification, cross-domain proof synthesis)
+
+Return: { complexity: int, rationale: string, decompose_recommended: bool }
+```
+
+One small-model call (Haiku-class). Cost: negligible vs. the N explorers it may replace.
+
+**Tier 2 — Routing decision.**
+
+```
+complexity ≤ 2: standard pipeline (no change)
+complexity = 3: standard pipeline + synthesis wave enabled
+complexity = 4: pre-decompose via H1 grafting with max_rounds=4 before first retry
+complexity = 5: H1 grafting mandatory; HITL gate after first graft failure (don't burn retries)
+```
+
+**Tier 3 — Verifier adaptation.**
+
+For tasks with `complexity ≥ 4`, the verifier receives an additional instruction:
+```
+This task has been classified as requiring multi-step proof verification. 
+Decompose your verification into sub-claims. Report each sub-claim as VERIFIED / UNVERIFIED / BEYOND_BUDGET.
+Score = fraction of VERIFIED sub-claims. Do not score BEYOND_BUDGET as 0.0 — report them separately.
+```
+
+`BEYOND_BUDGET` verdicts surface in `VerifierReasonContradictionEvent` as a distinct `ComplexityExhausted` kind, distinct from `ConstraintViolation`. This allows H2AI to distinguish "verifier rejected this" from "verifier could not evaluate this."
+
+**Config additions in `reference.toml`:**
+
+```toml
+[complexity_routing]
+enabled = false                          # opt-in
+complexity_probe_adapter = "researcher"  # adapter to use for probe (cheap model)
+complexity_probe_timeout_secs = 30
+decompose_threshold = 4                  # complexity ≥ this triggers H1 grafting first
+hitl_threshold = 5                       # complexity ≥ this skips retries, routes to HITL
+verifier_decomposition_enabled = false   # enable sub-claim BEYOND_BUDGET verdicts
+```
+
+**Connection to existing gaps.**
+
+- **GAP-H1** (closed) — grafting exists; complexity routing would select it earlier
+- **GAP-D2** (open) — complexity probe is the shared solution; same cheap model call
+- **GAP-H3** (open) — cost guard benefits: complexity=5 tasks route to HITL before burning 125 LLM calls
+- **GAP-B6** (open) — `BEYOND_BUDGET` verdict kind partially decouples verifier reliability from judge bias
+
+**Falsification condition.**
+
+Construct 20 tasks: 10 rated complexity ≤ 3 (code tasks, factual QA) and 10 rated complexity ≥ 4 (formal proofs, cryptographic constructions). Run with `complexity_routing.enabled = false` (current behaviour) and `= true`. Measure:
+- Retry exhaustion rate by complexity tier — hypothesis: `enabled=true` eliminates retry exhaustion for complexity-5 tasks entirely (routes to HITL after probe)
+- Oracle pass rate — hypothesis: no regression for complexity ≤ 3 (probe correctly identifies no decomposition needed)
+- Token cost — hypothesis: ≥30% reduction for complexity ≥ 4 tasks (grafting or HITL replaces retry burn)
+
+If complexity probe misclassifies ≥20% of tasks (mislabels hard tasks as easy or vice versa), the probe model is too weak and needs a stronger adapter or a few-shot calibration set.
+
+**Effort estimate.** 2 weeks. Complexity probe: 2 days (one new prompt, one new config section). Routing decision in `mape_k.rs`: 3 days. Verifier sub-claim decomposition: 1 week (new verdict kind, updated `run_with_panel`, updated `VerifierReasonContradictionEvent`). Config: 1 day.
+
+---
+
 ## Gap Priority Matrix
 
 | Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
 |---|---|---|---|---|
 | **INNOVATION-5 H2-P vs B3 experiment** | Critical | 1 week | None (single-model) | **Week 1** |
-| **INNOVATION-4 N_IT as primary sizer** | High | 1 week | None | **Week 2** |
 | **GAP-B5 rho_mean documentation** | Medium | 2 days | None | **Week 2** |
 | GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
 | GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
@@ -905,6 +934,9 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 | **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
 | **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
+| **GAP-H3 Cost Guard + AgentDropout** | Medium | 2 weeks | None | Week 3 |
+| **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
+| **GAP-J1 Complexity routing (probe + H1 graft dispatch)** | High | 2 weeks | None (uses existing H1 grafting) | **Week 2** |
 
 ---
 
@@ -930,3 +962,257 @@ Sessions 1 and 2 block on building a shared measurement harness:
 
 Building this harness is the pre-work for Session 1 and is the first concrete deliverable before
 any gap-resolution experiments begin.
+
+---
+
+## Brainstorm Group H — Skeptical Audit Resilience
+
+Two open gaps identified in adversarial review of the H2AI architecture. GAP-H1 (sequential
+grafting) and GAP-H2 (calibration drift) are closed — see `research-state.md §2`. The remaining
+open gaps are:
+
+---
+
+### GAP-H3: Astronomical Cost — No Per-Task Budget Enforcement or Consensus-Based Early Stopping 🔴 OPEN — Medium
+
+**Gap statement.**
+
+A compound task with 5 subtasks, N=5 explorer ensemble, and 4 MAPE-K retries can generate:
+```
+5 subtasks × 5 explorers × 1 TAO turn × 4 retries × 1 verifier = up to 125 LLM calls
+plus synthesis + audit calls
+```
+There is no cost counter, no budget gate, and no early stopping when the ensemble has already
+converged. Operators have no visibility into cost before the task completes. A single runaway task
+can exhaust monthly API budget.
+
+**Literature grounding.**
+
+*AgentDropout* (Zhang et al., ACL 2025) — consensus-based early stopping for multi-agent systems.
+The insight: once a supermajority of agents produce semantically equivalent proposals (measured by
+embedding similarity above 0.85), additional agents provide negligible new information. AgentDropout
+monitors the live proposal set and terminates further agent calls at `K_supermajority / N_total`.
+Measured result: **21.6% reduction in prompt tokens** on MMLU and reasoning benchmarks with <1%
+accuracy penalty. Configuration: `supermajority_threshold` (default 0.6) and `min_agents_before_stopping`
+(default 2, ensures diversity before convergence check).
+
+*FrugalGPT* (Chen et al., 2023, arXiv 2305.05176) — cascade routing through model tiers:
+Haiku → Sonnet → Opus. Each tier is triggered only when the previous tier produces a low-
+confidence or failed-verification result. Measured cost reduction: **30–50% vs. always-Opus**.
+The cascade is compatible with H2AI because the verification gate already signals pass/fail on
+each proposal; failed Haiku proposals escalate to Sonnet automatically.
+
+*Token-Budget-Aware Reasoning* (Xu et al., 2025, arXiv 2502.10463) — adding explicit token budget
+to the system prompt ("Use at most N tokens to reason through this problem") reduces generation
+length by **68.64%** with <5% accuracy penalty on reasoning benchmarks. The mechanism: the model
+infers it is in a cost-constrained regime and focuses reasoning, eliminating filler tokens.
+
+**Innovative solution — Cost Guard + AgentDropout + FrugalGPT cascade.**
+
+**Component 1 — Per-task cost counter.**
+Track `estimated_tokens_used` as a running counter on `MapeKController`. After each LLM dispatch,
+add `input_tokens + output_tokens` (from adapter response metadata). Emit
+`CostThresholdWarning` at 80% of budget; abort with `CostLimitExceeded` (treated as
+`MaxRetriesExhausted` for the API response) at 100%.
+
+**Component 2 — AgentDropout consensus gate.**
+After each exploration wave, compute pairwise embedding similarity across live proposals. If
+`converged_fraction ≥ supermajority_threshold` and `proposals_generated ≥ min_agents_before_stopping`,
+drop remaining agent slots for this wave. The embedding check reuses the existing Krum distance
+infrastructure.
+
+```rust
+fn check_consensus_convergence(
+    proposals: &[ScoredProposal],
+    threshold: f64,
+    min_agents: usize,
+) -> bool {
+    if proposals.len() < min_agents { return false; }
+    let pairs: Vec<f64> = // pairwise cosine similarity
+    let converged = pairs.iter().filter(|&&s| s >= threshold).count();
+    converged as f64 / pairs.len() as f64 >= threshold
+}
+```
+
+**Component 3 — FrugalGPT tier routing.**
+Add `adapter_tier: AdapterTier` (Haiku/Sonnet/Opus) to `AdapterConfig`. On first wave, use
+`tier_start` (default: Sonnet). If verification fails and `frugal_cascade_enabled = true`,
+escalate by one tier for the retry wave. On `MaxRetriesExhausted`, the final attempt always
+uses the highest available tier regardless of cost.
+
+**Component 4 — Token-budget prompts.**
+When `remaining_budget_tokens` drops below `budget_aware_prompt_threshold`, inject into the
+system prompt:
+```
+[BUDGET: Approximately {N} tokens remaining for this task. Be precise and concise.]
+```
+
+**New event types:**
+
+```rust
+pub struct CostThresholdWarning {
+    pub task_id: String,
+    pub tokens_used: u64,
+    pub budget_tokens: u64,
+    pub fraction_used: f64,
+}
+
+pub struct CostLimitExceeded {
+    pub task_id: String,
+    pub tokens_used: u64,
+    pub budget_tokens: u64,
+}
+```
+
+**Config additions in `reference.toml`:**
+
+```toml
+[cost_guard]
+enabled = false                             # opt-in
+budget_tokens_per_task = 100_000            # token budget per task (input + output)
+budget_warning_fraction = 0.80              # emit warning at 80% usage
+agent_dropout_enabled = false               # consensus-based early stopping
+agent_dropout_supermajority_threshold = 0.6 # fraction of pairs that must converge
+agent_dropout_min_agents = 2                # minimum proposals before dropout check
+frugal_cascade_enabled = false             # Haiku→Sonnet→Opus tier escalation
+budget_aware_prompts_enabled = false        # inject token budget hint into system prompt
+budget_aware_prompt_threshold_tokens = 20000 # inject when remaining budget below this
+```
+
+**Test strategy.**
+- Unit: `check_consensus_convergence` returns true/false correctly for given pairwise similarity
+- Unit: cost counter increments correctly; `CostThresholdWarning` fires at 80%; abort at 100%
+- Unit: FrugalGPT tier escalation selects correct adapter on retry
+- Unit: budget-aware prompt is injected only when threshold is crossed
+- Integration: 3-agent wave where 2 converge early → dropout fires, third agent skipped
+
+**Effort estimate.** 2 weeks. AgentDropout consensus check reuses Krum distance code. FrugalGPT
+tier routing requires adapter metadata extension. Token counters require adapter response metadata.
+
+**Falsification condition.**
+On a 5-agent benchmark run: measure tokens-used with `agent_dropout_enabled = true` vs `false`.
+If token reduction is < 10% (vs. AgentDropout paper's 21.6%), the ensemble is not converging
+early enough to benefit — examine whether `supermajority_threshold` needs lowering or whether the
+task distribution has inherently high diversity.
+
+---
+
+### GAP-H4: Small-N Human Ratings — MoM ECE Estimator Breaks Below N=50 🔴 OPEN — Medium
+
+**Gap statement.**
+
+The human oracle gateway (`OracleKind::HumanRating`) collects discrete ratings from human
+evaluators and feeds them into `EnsembleCalibration` via ECE (Expected Calibration Error)
+computation. The ECE estimator uses Method-of-Moments (MoM): it divides predictions into 10 bins
+and computes mean confidence vs. mean accuracy per bin. This estimator has well-known breakdown at
+small N:
+- With N<50 ratings, each bin contains ≤5 samples — variance of the bin mean is O(1/√5) ≈ 45%
+- Outlier ratings dominate; one unusual evaluator can flip a bin's calibration signal
+- At N<10, MoM produces calibration estimates with confidence intervals wider than the [0,1] scale
+
+For most tenants, human rating volumes will be N=3–30 per constraint domain (qualitative tasks are
+expensive to rate). The calibration output from human ratings is essentially noise at these
+volumes, yet it feeds directly into `EnsembleCalibration` with the same weight as oracle-grounded
+accuracy estimates with N=1000+.
+
+**Literature grounding.**
+
+*Dirichlet-Categorical posterior* (Minka, 2000; Gelman et al., 2013) — the correct Bayesian model
+for small-N count data on a discrete rating scale (1–5 or pass/fail). The Dirichlet prior
+concentrates posterior mass on the prior mean when N is small, and releases toward the empirical
+mean as N grows. This provides natural shrinkage without requiring a sample-size threshold.
+
+*Bayesian average for rating aggregation* (Laplace Smoothing generalization):
+```
+bayesian_mean = (sum_of_ratings + C × prior_mean) / (N + C)
+```
+where `C` is the effective prior count (analogous to "virtual observations from the prior").
+Standard recommendation (MovieLens, Goodreads, IMDb): `C = sqrt(mean_N)` where `mean_N` is the
+average rating count across all items.
+
+*SSBC — Small-Sample Bootstrap Calibration* (Bröcker & Smith, 2007, Monthly Weather Review) —
+conformal calibration valid down to N=47. Bootstrap resampling with bias correction for small
+histogram bins. The meteorological community standard for rank histogram calibration with
+< 50 samples.
+
+*Hybrid weight schedule* — practical recommendation from Bayesian A/B testing literature (Kohavi
+et al., 2020): `weight = min(1.0, N / N_effective_min)` where `N_effective_min` is the sample
+size at which the posterior credible interval narrows below a target width. For a beta-binomial
+model on pass/fail ratings, N_effective_min ≈ 15 gives a 95% credible interval of ±0.25.
+
+**N threshold tiers.**
+
+| N range | Estimator | Action |
+|---|---|---|
+| N < 10 | Prior only | Use `human_rating_prior_mean` (configured per tenant); discard sample entirely for calibration update |
+| 10 ≤ N < 30 | Bayesian average | `bayesian_mean = (sum + C × prior) / (N + C)`; weight in ECE update = `min(1.0, N / 15)` |
+| 30 ≤ N < 50 | SSBC bootstrap | Bootstrap-corrected histogram calibration; credible interval width determines whether the calibration gate opens |
+| N ≥ 50 | Standard MoM ECE | Full ECE computation; credible interval from SSBC used as confidence band |
+
+**Credible-interval circuit breaker.**
+
+Do not apply a human rating calibration update if the 95% credible interval of the updated ECE
+exceeds `human_rating_max_credible_interval_width` (default: 0.30). This prevents noisy small-N
+updates from overwriting calibration built from oracle-grounded data.
+
+**Implementation plan.**
+
+New function in `crates/h2ai-autonomic/src/calibration.rs`:
+
+```rust
+pub struct HumanRatingEstimate {
+    pub bayesian_mean: f64,
+    pub credible_interval_half_width: f64,  // 95% CI half-width
+    pub effective_n: f64,                    // N adjusted for prior
+    pub weight: f64,                         // weight for ECE update: min(1.0, N/N_min)
+    pub estimator_used: HumanRatingEstimator,
+}
+
+pub enum HumanRatingEstimator {
+    PriorOnly,
+    BayesianAverage,
+    BootstrapCorrected,
+    StandardMoM,
+}
+
+pub fn estimate_human_rating(
+    ratings: &[f64],          // raw ratings normalised to [0, 1]
+    prior_mean: f64,
+    prior_count: f64,         // C in Bayesian average formula
+    n_min: f64,               // N_effective_min for weight schedule
+) -> HumanRatingEstimate { ... }
+```
+
+The existing `update_from_oracle_verdict` in `calibration.rs` receives `HumanRatingEstimate`;
+applies the `weight` to the ECE update and skips the update if `credible_interval_half_width >
+max_credible_interval_width`.
+
+**Config additions in `reference.toml`:**
+
+```toml
+[calibration]
+human_rating_prior_mean = 0.5          # Dirichlet prior centre (0.5 = uninformative pass/fail)
+human_rating_prior_count = 5.0         # effective prior observations C
+human_rating_n_min = 15.0              # N_effective_min for hybrid weight schedule
+human_rating_bootstrap_n_samples = 500 # SSBC bootstrap resamples for N in [30, 50)
+human_rating_max_credible_interval_width = 0.30  # circuit breaker: skip update if CI too wide
+```
+
+**Test strategy.**
+- Unit: `estimate_human_rating` returns `PriorOnly` for N<10, `BayesianAverage` for N=12,
+  `BootstrapCorrected` for N=35, `StandardMoM` for N=60
+- Unit: Bayesian average formula is mathematically correct against closed-form for 3 specific inputs
+- Unit: circuit breaker fires when CI width > threshold; calibration update skipped
+- Unit: weight = `min(1.0, N/15)` — verifies N=7.5 → 0.5, N=15 → 1.0, N=30 → 1.0
+- Integration: simulate 8-rating stream; verify calibration does not update until N reaches 10
+
+**Effort estimate.** 1 week. Core estimator is pure math, no external crates needed. Bootstrap
+requires ~50 lines of Rust. Config wiring through existing `CalibrationConfig`.
+
+**Falsification condition.**
+Inject synthetic human rating streams with N=5, N=15, N=40, N=100 and known ground-truth ECE.
+If Bayesian estimator does not reduce RMSE vs. MoM for N=15 on 1000 bootstrap trials, the prior
+is mis-specified and `human_rating_prior_count` needs tuning. Expected: RMSE(Bayesian) < RMSE(MoM)
+for N ≤ 30 by at least 20%.
+
+

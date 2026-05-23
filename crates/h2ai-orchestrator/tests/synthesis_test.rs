@@ -291,3 +291,100 @@ async fn synthesis_phase_returns_critique_failed_on_two_bad_json() {
         result
     );
 }
+
+#[test]
+fn critique_verdict_weak_deserializes() {
+    let json =
+        r#"{"proposal_id": "p1", "strengths": [], "weaknesses": ["too vague"], "verdict": "weak"}"#;
+    use h2ai_orchestrator::synthesis::ProposalCritique;
+    let critique: ProposalCritique = serde_json::from_str(json).unwrap();
+    assert!(matches!(critique.verdict, CritiqueVerdict::Weak));
+}
+
+#[tokio::test]
+async fn synthesis_phase_returns_adapter_error_on_invalid_tau() {
+    let adapter = FixedAdapter::new("{}".to_string(), 0);
+    let proposals = vec![make_proposal("text")];
+    let cfg = H2AIConfig {
+        synthesis_tau: -1.0, // invalid tau → TauValue::new fails
+        ..H2AIConfig::default()
+    };
+    let input = SynthesisInput {
+        task_description: "task",
+        constraint_list: "none",
+        proposals: &proposals,
+        adapter: &adapter,
+        cfg: &cfg,
+    };
+    let result = SynthesisPhase::run(input).await;
+    assert!(
+        matches!(result, Err(SynthesisError::AdapterError(_))),
+        "invalid tau must produce AdapterError, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn synthesis_phase_returns_adapter_error_when_stage2_fails() {
+    // Stage 1 (critique) succeeds with valid JSON; Stage 2 (synthesis adapter) fails.
+    use h2ai_types::adapter::AdapterError;
+
+    #[derive(Debug)]
+    struct FailSecondAdapter {
+        first_output: String,
+        call_count: Arc<Mutex<usize>>,
+        kind: AdapterKind,
+    }
+    #[async_trait::async_trait]
+    impl IComputeAdapter for FailSecondAdapter {
+        async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(ComputeResponse {
+                    output: self.first_output.clone(),
+                    token_cost: 10,
+                    adapter_kind: self.kind.clone(),
+                    tokens_used: None,
+                    reasoning_trace: None,
+                })
+            } else {
+                Err(AdapterError::NetworkError("stage2 network failure".into()))
+            }
+        }
+        fn kind(&self) -> &AdapterKind {
+            &self.kind
+        }
+    }
+
+    let valid_critique = r#"{
+        "proposal_critiques": [{"proposal_id": "p1", "strengths": ["s"], "weaknesses": [], "verdict": "strong"}],
+        "contradictions": [],
+        "synthesis_guidance": "go."
+    }"#;
+
+    let adapter = FailSecondAdapter {
+        first_output: valid_critique.to_string(),
+        call_count: Arc::new(Mutex::new(0)),
+        kind: AdapterKind::CloudGeneric {
+            endpoint: "mock://failsecond".into(),
+            api_key_env: "NONE".into(),
+            model: None,
+        },
+    };
+    let proposals = vec![make_proposal("proposal text")];
+    let cfg = H2AIConfig::default();
+    let input = SynthesisInput {
+        task_description: "task",
+        constraint_list: "none",
+        proposals: &proposals,
+        adapter: &adapter,
+        cfg: &cfg,
+    };
+    let result = SynthesisPhase::run(input).await;
+    assert!(
+        matches!(result, Err(SynthesisError::AdapterError(_))),
+        "stage 2 adapter failure must produce AdapterError, got: {:?}",
+        result
+    );
+}

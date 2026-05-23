@@ -28,6 +28,10 @@ fn semantic_presence_child_injects_concept_into_context() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("task with presence constraint", &[doc], false);
     assert!(
@@ -61,6 +65,10 @@ fn semantic_exclusion_child_injects_pattern_into_context() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("stateless jwt design", &[doc], false);
     assert!(
@@ -94,6 +102,10 @@ fn composite_with_vocabulary_presence_child_appends_terms_block() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("budget mutation design", &[doc], true);
     assert!(
@@ -126,6 +138,10 @@ fn negative_keyword_predicate_appends_terms_block() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("stateless design", &[doc], false);
     assert!(
@@ -155,6 +171,10 @@ fn non_composite_predicate_with_no_vocab_emits_no_extra_block() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("task", &[doc], true);
     // The constraint id should not appear since it's a bare LlmJudge (not wrapped in Composite)
@@ -185,6 +205,10 @@ fn composite_without_llm_judge_child_uses_active_id_entry() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     // include_rubric=true but no LlmJudge child — falls back to ACTIVE_ID entry
     let result = compile("resilience design", &[doc], true);
@@ -304,6 +328,10 @@ fn include_rubric_false_still_includes_vocabulary_constraints() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("task description", &[vocab_doc], false);
     assert!(
@@ -349,6 +377,10 @@ fn semantic_ordering_constraint_injects_ordering_requirement_and_hint() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let result = compile("task description", &[doc], false);
     assert!(

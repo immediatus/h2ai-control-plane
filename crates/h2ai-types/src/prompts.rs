@@ -193,3 +193,90 @@ pub const SYNTHESIS_WRITE_PROMPT: &str = concat!(
     "Critique document:\n{critique_document}\n\n",
     "Write only the final synthesised response. No preamble, no meta-commentary."
 );
+
+// ── GAP-F1: Constraint-Informed Synthesis prompts ─────────────────────────────
+
+/// B1 mechanism: compliance checklist block injected into the repair context at retry ≥ 1.
+/// Variables: `{checklist_items}` — newline-joined numbered list produced by
+/// `build_checklist_items(checks)` in repair.rs.
+pub const F1_COMPLIANCE_CHECKLIST: &str = concat!(
+    "--- COMPLIANCE CHECKLIST (satisfy ALL of the following) ---\n",
+    "{checklist_items}\n",
+    "Your response MUST satisfy every item above. ",
+    "Check each one explicitly before finalising.\n",
+    "--- END CHECKLIST ---"
+);
+
+/// B2 mechanism: one partial-pass example block.
+/// Variables: `{n}` index (1-based), `{score}` (e.g. "0.67"), `{covered_indices}` (e.g. "1, 3"),
+/// `{status_lines}` — newline-joined ✓/✗ lines, `{proposal_text}` — truncated proposal.
+pub const F1_PARTIAL_EXAMPLE: &str = concat!(
+    "--- PARTIAL EXAMPLE {n} (score={score}, covers checks: {covered_indices}) ---\n",
+    "The following proposal satisfies SOME but not ALL constraints.\n",
+    "Use it as a source of correct techniques — do NOT copy its failures.\n\n",
+    "Per-constraint status:\n",
+    "{status_lines}\n\n",
+    "Proposal text (may be truncated):\n",
+    "{proposal_text}\n",
+    "--- END PARTIAL EXAMPLE {n} ---"
+);
+
+/// B2 mechanism: synthesis instruction appended after partial examples when > 0 partials present.
+pub const F1_PARTIAL_SYNTHESIS_INSTRUCTION: &str = concat!(
+    "SYNTHESIS TASK: Produce a single proposal that combines the SATISFIED approaches\n",
+    "from the examples above, while fixing all FAILED items. Do not introduce any\n",
+    "pattern not already justified above."
+);
+
+/// A mechanism: synthesis wave wrapper injected around the partial examples and checklist.
+/// Variables: `{checklist_block}` (F1_COMPLIANCE_CHECKLIST rendered),
+/// `{example_blocks}` (F1_PARTIAL_EXAMPLE blocks joined), `{final_task}` (F1_SYNTHESIS_FINAL_TASK).
+pub const F1_SYNTHESIS_WAVE_HEADER: &str = concat!(
+    "--- SYNTHESIS WAVE ---\n",
+    "Previous attempts partially satisfied the constraints. ",
+    "Your task is to produce a single final proposal combining the best elements ",
+    "of the examples below.\n\n",
+    "Examples are ordered by constraint coverage breadth (most checks covered first), ",
+    "not by raw score. Example 1 is the structural backbone — preserve its architecture.\n"
+);
+
+/// A mechanism: final task directive with Coherence Mandate.
+pub const F1_SYNTHESIS_FINAL_TASK: &str = concat!(
+    "FINAL SYNTHESIS TASK:\n",
+    "Produce ONE proposal that satisfies EVERY item in the checklist above.\n\n",
+    "COHERENCE MANDATE (strictly enforced):\n",
+    "  - You must NOT simply concatenate solutions from the examples above.\n",
+    "  - If the partial proposals use architecturally incompatible foundations\n",
+    "    (e.g., one uses Postgres polling, another uses Redis pub-sub), you must\n",
+    "    unify them under a SINGLE coherent architecture before addressing\n",
+    "    any individual constraint.\n",
+    "  - Do NOT output contradictory state mechanisms. A design that stores state\n",
+    "    in two mutually exclusive systems simultaneously is invalid, regardless of\n",
+    "    whether it passes individual binary checks in isolation.\n",
+    "  - Your output must be a unified, internally consistent engineering design.\n",
+    "    Verify architectural coherence before verifying constraint checklist items.\n",
+    "--- END SYNTHESIS WAVE ---"
+);
+
+/// GAP-H1: Single graft-step prompt. Variables:
+/// `{constraint_ids}` — comma-joined constraint IDs being integrated,
+/// `{base_text}` — current working draft (seed or result of previous graft),
+/// `{candidate_text}` — full text of the partial that satisfies the target constraints.
+pub const H1_GRAFT_CONTEXT: &str = concat!(
+    "--- GRAFT STEP (constraints: {constraint_ids}) ---\n",
+    "You are extending a working draft to satisfy additional constraints.\n\n",
+    "CURRENT DRAFT:\n",
+    "{base_text}\n\n",
+    "CONSTRAINT CLUSTER TO INTEGRATE ({constraint_ids}):\n",
+    "The following proposal satisfies the above constraints. ",
+    "Extract ONLY the techniques relevant to those constraints — do not import other patterns.\n\n",
+    "{candidate_text}\n\n",
+    "TASK: Extend the current draft to satisfy the constraints listed above.\n",
+    "Rules:\n",
+    "  1. Do NOT violate constraints already satisfied in the current draft.\n",
+    "  2. Do NOT copy architectural patterns from the candidate unless required by the constraints.\n",
+    "  3. If a constraint is architecturally incompatible with the current draft, prefer the\n",
+    "     current draft's architecture and document the tradeoff explicitly.\n",
+    "  4. Output the complete updated draft, not a diff.\n",
+    "--- END GRAFT STEP ---"
+);

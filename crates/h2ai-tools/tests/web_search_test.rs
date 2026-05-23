@@ -1,8 +1,8 @@
 use async_trait::async_trait;
+use h2ai_test_utils::MockSearchBackend;
 use h2ai_tools::error::ToolError;
 use h2ai_tools::web_search::{
-    GeminiSearchBackend, MockSearchBackend, WebSearchBackend, WebSearchExecutor,
-    WikipediaSearchBackend,
+    GeminiSearchBackend, WebSearchBackend, WebSearchExecutor, WikipediaSearchBackend,
 };
 use h2ai_tools::ToolExecutor;
 use std::sync::{Arc, Mutex};

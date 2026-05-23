@@ -1,5 +1,6 @@
 use h2ai_config::prompts::{
-    COMPILER_CONSTRAINT_ORDERING, THINKING_ARCHETYPE_SELECT_ITER1, THINKING_SYNTHESIS_TASK,
+    PromptTemplate, COMPILER_CONSTRAINT_ORDERING, THINKING_ARCHETYPE_SELECT_ITER1,
+    THINKING_SYNTHESIS_TASK,
 };
 
 #[test]
@@ -35,4 +36,10 @@ fn synthesis_task_renders_perspectives_and_prior() {
         ("prior_understanding", ""),
     ]);
     assert!(rendered.contains("arch A: use Redis"));
+}
+
+#[test]
+fn prompt_template_display_returns_raw_text() {
+    const T: PromptTemplate = PromptTemplate("hello {world}");
+    assert_eq!(format!("{T}"), "hello {world}");
 }

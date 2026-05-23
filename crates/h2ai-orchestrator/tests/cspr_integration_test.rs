@@ -57,7 +57,7 @@
 /// Exercises the full chain:
 ///   ConstraintConflictGraph::build → build_repair_context → output format
 /// without requiring a live adapter or NATS connection.
-use h2ai_autonomic::repair::{build_repair_context, RepairInput};
+use h2ai_autonomic::repair::{build_repair_context, RepairInput, RepairTarget};
 use h2ai_constraints::conflict::ConstraintConflictGraph;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 
@@ -76,6 +76,10 @@ fn make_doc_with_hint(id: &str, first: &str, then: &str, hint: &str) -> Constrai
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 
@@ -105,17 +109,36 @@ fn cspr_repair_context_for_competing_constraints() {
     let prior_text = "We publish the billing event to Kafka first, then debit the Redis budget.";
     let system_ctx = "You are an expert system designer. Evaluate the task below.";
 
+    let targets = vec![
+        RepairTarget {
+            constraint_id: "C-005".to_owned(),
+            constraint_description: "account debit must occur before Kafka publish".to_owned(),
+            remediation_hint: Some(
+                "Debit the budget atomically first, then publish the billing event.".to_owned(),
+            ),
+            criteria_pass: None,
+            verifier_reasons: vec![],
+        },
+        RepairTarget {
+            constraint_id: "C-999".to_owned(),
+            constraint_description: "Kafka publish must occur before account debit".to_owned(),
+            remediation_hint: Some("Publish to Kafka before debiting.".to_owned()),
+            criteria_pass: None,
+            verifier_reasons: vec![],
+        },
+    ];
     let ctx = build_repair_context(RepairInput {
         prior_proposal_text: prior_text,
-        violated_ids: &["C-005".to_owned(), "C-999".to_owned()],
-        violated_hints: &[
-            Some("Debit the budget atomically first, then publish the billing event.".to_owned()),
-            Some("Publish to Kafka before debiting.".to_owned()),
-        ],
+        targets: &targets,
+        zone3_hints: None,
         conflict_graph: &graph,
         retry_count: 1,
         attempts_remaining: 2,
         system_context_with_rubric: system_ctx,
+        checks: &[],
+        partial_passes: &[],
+        prior_best_score: None,
+        domain_syntheses: &[],
     });
 
     assert!(
@@ -151,17 +174,34 @@ fn cspr_repair_context_non_conflicting_constraints_no_meta_repair() {
     let graph = ConstraintConflictGraph::build(&docs);
     assert!(!graph.are_conflicting("A", "B"));
 
+    let targets = vec![
+        RepairTarget {
+            constraint_id: "A".to_owned(),
+            constraint_description: "x must occur before y".to_owned(),
+            remediation_hint: Some("Do X before Y".to_owned()),
+            criteria_pass: None,
+            verifier_reasons: vec![],
+        },
+        RepairTarget {
+            constraint_id: "B".to_owned(),
+            constraint_description: "a must occur before b".to_owned(),
+            remediation_hint: Some("Do A before B".to_owned()),
+            criteria_pass: None,
+            verifier_reasons: vec![],
+        },
+    ];
     let ctx = build_repair_context(RepairInput {
         prior_proposal_text: "prior",
-        violated_ids: &["A".to_owned(), "B".to_owned()],
-        violated_hints: &[
-            Some("Do X before Y".to_owned()),
-            Some("Do A before B".to_owned()),
-        ],
+        targets: &targets,
+        zone3_hints: None,
         conflict_graph: &graph,
         retry_count: 0,
         attempts_remaining: 3,
         system_context_with_rubric: "CTX",
+        checks: &[],
+        partial_passes: &[],
+        prior_best_score: None,
+        domain_syntheses: &[],
     });
 
     assert!(

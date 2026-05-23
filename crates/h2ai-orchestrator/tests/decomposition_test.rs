@@ -55,7 +55,8 @@ use async_trait::async_trait;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_orchestrator::decomposition::{
-    corpus_fallback, parse_decomposition_response, prune_by_orthogonality, run_decomposition_agent,
+    compute_role_diversity, corpus_fallback, parse_decomposition_response, prune_by_orthogonality,
+    run_decomposition_agent,
 };
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::{AdapterKind, ParetoWeights};
@@ -266,6 +267,10 @@ fn make_constraint(id: &str, domains: Vec<&str>) -> ConstraintDoc {
         domains: domains.into_iter().map(str::to_string).collect(),
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 
@@ -313,6 +318,38 @@ fn corpus_fallback_untagged_constraints_produce_default_slot() {
     let slots = corpus_fallback(&corpus, &weights, 3);
     assert_eq!(slots.len(), 1);
     assert!(!slots[0].role_frame.is_empty());
+}
+
+#[test]
+fn corpus_fallback_compliance_domain_produces_analyst_slot() {
+    let corpus = vec![make_constraint("C-010", vec!["compliance"])];
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let slots = corpus_fallback(&corpus, &weights, 5);
+    assert_eq!(slots.len(), 1);
+    assert!(slots[0].role_frame.contains("regulatory compliance"));
+}
+
+#[test]
+fn corpus_fallback_regulatory_and_audit_domains_produce_analyst_slot() {
+    let corpus = vec![
+        make_constraint("C-011", vec!["regulatory"]),
+        make_constraint("C-012", vec!["audit"]),
+    ];
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let slots = corpus_fallback(&corpus, &weights, 5);
+    assert_eq!(slots.len(), 2);
+    assert!(slots
+        .iter()
+        .all(|s| s.role_frame.contains("regulatory compliance")));
+}
+
+#[test]
+fn corpus_fallback_unknown_domain_produces_architect_slot() {
+    let corpus = vec![make_constraint("C-020", vec!["accessibility"])];
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let slots = corpus_fallback(&corpus, &weights, 5);
+    assert_eq!(slots.len(), 1);
+    assert!(slots[0].role_frame.contains("senior software architect"));
 }
 
 // ── run_decomposition_agent ──────────────────────────────────────────────────
@@ -894,4 +931,169 @@ fn step1_empty_thinking_context_produces_no_prefix() {
     ]);
     assert!(!rendered.contains("PRIOR THINKING CONTEXT"));
     assert!(rendered.contains("design RTB timeout"));
+}
+
+// ── LlmJudge + Composite rubric extraction via run_decomposition_agent ────────
+
+#[tokio::test]
+async fn pipeline_extracts_llm_judge_rubric_into_step1_context() {
+    let json_slot = r#"[{"role_frame": "You are a security engineer.", "cot_style": "step_by_step", "focus_mandate": "security constraint SEC-001", "rejection_criteria": "any security violation"}]"#;
+    let adapter = SequentialMockAdapter::new(vec![
+        "Analysis: this constraint covers no-SQL-injection.",
+        "Roles: one security engineer.",
+        json_slot,
+    ]);
+
+    // new_llm_judge creates Composite { And, [LlmJudge { rubric }] }
+    // → exercises both Composite and LlmJudge arms of extract_rubric
+    let mut constraint = ConstraintDoc::new_llm_judge("SEC-001", "No SQL injection allowed.");
+    constraint.domains = vec!["security".into()];
+    constraint.remediation_hint = Some("Sanitize all user inputs.".into());
+
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let slots = run_decomposition_agent(
+        "Design a secure auth service",
+        &[constraint],
+        &weights,
+        2,
+        5,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "Think carefully.",
+    )
+    .await
+    .unwrap();
+    assert_eq!(slots.len(), 1);
+}
+
+// ── Untagged constraint produces "untagged" in step1 context ──────────────────
+
+#[tokio::test]
+async fn pipeline_handles_untagged_constraint_with_empty_domains() {
+    let json_slot = r#"[{"role_frame": "You are an architect.", "cot_style": "step_by_step", "focus_mandate": "meet constraints", "rejection_criteria": "any violation"}]"#;
+    let adapter = SequentialMockAdapter::new(vec![
+        "Analysis: general constraint.",
+        "Roles: one architect.",
+        json_slot,
+    ]);
+
+    // Constraint with empty domains → "untagged" in step1_analyze_task
+    // Also empty corpus_domains → step3_assemble_json_task gets empty domains list
+    let constraint = ConstraintDoc {
+        id: "GEN-001".into(),
+        source_file: "gen.yaml".into(),
+        description: "General quality constraint.".into(),
+        severity: ConstraintSeverity::Advisory,
+        predicate: ConstraintPredicate::LengthRange {
+            min_chars: None,
+            max_chars: None,
+        },
+        remediation_hint: None,
+        domains: vec![], // empty → "untagged"
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
+    };
+
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let slots = run_decomposition_agent(
+        "Design a quality service",
+        &[constraint],
+        &weights,
+        1,
+        3,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await
+    .unwrap();
+    assert_eq!(slots.len(), 1);
+}
+
+// ── Line 47: value_to_string array with non-String item ───────────────────────
+
+#[test]
+fn parse_coerces_array_with_numeric_item_to_string() {
+    // Array focus_mandate where one item is a number (not a String) → line 47 executes
+    let json = r#"[{
+        "role_frame": "You are a security engineer.",
+        "cot_style": "none",
+        "focus_mandate": ["Ensure reliability", 42]
+    }]"#;
+    let slots = parse_decomposition_response(json).unwrap();
+    assert_eq!(slots.len(), 1);
+    assert!(
+        slots[0].focus_mandate.contains("42"),
+        "numeric array item must be stringified"
+    );
+}
+
+// ── Line 51: value_to_string with non-String, non-Array value ────────────────
+
+#[test]
+fn parse_coerces_numeric_role_frame_to_string() {
+    // role_frame is a number → value_to_string hits the `other => other.to_string()` arm
+    let json = r#"[{
+        "role_frame": 99,
+        "cot_style": "none"
+    }]"#;
+    let slots = parse_decomposition_response(json).unwrap();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].role_frame, "99");
+}
+
+// ── Line 106: NoJsonArray when ] comes before [ in response ───────────────────
+
+#[test]
+fn parse_returns_error_when_closing_bracket_before_opening() {
+    // ] appears before [ → end <= start → DecompositionError::NoJsonArray
+    let response = "] this text [ does not contain a valid array";
+    let result = parse_decomposition_response(response);
+    assert!(
+        result.is_err(),
+        "response with ] before [ must produce NoJsonArray error"
+    );
+}
+
+// ── Line 153: prune_by_orthogonality with single slot (n==1) ─────────────────
+
+#[test]
+fn prune_single_slot_returns_it_unchanged() {
+    // n == 1 → mean_sim[0] = 0.0 (the else branch at line 153)
+    let slots = vec![make_slot("security engineer")];
+    let model = IdenticalModel;
+    let pruned = prune_by_orthogonality(slots, 1, &model);
+    assert_eq!(pruned.len(), 1, "single slot must not be pruned");
+}
+
+// ── Lines 178-180: compute_role_diversity with a real EmbeddingModel ──────────
+
+#[test]
+fn compute_role_diversity_with_model_returns_non_one() {
+    // The Some(m) branch in compute_role_diversity — previously untested
+    let slots = vec![
+        make_slot("security engineer"),
+        make_slot("performance engineer"),
+    ];
+    let model = OrthogonalModel;
+    let diversity = compute_role_diversity(&slots, Some(&model));
+    assert!(
+        diversity > 0.0,
+        "orthogonal slots must produce positive diversity"
+    );
+}
+
+#[test]
+fn compute_role_diversity_none_model_returns_one() {
+    let slots = vec![make_slot("any role"), make_slot("another role")];
+    let diversity = compute_role_diversity(&slots, None);
+    assert!((diversity - 1.0).abs() < 1e-9, "None model must return 1.0");
 }

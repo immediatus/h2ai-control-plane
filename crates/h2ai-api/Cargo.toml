@@ -57,6 +57,7 @@ reqwest           = { workspace = true, features = ["json"] }
 fastembed-embed = ["h2ai-context/fastembed-embed"]
 
 [dev-dependencies]
+h2ai-test-utils  = { path = "../h2ai-test-utils" }
 axum          = { workspace = true, features = ["macros"] }
 tokio         = { workspace = true, features = ["macros", "rt"] }
 tower         = { workspace = true, features = ["util"] }

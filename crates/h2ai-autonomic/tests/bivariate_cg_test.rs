@@ -153,12 +153,20 @@ fn tombstone_contains_constraint_ids_not_proposal_text() {
             score: 0.0,
             severity_label: "Hard".into(),
             remediation_hint: Some("Use JWT tokens only".into()),
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
         ConstraintViolation {
             constraint_id: "CONSTRAINT-004".into(),
             score: 0.4,
             severity_label: "Soft".into(),
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
     ];
     let tombstone = synthesize_tombstone(&violations).expect("violations non-empty → Some");
@@ -223,6 +231,10 @@ fn constrained_exploration_tombstone_injection_signal() {
         score: 0.0,
         severity_label: "Hard".into(),
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }];
     let tombstone = synthesize_tombstone(&violations);
     assert!(

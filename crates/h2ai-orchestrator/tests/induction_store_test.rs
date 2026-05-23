@@ -1,73 +1,23 @@
 #![allow(
-    clippy::float_cmp,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::too_many_lines,
-    clippy::items_after_statements,
-    clippy::significant_drop_tightening,
-    clippy::significant_drop_in_scrutinee,
-    clippy::unused_async,
-    clippy::default_trait_access,
-    clippy::must_use_candidate,
-    clippy::return_self_not_must_use,
-    clippy::cast_possible_wrap,
-    clippy::doc_markdown,
-    clippy::manual_let_else,
-    clippy::match_wildcard_for_single_variants,
-    clippy::similar_names,
-    clippy::match_same_arms,
-    clippy::literal_string_with_formatting_args,
-    clippy::redundant_clone,
-    clippy::redundant_closure_for_method_calls,
-    clippy::useless_format,
-    clippy::option_if_let_else,
-    clippy::map_unwrap_or,
-    clippy::cloned_instead_of_copied,
-    clippy::trivially_copy_pass_by_ref,
-    clippy::cast_lossless,
-    clippy::uninlined_format_args,
-    clippy::needless_pass_by_value,
-    clippy::explicit_iter_loop,
-    clippy::needless_borrow,
-    clippy::large_futures,
-    clippy::manual_string_new,
-    clippy::needless_lifetimes,
-    clippy::elidable_lifetime_names,
-    clippy::redundant_else,
-    clippy::stable_sort_primitive,
-    clippy::type_complexity,
-    clippy::wildcard_imports,
-    clippy::single_match_else,
-    clippy::missing_fields_in_debug,
-    clippy::doc_link_with_quotes,
-    clippy::implicit_hasher,
-    clippy::needless_collect,
-    clippy::suboptimal_flops,
-    clippy::missing_const_for_fn,
-    clippy::needless_type_cast,
-    clippy::unreadable_literal,
-    clippy::no_effect_underscore_binding
+    clippy::missing_errors_doc,
+    clippy::significant_drop_tightening
 )]
-//! Requires NATS — skipped when NATS_URL env is absent.
 
-use h2ai_orchestrator::induction_store::InductionStore;
+use h2ai_orchestrator::induction_store::{InMemoryKvBackend, InductionStore, KvBackend};
 use h2ai_types::config::AgentRole;
+use h2ai_types::sizing::TauValue;
+use std::sync::Arc;
 
-async fn maybe_connect() -> Option<async_nats::Client> {
-    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
-    async_nats::connect(&url).await.ok()
+fn mock_store() -> InductionStore {
+    InductionStore::from_backend(Arc::new(InMemoryKvBackend::default()))
 }
+
+// ── cold start ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn cold_start_returns_empty() {
-    let Some(nats) = maybe_connect().await else {
-        return;
-    };
-    let bucket = format!("H2AI_MEMORY_test_{}", uuid::Uuid::new_v4().simple());
-    let store = InductionStore::create(&nats, &bucket).await.unwrap();
+    let store = mock_store();
     let patterns = store
         .load_patterns(&["fintech".to_string()], &AgentRole::Executor)
         .await
@@ -75,14 +25,11 @@ async fn cold_start_returns_empty() {
     assert!(patterns.is_empty());
 }
 
+// ── record + load round-trip ──────────────────────────────────────────────────
+
 #[tokio::test]
 async fn record_and_load_round_trip() {
-    let Some(nats) = maybe_connect().await else {
-        return;
-    };
-    let bucket = format!("H2AI_MEMORY_test_{}", uuid::Uuid::new_v4().simple());
-    let store = InductionStore::create(&nats, &bucket).await.unwrap();
-
+    let store = mock_store();
     store
         .record(
             &["ofac-sdncheck".to_string(), "wire-transfer".to_string()],
@@ -98,16 +45,14 @@ async fn record_and_load_round_trip() {
         .unwrap();
     assert!(!patterns.is_empty());
     assert!(patterns.iter().any(|p| p.node_id == "ofac-sdncheck"));
+    assert!(patterns.iter().any(|p| p.node_id == "wire-transfer"));
 }
+
+// ── load_patterns filters by role ─────────────────────────────────────────────
 
 #[tokio::test]
 async fn load_filters_by_role() {
-    let Some(nats) = maybe_connect().await else {
-        return;
-    };
-    let bucket = format!("H2AI_MEMORY_test_{}", uuid::Uuid::new_v4().simple());
-    let store = InductionStore::create(&nats, &bucket).await.unwrap();
-
+    let store = mock_store();
     store
         .record(
             &["gdpr-consent".to_string()],
@@ -117,7 +62,6 @@ async fn load_filters_by_role() {
         .await
         .unwrap();
 
-    // Executor query should not return Evaluator patterns
     let patterns = store
         .load_patterns(&["compliance".to_string()], &AgentRole::Executor)
         .await
@@ -125,14 +69,11 @@ async fn load_filters_by_role() {
     assert!(!patterns.iter().any(|p| p.node_id == "gdpr-consent"));
 }
 
+// ── hit_rate accumulates ──────────────────────────────────────────────────────
+
 #[tokio::test]
 async fn hit_rate_accumulates_on_repeated_record() {
-    let Some(nats) = maybe_connect().await else {
-        return;
-    };
-    let bucket = format!("H2AI_MEMORY_test_{}", uuid::Uuid::new_v4().simple());
-    let store = InductionStore::create(&nats, &bucket).await.unwrap();
-
+    let store = mock_store();
     store
         .record(
             &["node-a".to_string()],
@@ -160,4 +101,180 @@ async fn hit_rate_accumulates_on_repeated_record() {
         "hit_rate should accumulate: {}",
         node_a.hit_rate
     );
+}
+
+// ── Synthesizer role ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn record_with_synthesizer_role_is_found_by_load_patterns() {
+    let store = mock_store();
+    store
+        .record(
+            &["synth-node".to_string()],
+            &AgentRole::Synthesizer,
+            &["synthesis-domain".to_string()],
+        )
+        .await
+        .unwrap();
+
+    let patterns = store
+        .load_patterns(&["synthesis-domain".to_string()], &AgentRole::Synthesizer)
+        .await
+        .unwrap();
+    assert!(patterns.iter().any(|p| p.node_id == "synth-node"));
+}
+
+// ── Coordinator role ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn record_with_coordinator_role_is_found_by_load_patterns() {
+    let store = mock_store();
+    store
+        .record(
+            &["coord-node".to_string()],
+            &AgentRole::Coordinator,
+            &["coord-domain".to_string()],
+        )
+        .await
+        .unwrap();
+
+    let patterns = store
+        .load_patterns(&["coord-domain".to_string()], &AgentRole::Coordinator)
+        .await
+        .unwrap();
+    assert!(patterns.iter().any(|p| p.node_id == "coord-node"));
+}
+
+// ── Custom role maps to "executor" key ───────────────────────────────────────
+
+#[tokio::test]
+async fn record_with_custom_role_is_stored_under_executor_key() {
+    let store = mock_store();
+    let custom_role = AgentRole::Custom {
+        name: "my-role".into(),
+        tau: TauValue::new(0.5).unwrap(),
+        role_error_cost: 0.1,
+    };
+    store
+        .record(
+            &["custom-node".to_string()],
+            &custom_role,
+            &["domain-c".to_string()],
+        )
+        .await
+        .unwrap();
+
+    let patterns = store
+        .load_patterns(&["domain-c".to_string()], &AgentRole::Executor)
+        .await
+        .unwrap();
+    assert!(
+        patterns.iter().any(|p| p.node_id == "custom-node"),
+        "Custom role maps to executor suffix"
+    );
+}
+
+// ── domain tag merging ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn record_merges_new_domain_tags_on_existing_pattern() {
+    let store = mock_store();
+    store
+        .record(
+            &["tag-node".to_string()],
+            &AgentRole::Evaluator,
+            &["tag-a".to_string()],
+        )
+        .await
+        .unwrap();
+    store
+        .record(
+            &["tag-node".to_string()],
+            &AgentRole::Evaluator,
+            &["tag-b".to_string()],
+        )
+        .await
+        .unwrap();
+
+    let patterns = store
+        .load_patterns(&["tag-b".to_string()], &AgentRole::Evaluator)
+        .await
+        .unwrap();
+    assert!(
+        patterns.iter().any(|p| p.node_id == "tag-node"),
+        "merged domain tag must be queryable"
+    );
+}
+
+// ── node_id with slash is sanitized ──────────────────────────────────────────
+
+#[tokio::test]
+async fn node_id_slash_is_replaced_with_hyphen_in_key() {
+    let store = mock_store();
+    store
+        .record(
+            &["some/node/path".to_string()],
+            &AgentRole::Executor,
+            &["dom".to_string()],
+        )
+        .await
+        .unwrap();
+
+    let patterns = store
+        .load_patterns(&["dom".to_string()], &AgentRole::Executor)
+        .await
+        .unwrap();
+    assert!(patterns.iter().any(|p| p.node_id == "some/node/path"));
+}
+
+// ── corrupt value in backend → get_pattern returns None, load_patterns skips ─
+
+#[tokio::test]
+async fn corrupt_backend_value_is_silently_skipped() {
+    let kv = Arc::new(InMemoryKvBackend::default());
+    kv.put(
+        "knowledge.bad-node.executor",
+        bytes::Bytes::from_static(b"not valid json"),
+    )
+    .await
+    .unwrap();
+    let store = InductionStore::from_backend(kv);
+
+    let patterns = store
+        .load_patterns(&["any".to_string()], &AgentRole::Executor)
+        .await
+        .unwrap();
+    assert!(
+        !patterns.iter().any(|p| p.node_id == "bad-node"),
+        "corrupt pattern must be silently skipped"
+    );
+}
+
+// ── top-10 cap on load_patterns ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn load_patterns_returns_at_most_ten_sorted_by_hit_rate() {
+    let store = mock_store();
+    for i in 0..12_u32 {
+        let node = format!("node-{i:02}");
+        for _ in 0..i {
+            store
+                .record(
+                    std::slice::from_ref(&node),
+                    &AgentRole::Executor,
+                    &["d".to_string()],
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    let patterns = store
+        .load_patterns(&["d".to_string()], &AgentRole::Executor)
+        .await
+        .unwrap();
+    assert!(patterns.len() <= 10, "must be capped at 10");
+    for w in patterns.windows(2) {
+        assert!(w[0].hit_rate >= w[1].hit_rate, "must be sorted desc");
+    }
 }

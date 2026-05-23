@@ -1,4 +1,5 @@
-use h2ai_tools::mcp::{McpExecutor, MockMcpBackend};
+use h2ai_test_utils::MockMcpBackend;
+use h2ai_tools::mcp::McpExecutor;
 use h2ai_tools::ToolExecutor;
 use std::collections::HashMap;
 

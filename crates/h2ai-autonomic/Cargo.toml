@@ -14,12 +14,15 @@ h2ai-adapters    = { path = "../h2ai-adapters" }
 h2ai-context     = { path = "../h2ai-context" }
 h2ai-constraints = { path = "../h2ai-constraints" }
 chrono        = { workspace = true }
+tracing       = { workspace = true }
 futures       = { workspace = true }
 nalgebra      = { workspace = true }
 thiserror     = { workspace = true }
 tokio         = { workspace = true }
+serde_json    = { workspace = true }
 
 [dev-dependencies]
+h2ai-test-utils  = { path = "../h2ai-test-utils" }
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-config   = { path = "../h2ai-config" }
 async-trait   = { workspace = true }

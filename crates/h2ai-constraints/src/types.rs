@@ -43,6 +43,10 @@ const fn default_oracle_timeout_secs() -> u64 {
     30
 }
 
+const fn default_constraint_version() -> u64 {
+    1
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum ConstraintPredicate {
     VocabularyPresence {
@@ -142,6 +146,21 @@ pub struct ConstraintDoc {
     /// Used for wiki graph navigation and retrieval context expansion.
     #[serde(default)]
     pub related_to: Vec<String>,
+    /// Binary check strings from `criteria.checks` in the YAML source.
+    /// Empty for constraints that use free-text rubrics only.
+    #[serde(default)]
+    pub binary_checks: Vec<String>,
+    /// Monotonic version counter — incremented each time the constraint is repaired.
+    /// Mirrors `SemanticSpec::version`; default 1 for constraints loaded from static sources.
+    #[serde(default = "default_constraint_version")]
+    pub version: u64,
+    /// Provenance of the most recent automated repair, if any.
+    #[serde(default)]
+    pub repair_provenance: Option<crate::versioned::RepairProvenance>,
+    /// Pass-criteria text from `criteria.pass` in the YAML source.
+    /// Propagated to `ComplianceResult` and ultimately to `RepairTarget` for positive framing.
+    #[serde(default)]
+    pub pass_criteria: Option<String>,
 }
 
 impl ConstraintDoc {
@@ -183,7 +202,7 @@ impl ConstraintDoc {
             id: id.to_owned(),
             source_file: format!("{id}.yaml"),
             description: String::new(),
-            severity: ConstraintSeverity::Hard { threshold: 0.45 },
+            severity: ConstraintSeverity::Hard { threshold: 0.5 },
             predicate: ConstraintPredicate::Composite {
                 op: CompositeOp::And,
                 children: vec![ConstraintPredicate::LlmJudge {
@@ -194,6 +213,10 @@ impl ConstraintDoc {
             domains: vec![],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         }
     }
 
@@ -215,6 +238,10 @@ impl ConstraintDoc {
             domains: vec![],
             mandatory_for_tags: vec![],
             related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
         }
     }
 }
@@ -270,6 +297,16 @@ pub struct ComplianceResult {
     pub score: f64,
     pub severity: ConstraintSeverity,
     pub remediation_hint: Option<String>,
+    /// Natural-language constraint description from ConstraintDoc.description.
+    pub constraint_description: String,
+    /// Dynamic verifier reasoning from the LLM judge. None for static predicates.
+    pub verifier_reason: Option<String>,
+    /// Per-check verdicts parsed from the LlmJudge CoT output.
+    /// `true` = PRESENT (check passed), `false` = MISSING (check failed).
+    /// Empty when the constraint has no binary checks or when parsing was not possible.
+    pub check_verdicts: Vec<bool>,
+    /// Pass-criteria text from `criteria.pass` in the constraint YAML.
+    pub criteria_pass: Option<String>,
 }
 
 impl ComplianceResult {
@@ -281,6 +318,29 @@ impl ComplianceResult {
             _ => true,
         }
     }
+
+    /// Like `hard_passes` but applies a retry scale to the threshold.
+    /// On retry N, pass `scale = 0.9^N` to relax thresholds by 10% per wave.
+    #[must_use]
+    pub fn hard_passes_scaled(&self, scale: f64) -> bool {
+        match &self.severity {
+            ConstraintSeverity::Hard { threshold } => self.score >= threshold * scale,
+            _ => true,
+        }
+    }
+}
+
+/// Unweighted average score across ALL constraints (hard + soft). Returns 0.0 for empty input.
+///
+/// Used to surface partial compliance when the hard gate fails — instead of emitting 0.0 for
+/// every pruned proposal, the actual LLM-judge fractional score (e.g. 0.33 for 1/3 checks
+/// passing) is preserved so repair/synthesis context has meaningful signal.
+#[must_use]
+pub fn fractional_compliance_score(results: &[ComplianceResult]) -> f64 {
+    if results.is_empty() {
+        return 0.0;
+    }
+    results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64
 }
 
 /// Weighted average score over Soft constraints. Returns 1.0 if no Soft constraints exist.

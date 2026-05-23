@@ -165,6 +165,28 @@ yield_from_history([(n_useful, n_max, unix_min), ...]):
 
 Config: `calibration_slow_start.seed_alpha = 0.15`, `decay_rate = 0.95`, `reset_multiplier = 3.0`, `reset_threshold = 0.4` (yield below this triggers reset).
 
+### 2.7 N_max quorum floor — AIMD death spiral prevention
+
+AIMD can collapse `N_max` to 1–2 during sustained model degradation. At N_max < 3, the BFT/Krum/SRANI merge strategies lose their minimum viable quorum — `OutlierResistant{f}` requires `n ≥ 2f + 3`, so f ≥ 1 needs N ≥ 5; even f = 0 (no tolerated Byzantine fault) requires N ≥ 3. A committee of 1 or 2 cannot provide Byzantine-resistant output selection.
+
+**Hard floor in the type system.** `CoherencyCoefficients::n_max_ci()` floors both CI bounds at 3.0:
+
+```
+n_lo_raw = n_at_cg(CG_mean + cg_std_dev)
+n_hi_raw = n_at_cg(CG_mean − cg_std_dev)
+lo = min(n_lo_raw, n_hi_raw).max(3.0)    ← hard quorum floor
+hi = max(n_lo_raw, n_hi_raw).max(lo)
+```
+
+The unclamped value is preserved for telemetry via `n_max_degraded() → bool` (`true` when unclamped N_max < 3.0).
+
+**Circuit breaker.** `phases/complexity.rs` checks `n_max_degraded()` before any compute is committed:
+
+- In **shadow mode**: emits a `WARN` trace (`h2ai.engine`) with `unclamped_n_max` and continues — no task fails.
+- **Outside shadow mode**: raises `MultiplicationConditionFailure::QuorumDegradedBelowMinimum { unclamped_n_max }` and fails fast before burning API tokens. The adapter should be taken offline and recalibrated.
+
+`phases/topology.rs` additionally clamps the precision-mode slot count at `clamp(3, precision_mode_max_slots)`. `engine.rs` floors the conflict-rate N_max override at `max(3.0)`. These three clamps are redundant-by-design — each independently enforces the invariant.
+
 ---
 
 ## 3. Eigenvalue Calibration
@@ -191,14 +213,15 @@ Both compute symmetric eigendecomposition, clamp negative eigenvalues to 0 (nume
 
 ## 4. Multiplication Condition Gates
 
-Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Four failure modes:
+Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Five failure modes:
 
 1. **InsufficientCompetence** — `p_mean ≤ min_competence`. Adding more adapters makes the committee worse.
 2. **InsufficientDecorrelation** — `rho_mean ≥ max_correlation`. Errors are correlated; CJT gain collapses.
 3. **CommonGroundBelowFloor** — `cg_mean < θ_coord`. Adapters too epistemically distant; coordination cost exceeds diversity benefit.
 4. **InsufficientPoolDiversity** — `n_eff_cosine_prior < 1.0 + diversity_threshold`. Pool is semantically near-degenerate.
+5. **QuorumDegradedBelowMinimum** — unclamped `N_max < 3.0`. Adapter has degraded below the BFT/Krum/SRANI minimum quorum. Carries `unclamped_n_max: f64` for telemetry. Fails fast outside shadow mode; emits a warning in shadow mode. See §2.7 for the quorum floor rationale.
 
-The first three are checked at Phase 2.5 by `MultiplicationChecker::check`. The fourth is checked at Phase 2.6 by the engine directly when `cfg.diversity_threshold > 0`.
+The first three are checked at Phase 2.5 by `MultiplicationChecker::check`. The fourth is checked at Phase 2.6 by the engine directly when `cfg.diversity_threshold > 0`. The fifth is checked at Phase 2.6 by `phases/complexity.rs` via `n_max_degraded()`.
 
 > **`diversity_threshold` is used in two independent gates with different semantics.** Do not tune them as if they were the same gate:
 >
@@ -368,7 +391,7 @@ else                                          → ScoreOrdered
 
 - `ScoreOrdered` — pick the highest verification score (cheapest, no Byzantine resistance).
 - `ConsensusMedian` — pick the proposal with highest mean Jaccard similarity to the rest. Honest limitation: not Byzantine-resistant; vulnerable at f ≥ n/2.
-- `OutlierResistant{f}` — Krum (Blanchard et al. 2017): pick the proposal with smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space. Quorum requirement: `n ≥ 2f + 3`.
+- `OutlierResistant{f}` — Krum (Blanchard et al. 2017): pick the proposal with smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space. Quorum requirement: `n ≥ 2f + 3`. The N≥3 quorum floor in `n_max_ci()` (§2.7) guarantees this is only reachable with a viable committee — AIMD collapse to N=1–2 is intercepted by `QuorumDegradedBelowMinimum` before any proposal is generated.
 - `MultiOutlierResistant{f, m}` — apply OutlierResistant iteratively to keep m survivors, then take the highest verification score.
 
 **On the term "Byzantine" here.** The `OutlierResistant` algorithm is drawn from *federated learning Byzantine-robust aggregation* (Blanchard et al. 2017; Pillutla et al. 2019), not from PBFT (Practical Byzantine Fault Tolerance for distributed ledgers). In the federated learning literature, a "Byzantine fault" means any gradient that is a statistical outlier in the aggregation — not a cryptographically adversarial actor. LLM hallucinations that cluster in embedding space are precisely this kind of fault: they are outliers relative to the correct-answer distribution, not malicious agents subverting a protocol. The algorithm's breakdown-point proof (tolerating up to `f` outlier workers among `n ≥ 2f + 3`) applies to this statistical framing. The `bft_threshold` config key is shorthand for "fractional agreement gate" — it is not a reference to PBFT and implies no cryptographic guarantees.
@@ -451,7 +474,51 @@ The math used in this system is calibrated to specific assumptions. They are lis
 
 ---
 
-## 13. Epistemic Leader
+## 13. LLM Complexity Ceiling
+
+Source: Sikka & Sikka, "Hallucination Stations" (arXiv 2507.07505).
+
+### 13.1 Theorem 1
+
+> **Theorem 1.** *Given a prompt of length N, which includes a computational task within it of
+> complexity O(n³) or higher, where n < N, an LLM, or an LLM-based agent, will unavoidably
+> hallucinate in its response.*
+
+### 13.2 Proof basis
+
+Hartmanis and Stearns, in their seminal time-hierarchy theorem, showed that if t₂(n) is an
+asymptotically larger function than t₁(n) (e.g., t₂(n) = n² and t₁(n) = n), then there are
+decision problems solvable in O(t₂(n)) but not in O(t₁(n)). Consequently, any task that requires
+time greater than **O(N²·d)** — where N is the prompt length and d is the model depth — will not be
+correctly carried out by LLMs. The standard transformer self-attention pass has O(N²) complexity
+in sequence length; tasks requiring O(n³) or higher computation embedded in a prompt of length N
+exceed this budget.
+
+A corollary: there are tasks that can be given to LLM agents to perform, whose *verification or
+check for accuracy or semantic properties* cannot be correctly performed by LLMs. Countless tasks
+of polynomial and non-polynomial time complexity exist whose verification is worse than O(N²·d).
+
+### 13.3 Implications for H2AI
+
+Theorem 1 identifies a structural category of failure that the current MAPE-K retry loop cannot
+address: a quality ceiling (insufficient diversity, prompt calibration, or ensemble size) is cured
+by deeper retrying; a **complexity ceiling** (task complexity ≥ O(n³)) is not.
+
+| Failure type | Signal | Correct response |
+|---|---|---|
+| Quality ceiling | High N_eff, varied proposals, plausible scores | Retry with repair context, rotate adapters |
+| Complexity ceiling | Exhausted retries, partial_chars≈0, ECE drift | Task decomposition via H1 graft (GAP-J1) |
+
+The current retry loop treats both as quality failures. GAP-J1 (see `gaps.md`) proposes a
+lightweight complexity probe that routes O(n³)+ tasks to hierarchical decomposition (H1 graft)
+before the retry budget is spent. The corollary further implies that `LlmJudge` verification is
+unreliable for tasks whose verification itself exceeds O(N²·d) — an ECE drift or
+`pass_rate=0.0` in the oracle accumulator can be a complexity-ceiling signal rather than pure
+calibration drift.
+
+---
+
+## 14. Epistemic Leader
 
 The Epistemic Leader subsystem runs inside the thinking loop. At the start of each wave it selects a leader adapter, generates a Socratic question intended to surface the most information about the violated constraints, distributes the remaining constraint dimensions to follower adapters, and rotates leadership when the current leader stagnates.
 
@@ -520,3 +587,123 @@ aspect(i) = violated_constraints[i mod |violated_constraints|]
 ```
 
 This enforces Tree-of-Thoughts-style forced diversity: each follower explores a different constraint dimension in the same wave, preventing mode collapse to a single repair strategy. When `|violated_constraints| < N_follower`, constraint IDs wrap around so every follower still receives an assigned dimension.
+
+---
+
+## 15. Calibration Drift Detection (GAP-H2)
+
+Source: `crates/h2ai-autonomic/src/drift.rs`.
+
+The drift system detects when the observed `consensus_agreement_rate` — fraction of tasks where all verification calls agree — has shifted from its reference distribution, indicating LLM API drift. Two detectors run in parallel on every `DriftMonitor::observe(rate)` call.
+
+### 14.1 DDM fast layer (O(1))
+
+The Drift Detection Method (Gama et al. 2004) maintains a sliding window of the last `drift_ddm_window` observations (default 20). Let `μ_ref` be the mean and `σ_ref` the standard deviation of the reference window (the first full window). A warning fires when:
+
+```
+|μ_recent − μ_ref| > k_ddm × σ_ref    [default k_ddm = 2.5]
+```
+
+where `μ_recent` is the mean of the current window. O(1) per observation — the window is maintained as a circular buffer with running sum and sum-of-squares. Emits `DriftEvent::Warning(CalibrationDriftWarning)`.
+
+### 14.2 BOCPD — Normal-Inverse-Gamma conjugate prior
+
+Bayesian Online Changepoint Detection (Adams & MacKay 2007, arXiv 0710.3742) maintains a posterior over "run length" — the number of observations since the last changepoint. The conjugate prior for a Gaussian-distributed stream with unknown mean and variance is the Normal-Inverse-Gamma (NIG):
+
+```
+Parameters:  θ = (μ₀, κ₀, α₀, β₀)
+Interpretation:
+  μ₀    — prior predictive mean
+  κ₀    — pseudo-observations weighting the mean prior
+  α₀    — shape of the inverse-gamma prior on variance
+  β₀    — rate of the inverse-gamma prior on variance
+```
+
+**NIG posterior update** — given a new observation `x`, the sufficient statistics update in O(1):
+
+```
+κₙ = κ₀ + 1
+μₙ = (κ₀ × μ₀ + x) / κₙ
+αₙ = α₀ + 0.5
+βₙ = β₀ + (κ₀ × (x − μ₀)²) / (2 × κₙ)
+```
+
+**Student-t predictive distribution** — the marginal predictive for the next observation under NIG parameters `(μ, κ, α, β)` is a Student-t:
+
+```
+ν    = 2α                         [degrees of freedom]
+loc  = μ                          [location]
+scale² = β × (κ + 1) / (κ × α)   [scale squared]
+
+log p(x | θ) = log Γ((ν+1)/2) − log Γ(ν/2)
+             − 0.5 × log(π × ν × scale²)
+             − ((ν+1)/2) × log(1 + (x − loc)² / (ν × scale²))
+```
+
+`lgamma` is computed via Stirling's series (x ≥ 8) with recursive reduction for x < 8 and the reflection formula for x < 0.5 — no external crate required.
+
+### 14.3 BOCPD run-length posterior
+
+The system tracks at most `MAX_RUN_LENGTH = 500` run-length hypotheses. Each hypothesis `r` represents "the current run started `r` steps ago." The hazard rate `h = drift_bocpd_hazard_rate` (default 0.01) is the per-step probability of a changepoint.
+
+**State at time t:**
+
+```
+run_states[r] = { log_weight: f64, nig: NigParams }   for r = 0..t
+```
+
+**Update step** for each new observation `x`:
+
+```
+For each existing run hypothesis r:
+    log_likelihood_r = student_t_log_pdf(x | run_states[r].nig)
+    run_states[r].nig = run_states[r].nig.update_one(x)        [NIG update]
+    log_weight[r+1]  += log_likelihood_r + log(1 − h)          [survive: run grows]
+    log_weight_new   += log_likelihood_r + log(h)              [changepoint: new run r=0]
+
+New run hypothesis (r=0): fresh NIG prior, log_weight = log_weight_new
+Normalise all weights: log_weights -= logsumexp(log_weights)
+```
+
+**Changepoint detection:** after the guard (`run_states.len() > 5` to prevent startup false positives), compute the posterior mass on short run lengths:
+
+```
+P(run_length ≤ 4) = Σ_{r=0}^{4} exp(log_weight[r])
+```
+
+When `P(run_length ≤ 4) > drift_bocpd_changepoint_threshold` (default 0.90), a changepoint is detected. Emits `DriftEvent::Changepoint(CalibrationChangepoint)`.
+
+### 14.4 ORCA conformal margin
+
+Between changepoint detection and recalibration, ORCA (arXiv 2604.01170) ensures coverage does not collapse. `DriftMonitor::active_conformal_margin()` returns `drift_conformal_margin` (default 0.05) when:
+
+1. A changepoint was detected (`changepoint_active = true`), AND
+2. The elapsed time since detection < `drift_staleness_ttl_secs` (default 3600s)
+
+Otherwise returns 0.0. The margin is applied in `engine.rs::run_offline`:
+
+```
+threshold_adjusted = max(0.0, base_threshold − conformal_margin)
+```
+
+Widening the gate (lowering the pass threshold) means more proposals survive verification during drift — conservative but coverage-preserving. The margin is removed once TTL expires (without recalibration) or `reset_after_recalibration()` is called.
+
+### 14.5 Consensus agreement rate
+
+The signal fed to `DriftMonitor::observe()` is:
+
+```
+consensus_agreement_rate = |{e ∈ verification_events : e.passed == true}| / |verification_events|
+```
+
+Returns 1.0 for an empty event set. Source: `consensus_agreement_rate_from_events` in `engine.rs`. Stable degradation signal: when LLM quality shifts, the fraction of tasks where all verifiers agree on pass degrades before absolute pass rate does, giving early warning.
+
+| Symbol | Meaning | Default |
+|--------|---------|---------|
+| `drift_ddm_window` | DDM sliding window size | 20 |
+| `drift_ddm_k` | DDM sigma threshold | 2.5 |
+| `drift_bocpd_hazard_rate` (h) | Per-step changepoint probability | 0.01 |
+| `drift_bocpd_changepoint_threshold` | Posterior mass threshold for firing | 0.90 |
+| `drift_conformal_margin` | ORCA threshold widening on changepoint | 0.05 |
+| `drift_staleness_ttl_secs` | Margin TTL after changepoint | 3600 |
+| `auto_recalibrate_on_drift` | Trigger POST /calibrate on changepoint | false |

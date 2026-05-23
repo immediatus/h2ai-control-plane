@@ -1,4 +1,5 @@
-use h2ai_tools::wasm::{MockWasmBackend, WasmExecutor};
+use h2ai_test_utils::MockWasmBackend;
+use h2ai_tools::wasm::WasmExecutor;
 use h2ai_tools::ToolExecutor;
 
 #[tokio::test]

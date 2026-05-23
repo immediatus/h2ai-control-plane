@@ -1472,6 +1472,7 @@ dependencies = [
  "h2ai-config",
  "h2ai-nats",
  "h2ai-state",
+ "h2ai-test-utils",
  "h2ai-tools",
  "h2ai-types",
  "serde",
@@ -1494,11 +1495,13 @@ dependencies = [
  "h2ai-constraints",
  "h2ai-context",
  "h2ai-state",
+ "h2ai-test-utils",
  "h2ai-types",
  "nalgebra",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1519,6 +1522,7 @@ dependencies = [
 name = "h2ai-constraints"
 version = "0.1.0"
 dependencies = [
+ "async-nats",
  "async-trait",
  "futures",
  "jsonschema 0.26.2",
@@ -1569,6 +1573,7 @@ dependencies = [
  "h2ai-orchestrator",
  "h2ai-provisioner",
  "h2ai-state",
+ "h2ai-test-utils",
  "h2ai-tools",
  "h2ai-types",
  "hostname",
@@ -1589,20 +1594,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "h2ai-eval"
-version = "0.1.0"
-dependencies = [
- "async-nats",
- "futures",
- "h2ai-types",
- "reqwest",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1670,6 +1661,7 @@ dependencies = [
  "h2ai-provisioner",
  "h2ai-state",
  "h2ai-telemetry",
+ "h2ai-test-utils",
  "h2ai-tools",
  "h2ai-types",
  "hex",
@@ -1696,6 +1688,7 @@ dependencies = [
  "chrono",
  "h2ai-adapters",
  "h2ai-config",
+ "h2ai-test-utils",
  "h2ai-types",
  "serde",
  "serde_json",
@@ -1769,12 +1762,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "h2ai-test-utils"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "h2ai-adapters",
+ "h2ai-tools",
+ "h2ai-types",
+ "tokio",
+]
+
+[[package]]
 name = "h2ai-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
  "h2ai-config",
+ "h2ai-test-utils",
  "h2ai-types",
  "libc",
  "reqwest",

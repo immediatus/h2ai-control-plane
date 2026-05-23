@@ -1,6 +1,6 @@
 use h2ai_constraints::types::{
-    aggregate_compliance_score, ComplianceResult, ConstraintDoc, ConstraintPredicate,
-    ConstraintSeverity, VocabularyMode,
+    aggregate_compliance_score, fractional_compliance_score, ComplianceResult, ConstraintDoc,
+    ConstraintPredicate, ConstraintSeverity, VocabularyMode,
 };
 
 #[test]
@@ -18,6 +18,10 @@ fn constraint_doc_vocabulary_from_vocabulary_presence() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let vocab = doc.vocabulary();
     assert!(vocab.contains("personal"));
@@ -32,6 +36,10 @@ fn compliance_result_hard_fail_gives_zero_score() {
         score: 0.3,
         severity: ConstraintSeverity::Hard { threshold: 0.8 },
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     };
     assert!(!r.hard_passes());
     assert!((r.score - 0.3).abs() < 1e-9);
@@ -44,6 +52,10 @@ fn compliance_result_hard_pass_when_score_meets_threshold() {
         score: 0.9,
         severity: ConstraintSeverity::Hard { threshold: 0.8 },
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     };
     assert!(r.hard_passes());
 }
@@ -55,6 +67,10 @@ fn compliance_result_soft_always_passes_hard_gate() {
         score: 0.0,
         severity: ConstraintSeverity::Soft { weight: 1.0 },
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     };
     assert!(r.hard_passes());
 }
@@ -67,12 +83,20 @@ fn aggregate_compliance_score_weighted_average_of_soft() {
             score: 0.8,
             severity: ConstraintSeverity::Soft { weight: 2.0 },
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
         ComplianceResult {
             constraint_id: "s2".into(),
             score: 0.4,
             severity: ConstraintSeverity::Soft { weight: 1.0 },
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
     ];
     // (2.0*0.8 + 1.0*0.4) / 3.0 = 2.0/3.0
@@ -103,6 +127,10 @@ fn positive_vocabulary_excludes_negative_keyword_terms() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let pos = doc.positive_vocabulary();
     let neg = doc.negative_vocabulary();
@@ -146,6 +174,10 @@ fn negative_vocabulary_from_none_of_mode() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let neg = doc.negative_vocabulary();
     assert!(
@@ -169,6 +201,10 @@ fn aggregate_compliance_score_one_when_no_soft_constraints() {
         score: 0.9,
         severity: ConstraintSeverity::Hard { threshold: 0.8 },
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }];
     assert!((aggregate_compliance_score(&results) - 1.0).abs() < 1e-9);
 }
@@ -237,10 +273,151 @@ fn aggregate_compliance_score_returns_one_when_all_weights_zero() {
         score: 0.5,
         severity: ConstraintSeverity::Soft { weight: 0.0 },
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }];
     assert!(
         (aggregate_compliance_score(&results) - 1.0).abs() < 1e-9,
         "zero-weight soft must return 1.0"
+    );
+}
+
+#[test]
+fn test_constraint_doc_binary_checks_populated_from_yaml() {
+    use h2ai_constraints::yaml::ConstraintYaml;
+    let yaml_str = r#"
+id: TEST-001
+title: "Test constraint"
+severity: hard
+criteria:
+  pass: "passes"
+  fail: "fails"
+  checks:
+    - "Check A is present"
+    - "Check B is present"
+"#;
+    let cy: ConstraintYaml = serde_yaml::from_str(yaml_str).unwrap();
+    let doc = cy.into_constraint_doc();
+    assert_eq!(
+        doc.binary_checks,
+        vec!["Check A is present", "Check B is present"]
+    );
+}
+
+#[test]
+fn test_constraint_doc_binary_checks_empty_when_no_checks() {
+    use h2ai_constraints::yaml::ConstraintYaml;
+    let yaml_str = r#"
+id: TEST-002
+title: "No checks constraint"
+severity: hard
+criteria:
+  pass: "passes"
+  fail: "fails"
+"#;
+    let cy: ConstraintYaml = serde_yaml::from_str(yaml_str).unwrap();
+    let doc = cy.into_constraint_doc();
+    assert!(doc.binary_checks.is_empty());
+}
+
+// ── fractional_compliance_score ───────────────────────────────────────────────
+
+#[test]
+fn fractional_compliance_score_averages_all_hard_constraint_scores() {
+    let results = vec![
+        ComplianceResult {
+            constraint_id: "HLE-1".into(),
+            score: 0.33,
+            severity: ConstraintSeverity::Hard { threshold: 0.8 },
+            remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+        },
+        ComplianceResult {
+            constraint_id: "HLE-2".into(),
+            score: 0.67,
+            severity: ConstraintSeverity::Hard { threshold: 0.8 },
+            remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+        },
+    ];
+    let score = fractional_compliance_score(&results);
+    assert!((score - 0.5).abs() < 1e-9, "expected avg 0.5, got {score}");
+}
+
+#[test]
+fn fractional_compliance_score_returns_zero_when_empty() {
+    assert!(
+        (fractional_compliance_score(&[]) - 0.0).abs() < 1e-9,
+        "empty results must return 0.0"
+    );
+}
+
+#[test]
+fn fractional_compliance_score_includes_hard_and_soft() {
+    let results = vec![
+        ComplianceResult {
+            constraint_id: "h1".into(),
+            score: 0.2,
+            severity: ConstraintSeverity::Hard { threshold: 0.8 },
+            remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+        },
+        ComplianceResult {
+            constraint_id: "s1".into(),
+            score: 0.8,
+            severity: ConstraintSeverity::Soft { weight: 1.0 },
+            remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+        },
+    ];
+    let score = fractional_compliance_score(&results);
+    assert!(
+        (score - 0.5).abs() < 1e-9,
+        "expected avg 0.5 over hard+soft, got {score}"
+    );
+}
+
+#[test]
+fn fractional_compliance_score_all_zero_stays_zero() {
+    let results = vec![
+        ComplianceResult {
+            constraint_id: "h1".into(),
+            score: 0.0,
+            severity: ConstraintSeverity::Hard { threshold: 0.8 },
+            remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+        },
+        ComplianceResult {
+            constraint_id: "h2".into(),
+            score: 0.0,
+            severity: ConstraintSeverity::Hard { threshold: 0.8 },
+            remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+        },
+    ];
+    assert!(
+        (fractional_compliance_score(&results) - 0.0).abs() < 1e-9,
+        "all-zero results must return 0.0"
     );
 }
 
@@ -262,6 +439,10 @@ fn constraint_meta_from_doc_empty_description_uses_fallback() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let meta = ConstraintMeta::from_doc(&doc);
     assert!(

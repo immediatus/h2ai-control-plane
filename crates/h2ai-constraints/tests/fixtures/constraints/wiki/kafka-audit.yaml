@@ -1,0 +1,39 @@
+id: topic:kafka-audit
+depth: topic
+domains:
+  - billing
+  - audit
+synthesis: >
+  C-005 (Immutable Financial Audit Log): Every budget debit event MUST be published to the
+  Kafka topic "financial-events" (compacted, append-only) BEFORE the HTTP 200 response is
+  returned. Do not write directly to CockroachDB or log files — all billing events go to
+  Kafka first, then downstream consumers update CockroachDB. The Kafka publish must use
+  synchronous acknowledgement (acks=all) to guarantee durability. During Kafka unavailability
+  (0.01% SLA), charges must still be processable: buffer debit events locally (in-process
+  queue or Redis List) and flush to Kafka when connectivity restores. Never silently drop
+  audit events. The audit record must include: campaign_id, request_id, amount_debited,
+  timestamp_ms, node_id. Use a local retry queue with exponential backoff for Kafka errors.
+invariants:
+  - "Kafka publish before HTTP 200 response"
+  - "acks=all for Kafka producer"
+  - "Local buffer during Kafka unavailability"
+  - "Audit record includes campaign_id, request_id, amount, timestamp"
+  - "No direct CockroachDB writes from charge path"
+failure_modes_covered:
+  - FM-005-1
+tensions:
+  - domain: latency
+    reason: >
+      Synchronous Kafka acks add P99 latency. Mitigate with Kafka producer batching
+      (linger.ms=5) and local in-process queue to decouple charge path from Kafka I/O.
+entry_points:
+  - CONSTRAINT-005
+constraints:
+  - CONSTRAINT-005
+cross_references:
+  - id: CONSTRAINT-004
+    domain: billing
+    reason: "Idempotency key in audit record prevents duplicate billing on retry"
+related:
+  - CONSTRAINT-004
+  - CONSTRAINT-005

@@ -1,7 +1,7 @@
-use h2ai_adapters::mock::MockAdapter;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
+use h2ai_test_utils::MockAdapter;
 
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
@@ -99,6 +99,7 @@ async fn make_engine_input<'a>(
         srani_ema_cfi: 0.45,
         srani_count: 0,
         srani_grounding_chain: None,
+        gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
         nats: None,
@@ -107,6 +108,7 @@ async fn make_engine_input<'a>(
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        conformal_margin: 0.0,
     }
 }
 

@@ -64,7 +64,7 @@ pub fn run(input: Input<'_>) -> StepResult<Output> {
         let count = if precision_active {
             // 2–3 slots: more than 1 provides synthesis benefit; cap at 3 to stay
             // within the Self-MoA budget where within-family wins.
-            (input.n_max_ceiling as usize).clamp(2, engine_input.cfg.precision_mode_max_slots)
+            (input.n_max_ceiling as usize).clamp(3, engine_input.cfg.precision_mode_max_slots)
                 as u32
         } else {
             input.n_agents.max(1)
@@ -135,6 +135,7 @@ pub fn run(input: Input<'_>) -> StepResult<Output> {
         retry_count,
         cfg: engine_input.cfg,
         eigen: engine_input.calibration.eigen.as_ref(),
+        ensemble: engine_input.calibration.ensemble.as_ref(),
         task_quadrant: effective_quadrant,
     });
     provisioned.constraint_tombstone = input.pending_tombstone.clone();

@@ -2,36 +2,12 @@ use crate::error::ToolError;
 use crate::{ToolExecutor, ToolSchema};
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::HashMap;
 
 const PERMITTED_OPS: &[&str] = &["read_file", "list_directory"];
 
 #[async_trait]
 pub trait McpBackend: Send + Sync {
     async fn call(&self, op: &str, path: &str) -> Result<String, ToolError>;
-}
-
-// ── Mock ─────────────────────────────────────────────────────────────────────
-
-pub struct MockMcpBackend {
-    files: HashMap<String, String>,
-}
-
-impl MockMcpBackend {
-    #[must_use]
-    pub const fn new(files: HashMap<String, String>) -> Self {
-        Self { files }
-    }
-}
-
-#[async_trait]
-impl McpBackend for MockMcpBackend {
-    async fn call(&self, _op: &str, path: &str) -> Result<String, ToolError> {
-        self.files
-            .get(path)
-            .cloned()
-            .ok_or_else(|| ToolError::MalformedInput(format!("path not found: {path}")))
-    }
 }
 
 // ── Live: stdio subprocess (MCP JSON-RPC 2.0) ────────────────────────────────

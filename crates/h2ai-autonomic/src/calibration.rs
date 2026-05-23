@@ -269,11 +269,17 @@ impl CalibrationHarness {
                 .expect("cosine eigenvalue computation panicked")
                 .n_effective
             } else {
-                1.0
+                // Fewer than 2 adapters calibrated — n_eff not measurable.
+                // 0.0 signals "not measured" so the diversity guard skips.
+                0.0
             }
+        } else if adapter_outputs.len() < 2 {
+            // No embedding model, fewer than 2 adapters — n_eff not measurable.
+            // 0.0 signals "not measured" so the diversity guard skips.
+            0.0
         } else {
-            // No embedding model: fallback formula
-            let n = adapter_outputs.len().max(1) as f64;
+            // No embedding model: fallback formula (requires ≥ 2 adapters).
+            let n = adapter_outputs.len() as f64;
             input
                 .cfg
                 .calibration_cg_fallback

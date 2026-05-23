@@ -7,8 +7,8 @@ use h2ai_types::config::{
 use h2ai_types::events::{TopologyProvisionedEvent, ZeroCoordinationQualityEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::{
-    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, MergeStrategy, RoleErrorCost,
-    TaskQuadrant, TauValue,
+    CoherencyCoefficients, CoordinationThreshold, EigenCalibration, EnsembleCalibration,
+    MergeStrategy, RoleErrorCost, TaskQuadrant, TauValue,
 };
 
 /// All parameters required to provision a topology for a single task execution.
@@ -43,6 +43,10 @@ pub struct ProvisionInput<'a> {
     /// Pruning adapters beyond the spectral optimum avoids coherency overhead without
     /// sacrificing ensemble quality.
     pub eigen: Option<&'a EigenCalibration>,
+    /// Information-theoretic ensemble sizing. When present, `n_it_optimal()` becomes the
+    /// primary quality target; `n_max_usl` acts as a cost ceiling only.
+    /// When absent, falls back to `n_max_usl` as sole sizing constraint (old behaviour).
+    pub ensemble: Option<&'a EnsembleCalibration>,
     /// Phase 1.5 routing quadrant. `None` when `shadow_mode=true` (no routing change).
     /// When `Some(Precision)`, `n_max` is capped at 3 (within-family τ-spread, 2–3 slots).
     /// `Degenerate` is rejected before this call — the engine fails early.
@@ -111,21 +115,34 @@ impl TopologyPlanner {
                 None => input.cc.n_max(),
             }
         };
+
+        // N_IT quality target: smallest N where marginal info gain < 0.5 × per-adapter entropy.
+        // When present, this is the primary quality target; n_max_usl is the cost ceiling.
+        // When absent (no EnsembleCalibration available), fall back to n_max_usl as sole bound.
+        let n_quality_ceiling = if cg_collapsed {
+            1.0
+        } else {
+            match input.ensemble {
+                Some(ec) => (ec.n_it_optimal() as f64).min(n_max_usl),
+                None => n_max_usl,
+            }
+        };
+
         let n_max = if cg_collapsed {
             1.0
         } else {
             let eigen_capped = match input.eigen {
-                Some(eigen) if eigen.n_pruned > 0 => n_max_usl.min(eigen.n_pruned as f64),
-                _ => n_max_usl,
+                Some(eigen) if eigen.n_pruned > 0 => n_quality_ceiling.min(eigen.n_pruned as f64),
+                _ => n_quality_ceiling,
             };
             // Phase 1.5: quadrant-driven n_max overrides (non-shadow mode).
             // Precision → within-family τ-spread, up to 3 same-family slots.
             //   Cap at 3: beyond 3 the synthesis benefit plateaus for precision tasks.
-            // Complex   → maximum ensemble (bypass eigen cap; use full USL n_max).
+            // Complex   → maximum ensemble (bypass eigen cap and N_IT target; use full USL n_max).
             if matches!(input.task_quadrant, Some(TaskQuadrant::Precision)) {
                 eigen_capped.min(3.0)
             } else if matches!(input.task_quadrant, Some(TaskQuadrant::Complex)) {
-                n_max_usl // bypass eigen pruning for maximum coverage
+                n_max_usl // bypass quality ceiling for maximum coverage
             } else {
                 eigen_capped
             }

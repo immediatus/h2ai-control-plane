@@ -53,8 +53,9 @@
 )]
 use h2ai_orchestrator::context_assembler::stable_cache::{CachedSection, StableContextCache};
 use h2ai_orchestrator::context_assembler::{
-    build_sections, importance_trim, quality_guard, rule_pass, score_sections, AssembledContext,
-    CompressionKind, ContextAssembler, ContextAssemblerInput, RulePassInput, Section, SectionTag,
+    assemble_raw, build_sections, importance_trim, quality_guard, rule_pass, score_sections,
+    AssembledContext, CompressionKind, ContextAssembler, ContextAssemblerInput, RulePassInput,
+    Section, SectionTag,
 };
 
 #[test]
@@ -513,4 +514,244 @@ async fn topic_knowledge_section_included_when_provided() {
             .contains("Topic: idempotency patterns for distributed payments."),
         "topic knowledge text must appear in assembled output"
     );
+}
+
+// ── assemble_raw: all optional sections ──────────────────────────────────────
+
+#[test]
+fn assemble_raw_includes_all_optional_sections() {
+    let input = ContextAssemblerInput {
+        active_ctx: "task ctx",
+        retry_context: None,
+        leader_prefix: None,
+        grounding: Some("grounding hint"),
+        tombstone: Some("tombstone entry"),
+        role_frame: Some("expert role"),
+        mandate: Some("key mandate"),
+        rejection_criteria: Some("reject if missing atomicity"),
+        prev_wave_blob: None,
+        budget: None,
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: Some("C-001 vs C-007 tension"),
+    };
+    let raw = assemble_raw(&input);
+    assert!(raw.contains("[STATE-OF-THE-ART]: grounding hint"));
+    assert!(raw.contains("expert role"));
+    assert!(raw.contains("[MANDATE]: key mandate"));
+    assert!(raw.contains("BIGGEST RISK"));
+    assert!(raw.contains("reject if missing atomicity"));
+    assert!(raw.contains("tombstone entry"));
+    assert!(raw.contains("[CONSTRAINT TENSIONS]:"));
+    assert!(raw.contains("C-001 vs C-007 tension"));
+}
+
+// ── build_sections: all optional section types ───────────────────────────────
+
+#[test]
+fn build_sections_with_all_optional_fields() {
+    let input = ContextAssemblerInput {
+        active_ctx: "ctx",
+        retry_context: Some("retry"),
+        leader_prefix: Some("leader"),
+        grounding: Some("grounding"),
+        tombstone: Some("tomb"),
+        role_frame: Some("role"),
+        mandate: Some("mandate"),
+        rejection_criteria: Some("reject if X"),
+        prev_wave_blob: None,
+        budget: None,
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: Some("global"),
+        topic_knowledge: Some("topic"),
+        constraint_tensions: Some("tensions"),
+    };
+    let sections = build_sections(&input);
+    let tags: Vec<&SectionTag> = sections.iter().map(|s| &s.tag).collect();
+    assert!(tags.contains(&&SectionTag::Grounding));
+    assert!(tags.contains(&&SectionTag::RoleFrame));
+    assert!(tags.contains(&&SectionTag::Mandate));
+    assert!(tags.contains(&&SectionTag::RejectionCriteria));
+    assert!(tags.contains(&&SectionTag::Tombstone));
+    assert!(tags.contains(&&SectionTag::ConstraintTension));
+
+    let grounding = sections
+        .iter()
+        .find(|s| s.tag == SectionTag::Grounding)
+        .unwrap();
+    assert!(grounding.preserve);
+    assert_eq!(grounding.importance, 1.0);
+
+    let tension = sections
+        .iter()
+        .find(|s| s.tag == SectionTag::ConstraintTension)
+        .unwrap();
+    assert!(!tension.preserve);
+    assert_eq!(tension.importance, 0.85);
+
+    let mandate = sections
+        .iter()
+        .find(|s| s.tag == SectionTag::Mandate)
+        .unwrap();
+    assert!(mandate.preserve);
+    assert_eq!(mandate.importance, 0.95);
+
+    let role = sections
+        .iter()
+        .find(|s| s.tag == SectionTag::RoleFrame)
+        .unwrap();
+    assert!(role.preserve);
+    assert_eq!(role.importance, 0.9);
+
+    let rejection = sections
+        .iter()
+        .find(|s| s.tag == SectionTag::RejectionCriteria)
+        .unwrap();
+    assert!(rejection.preserve);
+}
+
+// ── score_sections: prev_wave penalty reduces importance ─────────────────────
+
+#[test]
+fn score_sections_prev_wave_penalty_reduces_importance() {
+    let sections = vec![Section {
+        tag: SectionTag::RetryContext,
+        text: "already seen content".to_string(),
+        importance: 0.5,
+        preserve: false,
+    }];
+    let scored = score_sections(sections, Some("already seen content and more context"));
+    let rc = scored
+        .iter()
+        .find(|s| s.tag == SectionTag::RetryContext)
+        .unwrap();
+    assert!(
+        rc.importance < 0.25,
+        "prev wave match should reduce importance below 0.25, got {}",
+        rc.importance
+    );
+}
+
+// ── quality_guard: zero original ──────────────────────────────────────────────
+
+#[test]
+fn quality_guard_zero_original_returns_false() {
+    assert!(
+        !quality_guard(0, 100, 0.4),
+        "zero original should never clamp"
+    );
+}
+
+// ── StableContextCache: len and is_empty ──────────────────────────────────────
+
+#[test]
+fn stable_cache_len_and_is_empty() {
+    let cache = StableContextCache::new();
+    assert!(cache.is_empty());
+    assert_eq!(cache.len(), 0);
+    cache.insert(
+        42,
+        CachedSection {
+            compressed_text: "x".to_string(),
+            original_token_estimate: 10,
+            compressed_token_estimate: 5,
+            hit_count: 0,
+        },
+    );
+    assert!(!cache.is_empty());
+    assert_eq!(cache.len(), 1);
+}
+
+// ── ImportanceScored path: tight budget, no LLM adapter ─────────────────────
+
+#[tokio::test]
+async fn build_returns_importance_scored_on_tight_budget_no_adapter() {
+    // Large preserved leader forces total > budget; non-preserved sections get trimmed.
+    // No adapter → step 3 returns ImportanceScored even though total still exceeds budget.
+    let large_leader = "L".repeat(5000);
+    let retry = "retry hint".to_string();
+    let input = ContextAssemblerInput {
+        active_ctx: "ctx",
+        retry_context: Some(&retry),
+        leader_prefix: Some(&large_leader),
+        grounding: None,
+        tombstone: None,
+        role_frame: None,
+        mandate: None,
+        rejection_criteria: None,
+        prev_wave_blob: None,
+        budget: Some(5),
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: None,
+    };
+    let result = ContextAssembler::build(input).await;
+    assert_eq!(result.compression, CompressionKind::ImportanceScored);
+    assert!(result.compression_ratio < 1.0);
+}
+
+// ── LlmSummarized path: tight budget + adapter ───────────────────────────────
+
+#[tokio::test]
+async fn build_returns_llm_summarized_with_adapter_on_tight_budget() {
+    use h2ai_test_utils::MockAdapter;
+    // Large preserved leader keeps total > budget even after trimming non-preserved sections.
+    // With an adapter present, step 4 (LLM) runs.
+    let large_leader = "L".repeat(5000);
+    let retry = "retry hint to compress".to_string();
+    let adapter = MockAdapter::new("compressed".to_string());
+    let input = ContextAssemblerInput {
+        active_ctx: "active ctx text",
+        retry_context: Some(&retry),
+        leader_prefix: Some(&large_leader),
+        grounding: None,
+        tombstone: None,
+        role_frame: None,
+        mandate: None,
+        rejection_criteria: None,
+        prev_wave_blob: None,
+        budget: Some(5),
+        quality_guard_ratio: None,
+        compression_adapter: Some(&adapter),
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: None,
+    };
+    let result = ContextAssembler::build(input).await;
+    assert_eq!(result.compression, CompressionKind::LlmSummarized);
+}
+
+// ── constraint_tensions in build output ──────────────────────────────────────
+
+#[tokio::test]
+async fn constraint_tensions_appear_in_build_output() {
+    let input = ContextAssemblerInput {
+        active_ctx: "task context",
+        retry_context: None,
+        leader_prefix: None,
+        grounding: None,
+        tombstone: None,
+        role_frame: None,
+        mandate: None,
+        rejection_criteria: None,
+        prev_wave_blob: None,
+        budget: Some(10_000),
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: Some("C-001 conflicts with C-007"),
+    };
+    let result = ContextAssembler::build(input).await;
+    assert!(result.text.contains("C-001 conflicts with C-007"));
 }

@@ -127,7 +127,7 @@ fn cfg_disabled() -> ThinkingLoopConfig {
 async fn disabled_loop_returns_empty_report() {
     // When disabled, run() must return immediately with empty ThinkingReport.
     // We pass a None embedding_model since disabled path must not touch it.
-    use h2ai_adapters::MockAdapter;
+    use h2ai_test_utils::MockAdapter;
     let adapter = MockAdapter::new("irrelevant".into());
     let input = ThinkingLoopInput {
         task_description: "test task",
@@ -215,7 +215,7 @@ fn scheduled_tau_decreases_linearly() {
 /// provider never received the constraint IDs regardless of what the caller passed in.
 #[tokio::test]
 async fn run_forwards_constraint_ids_to_knowledge_query() {
-    use h2ai_adapters::SequencedMockAdapter;
+    use h2ai_test_utils::SequencedMockAdapter;
 
     let (spy, captured) = SpyProvider::new();
     let cfg = ThinkingLoopConfig {
@@ -342,9 +342,9 @@ fn parse_thinking_report_empty_shared_understanding_with_zero_coverage_falls_bac
 
 #[tokio::test]
 async fn run_with_two_iterations_covers_convergence_check() {
-    use h2ai_adapters::SequencedMockAdapter;
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
+    use h2ai_test_utils::SequencedMockAdapter;
 
     let cfg = ThinkingLoopConfig {
         enabled: true,
@@ -397,9 +397,9 @@ async fn run_with_two_iterations_covers_convergence_check() {
 
 #[tokio::test]
 async fn run_with_low_coverage_continues_to_next_iteration() {
-    use h2ai_adapters::SequencedMockAdapter;
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
+    use h2ai_test_utils::SequencedMockAdapter;
 
     let cfg = ThinkingLoopConfig {
         enabled: true,
@@ -444,9 +444,9 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
 
 #[tokio::test]
 async fn run_breaks_early_on_empty_archetypes() {
-    use h2ai_adapters::MockAdapter;
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
+    use h2ai_test_utils::MockAdapter;
 
     let cfg = ThinkingLoopConfig {
         enabled: true,

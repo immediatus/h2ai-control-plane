@@ -91,42 +91,6 @@ impl ToolRegistry {
         r
     }
 
-    /// Test-only constructor: identical `WaveMode` logic but injects mock backends.
-    /// Does not touch env vars, the filesystem, or spawn subprocesses.
-    #[must_use]
-    pub fn for_wave_with_mocks(cfg: &H2AIConfig, mode: WaveMode) -> Self {
-        use crate::mcp::MockMcpBackend;
-        use crate::wasm::MockWasmBackend;
-        use crate::web_search::MockSearchBackend;
-
-        let allowlist = match mode {
-            WaveMode::Normal => cfg.shell_allowlist.clone(),
-            WaveMode::Hardened => cfg.shell_hardened_allowlist.clone(),
-        };
-        let mut r = Self::new();
-        r.register_shell(ShellExecutor::new(allowlist, cfg.shell_timeout_secs));
-
-        if cfg.wasm_executor.is_some() {
-            r.register_wasm(WasmExecutor::new(Box::new(MockWasmBackend::new("mock"))));
-        }
-
-        if mode == WaveMode::Normal {
-            if cfg.web_search.is_some() {
-                r.register_web_search(WebSearchExecutor::new(
-                    Box::new(MockSearchBackend::new("mock")),
-                    3,
-                ));
-            }
-            if cfg.mcp_filesystem.is_some() {
-                r.register_mcp(McpExecutor::new(Box::new(MockMcpBackend::new(
-                    HashMap::new(),
-                ))));
-            }
-        }
-
-        r
-    }
-
     pub fn register_shell(&mut self, executor: ShellExecutor) {
         self.executors.insert(AgentTool::Shell, Arc::new(executor));
     }

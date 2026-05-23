@@ -3,6 +3,7 @@ use crate::judge_panel::JudgePanel;
 use crate::phases::StepResult;
 use crate::verification::{EvalCache, VerificationInput, VerificationPhase};
 use chrono::Utc;
+use h2ai_constraints::types::fractional_compliance_score;
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{
     BranchPrunedEvent, ProposalEvent, TopologyProvisionedEvent, VerificationScoredEvent,
@@ -147,12 +148,15 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         engine_input.store.record_validation(task_id, true);
         proposals.push(prop);
     }
+    let ct_scale = input.verification_config.constraint_threshold_scale;
     for (prop, results, violations, any_cache_hit) in ver_out.failed {
-        let hard_gate = results
-            .iter()
-            .all(h2ai_constraints::types::ComplianceResult::hard_passes);
+        let hard_gate = results.iter().all(|r| r.hard_passes_scaled(ct_scale));
         let soft = h2ai_constraints::types::aggregate_compliance_score(&results);
-        let compliance = if hard_gate { soft } else { 0.0 };
+        let compliance = if hard_gate {
+            soft
+        } else {
+            fractional_compliance_score(&results)
+        };
         let score = compliance;
         iteration_verification_events.push(VerificationScoredEvent {
             task_id: task_id.clone(),
@@ -187,6 +191,7 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             task_id: task_id.clone(),
             explorer_id: prop.explorer_id,
             reason: format!("verification compliance {compliance:.2}"),
+            raw_output: prop.raw_output.clone(),
             constraint_error_cost: cost,
             violated_constraints: violations,
             timestamp: Utc::now(),

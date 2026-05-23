@@ -1,0 +1,51 @@
+id: topic:production-safety
+depth: topic
+domains:
+  - production-safety
+  - database
+  - migrations
+synthesis: >
+  Terminal-Bench maps to DevOps and system-admin tasks where actions have real environment
+  failure consequences. The two production-safety constraints enforce what constitutes a safe
+  migration strategy. CONSTRAINT-BFT-1 (No Destructive Production Ops) prohibits DROP TABLE,
+  TRUNCATE, and irreversible column renames without the expand-contract pattern. The expand-
+  contract pattern is mandatory: add the new column/table, dual-write, migrate data, verify
+  checksums, then remove the old artifact — each step independently reversible if the next
+  step fails. A migration that renames a column in a single ALTER TABLE is scored fail because
+  it cannot be rolled back without data loss. CONSTRAINT-BFT-2 (Migration Rollback Required)
+  mandates that every migration script is paired with a rollback script that executes in
+  under 5 minutes and is tested in a staging environment before production. Rollback must
+  restore the exact pre-migration schema state — not an approximation. Both constraints are
+  BFT (adversarial) in the Terminal-Bench sense: a Byzantine proposer might argue that a
+  direct rename is safe because "it's transactional." The honest verifier rejects this: even
+  within a transaction, a rename that drops the old column name is not independently reversible
+  at the application layer (running code references the old column name).
+invariants:
+  - "No DROP TABLE or TRUNCATE on live production tables"
+  - "Column renames use expand-contract: add new, dual-write, migrate, verify, drop old"
+  - "Every migration step independently reversible — rollback does not require data reconstruction"
+  - "Rollback script executes in <5 minutes"
+  - "Staging environment test required before production apply"
+  - "Backup checksum verified before any destructive step begins"
+failure_modes_covered:
+  - "FM-BFT-1-1: Direct column rename drops old name — app code referencing old name breaks"
+  - "FM-BFT-1-2: DROP TABLE with backup that is not verified — backup may be corrupt"
+  - "FM-BFT-2-1: Rollback script exists but takes 45 minutes — unacceptable for production incidents"
+  - "FM-BFT-2-2: Rollback tested in dev but not staging — staging has FK constraints that prevent rollback"
+entry_points:
+  - CONSTRAINT-BFT-1
+  - CONSTRAINT-BFT-2
+constraints:
+  - CONSTRAINT-BFT-1
+  - CONSTRAINT-BFT-2
+cross_references:
+  - id: CONSTRAINT-005
+    domain: audit
+    reason: "Financial audit logs must survive migration — backup-before-migrate applies to audit tables too"
+  - id: CONSTRAINT-TAU-2
+    domain: consistency
+    reason: "Quota table schema changes must also follow expand-contract to avoid enforcement gaps"
+related:
+  - CONSTRAINT-BFT-1
+  - CONSTRAINT-BFT-2
+  - CONSTRAINT-005

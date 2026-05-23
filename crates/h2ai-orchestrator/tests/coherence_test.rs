@@ -70,6 +70,10 @@ fn make_constraint(id: &str, domains: &[&str]) -> ConstraintDoc {
         domains: domains.iter().map(|s| s.to_string()).collect(),
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 
@@ -78,6 +82,7 @@ fn make_pruned(task_id: &TaskId, violated_ids: &[&str]) -> BranchPrunedEvent {
         task_id: task_id.clone(),
         explorer_id: ExplorerId::new(),
         reason: "test".into(),
+        raw_output: String::new(),
         constraint_error_cost: RoleErrorCost::new(0.5).unwrap(),
         violated_constraints: violated_ids
             .iter()
@@ -86,6 +91,10 @@ fn make_pruned(task_id: &TaskId, violated_ids: &[&str]) -> BranchPrunedEvent {
                 score: 0.0,
                 severity_label: "Hard".into(),
                 remediation_hint: None,
+                constraint_description: String::new(),
+                verifier_reason: None,
+                check_verdicts: vec![],
+                criteria_pass: None,
             })
             .collect(),
         timestamp: chrono::Utc::now(),

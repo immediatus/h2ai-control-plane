@@ -11,9 +11,9 @@ use std::sync::Arc;
 fn corpus_dir() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest)
-        .join("../../tests/e2e/constraints")
+        .join("tests/fixtures/constraints")
         .canonicalize()
-        .expect("ads-platform constraints directory must exist")
+        .expect("test fixture constraints directory must exist")
 }
 
 fn load_corpus() -> (FsConstraintStore, WikiCache) {
@@ -34,11 +34,11 @@ fn make_resolver() -> ConstraintResolver {
 fn corpus_loads_all_yaml_constraints() {
     let (store, _) = load_corpus();
     let docs = store.all_docs_sorted();
-    // 8 original ads-platform constraints + 4 CACHE constraints + 3 saga constraints (C-009/C-010/C-011)
+    // 8 original (001-008) + 3 saga (009-011) + 4 CACHE + 2 BFT + 2 HLE + 1 OSW + 2 SWE + 2 TAU = 24
     assert_eq!(
         docs.len(),
-        15,
-        "ads-platform corpus must contain exactly 15 constraints; got {}: {:?}",
+        24,
+        "ads-platform corpus must contain exactly 24 constraints; got {}: {:?}",
         docs.len(),
         docs.iter().map(|d| &d.id).collect::<Vec<_>>()
     );

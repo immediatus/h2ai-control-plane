@@ -81,6 +81,10 @@ pub struct AppState {
     /// Built at startup from available adapters; `None` = spec anchor only (inline, no chain).
     pub srani_grounding_chain:
         Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
+    /// Dedicated grounding chain for GAP-I1 gap researcher: DuckDuckGo web search + LLM distiller.
+    /// `None` when researcher adapter is not configured.
+    pub gap_research_chain:
+        Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
     /// Pending human clarification waiters.
     /// Maps `task_id` → (Notify to wake the waiting engine, slot for the answer text).
     /// Populated by the engine when it suspends for clarification; resolved by POST /tasks/{id}/clarify.
@@ -92,6 +96,9 @@ pub struct AppState {
     /// Uses `Bm25WikiProvider` when [knowledge] config is present;
     /// `PassthroughProvider` otherwise.
     pub knowledge_provider: Arc<dyn KnowledgeProvider>,
+    /// Calibration drift monitor (GAP-H2): tracks consensus_agreement_rate,
+    /// fires DDM warnings and BOCPD changepoints, holds ORCA conformal margin.
+    pub drift_monitor: std::sync::Arc<tokio::sync::Mutex<h2ai_autonomic::drift::DriftMonitor>>,
 }
 
 impl AppState {
@@ -113,6 +120,9 @@ impl AppState {
         let journal =
             Arc::new(SessionJournal::new(nats.clone()).with_snapshot_interval(snapshot_interval));
         let max_tasks = cfg.max_concurrent_tasks;
+        let drift_monitor = std::sync::Arc::new(tokio::sync::Mutex::new(
+            h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
+        ));
         let constraint_resolver = {
             use h2ai_config::ConstraintWikiConfig;
             Arc::new(match &cfg.constraint_wiki {
@@ -160,6 +170,7 @@ impl AppState {
             shadow_accumulator: None,
             researcher_adapter: None,
             srani_grounding_chain: None,
+            gap_research_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
             constraint_resolver,
             knowledge_provider: {
@@ -169,6 +180,7 @@ impl AppState {
                     ".",
                 )))
             },
+            drift_monitor,
         }
     }
 
@@ -183,6 +195,9 @@ impl AppState {
         use h2ai_orchestrator::payload_store::MemoryPayloadStore;
         assert!(!adapter_pool.is_empty(), "adapter_pool must be non-empty");
         let max_tasks = cfg.max_concurrent_tasks;
+        let drift_monitor = std::sync::Arc::new(tokio::sync::Mutex::new(
+            h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
+        ));
         let constraint_resolver = Arc::new(ConstraintResolver::new(
             Arc::new(FsConstraintIndex::from_docs(&[])),
             Arc::new(FsConstraintStore::from_docs(vec![])),
@@ -211,11 +226,13 @@ impl AppState {
             shadow_accumulator: None,
             researcher_adapter: None,
             srani_grounding_chain: None,
+            gap_research_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
             constraint_resolver,
             knowledge_provider: Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
                 ".",
             ))),
+            drift_monitor,
         }
     }
 

@@ -136,6 +136,10 @@ fn vocab_constraint(id: &str) -> ConstraintDoc {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 
@@ -192,6 +196,10 @@ async fn ambiguous_band_tcc_defers_probe_and_routes_coverage() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let corpus = vec![
         make_hard(
@@ -390,7 +398,7 @@ async fn run_probe_all_probes_fail_returns_structural_tcc() {
 
 #[tokio::test]
 async fn run_probe_all_probes_agree_uses_amplified_tcc() {
-    use h2ai_adapters::MockAdapter;
+    use h2ai_test_utils::MockAdapter;
 
     let mut cfg = H2AIConfig::default().task_complexity;
     cfg.n_probe = 3;
@@ -427,7 +435,7 @@ async fn run_probe_all_probes_agree_uses_amplified_tcc() {
 
 #[tokio::test]
 async fn run_probe_mixed_results_computes_tcc_empirical() {
-    use h2ai_adapters::SequencedMockAdapter;
+    use h2ai_test_utils::SequencedMockAdapter;
 
     let mut cfg = H2AIConfig::default().task_complexity;
     cfg.n_probe = 3;
@@ -456,6 +464,10 @@ async fn run_probe_mixed_results_computes_tcc_empirical() {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     };
     let corpus = vec![make_vocab("ca", "alpha"), make_vocab("cb", "beta")];
 
@@ -480,7 +492,7 @@ async fn run_probe_mixed_results_computes_tcc_empirical() {
 
 #[tokio::test]
 async fn run_probe_direct_empty_static_corpus_degenerate() {
-    use h2ai_adapters::MockAdapter;
+    use h2ai_test_utils::MockAdapter;
 
     let mut cfg = H2AIConfig::default().task_complexity;
     cfg.n_probe = 2;

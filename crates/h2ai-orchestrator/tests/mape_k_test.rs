@@ -153,6 +153,7 @@ fn observe_aggregates_verification_events_across_waves() {
     );
     if let MapeKDecision::Fail(EngineError::MaxRetriesExhausted {
         partial_verification_events,
+        ..
     }) = decision
     {
         assert_eq!(

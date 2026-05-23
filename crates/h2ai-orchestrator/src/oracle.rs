@@ -41,6 +41,7 @@ pub mod oracle_dispatch {
             n_used,
             oracle_spec: spec.clone(),
             domain: spec.domain.clone(),
+            oracle_specs: vec![],
         };
         if let Ok(payload) = serde_json::to_vec(&event) {
             let subject = format!("h2ai.oracle.{}.pending", tenant_id.as_ref());

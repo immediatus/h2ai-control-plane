@@ -1,0 +1,25 @@
+id: CONSTRAINT-HLE-1
+title: "Quorum Safety — Agreement Requires Strict Quorum Under Byzantine Faults"
+severity: hard
+domains:
+  - distributed-systems
+  - consensus
+  - formal-methods
+remediation_hint: "Any BFT consensus protocol must prove that n ≥ 3f+1 nodes are required for safety under f Byzantine faults (not 2f+1, which is sufficient only for crash faults). Quorum intersection must be proven: any two quorums of size ⌈(n+f+1)/2⌉ must share at least one honest node even when f nodes equivocate."
+criteria:
+  pass: |
+    All of the following are true:
+    - Protocol requires n ≥ 3f+1 nodes for safety under f Byzantine faults and proves why n=3f is insufficient
+    - Two different values cannot be committed in the same view/round (agreement property proven)
+    - Protocol handles equivocating Byzantine nodes sending conflicting messages to different correct nodes
+    - Quorum intersection is proven: any two quorums share ≥1 honest node even with f Byzantine nodes
+  partial: "Protocol achieves safety for crash faults (n ≥ 2f+1) but does not address Byzantine equivocation."
+  fail: |
+    Any of the following:
+    - Protocol claims n=2f+1 is sufficient for Byzantine safety without proving equivocation is prevented
+    - Two honest nodes can commit different values when f Byzantine nodes send conflicting votes
+    - Safety proof assumes synchrony (all messages arrive within a known bound)
+  checks:
+    - Does the protocol prove it requires n ≥ 3f+1 nodes for safety under f Byzantine faults, and explain why n=3f is insufficient?
+    - Does the design prevent two honest nodes from committing different values when f Byzantine nodes send equivocating messages to each?
+    - Does the quorum intersection proof show that any two quorums share at least one honest node even with f Byzantine nodes present?

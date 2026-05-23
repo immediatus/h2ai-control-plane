@@ -21,10 +21,11 @@ use h2ai_types::calibration::CalibrationRecord;
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
+use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
 
 use crate::backend::{
-    CalibrationStore, EstimatorStore, EventPublisher, OproStore, SignalPublisher, SnapshotStore,
-    TailEvents,
+    CalibrationStore, EstimatorStore, EventPublisher, OproStore, ReasoningStore, SignalPublisher,
+    SnapshotStore, TailEvents,
 };
 use crate::nats::NatsError;
 
@@ -57,6 +58,9 @@ pub struct InMemoryStateBackend {
     tao_states: Arc<RwLock<HashMap<String, (f64, usize)>>>,
     srani_states: Arc<RwLock<HashMap<String, (f64, usize)>>>,
     bandit_states: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    // ReasoningStore fields
+    reasoning_checkpoints: Arc<RwLock<HashMap<String, TaskReasoningCheckpoint>>>,
+    task_meta_states: Arc<RwLock<HashMap<String, TaskMetaState>>>,
 }
 
 impl InMemoryStateBackend {
@@ -326,5 +330,80 @@ impl EstimatorStore for InMemoryStateBackend {
         let key = format!("{}/bandit", tenant_id.bucket_safe());
         self.bandit_states.write().await.insert(key, json_bytes);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ReasoningStore for InMemoryStateBackend {
+    async fn ensure_reasoning_buckets(
+        &self,
+        _tenant_id: &TenantId,
+        _checkpoint_prefix: &str,
+        _meta_state_prefix: &str,
+    ) -> Result<(), NatsError> {
+        Ok(())
+    }
+
+    async fn put_reasoning_checkpoint(
+        &self,
+        checkpoint: &TaskReasoningCheckpoint,
+        _checkpoint_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let key = format!("{}/{}", checkpoint.tenant_id, checkpoint.task_id);
+        self.reasoning_checkpoints
+            .write()
+            .await
+            .insert(key, checkpoint.clone());
+        Ok(())
+    }
+
+    async fn get_reasoning_checkpoint(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        _checkpoint_prefix: &str,
+    ) -> Result<Option<TaskReasoningCheckpoint>, NatsError> {
+        let key = format!("{tenant_id}/{task_id}");
+        Ok(self.reasoning_checkpoints.read().await.get(&key).cloned())
+    }
+
+    async fn put_task_meta_state(
+        &self,
+        meta: &TaskMetaState,
+        _meta_state_prefix: &str,
+    ) -> Result<(), NatsError> {
+        let key = format!("{}/{}", meta.tenant_id, meta.task_id);
+        self.task_meta_states
+            .write()
+            .await
+            .insert(key, meta.clone());
+        Ok(())
+    }
+
+    async fn get_task_meta_state(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+        _meta_state_prefix: &str,
+    ) -> Result<Option<TaskMetaState>, NatsError> {
+        let key = format!("{tenant_id}/{task_id}");
+        Ok(self.task_meta_states.read().await.get(&key).cloned())
+    }
+
+    async fn list_task_meta_states(
+        &self,
+        tenant_id: &TenantId,
+        _meta_state_prefix: &str,
+        limit: usize,
+    ) -> Vec<TaskMetaState> {
+        let prefix = format!("{tenant_id}/");
+        self.task_meta_states
+            .read()
+            .await
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .take(limit)
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 }

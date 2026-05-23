@@ -12,6 +12,10 @@ fn make_result(score: f64, hard: bool) -> ComplianceResult {
             ConstraintSeverity::Soft { weight: 1.0 }
         },
         remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }
 }
 
@@ -65,12 +69,20 @@ fn opposite_profiles_are_diverse() {
             score: 1.0,
             severity: ConstraintSeverity::Hard { threshold: 0.5 },
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
         ComplianceResult {
             constraint_id: "c2".into(),
             score: 0.0,
             severity: ConstraintSeverity::Hard { threshold: 0.5 },
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
     ];
     let results_b = vec![
@@ -79,12 +91,20 @@ fn opposite_profiles_are_diverse() {
             score: 0.0,
             severity: ConstraintSeverity::Hard { threshold: 0.5 },
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
         ComplianceResult {
             constraint_id: "c2".into(),
             score: 1.0,
             severity: ConstraintSeverity::Hard { threshold: 0.5 },
             remediation_hint: None,
+            constraint_description: String::new(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
         },
     ];
     let passed = vec![

@@ -8,27 +8,6 @@ pub trait WasmBackend: Send + Sync {
     async fn execute_script(&self, language: &str, script: &str) -> Result<String, ToolError>;
 }
 
-// ── Mock ─────────────────────────────────────────────────────────────────────
-
-pub struct MockWasmBackend {
-    response: String,
-}
-
-impl MockWasmBackend {
-    pub fn new(response: impl Into<String>) -> Self {
-        Self {
-            response: response.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl WasmBackend for MockWasmBackend {
-    async fn execute_script(&self, _language: &str, _script: &str) -> Result<String, ToolError> {
-        Ok(self.response.clone())
-    }
-}
-
 // ── Live: wasmtime interpreter sandbox ───────────────────────────────────────
 
 #[cfg(feature = "wasm")]

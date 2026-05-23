@@ -1,0 +1,27 @@
+id: CONSTRAINT-TAU-2
+title: "Quota Change Atomicity — Runtime Quota Updates Must Be Instantly Consistent"
+severity: hard
+domains:
+  - saas
+  - multi-tenancy
+  - consistency
+related_to:
+  - CONSTRAINT-TAU-1
+remediation_hint: "Quota changes must be atomic: either the new quota limit becomes visible to all rate-check paths simultaneously, or the old limit remains until the update is fully committed. Partial updates — where some API nodes observe the new quota and others the old — create inconsistent enforcement and revenue risk. Use Redis Lua EVAL or a CAS operation as a single atomic step."
+criteria:
+  pass: |
+    All of the following are true:
+    - Quota updates use an atomic operation (Redis Lua EVAL, compare-and-swap) — not a read-then-write sequence
+    - All API nodes observe the new quota within one quota-cache TTL after the change commits (bounded eventual consistency)
+    - Quota changes take effect without a service restart or rolling redeployment
+    - Every quota change is recorded in an audit log with the old value, new value, tenant_id, and actor identity
+  partial: "Quota changes are eventually consistent but the convergence window is unbounded, or the audit log omits the actor identity."
+  fail: |
+    Any of the following:
+    - Quota change requires a service restart or rolling deployment to take effect
+    - Two API nodes can simultaneously enforce different quota limits for the same tenant after a change
+    - No audit record of quota change events (old value, new value, who changed it)
+  checks:
+    - "Does the quota change mechanism use an atomic operation (Redis Lua EVAL or compare-and-swap) to prevent a read-then-write race? A single Lua EVAL that atomically reads the old limit and writes the new limit in one script is the correct pattern."
+    - "Does the system guarantee that all API nodes observe the new quota within one quota-cache TTL (60 seconds) after the change commits? ACCEPTABLE mechanisms: (a) in-process cache TTL ≤60s so stale entries expire automatically within the window; (b) active push invalidation via Redis pub/sub or Redis Streams so nodes drop their cache on update; or (c) both. A proposal using ONLY a TTL-based in-process cache (no active push) satisfies this check because the TTL guarantees convergence within 60s regardless of traffic. A proposal that invalidates ONLY on next-request version mismatch WITHOUT a TTL safety net does NOT satisfy this check."
+    - "Is every quota change recorded in an immutable audit log with: old limit value, new limit value, tenant_id (from JWT), and actor identity (from JWT sub claim)? PostgreSQL INSERT-only tables satisfy this check. A Redis RPUSH to an audit list does NOT satisfy this check (data can be lost or mutated)."

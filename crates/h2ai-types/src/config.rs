@@ -232,6 +232,22 @@ pub struct TaoConfig {
     pub repetition_threshold: f64,
     /// Per-turn adapter call timeout in seconds. Increase for slow local models.
     pub per_turn_timeout_secs: u64,
+    /// When `true`, retry once on turn-1 (or bypass) timeout with a reduced
+    /// `max_tokens` cap to get a faster response from slow local LLMs.
+    #[serde(default = "default_retry_on_timeout")]
+    pub retry_on_timeout: bool,
+    /// `max_tokens` cap used on the single retry request after a timeout.
+    /// Smaller values elicit faster responses from slow local models.
+    #[serde(default = "default_timeout_retry_max_tokens")]
+    pub timeout_retry_max_tokens: u32,
+}
+
+fn default_retry_on_timeout() -> bool {
+    true
+}
+
+fn default_timeout_retry_max_tokens() -> u32 {
+    512
 }
 
 impl Default for TaoConfig {
@@ -245,6 +261,8 @@ impl Default for TaoConfig {
             retry_instruction: crate::prompts::TAO_RETRY_INSTRUCTION.into(),
             repetition_threshold: 0.92,
             per_turn_timeout_secs: 600,
+            retry_on_timeout: default_retry_on_timeout(),
+            timeout_retry_max_tokens: default_timeout_retry_max_tokens(),
         }
     }
 }
@@ -267,6 +285,14 @@ pub struct VerificationConfig {
     /// Does not affect pruning decisions. Off by default; enable only for measurement runs.
     #[serde(default)]
     pub record_adversarial_comparison: bool,
+    /// Multiplicative scale applied to Hard constraint thresholds. Default 1.0 (no relaxation).
+    /// Set to `0.9^retry_count` on retry waves to relax thresholds by 10% per wave.
+    #[serde(default = "default_constraint_threshold_scale")]
+    pub constraint_threshold_scale: f64,
+}
+
+fn default_constraint_threshold_scale() -> f64 {
+    1.0
 }
 
 impl Default for VerificationConfig {
@@ -278,6 +304,7 @@ impl Default for VerificationConfig {
             evaluator_tau: TauValue::new(0.1).unwrap(),
             evaluator_max_tokens: 32768,
             record_adversarial_comparison: false,
+            constraint_threshold_scale: 1.0,
         }
     }
 }

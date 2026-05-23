@@ -2,6 +2,7 @@ use chrono::Utc;
 use h2ai_types::config::TopologyKind;
 use h2ai_types::events::{BranchPrunedEvent, TaskFailedEvent, ZeroSurvivalEvent};
 use h2ai_types::sizing::MultiplicationConditionFailure;
+use std::collections::{HashMap, HashSet};
 
 pub enum RetryAction {
     Retry(TopologyKind),
@@ -12,10 +13,17 @@ pub enum RetryAction {
         tau_factor: f64,
     },
     /// Structured constraint violations found — provide targeted remediation hints.
+    /// Legacy path kept for call sites that pre-date RepairTarget.
     RetryWithHints {
         topology: TopologyKind,
         /// One hint per violated Hard constraint that has a `remediation_hint`.
         hints: Vec<String>,
+    },
+    /// Structured repair targets with per-constraint description, hint, and dynamic verifier reason.
+    /// Produced by RetryPolicy::decide() when ConstraintViolation carries rich metadata.
+    RetryWithTargets {
+        topology: TopologyKind,
+        targets: Vec<crate::repair::RepairTarget>,
     },
     Fail(TaskFailedEvent),
 }
@@ -47,6 +55,76 @@ const HALLUCINATION_SIGNALS: &[&str] = &[
     "false claim",
 ];
 
+/// Word-bag Jaccard similarity: |A ∩ B| / |A ∪ B|. Returns 1.0 when both bags are empty.
+fn jaccard(a: &str, b: &str) -> f64 {
+    let bag_a: HashSet<&str> = a.split_whitespace().collect();
+    let bag_b: HashSet<&str> = b.split_whitespace().collect();
+    let union = bag_a.union(&bag_b).count();
+    if union == 0 {
+        return 1.0;
+    }
+    bag_a.intersection(&bag_b).count() as f64 / union as f64
+}
+
+/// Min pairwise Jaccard across all reason pairs. Returns 1.0 when fewer than two reasons.
+fn min_pairwise_jaccard(reasons: &[String]) -> f64 {
+    let mut min = 1.0_f64;
+    for i in 0..reasons.len() {
+        for j in (i + 1)..reasons.len() {
+            min = min.min(jaccard(&reasons[i], &reasons[j]));
+        }
+    }
+    min
+}
+
+/// Mean pairwise Jaccard across all reason pairs. Returns 1.0 when fewer than two reasons.
+fn mean_pairwise_jaccard(reasons: &[String]) -> f64 {
+    if reasons.len() < 2 {
+        return 1.0;
+    }
+    let mut sum = 0.0_f64;
+    let mut count = 0usize;
+    for i in 0..reasons.len() {
+        for j in (i + 1)..reasons.len() {
+            sum += jaccard(&reasons[i], &reasons[j]);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        1.0
+    } else {
+        sum / count as f64
+    }
+}
+
+/// Return up to `k` unique (score, reason) pairs from `pairs`, sorted score-descending.
+///
+/// Uniqueness is enforced by Jaccard deduplication: a candidate is dropped when it exceeds
+/// `dedup_threshold` similarity with any already-selected reason. This prevents identical
+/// failure signals from bloating the repair prompt while preserving genuinely distinct diagnoses.
+pub(crate) fn top_k_unique_reasons(
+    pairs: &[(f64, String)],
+    k: usize,
+    dedup_threshold: f64,
+) -> Vec<(f64, String)> {
+    let mut sorted = pairs.to_vec();
+    sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut result: Vec<(f64, String)> = Vec::new();
+    for (score, reason) in sorted {
+        let is_dup = result
+            .iter()
+            .any(|(_, r)| jaccard(r, &reason) > dedup_threshold);
+        if !is_dup {
+            result.push((score, reason));
+        }
+        if result.len() >= k {
+            break;
+        }
+    }
+    result
+}
+
 impl RetryPolicy {
     pub fn decide(
         event: &ZeroSurvivalEvent,
@@ -55,18 +133,88 @@ impl RetryPolicy {
         tau_values_tried: Vec<Vec<f64>>,
         multiplication_failure: Option<MultiplicationConditionFailure>,
     ) -> RetryAction {
-        // Check structured constraint violations first — they provide targeted hints.
-        let hints: Vec<String> = pruned_events
-            .iter()
-            .flat_map(|e| e.violated_constraints.iter())
-            .filter(|v| v.severity_label == "Hard")
-            .filter_map(|v| v.remediation_hint.clone())
-            .collect::<std::collections::HashSet<_>>()
+        // Aggregate per-constraint data from all pruned events.
+        // For each hard-failing constraint: collect (score, verifier_reason, constraint_description, remediation_hint).
+        struct ConstraintEntry {
+            constraint_description: String,
+            remediation_hint: Option<String>,
+            criteria_pass: Option<String>,
+            // Pairs of (score, verifier_reason) from each proposal that violated this constraint.
+            score_reason_pairs: Vec<(f64, String)>,
+        }
+        let mut per_constraint: HashMap<String, ConstraintEntry> = HashMap::new();
+
+        for pruned in &pruned_events {
+            for v in pruned
+                .violated_constraints
+                .iter()
+                .filter(|v| v.severity_label == "Hard")
+            {
+                let entry = per_constraint
+                    .entry(v.constraint_id.clone())
+                    .or_insert_with(|| ConstraintEntry {
+                        constraint_description: v.constraint_description.clone(),
+                        remediation_hint: v.remediation_hint.clone(),
+                        criteria_pass: v.criteria_pass.clone(),
+                        score_reason_pairs: Vec::new(),
+                    });
+                if let Some(ref r) = v.verifier_reason {
+                    if !r.is_empty() {
+                        entry.score_reason_pairs.push((v.score, r.clone()));
+                    }
+                }
+            }
+        }
+
+        let has_violations = !per_constraint.is_empty();
+
+        // Build RepairTargets from aggregated per-constraint data.
+        let targets: Vec<crate::repair::RepairTarget> = per_constraint
             .into_iter()
+            .map(|(constraint_id, entry)| {
+                let reasons: Vec<String> = entry
+                    .score_reason_pairs
+                    .iter()
+                    .map(|(_, r)| r.clone())
+                    .collect();
+
+                // Log structural divergence when min Jaccard falls below half the mean.
+                // Self-calibrates to domain vocabulary — technical text naturally has low
+                // absolute Jaccard but may still carry consistent failure signal.
+                if reasons.len() >= 3 {
+                    let min_j = min_pairwise_jaccard(&reasons);
+                    let mean_j = mean_pairwise_jaccard(&reasons);
+                    if min_j < mean_j * 0.5 {
+                        tracing::warn!(
+                            target: "h2ai.retry",
+                            constraint_id = %constraint_id,
+                            min_jaccard = min_j,
+                            mean_jaccard = mean_j,
+                            reason_count = reasons.len(),
+                            "verifier reasons show structural divergence — \
+                            escalating to top-k breadth selection"
+                        );
+                    }
+                }
+
+                // Progressive signal escalation: k grows with retry_count so repair prompts
+                // receive more diverse failure context as single-reason repair keeps failing.
+                // k = tried_topologies.len() + 1: wave 1 → 1 reason, wave 2 → 2, wave 3+ → 3+
+                let k = tried_topologies.len() + 1;
+                crate::repair::RepairTarget {
+                    constraint_id,
+                    constraint_description: entry.constraint_description,
+                    remediation_hint: entry.remediation_hint,
+                    criteria_pass: entry.criteria_pass,
+                    verifier_reasons: top_k_unique_reasons(&entry.score_reason_pairs, k, 0.7),
+                }
+            })
             .collect();
 
-        // Fall back to keyword scan only when no structured violations carry hints.
-        let hallucination_count = if hints.is_empty() {
+        // Fall back to hallucination-signal keyword scan only when no structured violations found.
+        let hallucination_count = if has_violations {
+            0
+        } else {
             pruned_events
                 .iter()
                 .filter(|e| {
@@ -74,22 +222,19 @@ impl RetryPolicy {
                     HALLUCINATION_SIGNALS.iter().any(|sig| r.contains(sig))
                 })
                 .count()
-        } else {
-            0
         };
 
-        // Majority (>50%) of pruned reasons indicate hallucination → reduce τ.
-        let reduce_tau = hints.is_empty()
+        let reduce_tau = !has_violations
             && !pruned_events.is_empty()
             && hallucination_count * 2 >= pruned_events.len();
 
         for make_topology in FRONTIER {
             let candidate = make_topology();
             if !Self::has_tried(tried_topologies, &candidate) {
-                return if !hints.is_empty() {
-                    RetryAction::RetryWithHints {
+                return if has_violations {
+                    RetryAction::RetryWithTargets {
                         topology: candidate,
-                        hints,
+                        targets,
                     }
                 } else if reduce_tau {
                     RetryAction::RetryWithTauReduction {

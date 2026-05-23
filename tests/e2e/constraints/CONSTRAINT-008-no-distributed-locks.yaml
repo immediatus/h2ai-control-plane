@@ -1,5 +1,5 @@
 id: CONSTRAINT-008
-title: "No Distributed Locks on Critical Charge Path"
+title: "Lock-Free Critical Charge Path"
 severity: hard
 domains:
   - concurrency
@@ -7,7 +7,7 @@ domains:
   - distributed-systems
 related_to:
   - CONSTRAINT-004  # use atomic Redis operations instead of locks
-remediation_hint: "Use lock-free atomic operations: Redis Lua EVAL for check-and-debit in one round-trip, or Redis WATCH/MULTI/EXEC for optimistic concurrency. Distributed locks (Redlock, SETNX-based advisory locks, PostgreSQL advisory locks) add unbounded wait time under contention and are prohibited on the critical path."
+remediation_hint: "Use Redis Lua EVAL for all quota state mutations: one atomic script reads and writes the quota state, serialized by Redis — no external lock needed. WATCH/MULTI/EXEC is acceptable only when retries are strictly bounded (≤3) with a 429 fallback on exhaustion. SETNX as a one-shot idempotency guard (not a blocking spin-lock) is acceptable off the critical charge path. Redis Lua EVAL, SETNX-with-expiry as a one-shot guard, or a single-instance lock sentinel are the correct patterns for this path; distributed locking tools (Redlock, ZooKeeper/etcd ephemeral nodes, PostgreSQL advisory locks) are not appropriate here."
 semantic:
   exclusions:
     - pattern: "Redlock or advisory lock on the charge path"
@@ -28,10 +28,10 @@ criteria:
     latency requirement because lock acquisition requires at least one additional
     network round-trip (150µs–1ms in Redis deployments) with unbounded wait under contention.
   checks:
-    - Does the proposal avoid SETNX-based advisory locks or Redlock on the charge path?
-    - Does the proposal avoid database-level advisory locks (PostgreSQL pg_try_advisory_lock, etc.)?
-    - Does the proposal avoid ZooKeeper or etcd distributed locks on the charge path?
-    - Are all critical-path atomicity requirements satisfied by Redis atomic operations (Lua EVAL, MULTI/EXEC)?
+    - "Does the proposal use only lock-free Redis operations (Lua EVAL, CAS) — not SETNX-based blocking locks — on the quota change or rate-check path? Note: SETNX as a one-shot idempotency guard (no caller waits) is acceptable off the critical path."
+    - "Does the proposal keep PostgreSQL advisory locks (pg_advisory_lock, pg_advisory_xact_lock, pg_try_advisory_lock) off all paths that read or write quota state?"
+    - "Does the proposal use a Redis-native atomicity mechanism, keeping ZooKeeper/etcd/Consul distributed locks off all quota state mutation paths?"
+    - "Does the proposal use Redis Lua EVAL as the primary atomicity mechanism for quota state mutations? If WATCH/MULTI/EXEC is present, is it strictly bounded (MAX_RETRIES ≤ 3) with a non-blocking error response (e.g., HTTP 429) on exhaustion — and NOT an unbounded retry loop?"
 
 failure_modes:
   - id: FM-008-1

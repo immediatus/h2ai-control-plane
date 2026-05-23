@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = { workspace = true }
+async-nats  = { workspace = true }
 futures     = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
@@ -12,6 +13,7 @@ serde_yaml  = { workspace = true }
 regex       = { workspace = true }
 jsonschema  = { version = "0.26", default-features = false }
 thiserror   = { workspace = true }
+tokio       = { workspace = true, features = ["sync"] }
 tracing     = { workspace = true }
 
 [dev-dependencies]

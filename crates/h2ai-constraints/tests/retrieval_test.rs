@@ -136,6 +136,10 @@ fn make_doc(id: &str, pred: ConstraintPredicate) -> ConstraintDoc {
         domains: vec![],
         mandatory_for_tags: vec![],
         related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
     }
 }
 

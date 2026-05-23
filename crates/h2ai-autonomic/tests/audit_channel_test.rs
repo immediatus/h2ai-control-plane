@@ -8,6 +8,10 @@ fn v(constraint_id: &str, hint: Option<&str>) -> ConstraintViolation {
         score: 0.0,
         severity_label: "Hard".to_string(),
         remediation_hint: hint.map(str::to_string),
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
     }
 }
 
@@ -134,6 +138,16 @@ fn build_zone3_mixed_hints_only_emits_guidance_for_hinted() {
     let text2 = result2.expect("c-004 must produce zone3");
     assert!(text2.contains("c-004"));
     assert!(!text2.contains("Guidance:"));
+}
+
+#[test]
+fn build_zone3_none_when_violations_empty_with_positive_nf() {
+    // n_f > 0 but violations slice is empty → second arm of the `||` fires.
+    let result = AuditChannelBuilder::build_zone3(&[], 2, 1, 0, &OspConfig::default());
+    assert!(
+        result.is_none(),
+        "empty violations must return None even when n_f > 0"
+    );
 }
 
 #[test]

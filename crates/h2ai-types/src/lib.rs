@@ -39,6 +39,7 @@ pub mod prompt_variant;
 pub mod prompts;
 pub use prompt_variant::{AdapterOproState, PromptBanditArm, PromptVariant, PromptVariantSource};
 pub mod conflict;
+pub mod gap_i1;
 pub mod judge;
 pub use judge::{JudgePersona, PanelDiversityKind};
 pub mod sizing;

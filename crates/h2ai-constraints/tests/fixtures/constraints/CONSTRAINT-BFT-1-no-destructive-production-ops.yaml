@@ -1,0 +1,26 @@
+id: CONSTRAINT-BFT-1
+title: "No Destructive Production Operations — Additive-Only Schema Changes"
+severity: hard
+threshold: 0.7
+domains:
+  - production-safety
+  - database
+  - devops
+remediation_hint: "Schema migrations must never DROP, TRUNCATE, or irrecoverably overwrite data while any live read traffic exists. Column renames follow expand-contract: add-new → backfill → dual-read validation → remove-old in a separate cleanup migration. Every destructive step requires a prior full backup with checksum verification."
+criteria:
+  pass: |
+    All of the following are true:
+    - No DROP COLUMN, DROP TABLE, or TRUNCATE on tables with live data during the forward migration
+    - Column renames use the expand-contract pattern: new column added first, old column removed only after full rollout
+    - Each migration step is independently reversible with a specific documented rollback script
+    - Backward compatibility with the previous application version is maintained throughout the transition
+  partial: "Migration is additive but the rollback procedure is undocumented or requires manual data reconstruction."
+  fail: |
+    Any of the following:
+    - DROP COLUMN or DROP TABLE on a table with production data in the forward migration path
+    - TRUNCATE used to clear a live table as part of a migration step
+    - Migration makes the previous application version unable to read or write the database
+  checks:
+    - Does the migration plan avoid DROP COLUMN and DROP TABLE on tables containing live production data?
+    - Does the plan use additive-only schema changes (add column, add index) until the dual-read validation period is complete?
+    - Is every migration step independently reversible with a specific rollback script that executes in under 5 minutes?

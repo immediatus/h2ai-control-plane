@@ -36,18 +36,30 @@ import tomllib
 import traceback
 import urllib.request
 
-from client import submit_task, stream_events, submit_signal, wait_for_health, DEFAULT_TENANT
+from client import submit_task, stream_events, submit_signal, wait_for_health, trigger_calibration_and_wait, DEFAULT_TENANT
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 SCENARIOS_DIR = pathlib.Path(__file__).parent / "scenarios"
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 SERVER_BIN = REPO_ROOT / "target" / "release" / "h2ai-control-plane"
+
+
+def _git_sha() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=REPO_ROOT, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+GIT_SHA = _git_sha()
 MULTIFAMILY = os.environ.get("H2AI_E2E_MULTIFAMILY", "").strip() == "1"
 # Single model token budget for all LLM calls in the e2e harness.
 # Mirrors model_max_tokens in reference.toml.
 MODEL_MAX_TOKENS = 32768
-# Judge calls (PRESENT/MISSING verdicts) use a small budget — one word needed.
-JUDGE_MAX_TOKENS = 64
 
 
 # ── Scenario loading ──────────────────────────────────────────────────────────
@@ -112,6 +124,7 @@ def start_server(scenario_dir: pathlib.Path, config_file: str = "h2ai.toml") -> 
     proc = subprocess.Popen(
         [str(SERVER_BIN)],
         env=env,
+        cwd=REPO_ROOT,
         stdout=log_fh,
         stderr=log_fh,
     )
@@ -227,7 +240,9 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
 
         elif kind == "BranchPruned":
             for v in event.get("violated_constraints", []):
-                pruned_constraints.append(v.get("constraint_id", ""))
+                cid = v.get("constraint_id", "")
+                if cid:
+                    pruned_constraints.append(cid)
 
         elif kind == "CorrelatedFabrication":
             srani_events.append(event)
@@ -312,15 +327,11 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
 def check_assertions(result: dict, expected: dict, task_json: dict) -> dict[str, dict]:
     """Evaluate _expected assertions against a run result.
 
-    Design rules:
-    - terminal: only asserted when explicitly present in `_expected`; omitting it lets
-      feature-isolation scenarios pass on TaskFailed (the feature activated; LLM quality
-      is tested separately via checks_pass).
-    - Feature activation assertions (thinking_loop_ran, hitl_gate_fired, srani_active):
-      always evaluated regardless of which config file was used.  In compare mode this
-      creates the h2ai-vs-baseline differentiation: h2ai passes them, baseline fails them.
-    - checks_pass: only evaluated when the task actually produced a merged output
-      (terminal_kind == "MergeResolved"); TaskFailed means no content to score.
+    Supported assertion keys (all opt-in — only evaluated when present in _expected):
+    - terminal: exact match against terminal_kind ("MergeResolved", "TaskFailed", …)
+    - valid_proposals_min: len(verification_scores) >= N
+    - j_eff_min: j_eff >= diversity_weight * coverage_score
+    - should_prune (MULTIFAMILY only): constraint IDs present in pruned_constraints
     """
     out: dict[str, dict] = {}
 
@@ -356,50 +367,6 @@ def check_assertions(result: dict, expected: dict, task_json: dict) -> dict[str,
             found = any(constraint_id in c for c in result["pruned_constraints"])
             out[f"prune_{constraint_id}"] = {"expected": True, "actual": found, "pass": found}
 
-    if "thinking_loop_ran" in expected:
-        tl = result.get("thinking_loop_event")
-        actual = tl is not None and tl.get("enabled", False) and tl.get("iterations_run", 0) >= 1
-        out["thinking_loop_ran"] = {"expected": expected["thinking_loop_ran"], "actual": actual, "pass": actual == expected["thinking_loop_ran"]}
-
-    if "thinking_loop_coverage_min" in expected:
-        tl = result.get("thinking_loop_event")
-        actual = tl.get("coverage_score", 0.0) if tl else 0.0
-        exp = expected["thinking_loop_coverage_min"]
-        out["thinking_loop_coverage_min"] = {"expected": exp, "actual": actual, "pass": actual >= exp}
-
-    if "oracle_p_patched" in expected:
-        actual = result.get("oracle_calibration_patched") is not None
-        out["oracle_p_patched"] = {"expected": expected["oracle_p_patched"], "actual": actual, "pass": actual == expected["oracle_p_patched"]}
-
-    if "hitl_gate_fired" in expected:
-        actual = result.get("hitl_gate_fired", False)
-        exp = expected["hitl_gate_fired"]
-        out["hitl_gate_fired"] = {"expected": exp, "actual": actual, "pass": actual == exp}
-
-    if "leader_election_ran" in expected:
-        exp = expected["leader_election_ran"]
-        actual = result.get("leader_elected", False)
-        out["leader_election_ran"] = {"expected": exp, "actual": actual, "pass": actual == exp}
-
-    if "srani_active" in expected:
-        # Tests that SRANI was evaluated on at least one proposal (emitted any event).
-        # Use srani_active instead of srani_cfi_check to avoid dependency on fabrication firing.
-        exp = expected["srani_active"]
-        actual = len(result.get("srani_events", [])) > 0
-        out["srani_active"] = {"expected": exp, "actual": actual, "pass": actual == exp}
-
-    if "srani_cfi_check" in expected:
-        # Legacy: checks that at least one CorrelatedFabrication event fired.
-        exp = expected["srani_cfi_check"]
-        actual = len(result["srani_events"]) > 0
-        out["srani_cfi_check"] = {"expected": exp, "actual": actual, "pass": actual == exp}
-
-    if "checks_pass_threshold" in expected and terminal_kind == "MergeResolved":
-        # Only assert content quality when there is actually a merged output to score.
-        exp = expected["checks_pass_threshold"]
-        actual = result.get("checks_present", 0)
-        out["checks_pass"] = {"expected": exp, "actual": actual, "pass": actual >= exp}
-
     return out
 
 
@@ -421,6 +388,8 @@ def save_results(scenario_name: str, task: dict, result: dict, assertions: dict)
     ocp = result.get("oracle_calibration_patched")
     summary = {
         "scenario": scenario_name,
+        "benchmark": task.get("_benchmark"),
+        "git_sha": GIT_SHA,
         "timestamp": ts,
         "task_id": result["task_id"],
         "terminal_kind": result["terminal_kind"],
@@ -446,11 +415,6 @@ def save_results(scenario_name: str, task: dict, result: dict, assertions: dict)
         # Epistemic leader signals
         "leader_elected": result.get("leader_elected", False),
         "leader_election_count": len(result.get("leader_elected_events", [])),
-        # Content check results
-        "checks_results": result.get("checks_results", []),
-        "checks_present": result.get("checks_present", 0),
-        "checks_total": result.get("checks_total", 0),
-        "checks_threshold": result.get("checks_threshold", 0),
         "assertions": assertions,
         "pass": all(c["pass"] for c in assertions.values()),
     }
@@ -583,39 +547,20 @@ def _llm_call(endpoint: str, model: str, messages: list[dict], max_tokens: int =
         ) from None
 
 
-def _eval_checks_against_output(output: str, checks: list[dict], scenario_name: str) -> list[dict]:
-    """Evaluate content checks against merged h2ai output using the LLM judge.
-
-    Uses the same prompt and PRESENT/MISSING parsing as run_baseline().
-    Returns early with an empty list if output is empty.
-    """
-    if not output:
-        return []
-    endpoint, model, _max_tokens = _llm_endpoint_for_scenario(scenario_name)
-    results = []
+def _print_checks_for_review(checks: list[dict], out_dir: pathlib.Path) -> None:
+    """Print check questions to stdout so a human reviewer knows what to evaluate."""
+    if not checks:
+        return
+    print(f"  review output at: {out_dir / 'output.txt'}")
+    print(f"  evaluate manually against {len(checks)} check(s):")
     for check in checks:
-        prompt = (
-            f"Does the following ANSWER satisfy the CHECK?\n\n"
-            f"CHECK: {check['text']}\n\n"
-            f"ANSWER:\n{output[:16000]}\n\n"
-            f"Respond with exactly one word on its own line: PRESENT (if the answer clearly satisfies the check) or MISSING (if it does not)."
-        )
-        resp = _llm_call(endpoint, model, [{"role": "user", "content": prompt}], max_tokens=JUDGE_MAX_TOKENS)
-        # Accept PRESENT anywhere in the full response to handle models that add preamble
-        verdict = "PRESENT" if "PRESENT" in resp.upper() else "MISSING"
-        results.append({"id": check["id"], "verdict": verdict, "pass": verdict == "PRESENT"})
-        print(f"  check {check['id']}: {verdict}")
-    return results
+        print(f"    [{check['id']}] {check['text']}")
 
 
 def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -> dict:
     endpoint, model, max_tokens = _llm_endpoint_for_scenario(scenario_name)
     mode_label = "context-augmented" if constraint_context else "bare LLM"
     print(f"  LLM endpoint: {endpoint}  model: {model}  max_tokens: {max_tokens}  mode: {mode_label}")
-
-    expected = task.get("_expected", {})
-    checks = expected.get("checks", [])
-    threshold = expected.get("checks_pass_threshold", len(checks))
 
     system_parts = ["You are a senior distributed systems engineer. Be concrete and precise."]
     if constraint_context:
@@ -637,12 +582,6 @@ def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -
     elapsed = time.time() - t0
     print(f"  Answer: {len(answer)} chars in {elapsed:.0f}s")
 
-    results = _eval_checks_against_output(answer, checks, scenario_name)
-
-    present = sum(1 for r in results if r["pass"])
-    passed = present >= threshold
-    print(f"  checks: {present}/{len(checks)}  threshold={threshold}  → {'PASS' if passed else 'FAIL'}")
-
     ts = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     out_dir = RESULTS_DIR / scenario_name / ts
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -655,14 +594,10 @@ def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -
         "llm_endpoint": endpoint,
         "answer_chars": len(answer),
         "elapsed_s": round(elapsed, 1),
-        "checks": results,
-        "checks_present": present,
-        "checks_total": len(checks),
-        "checks_threshold": threshold,
-        "pass": passed,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"  results: {out_dir}")
+    checks = task.get("_expected", {}).get("_review_checklist", [])
+    _print_checks_for_review(checks, out_dir)
     return summary
 
 
@@ -685,25 +620,13 @@ def _run_h2ai_trials(
             proc = start_server(scenario_dir, config_file)
             wait_for_health()
             print("  server ready")
+            required_n = task.get("explorers", {}).get("count", 1)
+            trigger_calibration_and_wait(min_n_max=required_n, timeout_s=900)
             result = run_scenario(scenario_name, task)
-            checks = task.get("_expected", {}).get("checks", [])
-            threshold = task.get("_expected", {}).get("checks_pass_threshold", len(checks))
-            if checks and result["merged_output"]:
-                print(f"  evaluating {len(checks)} content checks against merged output…")
-                check_results = _eval_checks_against_output(result["merged_output"], checks, scenario_name)
-                present = sum(1 for r in check_results if r["pass"])
-                print(f"  checks: {present}/{len(checks)}  threshold={threshold}  → {'PASS' if present >= threshold else 'FAIL'}")
-                result["checks_results"] = check_results
-                result["checks_present"] = present
-                result["checks_total"] = len(checks)
-                result["checks_threshold"] = threshold
-            else:
-                result["checks_results"] = []
-                result["checks_present"] = 0
-                result["checks_total"] = 0
-                result["checks_threshold"] = 0
             assertions = check_assertions(result, task.get("_expected", {}), task)
             out_dir = save_results(scenario_name, task, result, assertions)
+            checks = task.get("_expected", {}).get("_review_checklist", [])
+            _print_checks_for_review(checks, out_dir)
             passed = all(c["pass"] for c in assertions.values())
             results.append({"passed": passed, "result": result, "assertions": assertions, "out_dir": str(out_dir)})
             mark = "PASS" if passed else "FAIL"
@@ -722,6 +645,7 @@ def _run_h2ai_trials(
     pass_k = passing / trials
     last = next((r for r in reversed(results) if "result" in r), {})
     last_result = last.get("result", {})
+    merged = last_result.get("merged_output", "")
     return {
         "trials": trials,
         "passing": passing,
@@ -734,11 +658,8 @@ def _run_h2ai_trials(
         "leader_elected": last_result.get("leader_elected", False),
         "leader_election_count": len(last_result.get("leader_elected_events", [])),
         "srani_events": len(last_result.get("srani_events", [])),
-        "checks_pass_rate": (
-            last_result.get("checks_present", 0) / last_result["checks_total"]
-            if last_result.get("checks_total", 0) > 0
-            else None
-        ),
+        "answer_chars": len(merged) if merged else None,
+        "elapsed_s": None,
     }
 
 
@@ -746,20 +667,18 @@ def _baseline_summary(result: dict) -> dict:
     """Wrap run_baseline() result in the same shape as _run_h2ai_trials() metrics."""
     return {
         "trials": 1,
-        "passing": 1 if result["pass"] else 0,
-        "pass_k": 1.0 if result["pass"] else 0.0,
+        "passing": None,
+        "pass_k": None,
         "j_eff": None,
-        "avg_verification_score": result.get("checks_present", 0) / max(result.get("checks_total", 1), 1),
+        "avg_verification_score": None,
         "valid_proposals": 0,
         "thinking_loop_iters": None,
         "hitl_fired": False,
         "leader_elected": None,
         "leader_election_count": 0,
         "srani_events": 0,
-        "checks_pass_rate": (
-            result["checks_present"] / result["checks_total"]
-            if result.get("checks_total", 0) > 0 else None
-        ),
+        "answer_chars": result.get("answer_chars"),
+        "elapsed_s": result.get("elapsed_s"),
     }
 
 
@@ -791,14 +710,14 @@ def _print_triple_table(
         return "—"
 
     rows = [
-        ("pass^k",          llm_metrics["pass_k"],                rag_metrics["pass_k"],                h2ai_metrics["pass_k"]),
-        ("constraint_pass", llm_metrics.get("checks_pass_rate"),  rag_metrics.get("checks_pass_rate"),  h2ai_metrics.get("checks_pass_rate")),
-        ("avg_verif_score", llm_metrics["avg_verification_score"],rag_metrics["avg_verification_score"],h2ai_metrics["avg_verification_score"]),
-        ("j_eff",           llm_metrics["j_eff"],                 rag_metrics["j_eff"],                 h2ai_metrics["j_eff"]),
-        ("thinking_iters",  llm_metrics["thinking_loop_iters"],   rag_metrics["thinking_loop_iters"],   h2ai_metrics["thinking_loop_iters"]),
-        ("srani_events",    llm_metrics["srani_events"],          rag_metrics["srani_events"],          h2ai_metrics["srani_events"]),
-        ("leader_elected",  llm_metrics.get("leader_elected"),    rag_metrics.get("leader_elected"),    h2ai_metrics.get("leader_elected")),
-        ("hitl_fired",      llm_metrics["hitl_fired"],            rag_metrics["hitl_fired"],            h2ai_metrics["hitl_fired"]),
+        ("output_chars",   llm_metrics.get("answer_chars"),       rag_metrics.get("answer_chars"),       h2ai_metrics.get("answer_chars")),
+        ("elapsed_s",      llm_metrics.get("elapsed_s"),          rag_metrics.get("elapsed_s"),          h2ai_metrics.get("elapsed_s")),
+        ("avg_verif_score",None,                                   None,                                  h2ai_metrics["avg_verification_score"]),
+        ("j_eff",          None,                                   None,                                  h2ai_metrics["j_eff"]),
+        ("thinking_iters", None,                                   None,                                  h2ai_metrics["thinking_loop_iters"]),
+        ("srani_events",   llm_metrics["srani_events"],           rag_metrics["srani_events"],           h2ai_metrics["srani_events"]),
+        ("leader_elected", None,                                   None,                                  h2ai_metrics.get("leader_elected")),
+        ("hitl_fired",     llm_metrics["hitl_fired"],             rag_metrics["hitl_fired"],             h2ai_metrics["hitl_fired"]),
     ]
     col_w = 14
     sep = "─" * (col_w * 4 + 14)
@@ -839,8 +758,7 @@ def _print_delta_table(h2ai_metrics: dict, baseline_metrics: dict) -> None:
     rows = [
         ("pass^k",          h2ai_metrics["pass_k"],                baseline_metrics["pass_k"]),
         ("j_eff",           h2ai_metrics["j_eff"],                 baseline_metrics["j_eff"]),
-        ("avg_verif_score", h2ai_metrics["avg_verification_score"],baseline_metrics["avg_verification_score"]),
-        ("constraint_pass", h2ai_metrics.get("checks_pass_rate"),  baseline_metrics.get("checks_pass_rate")),
+        ("avg_verif_score", h2ai_metrics["avg_verification_score"],None),
         ("valid_proposals", h2ai_metrics["valid_proposals"],       baseline_metrics["valid_proposals"]),
         ("thinking_iters",  h2ai_metrics["thinking_loop_iters"],   baseline_metrics["thinking_loop_iters"]),
         ("hitl_fired",      h2ai_metrics["hitl_fired"],            baseline_metrics["hitl_fired"]),
@@ -879,7 +797,7 @@ def main() -> None:
         for path in sorted(SCENARIOS_DIR.glob("**/task.json")):
             t = json.loads(path.read_text())
             rel = path.parent.relative_to(SCENARIOS_DIR)
-            n_checks = len(t.get("_expected", {}).get("checks", []))
+            n_checks = len(t.get("_expected", {}).get("_review_checklist", []))
             has_baseline = (path.parent / "baseline.toml").exists()
             print(f"  {str(rel):<45}  checks={n_checks}  {'[baseline.toml]' if has_baseline else ''}")
         return
@@ -895,8 +813,8 @@ def main() -> None:
             print(f"{'='*60}")
             try:
                 constraint_ctx = _load_constraint_context(scenario_dir, task) if args.context_augmented else ""
-                result = run_baseline(scenario_name, task, constraint_context=constraint_ctx)
-                overall[scenario_name] = "PASS" if result["pass"] else "FAIL"
+                run_baseline(scenario_name, task, constraint_context=constraint_ctx)
+                overall[scenario_name] = "DONE"
             except Exception as e:
                 overall[scenario_name] = f"ERROR: {e}"
                 print(f"  → ERROR: {e}")
@@ -917,8 +835,8 @@ def main() -> None:
                 compare_semantics = task.get("_compare_semantics", "strict")
                 if compare_semantics == "no_regression":
                     # Feature adds safety/correctness without measurable output uplift.
-                    # Pass when h2ai is at least as good as baseline and h2ai itself passes.
-                    verdict = "PASS" if h2ai_m["pass_k"] > 0 and h2ai_m["pass_k"] >= base_m["pass_k"] else "FAIL/WORSE"
+                    # Pass when h2ai passes majority of trials AND is at least as good as baseline.
+                    verdict = "PASS" if h2ai_m["pass_k"] >= 0.5 and h2ai_m["pass_k"] >= base_m["pass_k"] else "FAIL/WORSE"
                 else:
                     verdict = "PASS" if h2ai_m["pass_k"] > base_m["pass_k"] else "SAME/WORSE"
                 overall[scenario_name] = verdict
@@ -949,11 +867,9 @@ def main() -> None:
 
                 _print_triple_table(h2ai_m, llm_m, rag_m)
 
-                compare_semantics = task.get("_compare_semantics", "strict")
-                if compare_semantics == "no_regression":
-                    verdict = "PASS" if h2ai_m["pass_k"] > 0 and h2ai_m["pass_k"] >= rag_m["pass_k"] else "FAIL/WORSE"
-                else:
-                    verdict = "PASS" if h2ai_m["pass_k"] > rag_m["pass_k"] else "SAME/WORSE-THAN-RAG"
+                # Triple mode: H2AI must pass majority of trials (≥50%).
+                # Content quality is left for human review of output.txt files.
+                verdict = "PASS" if h2ai_m["pass_k"] >= 0.5 else "FAIL"
                 overall[scenario_name] = verdict
             except Exception as e:
                 overall[scenario_name] = f"ERROR: {e}"

@@ -266,3 +266,29 @@ fn bandit_update_after_task_raises_k_tasks_and_optimizer_hint_works() {
         "optimizer hint must nudge arm 2 alpha when arm 3 is near-optimal"
     );
 }
+
+#[test]
+fn bandit_update_unknown_arm_is_noop() {
+    let mut state = BanditState::new(4, 0, 6, 2.0, 5.0);
+    let k_before = state.k_tasks;
+    // n_used=999 doesn't exist in arms — must not panic, k_tasks must not change
+    state.update(999, Some(true), None);
+    assert_eq!(state.k_tasks, k_before);
+}
+
+#[test]
+fn select_phase1_epsilon_greedy_explores() {
+    // Force phase 1 by keeping k_tasks < bandit_phase1_k.
+    // Use epsilon=1.0 to guarantee exploration branch is taken.
+    let state = BanditState::new(4, 0, 6, 2.0, 5.0);
+    let c = cfg();
+    // With epsilon=1.0 in cfg, every call during phase 1 takes the explore path.
+    // Run many times; as long as it returns a valid arm and doesn't panic, test passes.
+    for _ in 0..50 {
+        let n = state.select(&c);
+        assert!(
+            state.arms.contains_key(&n),
+            "select must return a known arm"
+        );
+    }
+}

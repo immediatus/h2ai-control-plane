@@ -72,8 +72,13 @@ async fn openai_real_call_returns_non_empty_output() {
 
 #[tokio::test]
 async fn llamacpp_real_call_returns_non_empty_output() {
-    let endpoint = std::env::var("LLAMACPP_BASE_URL")
-        .unwrap_or_else(|_| "http://host.docker.internal:8080/v1".into());
+    let endpoint = match std::env::var("LLAMACPP_BASE_URL") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("SKIP: LLAMACPP_BASE_URL not set");
+            return;
+        }
+    };
     let model = std::env::var("LLAMACPP_MODEL").unwrap_or_else(|_| "local".into());
 
     if std::env::var("LLAMACPP_API_KEY").is_err() {
@@ -82,8 +87,17 @@ async fn llamacpp_real_call_returns_non_empty_output() {
 
     let adapter = OpenAIAdapter::new(endpoint.clone(), "LLAMACPP_API_KEY".into(), model.clone());
 
-    match adapter.execute(task_request()).await {
-        Ok(resp) => {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        adapter.execute(task_request()),
+    )
+    .await;
+
+    match result {
+        Err(_elapsed) => {
+            eprintln!("SKIP: llama.cpp server at {endpoint} timed out after 30s — model too slow for unit test");
+        }
+        Ok(Ok(resp)) => {
             eprintln!("endpoint:    {endpoint}");
             eprintln!("model:       {model}");
             eprintln!("output:      {}", resp.output);
@@ -91,8 +105,8 @@ async fn llamacpp_real_call_returns_non_empty_output() {
             assert!(!resp.output.is_empty(), "output must not be empty");
             assert!(resp.token_cost > 0, "token_cost must be > 0");
         }
-        Err(e) => {
-            eprintln!("SKIP: llama.server at {endpoint} not reachable: {e}");
+        Ok(Err(e)) => {
+            eprintln!("SKIP: llama.cpp server at {endpoint} not reachable: {e}");
         }
     }
 }
