@@ -51,7 +51,6 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use async_trait::async_trait;
 use h2ai_memory::error::MemoryError;
 use h2ai_memory::provider::MemoryProvider;
 use h2ai_orchestrator::pipeline::OrchestratorPipeline;
@@ -65,84 +64,83 @@ use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::sizing::TauValue;
 use std::sync::{Arc, Mutex};
 
-// --- Mocks ---
+// --- Mock declarations ---
 
-struct MockMemory(Arc<Mutex<Vec<serde_json::Value>>>);
-
-#[async_trait]
-impl MemoryProvider for MockMemory {
-    async fn get_recent_history(
-        &self,
-        _s: &str,
-        limit: usize,
-    ) -> Result<Vec<serde_json::Value>, MemoryError> {
-        Ok(self
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect())
-    }
-    async fn commit_new_memories(
-        &self,
-        _s: &str,
-        m: Vec<serde_json::Value>,
-    ) -> Result<(), MemoryError> {
-        self.0.lock().unwrap().extend(m);
-        Ok(())
-    }
-    async fn retrieve_relevant_context(
-        &self,
-        _s: &str,
-        _q: &str,
-    ) -> Result<Vec<String>, MemoryError> {
-        Ok(vec![])
+mockall::mock! {
+    pub PipelineMemory {}
+    #[async_trait::async_trait]
+    impl MemoryProvider for PipelineMemory {
+        async fn get_recent_history(&self, session_id: &str, limit: usize) -> Result<Vec<serde_json::Value>, MemoryError>;
+        async fn commit_new_memories(&self, session_id: &str, memories: Vec<serde_json::Value>) -> Result<(), MemoryError>;
+        async fn retrieve_relevant_context(&self, session_id: &str, query: &str) -> Result<Vec<String>, MemoryError>;
     }
 }
 
-struct MockProvisioner;
-
-#[async_trait]
-impl AgentProvider for MockProvisioner {
-    async fn ensure_agent_capacity(
-        &self,
-        _d: &AgentDescriptor,
-        _l: usize,
-    ) -> Result<(), ProvisionError> {
-        Ok(())
+mockall::mock! {
+    pub PipelineProvisioner {}
+    #[async_trait::async_trait]
+    impl AgentProvider for PipelineProvisioner {
+        async fn ensure_agent_capacity(&self, descriptor: &AgentDescriptor, task_load: usize) -> Result<(), ProvisionError>;
+        async fn terminate_agent(&self, agent_id: &AgentId) -> Result<(), ProvisionError>;
+        async fn select_agent(&self, requirements: &TaskRequirements) -> Result<AgentId, ProvisionError>;
     }
-    async fn terminate_agent(&self, _id: &AgentId) -> Result<(), ProvisionError> {
-        Ok(())
-    }
+}
 
-    async fn select_agent(
-        &self,
-        requirements: &TaskRequirements,
-    ) -> Result<AgentId, ProvisionError> {
+mockall::mock! {
+    pub PipelineAuditor {}
+    #[async_trait::async_trait]
+    impl AuditProvider for PipelineAuditor {
+        async fn record_event(&self, event: AgentTelemetryEvent) -> Result<(), AuditError>;
+        async fn flush(&self) -> Result<(), AuditError>;
+    }
+}
+
+// --- Factory helpers ---
+
+fn make_memory(store: Arc<Mutex<Vec<serde_json::Value>>>) -> MockPipelineMemory {
+    let commit_store = store.clone();
+    let history_store = store.clone();
+    let mut m = MockPipelineMemory::new();
+    m.expect_commit_new_memories()
+        .returning(move |_, memories| {
+            commit_store.lock().unwrap().extend(memories);
+            Ok(())
+        });
+    m.expect_get_recent_history().returning(move |_, limit| {
+        let entries = history_store.lock().unwrap();
+        Ok(entries.iter().rev().take(limit).cloned().collect())
+    });
+    m.expect_retrieve_relevant_context()
+        .returning(|_, _| Ok(vec![]));
+    m
+}
+
+fn make_provisioner_no_agents() -> MockPipelineProvisioner {
+    let mut m = MockPipelineProvisioner::new();
+    m.expect_ensure_agent_capacity().returning(|_, _| Ok(()));
+    m.expect_terminate_agent().returning(|_| Ok(()));
+    m.expect_select_agent().returning(|requirements| {
         Err(ProvisionError::NoAgentsAvailable {
             max_tier: requirements.max_cost_tier.clone(),
             tools: requirements.required_tools.clone(),
         })
-    }
+    });
+    m
 }
 
-struct MockAuditor(Arc<Mutex<Vec<AgentTelemetryEvent>>>);
-
-#[async_trait]
-impl AuditProvider for MockAuditor {
-    async fn record_event(&self, event: AgentTelemetryEvent) -> Result<(), AuditError> {
-        self.0.lock().unwrap().push(event);
+fn make_auditor(events: Arc<Mutex<Vec<AgentTelemetryEvent>>>) -> MockPipelineAuditor {
+    let record_events = events.clone();
+    let mut m = MockPipelineAuditor::new();
+    m.expect_record_event().returning(move |event| {
+        record_events.lock().unwrap().push(event);
         Ok(())
-    }
-    async fn flush(&self) -> Result<(), AuditError> {
-        Ok(())
-    }
+    });
+    m.expect_flush().returning(|| Ok(()));
+    m
 }
 
-async fn build_pipeline() -> Option<OrchestratorPipeline<MockMemory, MockProvisioner, MockAuditor>>
+async fn build_pipeline(
+) -> Option<OrchestratorPipeline<MockPipelineMemory, MockPipelineProvisioner, MockPipelineAuditor>>
 {
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match async_nats::connect(&nats_url).await {
@@ -152,10 +150,12 @@ async fn build_pipeline() -> Option<OrchestratorPipeline<MockMemory, MockProvisi
             return None;
         }
     };
+    let memory_store = Arc::new(Mutex::new(vec![]));
+    let events_store = Arc::new(Mutex::new(vec![]));
     Some(OrchestratorPipeline::new(
-        MockMemory(Arc::new(Mutex::new(vec![]))),
-        MockProvisioner,
-        MockAuditor(Arc::new(Mutex::new(vec![]))),
+        make_memory(memory_store),
+        make_provisioner_no_agents(),
+        make_auditor(events_store),
         nats,
     ))
 }
@@ -185,7 +185,7 @@ async fn pipeline_execute_dispatches_task() {
 
 #[tokio::test]
 async fn pipeline_finalize_commits_to_memory() {
-    let memory = Arc::new(Mutex::new(vec![]));
+    let memory_store = Arc::new(Mutex::new(vec![]));
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match async_nats::connect(&nats_url).await {
         Ok(c) => c,
@@ -194,10 +194,11 @@ async fn pipeline_finalize_commits_to_memory() {
             return;
         }
     };
+    let events_store = Arc::new(Mutex::new(vec![]));
     let pipeline = OrchestratorPipeline::new(
-        MockMemory(memory.clone()),
-        MockProvisioner,
-        MockAuditor(Arc::new(Mutex::new(vec![]))),
+        make_memory(memory_store.clone()),
+        make_provisioner_no_agents(),
+        make_auditor(events_store),
         nats,
     );
     let result = TaskResult {
@@ -209,7 +210,7 @@ async fn pipeline_finalize_commits_to_memory() {
         tool_calls: vec![],
     };
     pipeline.finalize("session-1", &result).await.unwrap();
-    assert!(!memory.lock().unwrap().is_empty());
+    assert!(!memory_store.lock().unwrap().is_empty());
 }
 
 /// Build a pipeline without live NATS by connecting to NATS and returning None if
@@ -217,7 +218,8 @@ async fn pipeline_finalize_commits_to_memory() {
 async fn build_pipeline_with_shared_memory(
     memory: Arc<Mutex<Vec<serde_json::Value>>>,
     events: Arc<Mutex<Vec<AgentTelemetryEvent>>>,
-) -> Option<OrchestratorPipeline<MockMemory, MockProvisioner, MockAuditor>> {
+) -> Option<OrchestratorPipeline<MockPipelineMemory, MockPipelineProvisioner, MockPipelineAuditor>>
+{
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = match async_nats::connect(&nats_url).await {
         Ok(c) => c,
@@ -227,9 +229,9 @@ async fn build_pipeline_with_shared_memory(
         }
     };
     Some(OrchestratorPipeline::new(
-        MockMemory(memory),
-        MockProvisioner,
-        MockAuditor(events),
+        make_memory(memory),
+        make_provisioner_no_agents(),
+        make_auditor(events),
         nats,
     ))
 }

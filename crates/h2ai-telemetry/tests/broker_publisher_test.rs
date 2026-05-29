@@ -1,6 +1,5 @@
 #![allow(clippy::type_complexity)]
 
-use async_trait::async_trait;
 use chrono::Utc;
 use h2ai_telemetry::broker_publisher::{BrokerPublisherProvider, NatsPublishClient};
 use h2ai_telemetry::error::AuditError;
@@ -11,22 +10,12 @@ use std::sync::{Arc, Mutex};
 
 // ── Mock ─────────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
-struct MockNats {
-    calls: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
-    flush_count: Arc<Mutex<usize>>,
-}
-
-#[async_trait]
-impl NatsPublishClient for MockNats {
-    async fn publish_bytes(&self, subject: String, payload: Vec<u8>) -> Result<(), AuditError> {
-        self.calls.lock().unwrap().push((subject, payload));
-        Ok(())
-    }
-
-    async fn flush(&self) -> Result<(), AuditError> {
-        *self.flush_count.lock().unwrap() += 1;
-        Ok(())
+mockall::mock! {
+    pub NatsClient {}
+    #[async_trait::async_trait]
+    impl NatsPublishClient for NatsClient {
+        async fn publish_bytes(&self, subject: String, payload: Vec<u8>) -> Result<(), AuditError>;
+        async fn flush(&self) -> Result<(), AuditError>;
     }
 }
 
@@ -35,11 +24,33 @@ fn make_provider() -> (
     Arc<Mutex<Vec<(String, Vec<u8>)>>>,
     Arc<Mutex<usize>>,
 ) {
-    let mock = Arc::new(MockNats::default());
-    let calls = mock.calls.clone();
-    let flushes = mock.flush_count.clone();
-    let provider = BrokerPublisherProvider::with_client(mock, "h2ai.test.telemetry");
+    let calls: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(vec![]));
+    let flushes: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    let calls_clone = calls.clone();
+    let flushes_clone = flushes.clone();
+
+    let mut mock = MockNatsClient::new();
+    mock.expect_publish_bytes()
+        .returning(move |subject, payload| {
+            calls_clone.lock().unwrap().push((subject, payload));
+            Ok(())
+        });
+    mock.expect_flush().returning(move || {
+        *flushes_clone.lock().unwrap() += 1;
+        Ok(())
+    });
+
+    let provider = BrokerPublisherProvider::with_client(Arc::new(mock), "h2ai.test.telemetry");
     (provider, calls, flushes)
+}
+
+fn make_failing_provider() -> BrokerPublisherProvider {
+    let mut mock = MockNatsClient::new();
+    mock.expect_publish_bytes()
+        .returning(|_, _| Err(AuditError::Transport("mock transport error".into())));
+    mock.expect_flush()
+        .returning(|| Err(AuditError::Flush("mock flush error".into())));
+    BrokerPublisherProvider::with_client(Arc::new(mock), "h2ai.test.telemetry")
 }
 
 fn agent_id() -> AgentId {
@@ -164,25 +175,11 @@ async fn broker_publisher_flush_after_multiple_publishes() {
     assert_eq!(*flushes.lock().unwrap(), 1);
 }
 
-// ── Mock that returns errors ──────────────────────────────────────────────────
-
-struct FailingNats;
-
-#[async_trait]
-impl NatsPublishClient for FailingNats {
-    async fn publish_bytes(&self, _: String, _: Vec<u8>) -> Result<(), AuditError> {
-        Err(AuditError::Transport("mock transport error".into()))
-    }
-
-    async fn flush(&self) -> Result<(), AuditError> {
-        Err(AuditError::Flush("mock flush error".into()))
-    }
-}
+// ── Failing mock tests ────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn broker_publisher_record_propagates_transport_error() {
-    let provider =
-        BrokerPublisherProvider::with_client(Arc::new(FailingNats), "h2ai.test.telemetry");
+    let provider = make_failing_provider();
     let event = AgentTelemetryEvent::LlmPromptSent {
         task_id: task_id(),
         agent_id: agent_id(),
@@ -200,8 +197,7 @@ async fn broker_publisher_record_propagates_transport_error() {
 
 #[tokio::test]
 async fn broker_publisher_flush_propagates_error() {
-    let provider =
-        BrokerPublisherProvider::with_client(Arc::new(FailingNats), "h2ai.test.telemetry");
+    let provider = make_failing_provider();
     let result = provider.flush().await;
     assert!(result.is_err(), "should propagate flush error");
 }
@@ -297,9 +293,6 @@ async fn nats_publish_client_flush_error_via_provider_after_drain() {
 
     // Drain via the clone — both nats and nats_clone share the same connection loop
     nats_clone.drain().await.ok();
-
-    // Give the drain time to close the connection loop
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
     // provider.flush() → self.client.flush() → NatsPublishClient::flush(&client)
     // → Client::flush().await.map_err(|e| AuditError::Flush(e.to_string()))

@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
-use h2ai_types::config::AdapterKind;
+use h2ai_types::config::{AdapterKind, CloudProvider};
 use serde::Deserialize;
 
 #[derive(Debug)]
 pub struct CloudGenericAdapter {
     kind: AdapterKind,
-    client: reqwest::Client,
     enable_thinking: bool,
+    client: reqwest::Client,
 }
 
 impl CloudGenericAdapter {
@@ -28,9 +28,30 @@ impl CloudGenericAdapter {
                 endpoint,
                 api_key_env,
                 model,
+                provider: CloudProvider::default(),
             },
-            client: reqwest::Client::new(),
             enable_thinking,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_provider(
+        endpoint: String,
+        api_key_env: String,
+        model: Option<String>,
+        provider: CloudProvider,
+        enable_thinking: bool,
+    ) -> Self {
+        Self {
+            kind: AdapterKind::CloudGeneric {
+                endpoint,
+                api_key_env,
+                model,
+                provider,
+            },
+            enable_thinking,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -115,8 +136,10 @@ impl IComputeAdapter for CloudGenericAdapter {
         let api_key = self.api_key()?;
         let url = format!("{}/chat/completions", self.endpoint().trim_end_matches('/'));
 
-        let model = match &self.kind {
-            AdapterKind::CloudGeneric { model, .. } => model.clone(),
+        let (model, provider) = match &self.kind {
+            AdapterKind::CloudGeneric {
+                model, provider, ..
+            } => (model.clone(), provider.clone()),
             _ => unreachable!(),
         };
         let messages: Vec<serde_json::Value> = {
@@ -135,8 +158,16 @@ impl IComputeAdapter for CloudGenericAdapter {
         if let Some(m) = model {
             body["model"] = serde_json::Value::String(m);
         }
-        if !self.enable_thinking {
-            body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
+        match provider {
+            CloudProvider::LlamaCpp => {
+                body["chat_template_kwargs"] =
+                    serde_json::json!({"enable_thinking": self.enable_thinking});
+            }
+            CloudProvider::Gemini => {
+                // The Gemini OpenAI-compatible endpoint does not accept thinking_config.
+                // Thinking is always enabled for models that support it (e.g. gemini-2.5-pro).
+            }
+            CloudProvider::Generic => {}
         }
 
         // Retry on 429 (server busy / rate-limited) with capped exponential backoff.

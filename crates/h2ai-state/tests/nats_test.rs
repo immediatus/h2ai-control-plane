@@ -244,15 +244,7 @@ async fn await_task_result_round_trip() {
     let task_id = TaskId::new();
     let agent_id = AgentId::from("test-agent");
 
-    let nats2 = NatsClient::connect(&nats_url).await.unwrap();
-    let tid = task_id.clone();
-    let waiter = tokio::spawn(async move {
-        nats2
-            .await_task_result_once(&tid, Duration::from_secs(5))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
+    // Publish to JetStream first — DeliverPolicy::All replays it for any subsequent consumer
     let result = TaskResult {
         task_id: task_id.clone(),
         agent_id: agent_id.clone(),
@@ -269,7 +261,11 @@ async fn await_task_result_round_trip() {
         .await
         .unwrap();
 
-    let received = waiter.await.unwrap().expect("result");
+    let nats2 = NatsClient::connect(&nats_url).await.unwrap();
+    let received = nats2
+        .await_task_result_once(&task_id, Duration::from_secs(5))
+        .await
+        .expect("result");
     assert_eq!(received.output, "hello");
     assert_eq!(received.task_id, task_id);
 }

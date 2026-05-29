@@ -59,8 +59,8 @@ use h2ai_orchestrator::srani_grounding::{
     LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
 };
 use h2ai_orchestrator::task_store::TaskStore;
-use h2ai_test_utils::MockAdapter;
-use h2ai_test_utils::MockSearchBackend;
+use h2ai_test_utils::mock_adapter;
+use h2ai_test_utils::mock_search;
 use h2ai_tools::error::ToolError;
 use h2ai_tools::web_search::{
     GeminiSearchBackend, StackOverflowSearchBackend, WebGroundingBackend, WebSearchBackend,
@@ -72,7 +72,7 @@ use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::Arc;
 
 async fn calibration() -> h2ai_types::events::CalibrationCompletedEvent {
-    let adapter = MockAdapter::new("stateless JWT auth ADR-001".into());
+    let adapter = mock_adapter("stateless JWT auth ADR-001");
     let cfg = H2AIConfig::default();
     CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
@@ -116,15 +116,13 @@ fn rate_limit_manifest() -> TaskManifest {
 /// Full pipeline with no grounding chain; must complete without panic.
 #[tokio::test]
 async fn system_chain_absent_task_completes_without_panic() {
-    let explorer = MockAdapter::new(
-        "I recommend CockroachDB for distributed rate-limiting consistency".into(),
-    );
-    let scorer = MockAdapter::new(r#"{"score": 0.9, "reason": "ok"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let explorer =
+        mock_adapter("I recommend CockroachDB for distributed rate-limiting consistency");
+    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "ok"}"#);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
     let cal = calibration().await;
     let cfg = H2AIConfig::default();
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("x".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("x")) as Arc<dyn IComputeAdapter>);
     let store = TaskStore::new();
 
     let input = EngineInput {
@@ -173,15 +171,13 @@ async fn system_chain_absent_task_completes_without_panic() {
 /// Spec-anchor-only chain: SRANI grounding events carry SpecAnchor source.
 #[tokio::test]
 async fn system_spec_anchor_chain_emits_spec_anchor_source() {
-    let explorer = MockAdapter::new(
-        "I recommend CockroachDB for distributed rate-limiting consistency".into(),
-    );
-    let scorer = MockAdapter::new(r#"{"score": 0.9, "reason": "ok"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let explorer =
+        mock_adapter("I recommend CockroachDB for distributed rate-limiting consistency");
+    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "ok"}"#);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
     let cal = calibration().await;
     let cfg = H2AIConfig::default();
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("x".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("x")) as Arc<dyn IComputeAdapter>);
     let store = TaskStore::new();
     let chain = Arc::new(SraniGroundingChain::new(vec![Box::new(SpecAnchorGrounder)]));
 
@@ -248,11 +244,11 @@ async fn system_web_search_chain_escalates_correctly_per_tier() {
     let web_snippet = "Redis sliding-window counter is the standard for rate limiting";
     let chain = SraniGroundingChain::new(vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
-            r#"{"alternatives": ["x"], "statement": "should not appear at tier 1"}"#.into(),
+        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
+            r#"{"alternatives": ["x"], "statement": "should not appear at tier 1"}"#,
         )))),
         Box::new(WebSearchGrounder::new(
-            Arc::new(MockSearchBackend::new(web_snippet.to_string())),
+            Arc::new(mock_search(web_snippet.to_string())),
             3,
         )),
     ]);
@@ -551,8 +547,8 @@ async fn llm_researcher_happy_path() {
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
     };
-    let adapter = Arc::new(MockAdapter::new(
-        r#"{"alternatives": ["Redis TTL counters", "sliding window"], "statement": "Use Redis TTL + Lua for rate limiting"}"#.into(),
+    let adapter = Arc::new(mock_adapter(
+        r#"{"alternatives": ["Redis TTL counters", "sliding window"], "statement": "Use Redis TTL + Lua for rate limiting"}"#,
     ));
     let grounder = LlmResearcherGrounder::new(adapter);
     let result = grounder.ground(&ctx).await.unwrap();
@@ -566,7 +562,7 @@ async fn llm_researcher_invalid_json_returns_none() {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
     };
-    let adapter = Arc::new(MockAdapter::new("not json at all !!!".into()));
+    let adapter = Arc::new(mock_adapter("not json at all !!!"));
     let grounder = LlmResearcherGrounder::new(adapter);
     let result = grounder.ground(&ctx).await;
     assert!(result.is_none());
@@ -578,7 +574,7 @@ async fn llm_researcher_missing_alternatives_field_returns_none() {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
     };
-    let adapter = Arc::new(MockAdapter::new(r#"{"statement": "use Redis"}"#.into()));
+    let adapter = Arc::new(mock_adapter(r#"{"statement": "use Redis"}"#));
     let grounder = LlmResearcherGrounder::new(adapter);
     let result = grounder.ground(&ctx).await;
     assert!(
@@ -596,7 +592,7 @@ async fn web_search_produces_web_search_source() {
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
     };
-    let backend = Arc::new(MockSearchBackend::new(
+    let backend = Arc::new(mock_search(
         "Redis sliding-window counter is the standard approach for rate limiting".to_string(),
     ));
     let grounder = WebSearchGrounder::new(backend, 3);
@@ -611,7 +607,7 @@ async fn web_search_empty_results_returns_none() {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
     };
-    let backend = Arc::new(MockSearchBackend::new("".to_string()));
+    let backend = Arc::new(mock_search("".to_string()));
     let grounder = WebSearchGrounder::new(backend, 3);
     let result = grounder.ground(&ctx).await;
     assert!(result.is_none());
@@ -619,18 +615,16 @@ async fn web_search_empty_results_returns_none() {
 
 #[tokio::test]
 async fn web_search_error_returns_none() {
-    struct FailingBackend;
-    #[async_trait::async_trait]
-    impl WebSearchBackend for FailingBackend {
-        async fn search(&self, _q: &str, _n: usize) -> Result<String, ToolError> {
-            Err(ToolError::MalformedInput("network error".into()))
-        }
-    }
+    use h2ai_test_utils::MockWebSearch;
+    let mut backend = MockWebSearch::new();
+    backend
+        .expect_search()
+        .returning(|_, _| Err(ToolError::MalformedInput("network error".into())));
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
     };
-    let grounder = WebSearchGrounder::new(Arc::new(FailingBackend), 3);
+    let grounder = WebSearchGrounder::new(Arc::new(backend), 3);
     let result = grounder.ground(&ctx).await;
     assert!(result.is_none());
 }
@@ -679,11 +673,11 @@ async fn chain_distillation_replaces_raw_web_text_with_distilled_output() {
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
         Box::new(WebSearchGrounder::new(
-            Arc::new(MockSearchBackend::new(raw_text.clone())),
+            Arc::new(mock_search(raw_text.clone())),
             3,
         )),
     ];
-    let distiller = Arc::new(MockAdapter::new(distilled_output.into()));
+    let distiller = Arc::new(mock_adapter(distilled_output));
     let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     assert_eq!(result.source, GroundingSource::WebSearch);
@@ -704,12 +698,9 @@ async fn chain_distill_disabled_preserves_raw_text_capped_at_hint_limit() {
     let raw_text = "Redis. ".repeat(300); // > 1200 chars
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(WebSearchGrounder::new(
-            Arc::new(MockSearchBackend::new(raw_text)),
-            3,
-        )),
+        Box::new(WebSearchGrounder::new(Arc::new(mock_search(raw_text)), 3)),
     ];
-    let distiller = Arc::new(MockAdapter::new("should not be called".into()));
+    let distiller = Arc::new(mock_adapter("should not be called"));
     let chain = SraniGroundingChain::new(providers).with_distiller(distiller, false);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     // distill=false: raw text passes through unchanged (no truncation in this project)
@@ -727,9 +718,8 @@ async fn chain_tier0_merges_spec_anchor_and_researcher() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
-            r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua"}"#
-                .into(),
+        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
+            r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua"}"#,
         )))),
     ];
     let chain = SraniGroundingChain::new(providers);
@@ -755,11 +745,11 @@ async fn chain_tier1_escalates_to_web_search_skips_researcher() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
-            "should not appear".into(),
+        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
+            "should not appear",
         )))),
         Box::new(WebSearchGrounder::new(
-            Arc::new(MockSearchBackend::new("Web result: use Redis".to_string())),
+            Arc::new(mock_search("Web result: use Redis".to_string())),
             3,
         )),
     ];
@@ -781,8 +771,8 @@ async fn chain_tier_clamped_at_last_tier() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
-            r#"{"alternatives": ["x"], "statement": "y"}"#.into(),
+        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
+            r#"{"alternatives": ["x"], "statement": "y"}"#,
         )))),
     ];
     let chain = SraniGroundingChain::new(providers);
@@ -843,14 +833,13 @@ async fn live_web_grounding_full_pipeline_aggregates_multi_source() {
 #[tokio::test]
 async fn system_srani_force_fire_injects_grounding_in_pipeline() {
     // Both slots return the same off-spec component so CFI = 1.0.
-    let explorer = MockAdapter::new(
-        "I recommend CockroachDB for distributed rate-limiting consistency".into(),
-    );
-    let scorer = MockAdapter::new(r#"{"score": 0.9, "reason": "ok"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let explorer =
+        mock_adapter("I recommend CockroachDB for distributed rate-limiting consistency");
+    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "ok"}"#);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
     // Researcher returns valid JSON with spec-compliant alternatives.
-    let researcher = Arc::new(MockAdapter::new(
-        r#"{"alternatives": ["Redis sliding window"], "statement": "Use Redis sorted sets as specified."}"#.into(),
+    let researcher = Arc::new(mock_adapter(
+        r#"{"alternatives": ["Redis sliding window"], "statement": "Use Redis sorted sets as specified."}"#,
     ));
     let cal = calibration().await;
 
@@ -874,8 +863,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         )),
     ]));
 
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("x".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("x")) as Arc<dyn IComputeAdapter>);
     let store = TaskStore::new();
 
     let input = EngineInput {
@@ -944,7 +932,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
     );
 
     // Chain resolves at SpecAnchor (tier 0) or LlmResearcher (tier 1) — never WebSearch.
-    // Slot must be classified (Some) after GAP-I1 entity slot classification.
+    // Slot must be classified (Some) after entity slot classification.
     for ev in &grounding_events {
         assert!(
             matches!(
@@ -1082,7 +1070,7 @@ async fn web_search_grounder_returns_none_with_no_fabricated_entities() {
         fabricated_entities: vec![],
         task_description: "Build a rate limiting service using Redis".into(),
     };
-    let backend = Arc::new(MockSearchBackend::new("some result".to_string()));
+    let backend = Arc::new(mock_search("some result".to_string()));
     let grounder = WebSearchGrounder::new(backend, 3);
     let result = grounder.ground(&ctx).await;
     assert!(result.is_none(), "no fabricated entities must return None");
@@ -1104,8 +1092,8 @@ async fn chain_none_anchor_some_tier_uses_tier_result() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(NoneProvider),
-        Box::new(LlmResearcherGrounder::new(Arc::new(MockAdapter::new(
-            r#"{"alternatives": ["Redis"], "statement": "Use Redis"}"#.into(),
+        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
+            r#"{"alternatives": ["Redis"], "statement": "Use Redis"}"#,
         )))),
     ];
     let chain = SraniGroundingChain::new(providers);
@@ -1119,18 +1107,13 @@ async fn chain_none_anchor_some_tier_uses_tier_result() {
 
 #[tokio::test]
 async fn web_search_no_results_found_string_returns_none() {
-    struct NoResultsBackend;
-    #[async_trait::async_trait]
-    impl WebSearchBackend for NoResultsBackend {
-        async fn search(&self, _q: &str, _n: usize) -> Result<String, ToolError> {
-            Ok("No results found.".to_string())
-        }
-    }
+    use h2ai_test_utils::mock_search;
+    let backend = mock_search("No results found.");
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate limiting service using Redis".into(),
     };
-    let grounder = WebSearchGrounder::new(Arc::new(NoResultsBackend), 3);
+    let grounder = WebSearchGrounder::new(Arc::new(backend), 3);
     let result = grounder.ground(&ctx).await;
     assert!(result.is_none(), "No results found must return None");
 }
@@ -1146,11 +1129,11 @@ async fn chain_distillation_empty_output_falls_back_to_raw() {
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
         Box::new(WebSearchGrounder::new(
-            Arc::new(MockSearchBackend::new(raw_text.clone())),
+            Arc::new(mock_search(raw_text.clone())),
             3,
         )),
     ];
-    let distiller = Arc::new(MockAdapter::new("".into()));
+    let distiller = Arc::new(mock_adapter(""));
     let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     assert_eq!(result.source, GroundingSource::WebSearch);

@@ -29,7 +29,7 @@ pub enum ExitReason {
         tau_values: Vec<f64>,
     },
     OracleBlocked,
-    /// GAP-C1 correlated hallucination detected — clustered ensemble; retry with grounding.
+    /// correlated hallucination detected — clustered ensemble; retry with grounding.
     HallucinationDetected {
         /// Formatted `retry_context` hint to set before `continue`.
         retry_context_hint: String,

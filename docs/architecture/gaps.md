@@ -17,8 +17,7 @@ mathematical improvement, and simulation protocol for every open gap.
 | [Group B — Math Apparatus](#brainstorm-group-b--mathematical-formula-validity) | Are the formulas principled or arbitrary? |
 | [Group D — Infrastructure](#brainstorm-group-d--infrastructure-and-operational-gaps) | Do the inputs to the math arrive correctly? |
 | [Group E — Quality Measurement](#brainstorm-group-e--quality-measurement-infrastructure) | Can we measure what we claim to optimise? |
-| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | Two open production gaps: per-task cost enforcement (GAP-H3) and small-N human rating calibration (GAP-H4) |
-| [Group J — Complexity-Aware Execution](#brainstorm-group-j--complexity-aware-execution) | Retry loop cannot distinguish complexity ceiling from quality ceiling (GAP-J1) |
+| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | One open production gap: small-N human rating calibration (GAP-H4); GAP-H3 Cost Guard is closed |
 | [Shared Infrastructure](#shared-infrastructure-required-for-group-a) | Pre-work that blocks Group A experiments |
 
 ---
@@ -42,10 +41,7 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🔴 OPEN | **High** | BM25 retrieval is wired but there is no measurement of whether it helps; solve with contrastive task pairs (with/without knowledge augmentation) isolating knowledge network contribution |
 | **GAP-F5 Constraint violations don't reshape retrieval routing** | 🔴 OPEN | Medium | Violation signals reach `conflict_beta` bandit but never update knowledge graph edge weights; closed-loop propagation (Solvita-style) would make the retrieval layer learn from failures |
 | **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🔴 OPEN | Medium | Phase 1 live (checkpoint + TaskMetaState); Phases 2 (Induction), 3 (thinking loop priors), 4 (hybrid retrieval) designed below — not yet implemented |
-| **GAP-H3 Astronomical Cost — no per-task budget or early stopping** | 🔴 OPEN | Medium | 60+ LLM calls per compound task with no warning; AgentDropout consensus gate + FrugalGPT cascade + token-budget prompts |
 | **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | N<10 ratings give noisy calibration; Dirichlet-Categorical posterior + credible-interval circuit breaker |
-| **GAP-J1 Complexity-Ceiling vs Quality-Ceiling Retry Conflation** | 🔴 OPEN | **High** | Retry loop treats all exhaustion as quality failure; structural complexity ceiling requires task decomposition (H1 grafting), not repair-context retries |
-
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
 **Infrastructure note (2026-05-14):** Delta checkpoint encoding (JSON Patch RFC 6902, `CheckpointKind::Base/Delta`, O(N) NATS KV storage) is now live in `h2ai-state`. Previously O(N²) checkpoint growth would have exhausted NATS KV space during the long multi-task experiment runs required by GAP-A6 and GAP-A1. This blocker is resolved; experiment runs are no longer storage-constrained.
@@ -807,119 +803,6 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 
 ---
 
-## Brainstorm Group J — Complexity-Aware Execution
-
----
-
-### GAP-J1: Complexity-Ceiling vs Quality-Ceiling Retry Conflation 🔴 OPEN — **High**
-
-**Gap statement.**
-
-The `max_autonomic_retries` loop treats all retry exhaustion uniformly: surface `best_partial_text` to the HITL gate. This design assumes every `ZeroSurvival` or low-score outcome is a *quality* problem — solvable by better repair context, SRANI grounding, knowledge augmentation, or synthesis. It is wrong for a distinct failure class: the *complexity ceiling*.
-
-Sikka & Sikka (arXiv 2507.07505, 2025) — *"Hallucination Stations"* — prove **Theorem 1**: given a prompt of length N containing a task of complexity O(n³) or higher (n < N), an LLM will unavoidably hallucinate. Retrying with better prompts does not change the computation budget — it hits the same wall N times. The correct intervention is *task decomposition* — breaking the task into sub-problems each below the O(n³) threshold — not iterative repair.
-
-**Two failure modes, same observable signal.**
-
-| Signal | Quality ceiling (addressable) | Complexity ceiling (structural) |
-|---|---|---|
-| `ZeroSurvival` after retry 1 | Wrong grounding; repair context + SRANI helps | Same structural failure class every retry |
-| Verifier scores: mixed (0.0–0.5) | Judge is uncertain; cross-family panel helps | Judge is beyond its own verification budget |
-| Verifier scores: 0.0 with long explanations | Judge identified failure mode | Judge understands the problem but cannot compute the verification |
-| `partial_chars=0` on `MaxRetriesExhausted` | Partial synthesis failed | No partial exists at any complexity budget slice |
-
-The framework currently routes both to HITL. The HLE benchmark observed this directly: the liveness-proof task (`partial_chars=0`, `max_retries=4`, all retries `ZeroSurvival`) was a complexity-ceiling hit — the proposal generation and the liveness-proof verification both required more computation than one forward pass can provide.
-
-**Literature grounding.**
-
-Sikka & Sikka (arXiv 2507.07505, 2025) — **Theorem 1**: *"Given a prompt of length N, which includes a computational task within it of complexity O(n³) or higher, where n < N, an LLM, or an LLM-based agent, will unavoidably hallucinate in its response."* The mechanism: self-attention is O(n²); tasks requiring O(n³)+ computation cannot be solved or verified in a single forward pass. Critically, the theorem applies to verification as well as generation — the LlmJudge verifier faces the same ceiling. Retrying does not change the computation budget; it is not the cure for this failure class.
-
-FrugalGPT (Chen et al., 2023, arXiv 2305.05176) — cascade routing based on complexity estimation: simpler tasks routed to cheap models; hard tasks escalated. The key architectural insight: route *before* burning full-ensemble compute, based on a complexity estimate, not after exhaustion.
-
-TAO thinking loop (`max_iterations`) — H2AI's existing acknowledgement that O(n²) budget can be multiplied by iterative refinement. The connection to GAP-J1: if `max_iterations=5` and `max_retries=4` still exhaust, the combined compute budget is insufficient — decomposition is required, not a sixth iteration.
-
-GAP-H1 (sequential grafting, closed 2026-05-26) — provides the decomposition mechanism. The gap is that grafting is never *preferentially selected* over retry for tasks above the complexity threshold. Grafting is only available as the terminal synthesis path after retry exhaustion, not as the first-choice intervention for hard tasks.
-
-GAP-D2 (compound task cost probe, open) — a lightweight complexity probe before dispatch would address both GAP-D2 (cost control) and GAP-J1 (routing). One cheap small-model call to rate task complexity 1–5 is the shared solution.
-
-**Why verifier reliability degrades at the complexity ceiling.**
-
-The LlmJudge verifier is itself a transformer with the same O(n²) ceiling. For tasks where *verification* requires more computation than the verifier's forward-pass budget — checking whether a distributed-systems liveness proof is correct under partial synchrony, verifying a cryptographic construction, checking NP-hard combinatorial properties — the verifier's scores are structurally unreliable. No amount of cross-family judge rotation, adversarial prompting, or panel voting resolves this: the bottleneck is computation budget, not bias.
-
-Observable signature: verifier produces score=0.0 with a sophisticated multi-paragraph explanation that accurately identifies the proof gap but cannot close it. The verifier *understands* the domain but cannot *compute* the verification. This is distinguishable from bias (which produces consistent preferences regardless of content) and from calibration failure (which produces confident-but-wrong scores).
-
-**Innovative solution — pre-dispatch complexity classification + routing.**
-
-Three-tier implementation:
-
-**Tier 1 — Complexity probe (cheap, immediate).**
-Before dispatching the full N-explorer ensemble, route the task through a lightweight adapter call:
-
-```
-Given this task description, rate its computational complexity on a 1–5 scale:
-1 = factual lookup, direct answer
-2 = multi-step reasoning, clear structure
-3 = constructive proof or algorithm design
-4 = formal proof with multiple sub-claims (liveness, safety, correctness under adversarial conditions)
-5 = requires verification beyond what a single reasoning pass can provide (NP-hard verification, cross-domain proof synthesis)
-
-Return: { complexity: int, rationale: string, decompose_recommended: bool }
-```
-
-One small-model call (Haiku-class). Cost: negligible vs. the N explorers it may replace.
-
-**Tier 2 — Routing decision.**
-
-```
-complexity ≤ 2: standard pipeline (no change)
-complexity = 3: standard pipeline + synthesis wave enabled
-complexity = 4: pre-decompose via H1 grafting with max_rounds=4 before first retry
-complexity = 5: H1 grafting mandatory; HITL gate after first graft failure (don't burn retries)
-```
-
-**Tier 3 — Verifier adaptation.**
-
-For tasks with `complexity ≥ 4`, the verifier receives an additional instruction:
-```
-This task has been classified as requiring multi-step proof verification. 
-Decompose your verification into sub-claims. Report each sub-claim as VERIFIED / UNVERIFIED / BEYOND_BUDGET.
-Score = fraction of VERIFIED sub-claims. Do not score BEYOND_BUDGET as 0.0 — report them separately.
-```
-
-`BEYOND_BUDGET` verdicts surface in `VerifierReasonContradictionEvent` as a distinct `ComplexityExhausted` kind, distinct from `ConstraintViolation`. This allows H2AI to distinguish "verifier rejected this" from "verifier could not evaluate this."
-
-**Config additions in `reference.toml`:**
-
-```toml
-[complexity_routing]
-enabled = false                          # opt-in
-complexity_probe_adapter = "researcher"  # adapter to use for probe (cheap model)
-complexity_probe_timeout_secs = 30
-decompose_threshold = 4                  # complexity ≥ this triggers H1 grafting first
-hitl_threshold = 5                       # complexity ≥ this skips retries, routes to HITL
-verifier_decomposition_enabled = false   # enable sub-claim BEYOND_BUDGET verdicts
-```
-
-**Connection to existing gaps.**
-
-- **GAP-H1** (closed) — grafting exists; complexity routing would select it earlier
-- **GAP-D2** (open) — complexity probe is the shared solution; same cheap model call
-- **GAP-H3** (open) — cost guard benefits: complexity=5 tasks route to HITL before burning 125 LLM calls
-- **GAP-B6** (open) — `BEYOND_BUDGET` verdict kind partially decouples verifier reliability from judge bias
-
-**Falsification condition.**
-
-Construct 20 tasks: 10 rated complexity ≤ 3 (code tasks, factual QA) and 10 rated complexity ≥ 4 (formal proofs, cryptographic constructions). Run with `complexity_routing.enabled = false` (current behaviour) and `= true`. Measure:
-- Retry exhaustion rate by complexity tier — hypothesis: `enabled=true` eliminates retry exhaustion for complexity-5 tasks entirely (routes to HITL after probe)
-- Oracle pass rate — hypothesis: no regression for complexity ≤ 3 (probe correctly identifies no decomposition needed)
-- Token cost — hypothesis: ≥30% reduction for complexity ≥ 4 tasks (grafting or HITL replaces retry burn)
-
-If complexity probe misclassifies ≥20% of tasks (mislabels hard tasks as easy or vice versa), the probe model is too weak and needs a stronger adapter or a few-shot calibration set.
-
-**Effort estimate.** 2 weeks. Complexity probe: 2 days (one new prompt, one new config section). Routing decision in `mape_k.rs`: 3 days. Verifier sub-claim decomposition: 1 week (new verdict kind, updated `run_with_panel`, updated `VerifierReasonContradictionEvent`). Config: 1 day.
-
----
-
 ## Gap Priority Matrix
 
 | Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
@@ -934,9 +817,7 @@ If complexity probe misclassifies ≥20% of tasks (mislabels hard tasks as easy 
 | **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
 | **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
-| **GAP-H3 Cost Guard + AgentDropout** | Medium | 2 weeks | None | Week 3 |
 | **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
-| **GAP-J1 Complexity routing (probe + H1 graft dispatch)** | High | 2 weeks | None (uses existing H1 grafting) | **Week 2** |
 
 ---
 
@@ -970,130 +851,6 @@ any gap-resolution experiments begin.
 Two open gaps identified in adversarial review of the H2AI architecture. GAP-H1 (sequential
 grafting) and GAP-H2 (calibration drift) are closed — see `research-state.md §2`. The remaining
 open gaps are:
-
----
-
-### GAP-H3: Astronomical Cost — No Per-Task Budget Enforcement or Consensus-Based Early Stopping 🔴 OPEN — Medium
-
-**Gap statement.**
-
-A compound task with 5 subtasks, N=5 explorer ensemble, and 4 MAPE-K retries can generate:
-```
-5 subtasks × 5 explorers × 1 TAO turn × 4 retries × 1 verifier = up to 125 LLM calls
-plus synthesis + audit calls
-```
-There is no cost counter, no budget gate, and no early stopping when the ensemble has already
-converged. Operators have no visibility into cost before the task completes. A single runaway task
-can exhaust monthly API budget.
-
-**Literature grounding.**
-
-*AgentDropout* (Zhang et al., ACL 2025) — consensus-based early stopping for multi-agent systems.
-The insight: once a supermajority of agents produce semantically equivalent proposals (measured by
-embedding similarity above 0.85), additional agents provide negligible new information. AgentDropout
-monitors the live proposal set and terminates further agent calls at `K_supermajority / N_total`.
-Measured result: **21.6% reduction in prompt tokens** on MMLU and reasoning benchmarks with <1%
-accuracy penalty. Configuration: `supermajority_threshold` (default 0.6) and `min_agents_before_stopping`
-(default 2, ensures diversity before convergence check).
-
-*FrugalGPT* (Chen et al., 2023, arXiv 2305.05176) — cascade routing through model tiers:
-Haiku → Sonnet → Opus. Each tier is triggered only when the previous tier produces a low-
-confidence or failed-verification result. Measured cost reduction: **30–50% vs. always-Opus**.
-The cascade is compatible with H2AI because the verification gate already signals pass/fail on
-each proposal; failed Haiku proposals escalate to Sonnet automatically.
-
-*Token-Budget-Aware Reasoning* (Xu et al., 2025, arXiv 2502.10463) — adding explicit token budget
-to the system prompt ("Use at most N tokens to reason through this problem") reduces generation
-length by **68.64%** with <5% accuracy penalty on reasoning benchmarks. The mechanism: the model
-infers it is in a cost-constrained regime and focuses reasoning, eliminating filler tokens.
-
-**Innovative solution — Cost Guard + AgentDropout + FrugalGPT cascade.**
-
-**Component 1 — Per-task cost counter.**
-Track `estimated_tokens_used` as a running counter on `MapeKController`. After each LLM dispatch,
-add `input_tokens + output_tokens` (from adapter response metadata). Emit
-`CostThresholdWarning` at 80% of budget; abort with `CostLimitExceeded` (treated as
-`MaxRetriesExhausted` for the API response) at 100%.
-
-**Component 2 — AgentDropout consensus gate.**
-After each exploration wave, compute pairwise embedding similarity across live proposals. If
-`converged_fraction ≥ supermajority_threshold` and `proposals_generated ≥ min_agents_before_stopping`,
-drop remaining agent slots for this wave. The embedding check reuses the existing Krum distance
-infrastructure.
-
-```rust
-fn check_consensus_convergence(
-    proposals: &[ScoredProposal],
-    threshold: f64,
-    min_agents: usize,
-) -> bool {
-    if proposals.len() < min_agents { return false; }
-    let pairs: Vec<f64> = // pairwise cosine similarity
-    let converged = pairs.iter().filter(|&&s| s >= threshold).count();
-    converged as f64 / pairs.len() as f64 >= threshold
-}
-```
-
-**Component 3 — FrugalGPT tier routing.**
-Add `adapter_tier: AdapterTier` (Haiku/Sonnet/Opus) to `AdapterConfig`. On first wave, use
-`tier_start` (default: Sonnet). If verification fails and `frugal_cascade_enabled = true`,
-escalate by one tier for the retry wave. On `MaxRetriesExhausted`, the final attempt always
-uses the highest available tier regardless of cost.
-
-**Component 4 — Token-budget prompts.**
-When `remaining_budget_tokens` drops below `budget_aware_prompt_threshold`, inject into the
-system prompt:
-```
-[BUDGET: Approximately {N} tokens remaining for this task. Be precise and concise.]
-```
-
-**New event types:**
-
-```rust
-pub struct CostThresholdWarning {
-    pub task_id: String,
-    pub tokens_used: u64,
-    pub budget_tokens: u64,
-    pub fraction_used: f64,
-}
-
-pub struct CostLimitExceeded {
-    pub task_id: String,
-    pub tokens_used: u64,
-    pub budget_tokens: u64,
-}
-```
-
-**Config additions in `reference.toml`:**
-
-```toml
-[cost_guard]
-enabled = false                             # opt-in
-budget_tokens_per_task = 100_000            # token budget per task (input + output)
-budget_warning_fraction = 0.80              # emit warning at 80% usage
-agent_dropout_enabled = false               # consensus-based early stopping
-agent_dropout_supermajority_threshold = 0.6 # fraction of pairs that must converge
-agent_dropout_min_agents = 2                # minimum proposals before dropout check
-frugal_cascade_enabled = false             # Haiku→Sonnet→Opus tier escalation
-budget_aware_prompts_enabled = false        # inject token budget hint into system prompt
-budget_aware_prompt_threshold_tokens = 20000 # inject when remaining budget below this
-```
-
-**Test strategy.**
-- Unit: `check_consensus_convergence` returns true/false correctly for given pairwise similarity
-- Unit: cost counter increments correctly; `CostThresholdWarning` fires at 80%; abort at 100%
-- Unit: FrugalGPT tier escalation selects correct adapter on retry
-- Unit: budget-aware prompt is injected only when threshold is crossed
-- Integration: 3-agent wave where 2 converge early → dropout fires, third agent skipped
-
-**Effort estimate.** 2 weeks. AgentDropout consensus check reuses Krum distance code. FrugalGPT
-tier routing requires adapter metadata extension. Token counters require adapter response metadata.
-
-**Falsification condition.**
-On a 5-agent benchmark run: measure tokens-used with `agent_dropout_enabled = true` vs `false`.
-If token reduction is < 10% (vs. AgentDropout paper's 21.6%), the ensemble is not converging
-early enough to benefit — examine whether `supermajority_threshold` needs lowering or whether the
-task distribution has inherently high diversity.
 
 ---
 

@@ -115,6 +115,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
             endpoint: "synthesis".into(),
             api_key_env: "NONE".into(),
             model: None,
+            provider: Default::default(),
         },
         timestamp: Utc::now(),
     };

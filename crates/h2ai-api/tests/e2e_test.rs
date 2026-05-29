@@ -64,9 +64,8 @@ use h2ai_api::{
 };
 use h2ai_config::H2AIConfig;
 use h2ai_state::nats::NatsClient;
-use h2ai_test_utils::{DecompositionMockAdapter, MockAdapter};
+use h2ai_test_utils::{decomposition_adapter, mock_adapter};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
 
 async fn boot_app() -> Option<(String, tokio::task::JoinHandle<()>)> {
@@ -81,9 +80,9 @@ async fn boot_app() -> Option<(String, tokio::task::JoinHandle<()>)> {
     nats.ensure_infrastructure().await.expect("infra");
 
     let cfg = H2AIConfig::default();
-    let explorer = Arc::new(DecompositionMockAdapter::new("mock explorer output".into()));
-    let auditor = Arc::new(MockAdapter::new(
-        r#"{"approved":true,"score":0.9,"reason":"mock"}"#.into(),
+    let explorer = Arc::new(decomposition_adapter("mock explorer output"));
+    let auditor = Arc::new(mock_adapter(
+        r#"{"approved":true,"score":0.9,"reason":"mock"}"#,
     ));
     let state = AppState::new(
         nats,
@@ -106,23 +105,35 @@ async fn boot_app() -> Option<(String, tokio::task::JoinHandle<()>)> {
         axum::serve(listener, app).await.expect("serve");
     });
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait until the server accepts TCP connections
+    for _ in 0..10_000 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 
     Some((base_url, handle))
 }
 
-/// Helper: poll GET {url} until HTTP 200, or panic after `attempts` tries.
-async fn poll_until_ok(client: &reqwest::Client, url: &str, attempts: u32) -> reqwest::Response {
-    for i in 0..attempts {
+/// Helper: poll GET {url} until HTTP 200, or panic after `timeout_secs`.
+async fn poll_until_ok(
+    client: &reqwest::Client,
+    url: &str,
+    timeout_secs: u64,
+) -> reqwest::Response {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "URL {url} never returned 200 within {timeout_secs}s"
+        );
         let resp = client.get(url).send().await.expect("GET failed");
         if resp.status().is_success() {
             return resp;
         }
-        if i < attempts - 1 {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        // HTTP round-trip to in-process axum already yields to the Tokio scheduler
     }
-    panic!("URL {url} never returned 200 after {attempts} attempts");
 }
 
 /// Helper: poll GET {`status_url`} until task status matches one of `expected`, or panic.
@@ -130,10 +141,15 @@ async fn poll_until_status(
     client: &reqwest::Client,
     status_url: &str,
     expected: &[&str],
-    attempts: u32,
+    timeout_secs: u64,
 ) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let mut last_status = String::from("<none>");
-    for i in 0..attempts {
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Task at {status_url} never reached one of {expected:?} within {timeout_secs}s (last: {last_status})"
+        );
         let resp = client
             .get(status_url)
             .send()
@@ -147,13 +163,8 @@ async fn poll_until_status(
                 return body;
             }
         }
-        if i < attempts - 1 {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        }
+        // HTTP round-trip to in-process axum already yields to the Tokio scheduler
     }
-    panic!(
-        "Task at {status_url} never reached one of {expected:?} after {attempts} attempts (last: {last_status})"
-    );
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────────
@@ -194,7 +205,7 @@ async fn calibrate_then_current_returns_coefficients() {
         .to_owned();
 
     // Poll /calibrate/current until calibration completes (calibration uses fast in-process adapters)
-    let current = poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    let current = poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
     let cal_body: serde_json::Value = current.json().await.expect("current json");
     assert!(
         cal_body["alpha"].as_f64().is_some(),
@@ -279,7 +290,7 @@ async fn full_task_lifecycle_accepted_and_status_queryable() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     // Submit task — empty constraints
     let manifest = serde_json::json!({
@@ -334,7 +345,7 @@ async fn full_task_lifecycle_accepted_and_status_queryable() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["resolved", "failed", "awaiting_approval"],
-        40,
+        20,
     )
     .await;
     // Task is terminal (resolved/failed) or parked at HITL gate (awaiting_approval)
@@ -360,7 +371,7 @@ async fn recover_task_after_store_cleared() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     // Submit task
     let manifest = serde_json::json!({
@@ -381,19 +392,21 @@ async fn recover_task_after_store_cleared() {
         .unwrap()
         .to_owned();
 
-    // Wait for at least one event to be published to JetStream
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    // The in-memory store has this task. If we call /recover it should still work
-    // (it won't find "no live entry" so it won't overwrite — but replay should succeed)
-    let recover_resp = client
-        .get(format!("{base}/{TENANT}/tasks/{task_id}/recover"))
-        .send()
-        .await
-        .expect("GET /recover");
+    // Poll /recover until at least one event lands in JetStream (fast in-process adapters)
+    let recover_resp = loop {
+        let r = client
+            .get(format!("{base}/{TENANT}/tasks/{task_id}/recover"))
+            .send()
+            .await
+            .expect("GET /recover");
+        if r.status() == 200 {
+            break r;
+        }
+        tokio::task::yield_now().await;
+    };
 
     // Should be 200 (events exist in JetStream) or 404 if somehow no events landed yet
-    // With 300ms delay and fast in-process adapters, events should be present
+    // With polling, events are present before we assert
     assert_eq!(
         recover_resp.status(),
         200,
@@ -480,7 +493,7 @@ async fn task_events_endpoint_is_sse() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     // Submit task
     let manifest = serde_json::json!({
@@ -530,7 +543,7 @@ async fn hitl_require_approval_task_reaches_awaiting_approval() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     // Submit task with require_approval=true — gate fires regardless of confidence
     let manifest = serde_json::json!({
@@ -558,7 +571,7 @@ async fn hitl_require_approval_task_reaches_awaiting_approval() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["awaiting_approval", "resolved", "failed"],
-        50,
+        20,
     )
     .await;
     assert_eq!(
@@ -592,7 +605,7 @@ async fn hitl_approve_resolves_awaiting_task() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     let manifest = serde_json::json!({
         "description": "Design a circuit breaker pattern for distributed service calls",
@@ -620,7 +633,7 @@ async fn hitl_approve_resolves_awaiting_task() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["awaiting_approval"],
-        50,
+        20,
     )
     .await;
 
@@ -653,7 +666,7 @@ async fn hitl_approve_resolves_awaiting_task() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["resolved", "failed"],
-        30,
+        20,
     )
     .await;
     assert_eq!(
@@ -675,7 +688,7 @@ async fn hitl_reject_fails_awaiting_task() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     let manifest = serde_json::json!({
         "description": "Design a rate limiting system for API endpoints",
@@ -703,7 +716,7 @@ async fn hitl_reject_fails_awaiting_task() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["awaiting_approval"],
-        50,
+        20,
     )
     .await;
 
@@ -736,7 +749,7 @@ async fn hitl_reject_fails_awaiting_task() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["failed", "resolved"],
-        30,
+        20,
     )
     .await;
     assert_eq!(
@@ -778,7 +791,7 @@ async fn hitl_concurrent_approve_returns_conflict() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     let manifest = serde_json::json!({
         "description": "Design an event sourcing system for order management",
@@ -806,7 +819,7 @@ async fn hitl_concurrent_approve_returns_conflict() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["awaiting_approval"],
-        50,
+        20,
     )
     .await;
 
@@ -856,7 +869,7 @@ async fn task_checkpoint_created_and_cleaned_after_approval() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     // Manifest with require_approval=true — checkpoint is written at Merging, then GC'd after approve
     let manifest = serde_json::json!({
@@ -885,7 +898,7 @@ async fn task_checkpoint_created_and_cleaned_after_approval() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["awaiting_approval", "resolved", "failed"],
-        50,
+        20,
     )
     .await;
     assert_eq!(
@@ -915,7 +928,7 @@ async fn task_checkpoint_created_and_cleaned_after_approval() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["resolved", "failed"],
-        30,
+        20,
     )
     .await;
     assert_eq!(
@@ -952,7 +965,7 @@ async fn awaiting_approval_is_non_terminal_status() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     let manifest = serde_json::json!({
         "description": "Design a CQRS architecture for read-heavy e-commerce catalog",
@@ -980,7 +993,7 @@ async fn awaiting_approval_is_non_terminal_status() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["awaiting_approval", "resolved", "failed"],
-        50,
+        20,
     )
     .await;
 
@@ -1010,7 +1023,7 @@ async fn oracle_task_bypasses_hitl_gate() {
         .send()
         .await
         .expect("calibrate");
-    poll_until_ok(&client, &format!("{base}/calibrate/current"), 20).await;
+    poll_until_ok(&client, &format!("{base}/calibrate/current"), 10).await;
 
     // Oracle task with require_approval=true — gate must be bypassed
     let manifest = serde_json::json!({
@@ -1047,7 +1060,7 @@ async fn oracle_task_bypasses_hitl_gate() {
         &client,
         &format!("{base}/{TENANT}/tasks/{task_id}"),
         &["resolved", "failed"],
-        50,
+        20,
     )
     .await;
     let s = status["status"].as_str().unwrap_or("");

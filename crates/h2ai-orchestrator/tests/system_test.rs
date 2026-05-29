@@ -51,17 +51,14 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use async_trait::async_trait;
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::{failing_adapter, mock_adapter, MockIComputeAdapter};
 
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::{TaskPhase, TaskStore};
-use h2ai_types::adapter::{
-    AdapterError, AdapterRegistry, ComputeRequest, ComputeResponse, IComputeAdapter,
-};
+use h2ai_types::adapter::{AdapterRegistry, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::{
     AdapterKind, AgentRole, AuditorConfig, ParetoWeights, RoleSpec, TaoConfig, VerificationConfig,
 };
@@ -72,68 +69,67 @@ use std::sync::Arc;
 
 // ── Helper adapters ──────────────────────────────────────────────────────────
 
-#[derive(Debug)]
-struct FailingAdapter {
-    kind: AdapterKind,
-}
-
-impl FailingAdapter {
-    fn new() -> Self {
-        Self {
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://failing".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for FailingAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::NetworkError("simulated agent loss".into()))
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
-
-#[derive(Debug)]
-struct TokenCostAdapter {
-    output: String,
-    cost: u64,
-    kind: AdapterKind,
-}
-
-impl TokenCostAdapter {
-    fn new(output: impl Into<String>, cost: u64) -> Self {
-        Self {
-            output: output.into(),
-            cost,
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://token-cost".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for TokenCostAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+fn token_cost_adapter(output: impl Into<String>, cost: u64) -> MockIComputeAdapter {
+    let output = output.into();
+    let kind = AdapterKind::CloudGeneric {
+        endpoint: "mock://token-cost".into(),
+        api_key_env: "NONE".into(),
+        model: None,
+        provider: Default::default(),
+    };
+    let kind2 = kind.clone();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
         Ok(ComputeResponse {
-            output: self.output.clone(),
-            token_cost: self.cost,
-            adapter_kind: self.kind.clone(),
+            output: output.clone(),
+            token_cost: cost,
+            adapter_kind: kind.clone(),
             tokens_used: None,
             reasoning_trace: None,
         })
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
+    });
+    m.expect_kind().return_const(kind2).times(0..);
+    m
+}
+
+fn shadow_approves() -> MockIComputeAdapter {
+    let kind = AdapterKind::Anthropic {
+        api_key_env: "NONE".into(),
+        model: "claude-shadow".into(),
+    };
+    let kind2 = kind.clone();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        Ok(ComputeResponse {
+            output: r#"{"approved": true, "reason": "shadow ok"}"#.into(),
+            token_cost: 1,
+            adapter_kind: kind.clone(),
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    });
+    m.expect_kind().return_const(kind2).times(0..);
+    m
+}
+
+fn shadow_rejects() -> MockIComputeAdapter {
+    let kind = AdapterKind::Anthropic {
+        api_key_env: "NONE".into(),
+        model: "claude-shadow".into(),
+    };
+    let kind2 = kind.clone();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        Ok(ComputeResponse {
+            output: r#"{"approved": false, "reason": "shadow rejected"}"#.into(),
+            token_cost: 1,
+            adapter_kind: kind.clone(),
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    });
+    m.expect_kind().return_const(kind2).times(0..);
+    m
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
@@ -194,25 +190,25 @@ fn auditor_cfg() -> AuditorConfig {
             endpoint: "mock".into(),
             api_key_env: "NONE".into(),
             model: None,
+            provider: Default::default(),
         },
         ..Default::default()
     }
 }
 
-fn scoring_adapter() -> MockAdapter {
-    MockAdapter::new(r#"{"score": 0.9, "reason": "compliant"}"#.into())
+fn scoring_adapter() -> h2ai_test_utils::MockIComputeAdapter {
+    mock_adapter(r#"{"score": 0.9, "reason": "compliant"}"#)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn system_solves_well_formed_problem() {
-    let ex1 = MockAdapter::new("stateless JWT auth solution — ADR-001 compliant".into());
-    let ex2 = MockAdapter::new("token-based stateless authentication RSA signing ADR-001".into());
-    let ex3 = MockAdapter::new("stateless auth credential verification OAuth2 ADR-001".into());
+    let ex1 = mock_adapter("stateless JWT auth solution — ADR-001 compliant");
+    let ex2 = mock_adapter("token-based stateless authentication RSA signing ADR-001");
+    let ex3 = mock_adapter("stateless auth credential verification OAuth2 ADR-001");
     let scorer = scoring_adapter();
-    let auditor =
-        MockAdapter::new(r#"{"approved": true, "reason": "compliant with ADR-001"}"#.into());
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant with ADR-001"}"#);
     let cal = run_calibration(&[&ex1 as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
     // Disable C1 — this test predates correlated-hallucination detection and uses
@@ -223,8 +219,8 @@ async fn system_solves_well_formed_problem() {
     };
     let task_id = TaskId::new();
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "stateless JWT auth solution — ADR-001 compliant".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "stateless JWT auth solution — ADR-001 compliant",
     )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -298,13 +294,13 @@ async fn system_solves_well_formed_problem() {
 async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
     // Two adapters with different enough text so the diversity gate does not fire,
     // allowing proposals to reach the auditor which rejects all of them.
-    let ex1 = MockAdapter::new("stateless JWT auth implementation ADR-001".into());
-    let ex2 = MockAdapter::new("invented credential protocol fabricated library ADR-001".into());
+    let ex1 = mock_adapter("stateless JWT auth implementation ADR-001");
+    let ex2 = mock_adapter("invented credential protocol fabricated library ADR-001");
     let scorer = scoring_adapter();
     // Auditor rejects every proposal — simulates hallucination detected at semantic review (Phase 4).
     // Verification (Phase 3.5) passes since proposals are syntactically well-formed.
-    let auditor = MockAdapter::new(
-        r#"{"approved": false, "reason": "hallucination detected: output fabricated"}"#.into(),
+    let auditor = mock_adapter(
+        r#"{"approved": false, "reason": "hallucination detected: output fabricated"}"#,
     );
     let cal = run_calibration(&[&ex1 as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
@@ -314,8 +310,8 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
     };
     let task_id = TaskId::new();
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "stateless JWT auth implementation ADR-001".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "stateless JWT auth implementation ADR-001",
     )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -375,18 +371,17 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
 
 #[tokio::test]
 async fn system_survives_agent_loss_and_resolves_with_survivors() {
-    let failing = FailingAdapter::new();
-    let survivor = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let failing = failing_adapter();
+    let survivor = mock_adapter("stateless JWT auth — ADR-001 compliant");
     let scorer = scoring_adapter();
-    let auditor =
-        MockAdapter::new(r#"{"approved": true, "reason": "compliant with ADR-001"}"#.into());
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant with ADR-001"}"#);
     let cal = run_calibration(&[&survivor as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
     let task_id = TaskId::new();
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "stateless JWT auth — ADR-001 compliant".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "stateless JWT auth — ADR-001 compliant",
     )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -447,11 +442,11 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
 
 #[tokio::test]
 async fn system_resolves_conflict_via_bft_consensus() {
-    let cheap = TokenCostAdapter::new("low-cost auth solution — stateless ADR-001", 5);
-    let pricey = TokenCostAdapter::new("high-cost auth solution — stateless ADR-001", 500);
+    let cheap = token_cost_adapter("low-cost auth solution — stateless ADR-001", 5);
+    let pricey = token_cost_adapter("high-cost auth solution — stateless ADR-001", 500);
     let scorer = scoring_adapter();
     let fair_evaluator =
-        MockAdapter::new(r#"{"approved": true, "reason": "valid compliant proposal"}"#.into());
+        mock_adapter(r#"{"approved": true, "reason": "valid compliant proposal"}"#);
     let cal = run_calibration(&[
         &cheap as &dyn IComputeAdapter,
         &pricey as &dyn IComputeAdapter,
@@ -499,8 +494,8 @@ async fn system_resolves_conflict_via_bft_consensus() {
         tenant_id: h2ai_types::identity::TenantId::default_tenant(),
     };
 
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "low-cost auth solution — stateless ADR-001".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "low-cost auth solution — stateless ADR-001",
     )) as Arc<dyn IComputeAdapter>);
     let input = EngineInput {
         task_id: task_id.clone(),
@@ -564,66 +559,18 @@ async fn system_resolves_conflict_via_bft_consensus() {
 
 // ── Shadow audit system integration tests ───────────────────────────────────
 
-#[derive(Debug)]
-struct ShadowAdapter {
-    approved: bool,
-    kind: AdapterKind,
-}
-
-impl ShadowAdapter {
-    fn approves() -> Self {
-        Self {
-            approved: true,
-            kind: AdapterKind::Anthropic {
-                api_key_env: "NONE".into(),
-                model: "claude-shadow".into(),
-            },
-        }
-    }
-    fn rejects() -> Self {
-        Self {
-            approved: false,
-            kind: AdapterKind::Anthropic {
-                api_key_env: "NONE".into(),
-                model: "claude-shadow".into(),
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for ShadowAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        let body = if self.approved {
-            r#"{"approved": true, "reason": "shadow ok"}"#
-        } else {
-            r#"{"approved": false, "reason": "shadow rejected"}"#
-        };
-        Ok(ComputeResponse {
-            output: body.into(),
-            token_cost: 1,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
-
 /// Shadow mode on + both agree → task resolves, shadow_audit_events populated, disagreement=false.
 #[tokio::test]
 async fn system_shadow_mode_agreement_resolves_task() {
-    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let explorer = mock_adapter("stateless JWT auth — ADR-001 compliant");
     let scorer = scoring_adapter();
-    let primary_auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
-    let shadow = ShadowAdapter::approves();
+    let primary_auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
+    let shadow = shadow_approves();
     let cal = run_calibration(&[&explorer as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "stateless JWT auth — ADR-001 compliant".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "stateless JWT auth — ADR-001 compliant",
     )) as Arc<dyn IComputeAdapter>);
 
     let mut manifest = default_manifest(1);
@@ -690,15 +637,15 @@ async fn system_shadow_mode_agreement_resolves_task() {
 /// disagreement=true in events, but primary's approve wins.
 #[tokio::test]
 async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
-    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let explorer = mock_adapter("stateless JWT auth — ADR-001 compliant");
     let scorer = scoring_adapter();
-    let primary_auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
-    let shadow = ShadowAdapter::rejects();
+    let primary_auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
+    let shadow = shadow_rejects();
     let cal = run_calibration(&[&explorer as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
     let cfg = H2AIConfig::default();
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "stateless JWT auth — ADR-001 compliant".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "stateless JWT auth — ADR-001 compliant",
     )) as Arc<dyn IComputeAdapter>);
 
     // promoted_domains is empty → shadow observe mode, NOT AND-vote
@@ -761,18 +708,18 @@ async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
 /// AND-vote mode active: primary approves, shadow rejects → task must fail.
 #[tokio::test]
 async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
-    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
+    let explorer = mock_adapter("stateless JWT auth — ADR-001 compliant");
     let scorer = scoring_adapter();
-    let primary_auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
-    let shadow = ShadowAdapter::rejects();
+    let primary_auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
+    let shadow = shadow_rejects();
     let cal = run_calibration(&[&explorer as &dyn IComputeAdapter]).await;
     let store = TaskStore::new();
     let cfg = H2AIConfig {
         max_autonomic_retries: 0,
         ..H2AIConfig::default()
     };
-    let registry = AdapterRegistry::new(Arc::new(MockAdapter::new(
-        "stateless JWT auth — ADR-001 compliant".into(),
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter(
+        "stateless JWT auth — ADR-001 compliant",
     )) as Arc<dyn IComputeAdapter>);
 
     let mut manifest = default_manifest(1);
@@ -833,50 +780,15 @@ async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
     );
 }
 
-// ── GAP-C1 system test ───────────────────────────────────────────────────────
-
-#[derive(Debug)]
-struct IdenticalOutputAdapter {
-    output: String,
-    kind: AdapterKind,
-}
-
-impl IdenticalOutputAdapter {
-    fn new(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://identical".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for IdenticalOutputAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Ok(ComputeResponse {
-            output: self.output.clone(),
-            token_cost: 10,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
+// ── system test ───────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn system_c1_fires_and_records_warning_for_identical_proposals() {
     let text = "stateless JWT auth token validation bearer scheme ADR-001 compliant".to_string();
-    let ex1 = IdenticalOutputAdapter::new(text.clone());
-    let ex2 = IdenticalOutputAdapter::new(text.clone());
+    let ex1 = mock_adapter(text.clone());
+    let ex2 = mock_adapter(text.clone());
     let scorer = scoring_adapter();
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
 
     let cfg = H2AIConfig {
         correlated_hallucination_cv_threshold: 0.30,
@@ -888,7 +800,7 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
     let store = h2ai_orchestrator::task_store::TaskStore::new();
     let task_id = TaskId::new();
     let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new(text.clone())) as Arc<dyn IComputeAdapter>);
+        AdapterRegistry::new(Arc::new(mock_adapter(text.clone())) as Arc<dyn IComputeAdapter>);
     let mut manifest = default_manifest(2);
     manifest.explorers.count = 2;
 
@@ -949,13 +861,13 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
     }
 }
 
-// ── GAP-C3 system test ───────────────────────────────────────────────────────
+// ── system test ───────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn system_c3_no_degraded_event_when_domains_covered() {
-    let ex = MockAdapter::new("stateless JWT auth solution ADR-001 compliant security".into());
+    let ex = mock_adapter("stateless JWT auth solution ADR-001 compliant security");
     let scorer = scoring_adapter();
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
 
     let cfg = H2AIConfig {
         domain_coverage_threshold: 0.5,
@@ -968,9 +880,8 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
 
     let cal = run_calibration(&[&ex as &dyn IComputeAdapter]).await;
     let store = h2ai_orchestrator::task_store::TaskStore::new();
-    let registry = AdapterRegistry::new(
-        Arc::new(MockAdapter::new("solution".into())) as Arc<dyn IComputeAdapter>
-    );
+    let registry =
+        AdapterRegistry::new(Arc::new(mock_adapter("solution")) as Arc<dyn IComputeAdapter>);
 
     let mut manifest = default_manifest(1);
     manifest.explorers.slot_configs = vec![h2ai_types::manifest::ExplorerSlotConfig {
@@ -1027,10 +938,9 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
 
 #[tokio::test]
 async fn system_c3_degraded_event_when_domains_uncovered() {
-    let ex =
-        MockAdapter::new("stateless JWT auth solution security correctness performance".into());
+    let ex = mock_adapter("stateless JWT auth solution security correctness performance");
     let scorer = scoring_adapter();
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "compliant"}"#.into());
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
 
     let cfg = H2AIConfig {
         domain_coverage_threshold: 0.8,
@@ -1051,9 +961,8 @@ async fn system_c3_degraded_event_when_domains_uncovered() {
 
     let cal = run_calibration(&[&ex as &dyn IComputeAdapter]).await;
     let store = h2ai_orchestrator::task_store::TaskStore::new();
-    let registry = AdapterRegistry::new(
-        Arc::new(MockAdapter::new("solution".into())) as Arc<dyn IComputeAdapter>
-    );
+    let registry =
+        AdapterRegistry::new(Arc::new(mock_adapter("solution")) as Arc<dyn IComputeAdapter>);
 
     let mut manifest = default_manifest(1);
     manifest.explorers.slot_configs = vec![h2ai_types::manifest::ExplorerSlotConfig {

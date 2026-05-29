@@ -75,3 +75,34 @@ async fn direct_log_flush_succeeds() {
     let result = provider.flush().await;
     assert!(result.is_ok());
 }
+
+#[tokio::test]
+async fn direct_log_record_event_with_unicode_content() {
+    let provider = DirectLogProvider;
+    let event = AgentTelemetryEvent::LlmPromptSent {
+        task_id: task_id(),
+        agent_id: agent_id(),
+        prompt: "Hello 🌍\nMultiline\t\"quoted\"".into(),
+        timestamp: Utc::now(),
+    };
+    assert!(provider.record_event(event).await.is_ok());
+}
+
+#[tokio::test]
+async fn direct_log_flush_is_idempotent() {
+    let provider = DirectLogProvider;
+    assert!(provider.flush().await.is_ok());
+    assert!(provider.flush().await.is_ok());
+}
+
+#[tokio::test]
+async fn direct_log_record_event_with_empty_strings() {
+    let provider = DirectLogProvider;
+    let event = AgentTelemetryEvent::SystemError {
+        task_id: task_id(),
+        agent_id: agent_id(),
+        error: String::new(),
+        timestamp: Utc::now(),
+    };
+    assert!(provider.record_event(event).await.is_ok());
+}

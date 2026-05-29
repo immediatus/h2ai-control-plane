@@ -37,7 +37,7 @@ pub struct AttributionInput {
 /// Case B (correlated failure) signals fire.
 ///
 /// `q_confidence` measures how confident the system is in its output, not whether the output
-/// is correct. Oracle-grounded correctness requires external measurement (see GAP-B3, GAP-E1).
+/// is correct. Oracle-grounded correctness requires external measurement (see ).
 ///
 /// Ground truth for `ρ_actual` requires `baseline_eval.py` ICC measurement (see S5/S8).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

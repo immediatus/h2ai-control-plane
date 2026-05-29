@@ -15,6 +15,7 @@ pub struct GoogleSearchBackend {
     api_key: String,
     cx: String,
     client: reqwest::Client,
+    base_url: String,
 }
 
 impl GoogleSearchBackend {
@@ -23,7 +24,14 @@ impl GoogleSearchBackend {
             api_key: api_key.into(),
             cx: cx.into(),
             client: reqwest::Client::new(),
+            base_url: "https://www.googleapis.com/customsearch/v1".into(),
         }
+    }
+
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
     }
 }
 
@@ -35,7 +43,7 @@ impl WebSearchBackend for GoogleSearchBackend {
         let num_str = num.to_string();
         let resp = self
             .client
-            .get("https://www.googleapis.com/customsearch/v1")
+            .get(&self.base_url)
             .query(&[
                 ("key", self.api_key.as_str()),
                 ("cx", self.cx.as_str()),
@@ -82,6 +90,7 @@ impl WebSearchBackend for GoogleSearchBackend {
 
 pub struct DuckDuckGoSearchBackend {
     client: reqwest::Client,
+    base_url: String,
 }
 
 impl Default for DuckDuckGoSearchBackend {
@@ -101,7 +110,14 @@ impl DuckDuckGoSearchBackend {
                 )
                 .build()
                 .unwrap_or_default(),
+            base_url: "https://lite.duckduckgo.com/lite/".into(),
         }
+    }
+
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
     }
 
     /// Parses result snippets out of DDG's lite HTML response.
@@ -165,7 +181,7 @@ impl WebSearchBackend for DuckDuckGoSearchBackend {
         // DDG Lite: returns plain HTML with actual web search snippets.
         let resp = self
             .client
-            .post("https://lite.duckduckgo.com/lite/")
+            .post(&self.base_url)
             .form(&[("q", query)])
             .send()
             .await
@@ -302,6 +318,7 @@ pub struct StackOverflowSearchBackend {
     client: reqwest::Client,
     /// SE site to search: "stackoverflow", "softwareengineering", etc.
     site: String,
+    base_url: String,
 }
 
 impl Default for StackOverflowSearchBackend {
@@ -324,14 +341,21 @@ impl StackOverflowSearchBackend {
                 .build()
                 .unwrap_or_default(),
             site: site.into(),
+            base_url: "https://api.stackexchange.com/2.3".into(),
         }
+    }
+
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
     }
 
     async fn fetch_top_answers(&self, question_id: u64) -> Vec<String> {
         let url = format!(
-            "https://api.stackexchange.com/2.3/questions/{question_id}/answers\
+            "{}/questions/{question_id}/answers\
              ?site={}&sort=votes&order=desc&pagesize=2&filter=withbody",
-            self.site
+            self.base_url, self.site
         );
         let Ok(resp) = self.client.get(&url).send().await else {
             return vec![];
@@ -366,7 +390,7 @@ impl WebSearchBackend for StackOverflowSearchBackend {
         let limit = max_results.min(5).to_string();
         let resp = self
             .client
-            .get("https://api.stackexchange.com/2.3/search/advanced")
+            .get(format!("{}/search/advanced", self.base_url))
             .query(&[
                 ("order", "desc"),
                 ("sort", "relevance"),
@@ -425,6 +449,7 @@ impl WebSearchBackend for StackOverflowSearchBackend {
 /// For technical grounding, prefer `StackOverflowSearchBackend`.
 pub struct WikipediaSearchBackend {
     client: reqwest::Client,
+    base_url: String,
 }
 
 impl Default for WikipediaSearchBackend {
@@ -441,7 +466,14 @@ impl WikipediaSearchBackend {
                 .user_agent("h2ai-control-plane/0.1 (grounding-research)")
                 .build()
                 .unwrap_or_default(),
+            base_url: "https://en.wikipedia.org".into(),
         }
+    }
+
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
     }
 }
 
@@ -451,7 +483,7 @@ impl WebSearchBackend for WikipediaSearchBackend {
         let limit = max_results.min(5).to_string();
         let search_resp = self
             .client
-            .get("https://en.wikipedia.org/w/api.php")
+            .get(format!("{}/w/api.php", self.base_url))
             .query(&[
                 ("action", "query"),
                 ("list", "search"),
@@ -492,7 +524,8 @@ impl WebSearchBackend for WikipediaSearchBackend {
         let mut parts = Vec::new();
         for (i, title) in titles.iter().enumerate() {
             let url = format!(
-                "https://en.wikipedia.org/api/rest_v1/page/summary/{}",
+                "{}/api/rest_v1/page/summary/{}",
+                self.base_url,
                 title.replace(' ', "_")
             );
             let Ok(r) = self.client.get(&url).send().await else {
@@ -529,6 +562,7 @@ pub struct GeminiSearchBackend {
     api_key: String,
     client: reqwest::Client,
     model: String,
+    base_url: String,
 }
 
 impl GeminiSearchBackend {
@@ -538,6 +572,7 @@ impl GeminiSearchBackend {
             api_key: api_key.into(),
             client: reqwest::Client::new(),
             model: "gemini-2.0-flash".into(),
+            base_url: "https://generativelanguage.googleapis.com".into(),
         }
     }
 
@@ -546,14 +581,20 @@ impl GeminiSearchBackend {
         self.model = model.into();
         self
     }
+
+    #[must_use]
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
+    }
 }
 
 #[async_trait]
 impl WebSearchBackend for GeminiSearchBackend {
     async fn search(&self, query: &str, _max_results: usize) -> Result<String, ToolError> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
+            "{}/v1beta/models/{}:generateContent?key={}",
+            self.base_url, self.model, self.api_key
         );
 
         let body = json!({
@@ -1030,5 +1071,248 @@ impl ToolExecutor for WebSearchExecutor {
             .as_str()
             .ok_or_else(|| ToolError::MalformedInput("missing 'query' field".into()))?;
         self.backend.search(query, self.max_results).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── DuckDuckGoSearchBackend::strip_tags ───────────────────────────────────
+
+    #[test]
+    fn strip_tags_removes_html_tags() {
+        let result = DuckDuckGoSearchBackend::strip_tags("<b>hello</b> world");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn strip_tags_decodes_html_entities() {
+        let result = DuckDuckGoSearchBackend::strip_tags(
+            "a &amp; b &lt;c&gt; &quot;d&quot; e&#x27;f &nbsp;g",
+        );
+        assert_eq!(result, "a & b <c> \"d\" e'f  g");
+    }
+
+    #[test]
+    fn strip_tags_handles_empty_input() {
+        assert_eq!(DuckDuckGoSearchBackend::strip_tags(""), "");
+    }
+
+    #[test]
+    fn strip_tags_handles_plain_text() {
+        assert_eq!(
+            DuckDuckGoSearchBackend::strip_tags("no tags here"),
+            "no tags here"
+        );
+    }
+
+    // ── DuckDuckGoSearchBackend::parse_html_snippets ──────────────────────────
+
+    #[test]
+    fn parse_html_snippets_extracts_result_snippets() {
+        let html = r#"<table><td class="result-snippet"><b>Redis</b> rate limiting</td><td class="result-snippet">sliding window algorithm</td></table>"#;
+        let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 5);
+        assert_eq!(snippets.len(), 2);
+        assert!(
+            snippets[0].contains("Redis rate limiting") || snippets[0].contains("rate limiting")
+        );
+        assert!(snippets[1].contains("sliding window"));
+    }
+
+    #[test]
+    fn parse_html_snippets_respects_max_results() {
+        let html = r#"<td class="result-snippet">one</td><td class="result-snippet">two</td><td class="result-snippet">three</td>"#;
+        let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 2);
+        assert_eq!(snippets.len(), 2);
+    }
+
+    #[test]
+    fn parse_html_snippets_returns_empty_for_no_matches() {
+        let html = "<html><body>no results here</body></html>";
+        let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 5);
+        assert!(snippets.is_empty());
+    }
+
+    #[test]
+    fn parse_html_snippets_skips_empty_snippets() {
+        // snippet with only whitespace should not be included
+        let html =
+            r#"<td class="result-snippet">   </td><td class="result-snippet">real content</td>"#;
+        let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 5);
+        assert_eq!(snippets.len(), 1);
+        assert!(snippets[0].contains("real content"));
+    }
+
+    // ── extract_text_from_html ────────────────────────────────────────────────
+
+    #[test]
+    fn extract_text_strips_script_and_style_blocks() {
+        let html = "<p>visible</p><script>var x = 1;</script><style>.a{color:red}</style><p>also visible</p>";
+        let text = extract_text_from_html(html);
+        assert!(text.contains("visible"));
+        assert!(
+            !text.contains("var x = 1"),
+            "script contents must be stripped"
+        );
+        assert!(
+            !text.contains("color:red"),
+            "style contents must be stripped"
+        );
+    }
+
+    #[test]
+    fn extract_text_strips_nav_header_footer() {
+        let html =
+            "<nav>menu items</nav><main><p>article content</p></main><footer>copyright</footer>";
+        let text = extract_text_from_html(html);
+        assert!(!text.contains("menu items"), "nav must be stripped");
+        assert!(!text.contains("copyright"), "footer must be stripped");
+        assert!(text.contains("article content"));
+    }
+
+    #[test]
+    fn extract_text_decodes_entities() {
+        let html = "<p>a &amp; b &lt;c&gt; &nbsp;d &quot;e&quot;</p>";
+        let text = extract_text_from_html(html);
+        assert!(text.contains("a & b"), "amp must decode");
+        assert!(text.contains("<c>"), "lt/gt must decode");
+    }
+
+    #[test]
+    fn extract_text_collapses_whitespace() {
+        let html = "<p>hello     world</p>";
+        let text = extract_text_from_html(html);
+        // Multiple spaces should collapse to single space
+        assert!(!text.contains("     "), "whitespace must collapse");
+        assert!(text.contains("hello") && text.contains("world"));
+    }
+
+    #[test]
+    fn extract_text_handles_empty_input() {
+        assert_eq!(extract_text_from_html(""), "");
+    }
+
+    #[test]
+    fn extract_text_handles_nested_skip_tags() {
+        let html = "<script><script>inner</script></script><p>after</p>";
+        let text = extract_text_from_html(html);
+        assert!(
+            !text.contains("inner"),
+            "nested skip content must be hidden"
+        );
+        assert!(text.contains("after"));
+    }
+
+    // ── parse_github_repo ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_github_repo_extracts_owner_and_repo() {
+        let result = parse_github_repo("https://github.com/owner/repo");
+        assert_eq!(result, Some(("owner".into(), "repo".into())));
+    }
+
+    #[test]
+    fn parse_github_repo_ignores_extra_path_segments() {
+        let result = parse_github_repo("https://github.com/owner/repo/tree/main");
+        assert_eq!(result, Some(("owner".into(), "repo".into())));
+    }
+
+    #[test]
+    fn parse_github_repo_returns_none_for_wrong_host() {
+        assert_eq!(parse_github_repo("https://gitlab.com/owner/repo"), None);
+    }
+
+    #[test]
+    fn parse_github_repo_returns_none_for_single_segment() {
+        assert_eq!(parse_github_repo("https://github.com/onlyowner"), None);
+    }
+
+    // ── base64_decoder ────────────────────────────────────────────────────────
+
+    #[test]
+    fn base64_decoder_decodes_unpadded_string() {
+        use std::io::Read;
+        // "Man" → 3 bytes, encodes to "TWFu" with no padding — decoder handles this correctly.
+        let encoded = b"TWFu";
+        let mut dec = base64_decoder(encoded);
+        let mut buf = Vec::new();
+        dec.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"Man");
+    }
+
+    #[test]
+    fn base64_decoder_decodes_multiple_groups() {
+        use std::io::Read;
+        // "Hello W" is 7 bytes, but "Hello Wo" is 8 bytes = not multiple of 3
+        // Use 9-byte "Hello Wor" → "SGVsbG8gV29y" (no padding)
+        let encoded = b"SGVsbG8gV29y";
+        let mut dec = base64_decoder(encoded);
+        let mut buf = Vec::new();
+        dec.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"Hello Wor");
+    }
+
+    #[test]
+    fn base64_decoder_handles_empty_input() {
+        use std::io::Read;
+        let mut dec = base64_decoder(b"");
+        let mut buf = Vec::new();
+        dec.read_to_end(&mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn base64_decoder_skips_invalid_chars() {
+        use std::io::Read;
+        // Invalid base64 chunk (non-base64 chars map to 0x40 = invalid, skipped)
+        // "TWFu" = "Man", prefix with invalid chunk to verify skip behavior
+        let encoded = b"!!!!TWFu";
+        let mut dec = base64_decoder(encoded);
+        let mut buf = Vec::new();
+        dec.read_to_end(&mut buf).unwrap();
+        // Invalid "!!!!" chunk is skipped, "Man" is decoded
+        assert_eq!(buf, b"Man");
+    }
+
+    // ── Backend constructors ──────────────────────────────────────────────────
+
+    #[test]
+    fn google_search_backend_constructs() {
+        let _b = GoogleSearchBackend::new("api-key", "cx-id");
+    }
+
+    #[test]
+    fn stack_overflow_backend_with_site_builder() {
+        let _b = StackOverflowSearchBackend::with_site("softwareengineering");
+    }
+
+    #[test]
+    fn stack_overflow_backend_default() {
+        let _b = StackOverflowSearchBackend::default();
+    }
+
+    #[test]
+    fn wikipedia_backend_new_and_default() {
+        let _a = WikipediaSearchBackend::new();
+        let _b = WikipediaSearchBackend::default();
+    }
+
+    #[test]
+    fn gemini_backend_with_model_builder() {
+        let b = GeminiSearchBackend::new("api-key").with_model("gemini-1.5-pro");
+        // Just verify the builder chain doesn't panic
+        drop(b);
+    }
+
+    #[test]
+    fn web_grounding_backend_with_page_chars_builder() {
+        let b = WebGroundingBackend::new().with_page_chars(500);
+        drop(b);
+    }
+
+    #[test]
+    fn web_grounding_backend_default() {
+        let _b = WebGroundingBackend::default();
     }
 }

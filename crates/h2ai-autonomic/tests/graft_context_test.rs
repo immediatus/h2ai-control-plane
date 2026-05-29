@@ -1,4 +1,7 @@
-use h2ai_autonomic::repair::{build_graft_context, missing_constraint_ids, GraftInput};
+use h2ai_autonomic::repair::{
+    build_graft_context, graft_is_redundant, graft_token_projection_exceeds,
+    grafted_ids_cycle_detected, missing_constraint_ids, GraftInput, PartialPass,
+};
 
 #[test]
 fn graft_context_contains_base_text() {
@@ -179,4 +182,90 @@ fn missing_constraint_ids_cluster_covered_when_any_check_passes() {
     let offsets = vec![("C-001".to_string(), 0usize, 3usize)];
     let result = missing_constraint_ids(&base, &candidate, &offsets);
     assert_eq!(result, vec!["C-001".to_string()]);
+}
+
+fn partial(checks: Vec<(usize, bool)>) -> PartialPass {
+    PartialPass {
+        proposal_text: "x".repeat(200),
+        check_results: checks
+            .into_iter()
+            .map(|(i, p)| (i, "txt".to_string(), p))
+            .collect(),
+        score: 0.5,
+    }
+}
+
+// ── graft_is_redundant ───────────────────────────────────────────────────
+
+#[test]
+fn graft_is_redundant_true_when_high_overlap() {
+    // base passes 0,1,2,3 ; candidate covers 0,1,2,3,4
+    // shared/union = 4/5 = 0.80 > 0.60 → redundant
+    let base = partial(vec![(0, true), (1, true), (2, true), (3, true)]);
+    let candidate = partial(vec![(0, true), (1, true), (2, true), (3, true), (4, false)]);
+    assert!(
+        graft_is_redundant(&base, &candidate, 0.6),
+        "high overlap must be detected as redundant"
+    );
+}
+
+#[test]
+fn graft_is_redundant_false_when_low_overlap() {
+    // base passes 0,1 ; candidate covers 2,3,4 → shared=0, union=5 → 0.0 ≤ 0.6
+    let base = partial(vec![(0, true), (1, true)]);
+    let candidate = partial(vec![(2, false), (3, false), (4, false)]);
+    assert!(
+        !graft_is_redundant(&base, &candidate, 0.6),
+        "low overlap must not be flagged as redundant"
+    );
+}
+
+// ── grafted_ids_cycle_detected ───────────────────────────────────────────
+
+#[test]
+fn cycle_detected_when_missing_all_already_grafted() {
+    let already_grafted: std::collections::HashSet<String> =
+        ["C-001", "C-002"].iter().map(|s| s.to_string()).collect();
+    let missing = vec!["C-001".to_string(), "C-002".to_string()];
+    assert!(
+        grafted_ids_cycle_detected(&missing, &already_grafted),
+        "all missing IDs already grafted → cycle"
+    );
+}
+
+#[test]
+fn no_cycle_when_missing_has_new_ids() {
+    let already_grafted: std::collections::HashSet<String> =
+        ["C-001"].iter().map(|s| s.to_string()).collect();
+    let missing = vec!["C-001".to_string(), "C-003".to_string()];
+    assert!(
+        !grafted_ids_cycle_detected(&missing, &already_grafted),
+        "at least one new ID → no cycle"
+    );
+}
+
+// ── graft_token_projection_exceeds ───────────────────────────────────────
+
+#[test]
+fn token_projection_exceeds_when_texts_too_large() {
+    // base = 400 chars (~100 tokens), candidate = 400 chars (~100 tokens)
+    // projected = 200 tokens; 200 > 100 * 1.3 = 130 → true
+    let base_text = "a".repeat(400);
+    let candidate_text = "b".repeat(400);
+    assert!(
+        graft_token_projection_exceeds(&base_text, &candidate_text, 1.3),
+        "large candidate must trigger token projection guard"
+    );
+}
+
+#[test]
+fn token_projection_passes_when_texts_small() {
+    // base = 400 chars (~100 tokens), candidate = 40 chars (~10 tokens)
+    // projected = 110 tokens; 110 ≤ 100 * 1.3 = 130 → false
+    let base_text = "a".repeat(400);
+    let candidate_text = "b".repeat(40);
+    assert!(
+        !graft_token_projection_exceeds(&base_text, &candidate_text, 1.3),
+        "small candidate must not trigger token projection guard"
+    );
 }

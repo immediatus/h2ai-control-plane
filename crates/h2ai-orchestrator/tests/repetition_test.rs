@@ -48,7 +48,7 @@ fn word_order_does_not_affect_similarity() {
 }
 
 use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop};
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::TaoConfig;
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -59,7 +59,7 @@ async fn tao_loop_detects_repetition_and_returns_err() {
     // Adapter always returns the same output. Pattern requires "APPROVED" which
     // never appears. Turn 1 fails → sets last_output. Turn 2 fails with identical
     // output → similarity 1.0 ≥ 0.92 threshold → Err.
-    let adapter = MockAdapter::new("identical output every time".into());
+    let adapter = mock_adapter("identical output every time");
     let result = TaoLoop::run(TaoInput {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),
@@ -93,7 +93,7 @@ async fn tao_loop_detects_repetition_and_returns_err() {
 #[tokio::test]
 async fn tao_loop_allows_similar_but_passing_output() {
     // Adapter returns a passing output. Passes on turn 1 → Ok before any repetition check.
-    let adapter = MockAdapter::new("APPROVED: good answer".into());
+    let adapter = mock_adapter("APPROVED: good answer");
     let result = TaoLoop::run(TaoInput {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),
@@ -123,7 +123,7 @@ async fn tao_loop_allows_similar_but_passing_output() {
 #[tokio::test]
 async fn tao_loop_disabled_repetition_exhausts_turns() {
     // repetition_threshold > 1.0 → detector disabled. Stuck adapter runs all turns.
-    let adapter = MockAdapter::new("stuck output".into());
+    let adapter = mock_adapter("stuck output");
     let result = TaoLoop::run(TaoInput {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),

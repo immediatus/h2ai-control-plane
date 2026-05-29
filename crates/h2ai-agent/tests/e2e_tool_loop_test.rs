@@ -1,15 +1,15 @@
 use h2ai_agent::tao_agent::{TaoAgent, TaoAgentInput};
 use h2ai_config::H2AIConfig;
-use h2ai_test_utils::SequencedMockAdapter;
-use h2ai_test_utils::{MockMcpBackend, MockSearchBackend, MockWasmBackend};
+use h2ai_test_utils::{mock_mcp, mock_search, mock_wasm, sequenced_adapter, MockIComputeAdapter};
 use h2ai_tools::mcp::McpExecutor;
 use h2ai_tools::registry::ToolRegistry;
 use h2ai_tools::wasm::WasmExecutor;
 use h2ai_tools::web_search::WebSearchExecutor;
-use h2ai_types::adapter::IComputeAdapter;
+use h2ai_types::adapter::{ComputeResponse, IComputeAdapter};
 use h2ai_types::agent::AgentTool;
 use h2ai_types::sizing::TauValue;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 fn cfg() -> H2AIConfig {
     H2AIConfig::default()
@@ -22,7 +22,7 @@ fn cfg() -> H2AIConfig {
 /// 4. LLM emits final answer
 #[tokio::test]
 async fn tao_agent_traverses_three_tools_and_produces_final_answer() {
-    let adapter = SequencedMockAdapter::new(vec![
+    let adapter = sequenced_adapter(vec![
         r#"{"tool":"web_search","input":{"query":"h2ai agent_max_tool_iterations default"}}"#
             .into(),
         r#"{"tool":"file_system","input":{"op":"read_file","path":"reference.toml"}}"#.into(),
@@ -30,16 +30,15 @@ async fn tao_agent_traverses_three_tools_and_produces_final_answer() {
         "The default is 5, confirmed in reference.toml. Computed square: 25.".into(),
     ]);
 
-    let search_backend =
-        MockSearchBackend::new("agent_max_tool_iterations: default is 5 (source: h2ai docs)");
+    let search_backend = mock_search("agent_max_tool_iterations: default is 5 (source: h2ai docs)");
 
     let mut mcp_files = HashMap::new();
     mcp_files.insert(
         "reference.toml".to_string(),
         "agent_max_tool_iterations = 5".to_string(),
     );
-    let mcp_backend = MockMcpBackend::new(mcp_files);
-    let wasm_backend = MockWasmBackend::new("25");
+    let mcp_backend = mock_mcp(mcp_files);
+    let wasm_backend = mock_wasm("25");
 
     let mut registry = ToolRegistry::new();
     registry.register_web_search(WebSearchExecutor::new(Box::new(search_backend), 3));
@@ -111,48 +110,40 @@ async fn tao_agent_traverses_three_tools_and_produces_final_answer() {
 /// Verify the [TOOLS] block in system context advertises all three executors.
 #[tokio::test]
 async fn tao_agent_three_tool_registry_injects_all_schemas_into_system_context() {
-    use async_trait::async_trait;
-    use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse};
-    use h2ai_types::config::AdapterKind;
-    use std::sync::{Arc, Mutex};
+    let captured = Arc::new(Mutex::new(Option::<String>::None));
+    let captured_clone = captured.clone();
 
-    #[derive(Clone, Debug)]
-    struct ContextCapture(Arc<Mutex<Option<String>>>);
-
-    #[async_trait]
-    impl IComputeAdapter for ContextCapture {
-        async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-            *self.0.lock().unwrap() = Some(req.system_context);
-            Ok(ComputeResponse {
-                output: "done".into(),
-                token_cost: 0,
-                adapter_kind: AdapterKind::CloudGeneric {
-                    endpoint: "mock://capture".into(),
-                    api_key_env: "NONE".into(),
-                    model: None,
-                },
-                tokens_used: None,
-                reasoning_trace: None,
-            })
-        }
-        fn kind(&self) -> &AdapterKind {
-            unreachable!()
-        }
-    }
-
-    let capture = ContextCapture(Arc::new(Mutex::new(None)));
+    let mut mock = MockIComputeAdapter::new();
+    mock.expect_execute().returning(move |req| {
+        *captured_clone.lock().unwrap() = Some(req.system_context);
+        Ok(ComputeResponse {
+            output: "done".into(),
+            token_cost: 0,
+            adapter_kind: h2ai_types::config::AdapterKind::CloudGeneric {
+                endpoint: "mock://capture".into(),
+                api_key_env: "NONE".into(),
+                model: None,
+                provider: Default::default(),
+            },
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    });
+    mock.expect_kind()
+        .return_const(h2ai_types::config::AdapterKind::CloudGeneric {
+            endpoint: "mock://capture".into(),
+            api_key_env: "NONE".into(),
+            model: None,
+            provider: Default::default(),
+        })
+        .times(0..);
 
     let mut registry = ToolRegistry::new();
-    registry.register_web_search(WebSearchExecutor::new(
-        Box::new(MockSearchBackend::new("x")),
-        3,
-    ));
-    registry.register_mcp(McpExecutor::new(Box::new(MockMcpBackend::new(
-        HashMap::new(),
-    ))));
-    registry.register_wasm(WasmExecutor::new(Box::new(MockWasmBackend::new("x"))));
+    registry.register_web_search(WebSearchExecutor::new(Box::new(mock_search("x")), 3));
+    registry.register_mcp(McpExecutor::new(Box::new(mock_mcp(HashMap::new()))));
+    registry.register_wasm(WasmExecutor::new(Box::new(mock_wasm("x"))));
 
-    TaoAgent::new(&capture as &dyn IComputeAdapter, registry, &cfg())
+    TaoAgent::new(&mock as &dyn IComputeAdapter, registry, &cfg())
         .run(TaoAgentInput {
             instructions: "anything".into(),
             system_context: "base".into(),
@@ -161,8 +152,7 @@ async fn tao_agent_three_tool_registry_injects_all_schemas_into_system_context()
         })
         .await;
 
-    let ctx = capture
-        .0
+    let ctx = captured
         .lock()
         .unwrap()
         .clone()

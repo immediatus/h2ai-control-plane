@@ -288,7 +288,7 @@ mod zone3_hints {
     }
 }
 
-/// Tests for positive assertion framing (GAP-J1).
+/// Tests for positive assertion framing.
 mod positive_assertion_framing {
     use super::*;
 

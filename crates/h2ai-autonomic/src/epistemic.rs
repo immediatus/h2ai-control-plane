@@ -32,6 +32,31 @@ pub fn compute_n_eff_cosine(texts: &[String], model: &dyn EmbeddingModel, delta:
     EigenCalibration::from_cosine_matrix(&k, delta).n_effective
 }
 
+/// Compute the mean pairwise cosine similarity across all (i, j) pairs (i < j) in `texts`.
+///
+/// Returns `None` for fewer than 2 texts (no pairs to compare).
+/// Clamps raw cosine to `[0.0, 1.0]` before averaging.
+pub fn mean_pairwise_cosine(texts: &[String], model: &dyn EmbeddingModel) -> Option<f64> {
+    let n = texts.len();
+    if n < 2 {
+        return None;
+    }
+    let embeddings: Vec<Vec<f32>> = texts.iter().map(|t| model.embed(t)).collect();
+    let mut sum = 0.0_f64;
+    let mut count = 0usize;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let sim = cosine_similarity(&embeddings[i], &embeddings[j]).max(0.0);
+            sum += sim;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    Some(sum / count as f64)
+}
+
 /// Classify a zero-survival event as `ConstrainedExploration` or `ModeCollapse`.
 ///
 /// Boundary: `n_eff > diversity_threshold × n_requested` → `ConstrainedExploration`.
@@ -71,4 +96,60 @@ pub fn synthesize_tombstone(violations: &[ConstraintViolation]) -> Option<String
     }
     lines.push("Do not repeat these patterns.".to_string());
     Some(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod pairwise_cosine_tests {
+    use super::*;
+
+    struct FakeEmbedder {
+        embeddings: std::collections::HashMap<String, Vec<f32>>,
+    }
+
+    impl EmbeddingModel for FakeEmbedder {
+        fn embed(&self, text: &str) -> Vec<f32> {
+            self.embeddings.get(text).cloned().unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn mean_pairwise_cosine_returns_none_for_single_text() {
+        let model = FakeEmbedder {
+            embeddings: Default::default(),
+        };
+        let result = mean_pairwise_cosine(&["hello".to_string()], &model);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn mean_pairwise_cosine_identical_texts_returns_one() {
+        let mut emb = std::collections::HashMap::new();
+        emb.insert("a".to_string(), vec![1.0_f32, 0.0]);
+        emb.insert("b".to_string(), vec![1.0_f32, 0.0]);
+        let model = FakeEmbedder { embeddings: emb };
+        let result = mean_pairwise_cosine(&["a".to_string(), "b".to_string()], &model).unwrap();
+        assert!((result - 1.0).abs() < 1e-5, "expected ~1.0 got {result}");
+    }
+
+    #[test]
+    fn mean_pairwise_cosine_orthogonal_returns_zero() {
+        let mut emb = std::collections::HashMap::new();
+        emb.insert("x".to_string(), vec![1.0_f32, 0.0]);
+        emb.insert("y".to_string(), vec![0.0_f32, 1.0]);
+        let model = FakeEmbedder { embeddings: emb };
+        let result = mean_pairwise_cosine(&["x".to_string(), "y".to_string()], &model).unwrap();
+        assert!(result.abs() < 1e-5, "expected ~0.0 got {result}");
+    }
+
+    #[test]
+    fn mean_pairwise_cosine_three_texts_averages_pairs() {
+        let mut emb = std::collections::HashMap::new();
+        for k in ["a", "b", "c"] {
+            emb.insert(k.to_string(), vec![1.0_f32, 0.0]);
+        }
+        let model = FakeEmbedder { embeddings: emb };
+        let texts: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let result = mean_pairwise_cosine(&texts, &model).unwrap();
+        assert!((result - 1.0).abs() < 1e-5, "expected ~1.0 got {result}");
+    }
 }

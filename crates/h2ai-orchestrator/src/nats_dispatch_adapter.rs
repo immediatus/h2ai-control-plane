@@ -61,6 +61,7 @@ impl NatsDispatchAdapter {
                 endpoint: "nats://dispatch".into(),
                 api_key_env: String::new(),
                 model: None,
+                provider: Default::default(),
             },
         }
     }

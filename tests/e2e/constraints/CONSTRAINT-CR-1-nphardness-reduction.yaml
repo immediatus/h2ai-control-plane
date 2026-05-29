@@ -1,0 +1,29 @@
+id: CONSTRAINT-CR-1
+title: "NP-Hardness Reduction — Minimum Vertex Cover requires explicit polynomial-time reduction from 3-SAT"
+severity: hard
+domains:
+  - complexity-theory
+  - formal-methods
+  - algorithms
+remediation_hint: "Prove MVC is NP-hard via an explicit polynomial-time reduction from 3-SAT. The reduction must: (1) construct graph G from formula φ — one node per variable (x_i, ¬x_i) connected as a truth-assignment edge, and one triangle per clause connecting three literal nodes to their variable nodes; (2) set k = |variables| + 2·|clauses|; (3) prove the forward direction: a satisfying assignment yields a vertex cover of size ≤ k; (4) prove the backward direction: any vertex cover of size ≤ k yields a satisfying assignment. Both directions of the iff are required."
+criteria:
+  pass: |
+    All of the following are true:
+    - Reduction constructs a graph G from an arbitrary 3-CNF formula φ in polynomial time
+    - The bound k is defined as |variables| + 2·|clauses| (or an equivalent valid bound with proof)
+    - Forward direction proven: a satisfying assignment to φ implies G has a vertex cover of size ≤ k
+    - Backward direction proven: any vertex cover of G of size ≤ k implies φ is satisfiable
+    - The reduction itself runs in polynomial time (construction of G is O(|φ|))
+  partial: "Reduction construction described with one direction of the iff proven but the other direction omitted or hand-wavy."
+  fail: |
+    Any of the following:
+    - Reduction from a problem other than 3-SAT (or equivalent NP-complete problem) without proving that source problem is NP-hard
+    - k bound not specified or not proven to be correct
+    - Only one direction of the iff proven (forward or backward only)
+    - Reduction takes super-polynomial time
+    - NP-hardness claimed without any reduction (appeals to known result without proof)
+  checks:
+    - Does the proposal construct graph G from an arbitrary 3-CNF formula φ, with vertex structure mapping variables to truth-assignment edges and clauses to triangles or gadgets?
+    - Does the proposal prove that a satisfying assignment to φ yields a vertex cover of G of size ≤ k (forward direction)?
+    - Does the proposal prove that any vertex cover of G of size ≤ k yields a satisfying assignment to φ (backward direction)?
+    - Is the reduction itself polynomial-time — does the construction of G from φ take O(|φ|) or polynomial time?

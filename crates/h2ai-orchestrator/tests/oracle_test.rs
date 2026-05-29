@@ -60,27 +60,27 @@ use std::sync::{Arc, Mutex};
 
 // ── Mock ─────────────────────────────────────────────────────────────────────
 
-struct MockPublisher {
-    calls: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
-}
-
-impl MockPublisher {
-    fn new() -> Self {
-        Self {
-            calls: Arc::new(Mutex::new(vec![])),
-        }
-    }
-
-    fn published(&self) -> Vec<(String, Vec<u8>)> {
-        self.calls.lock().unwrap().clone()
+mockall::mock! {
+    pub Publisher {}
+    #[async_trait::async_trait]
+    impl OraclePublisher for Publisher {
+        async fn publish_oracle(&self, subject: String, payload: bytes::Bytes);
     }
 }
 
-#[async_trait::async_trait]
-impl OraclePublisher for MockPublisher {
-    async fn publish_oracle(&self, subject: String, payload: bytes::Bytes) {
-        self.calls.lock().unwrap().push((subject, payload.to_vec()));
-    }
+/// Helper: create a publisher mock with call capture.
+fn make_publisher() -> (MockPublisher, Arc<Mutex<Vec<(String, Vec<u8>)>>>) {
+    let calls: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(vec![]));
+    let calls_clone = calls.clone();
+    let mut m = MockPublisher::new();
+    m.expect_publish_oracle()
+        .returning(move |subject, payload| {
+            calls_clone
+                .lock()
+                .unwrap()
+                .push((subject, payload.to_vec()));
+        });
+    (m, calls)
 }
 
 fn sample_spec() -> OracleSpec {
@@ -96,7 +96,7 @@ fn sample_spec() -> OracleSpec {
 /// oracle_dispatch::fire must publish to the correct NATS subject.
 #[tokio::test]
 async fn fire_publishes_to_correct_subject() {
-    let mock = MockPublisher::new();
+    let (mock, calls) = make_publisher();
     let task_id = TaskId::new();
     let tenant_id = TenantId::default_tenant();
 
@@ -111,9 +111,9 @@ async fn fire_publishes_to_correct_subject() {
     )
     .await;
 
-    let calls = mock.published();
-    assert_eq!(calls.len(), 1);
-    let (subject, payload) = &calls[0];
+    let published = calls.lock().unwrap().clone();
+    assert_eq!(published.len(), 1);
+    let (subject, payload) = &published[0];
     assert_eq!(
         subject,
         &format!("h2ai.oracle.{}.pending", tenant_id.as_ref())
@@ -129,8 +129,8 @@ async fn fire_publishes_to_correct_subject() {
 /// fire encodes the tenant_id in the NATS subject — different tenants get different subjects.
 #[tokio::test]
 async fn fire_subjects_are_tenant_scoped() {
-    let mock_a = MockPublisher::new();
-    let mock_b = MockPublisher::new();
+    let (mock_a, calls_a) = make_publisher();
+    let (mock_b, calls_b) = make_publisher();
     let task_id = TaskId::new();
     let tenant_a = TenantId("tenant_a".into());
     let tenant_b = TenantId("tenant_b".into());
@@ -157,26 +157,29 @@ async fn fire_subjects_are_tenant_scoped() {
     )
     .await;
 
-    let calls_a = mock_a.published();
-    let calls_b = mock_b.published();
+    let published_a = calls_a.lock().unwrap().clone();
+    let published_b = calls_b.lock().unwrap().clone();
 
-    assert_eq!(calls_a.len(), 1);
-    assert_eq!(calls_b.len(), 1);
+    assert_eq!(published_a.len(), 1);
+    assert_eq!(published_b.len(), 1);
     assert_eq!(
-        calls_a[0].0,
+        published_a[0].0,
         format!("h2ai.oracle.{}.pending", tenant_a.as_ref())
     );
     assert_eq!(
-        calls_b[0].0,
+        published_b[0].0,
         format!("h2ai.oracle.{}.pending", tenant_b.as_ref())
     );
-    assert_ne!(calls_a[0].0, calls_b[0].0, "subjects must be tenant-scoped");
+    assert_ne!(
+        published_a[0].0, published_b[0].0,
+        "subjects must be tenant-scoped"
+    );
 }
 
 /// fire is fire-and-forget — must complete without panicking at edge confidence values.
 #[tokio::test]
 async fn fire_edge_confidence_values() {
-    let mock = MockPublisher::new();
+    let (mock, calls) = make_publisher();
     let spec = sample_spec();
 
     oracle_dispatch::fire(
@@ -201,7 +204,7 @@ async fn fire_edge_confidence_values() {
     .await;
 
     assert_eq!(
-        mock.published().len(),
+        calls.lock().unwrap().len(),
         2,
         "both edge-value calls must publish"
     );

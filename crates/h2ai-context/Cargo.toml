@@ -25,4 +25,5 @@ fastembed-embed = ["dep:fastembed", "dep:ureq"]
 [dev-dependencies]
 h2ai-adapters = { path = "../h2ai-adapters" }
 h2ai-config   = { path = "../h2ai-config" }
+mockall       = { workspace = true }
 tokio         = { workspace = true }

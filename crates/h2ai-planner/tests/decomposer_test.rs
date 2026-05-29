@@ -1,29 +1,9 @@
-use async_trait::async_trait;
 use h2ai_planner::decomposer::{PlannerError, PlanningEngine};
-use h2ai_test_utils::MockAdapter;
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
-use h2ai_types::config::AdapterKind;
+use h2ai_test_utils::{failing_adapter, mock_adapter};
 use h2ai_types::config::{AgentRole, ParetoWeights};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use h2ai_types::plan::PlanStatus;
 use h2ai_types::sizing::TauValue;
-
-/// An adapter that always returns an error — used to exercise the Adapter error path.
-#[derive(Debug)]
-struct FailingAdapter;
-
-#[async_trait]
-impl IComputeAdapter for FailingAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::NetworkError(
-            "simulated network failure".into(),
-        ))
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        unimplemented!("FailingAdapter::kind not needed in tests")
-    }
-}
 
 fn manifest() -> TaskManifest {
     TaskManifest {
@@ -54,13 +34,15 @@ fn manifest() -> TaskManifest {
 
 #[tokio::test]
 async fn decomposer_parses_llm_json_into_subtask_plan() {
-    let adapter = MockAdapter::new(r#"{
+    let adapter = mock_adapter(
+        r#"{
       "subtasks": [
         {"description": "Design the user model and DB schema", "depends_on": [], "role_hint": "Executor"},
         {"description": "Implement JWT token generation and validation", "depends_on": [0], "role_hint": "Executor"},
         {"description": "Write integration tests for auth endpoints", "depends_on": [1], "role_hint": "Evaluator"}
       ]
-    }"#.into());
+    }"#,
+    );
 
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
         .await
@@ -78,7 +60,7 @@ async fn decomposer_parses_llm_json_into_subtask_plan() {
 
 #[tokio::test]
 async fn decomposer_handles_markdown_fenced_json() {
-    let adapter = MockAdapter::new(
+    let adapter = mock_adapter(
         r#"```json
 {
   "subtasks": [
@@ -86,8 +68,7 @@ async fn decomposer_handles_markdown_fenced_json() {
     {"description": "Step two", "depends_on": [0], "role_hint": null}
   ]
 }
-```"#
-            .into(),
+```"#,
     );
 
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.3).unwrap())
@@ -99,7 +80,7 @@ async fn decomposer_handles_markdown_fenced_json() {
 
 #[tokio::test]
 async fn decomposer_returns_error_on_invalid_json() {
-    let adapter = MockAdapter::new("I cannot decompose this task.".into());
+    let adapter = mock_adapter("I cannot decompose this task.");
     let result =
         PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap()).await;
     assert!(
@@ -110,15 +91,14 @@ async fn decomposer_returns_error_on_invalid_json() {
 
 #[tokio::test]
 async fn decomposer_assigns_stable_subtask_ids() {
-    let adapter = MockAdapter::new(
+    let adapter = mock_adapter(
         r#"{
       "subtasks": [
         {"description": "A", "depends_on": [], "role_hint": null},
         {"description": "B", "depends_on": [0], "role_hint": null},
         {"description": "C", "depends_on": [0, 1], "role_hint": null}
       ]
-    }"#
-        .into(),
+    }"#,
     );
 
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
@@ -135,14 +115,13 @@ async fn decomposer_assigns_stable_subtask_ids() {
 #[tokio::test]
 async fn decomposer_returns_error_on_out_of_range_dependency_index() {
     // Index 5 is out of range for a 2-subtask plan.
-    let adapter = MockAdapter::new(
+    let adapter = mock_adapter(
         r#"{
           "subtasks": [
             {"description": "Step A", "depends_on": [], "role_hint": null},
             {"description": "Step B", "depends_on": [5], "role_hint": null}
           ]
-        }"#
-        .into(),
+        }"#,
     );
     let result =
         PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap()).await;
@@ -155,7 +134,7 @@ async fn decomposer_returns_error_on_out_of_range_dependency_index() {
 #[tokio::test]
 async fn decomposer_empty_subtasks_array_produces_empty_plan() {
     // LLM returns an empty subtasks array — structurally valid JSON; reviewer will reject it.
-    let adapter = MockAdapter::new(r#"{"subtasks": []}"#.into());
+    let adapter = mock_adapter(r#"{"subtasks": []}"#);
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
         .await
         .unwrap();
@@ -167,14 +146,13 @@ async fn decomposer_empty_subtasks_array_produces_empty_plan() {
 
 #[tokio::test]
 async fn decomposer_unrecognised_role_hint_yields_none() {
-    let adapter = MockAdapter::new(
+    let adapter = mock_adapter(
         r#"{
           "subtasks": [
             {"description": "Step A", "depends_on": [], "role_hint": "UnknownRole"},
             {"description": "Step B", "depends_on": [0], "role_hint": "Executor"}
           ]
-        }"#
-        .into(),
+        }"#,
     );
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
         .await
@@ -192,15 +170,14 @@ async fn decomposer_unrecognised_role_hint_yields_none() {
 
 #[tokio::test]
 async fn decomposer_recognises_synthesizer_and_coordinator_role_hints() {
-    let adapter = MockAdapter::new(
+    let adapter = mock_adapter(
         r#"{
           "subtasks": [
             {"description": "Synthesize results", "depends_on": [], "role_hint": "Synthesizer"},
             {"description": "Coordinate work", "depends_on": [0], "role_hint": "Coordinator"},
             {"description": "Evaluate output", "depends_on": [0], "role_hint": "Evaluator"}
           ]
-        }"#
-        .into(),
+        }"#,
     );
     let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
         .await
@@ -225,7 +202,8 @@ async fn decomposer_recognises_synthesizer_and_coordinator_role_hints() {
 #[tokio::test]
 async fn decomposer_propagates_adapter_error() {
     let result =
-        PlanningEngine::decompose(&manifest(), &FailingAdapter, TauValue::new(0.4).unwrap()).await;
+        PlanningEngine::decompose(&manifest(), &failing_adapter(), TauValue::new(0.4).unwrap())
+            .await;
     assert!(
         matches!(result, Err(PlannerError::Adapter(_))),
         "adapter failure must propagate as PlannerError::Adapter, got: {result:?}"
@@ -237,9 +215,8 @@ async fn decomposer_handles_manifest_with_no_constraints() {
     // Exercises the `constraints_str = "none"` branch in decompose().
     let mut m = manifest();
     m.constraints = vec![];
-    let adapter = MockAdapter::new(
-        r#"{"subtasks": [{"description": "Only step", "depends_on": [], "role_hint": null}]}"#
-            .into(),
+    let adapter = mock_adapter(
+        r#"{"subtasks": [{"description": "Only step", "depends_on": [], "role_hint": null}]}"#,
     );
     let plan = PlanningEngine::decompose(&m, &adapter, TauValue::new(0.4).unwrap())
         .await

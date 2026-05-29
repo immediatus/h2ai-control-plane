@@ -3,114 +3,99 @@
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation
 )]
-use async_trait::async_trait;
 use h2ai_autonomic::calibration::{
     aimd_decay, aimd_reset, beta_from_merge_spans, beta_from_n_eff_adj, beta_from_token_spans,
     compute_conflict_rate, yield_from_history, CalibrationHarness, CalibrationInput,
 };
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
-use h2ai_test_utils::MockAdapter;
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_test_utils::{failing_adapter, mock_adapter, MockIComputeAdapter};
+use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::{EigenCalibration, EnsembleCalibration};
 use nalgebra::DMatrix;
 
-/// A test adapter that always returns an error — used to exercise error propagation paths.
-#[derive(Debug)]
-struct FailingAdapter {
-    kind: AdapterKind,
-}
-
-impl FailingAdapter {
-    fn new() -> Self {
-        Self {
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://failing".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for FailingAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::Remote("test failure".to_string()))
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
-
-/// A minimal test adapter that returns a fixed output and reports a configurable `AdapterKind`.
-/// Used to exercise multi-family scenarios without spinning up real network adapters.
-#[derive(Debug)]
-struct KindedMockAdapter {
-    output: String,
-    kind: AdapterKind,
-}
-
-impl KindedMockAdapter {
-    fn anthropic(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            kind: AdapterKind::Anthropic {
+fn kinded_mock_anthropic(output: impl Into<String>) -> MockIComputeAdapter {
+    let output = output.into();
+    let kind = AdapterKind::Anthropic {
+        api_key_env: "MOCK_KEY".into(),
+        model: "claude-test".into(),
+    };
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        Ok(h2ai_types::adapter::ComputeResponse {
+            output: output.clone(),
+            token_cost: 0,
+            adapter_kind: AdapterKind::Anthropic {
                 api_key_env: "MOCK_KEY".into(),
                 model: "claude-test".into(),
             },
-        }
-    }
-
-    fn local(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            kind: AdapterKind::Ollama {
-                endpoint: "http://localhost:11434".into(),
-                model: "llama3".into(),
-            },
-        }
-    }
-
-    fn cloud(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://localhost".into(),
-                api_key_env: "MOCK".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for KindedMockAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Ok(ComputeResponse {
-            output: self.output.clone(),
-            token_cost: 0,
-            adapter_kind: self.kind.clone(),
             tokens_used: None,
             reasoning_trace: None,
         })
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
+    });
+    m.expect_kind().return_const(kind).times(0..);
+    m
 }
 
-fn mock_adapter() -> MockAdapter {
-    MockAdapter::new("The proposed solution uses stateless JWT auth.".into())
+fn kinded_mock_local(output: impl Into<String>) -> MockIComputeAdapter {
+    let output = output.into();
+    let kind = AdapterKind::Ollama {
+        endpoint: "http://localhost:11434".into(),
+        model: "llama3".into(),
+    };
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        Ok(h2ai_types::adapter::ComputeResponse {
+            output: output.clone(),
+            token_cost: 0,
+            adapter_kind: AdapterKind::Ollama {
+                endpoint: "http://localhost:11434".into(),
+                model: "llama3".into(),
+            },
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    });
+    m.expect_kind().return_const(kind).times(0..);
+    m
+}
+
+fn kinded_mock_cloud(output: impl Into<String>) -> MockIComputeAdapter {
+    let output = output.into();
+    let kind = AdapterKind::CloudGeneric {
+        endpoint: "mock://localhost".into(),
+        api_key_env: "MOCK".into(),
+        model: None,
+        provider: Default::default(),
+    };
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        Ok(h2ai_types::adapter::ComputeResponse {
+            output: output.clone(),
+            token_cost: 0,
+            adapter_kind: AdapterKind::CloudGeneric {
+                endpoint: "mock://localhost".into(),
+                api_key_env: "MOCK".into(),
+                model: None,
+                provider: Default::default(),
+            },
+            tokens_used: None,
+            reasoning_trace: None,
+        })
+    });
+    m.expect_kind().return_const(kind).times(0..);
+    m
+}
+
+fn calibration_mock_adapter() -> MockIComputeAdapter {
+    mock_adapter("The proposed solution uses stateless JWT auth.")
 }
 
 #[tokio::test]
 async fn calibration_produces_valid_coefficients() {
-    let adapter = mock_adapter();
+    let adapter = calibration_mock_adapter();
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -133,7 +118,7 @@ async fn calibration_produces_valid_coefficients() {
 
 #[tokio::test]
 async fn calibration_single_adapter_uses_default_cg() {
-    let adapter = mock_adapter();
+    let adapter = calibration_mock_adapter();
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -150,8 +135,8 @@ async fn calibration_single_adapter_uses_default_cg() {
 #[tokio::test]
 async fn calibration_two_adapters_empty_corpus_uses_fallback_cg() {
     // Two adapters with empty corpus → single pair → fallback CG = cfg.calibration_cg_fallback
-    let a = mock_adapter();
-    let b = mock_adapter(); // same output
+    let a = calibration_mock_adapter();
+    let b = calibration_mock_adapter(); // same output
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -178,8 +163,8 @@ async fn calibration_two_adapters_empty_corpus_uses_fallback_cg() {
 #[tokio::test]
 async fn calibration_empty_task_prompts_with_two_adapters_produces_cg_zero() {
     // No prompts → outputs_i.is_empty() → triggers fallback path.
-    let a = mock_adapter();
-    let b = mock_adapter();
+    let a = calibration_mock_adapter();
+    let b = calibration_mock_adapter();
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -224,8 +209,8 @@ async fn calibration_zero_adapters_returns_no_adapters_error() {
 #[tokio::test]
 async fn calibration_two_adapters_populates_ensemble() {
     let cfg = H2AIConfig::default();
-    let a1 = MockAdapter::new("alpha beta gamma delta".into());
-    let a2 = MockAdapter::new("delta epsilon zeta omega".into());
+    let a1 = mock_adapter("alpha beta gamma delta");
+    let a2 = mock_adapter("delta epsilon zeta omega");
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["test prompt".into()],
@@ -314,11 +299,9 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
     // (2 adapters) and Phase B (3 adapters) in parallel. MockAdapter timing is
     // sub-nanosecond, so USL fit always falls back to config default α = 0.12.
     // We verify the multi-adapter code path ran by checking ensemble and eigen.
-    let a1 = MockAdapter::new("stateless JWT authentication using signed tokens".into());
-    let a2 = MockAdapter::new("event sourcing with CQRS separating reads from writes".into());
-    let a3 = MockAdapter::new(
-        "clean API boundary defined by domain interfaces not implementation".into(),
-    );
+    let a1 = mock_adapter("stateless JWT authentication using signed tokens");
+    let a2 = mock_adapter("event sourcing with CQRS separating reads from writes");
+    let a3 = mock_adapter("clean API boundary defined by domain interfaces not implementation");
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -354,7 +337,7 @@ async fn calibration_harness_m3_populates_ensemble_and_eigen() {
 
 #[tokio::test]
 async fn calibration_accepts_empty_corpus() {
-    let a = mock_adapter();
+    let a = calibration_mock_adapter();
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -393,8 +376,8 @@ async fn calibration_non_empty_corpus_computes_hamming() {
         repair_provenance: None,
         pass_criteria: None,
     }];
-    let a = MockAdapter::new("jwt authentication token".into());
-    let b = MockAdapter::new("session cookie storage".into());
+    let a = mock_adapter("jwt authentication token");
+    let b = mock_adapter("session cookie storage");
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
@@ -443,9 +426,9 @@ async fn n_eff_cosine_prior_populated_with_embedding_model() {
         }
     }
     let stub = DiverseStub;
-    let a1 = MockAdapter::new("Use stateless JWT auth approach".into());
-    let a2 = MockAdapter::new("CQRS separates reads and writes".into());
-    let a3 = MockAdapter::new("API boundary isolates services".into());
+    let a1 = mock_adapter("Use stateless JWT auth approach");
+    let a2 = mock_adapter("CQRS separates reads and writes");
+    let a3 = mock_adapter("API boundary isolates services");
     let cfg = H2AIConfig::default();
     let result = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
@@ -476,7 +459,7 @@ async fn n_eff_cosine_prior_populated_with_embedding_model() {
 
 #[tokio::test]
 async fn n_eff_cosine_prior_fallback_without_embedding_model() {
-    let a = MockAdapter::new("Answer to prompt".into());
+    let a = mock_adapter("Answer to prompt");
     let cfg = H2AIConfig::default();
     let result = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
@@ -502,7 +485,7 @@ async fn calibration_source_is_synthetic_priors_with_single_adapter() {
     use h2ai_types::events::CalibrationSource;
 
     let cfg = H2AIConfig::default();
-    let adapter = mock_adapter();
+    let adapter = calibration_mock_adapter();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         adapters: vec![&adapter as &dyn h2ai_types::adapter::IComputeAdapter],
@@ -523,8 +506,8 @@ async fn calibration_source_is_partial_fit_with_two_adapters() {
     use h2ai_types::events::CalibrationSource;
 
     let cfg = H2AIConfig::default();
-    let adapter1 = mock_adapter();
-    let adapter2 = mock_adapter();
+    let adapter1 = calibration_mock_adapter();
+    let adapter2 = calibration_mock_adapter();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         adapters: vec![
@@ -547,7 +530,7 @@ async fn calibration_source_is_partial_fit_with_two_adapters() {
 #[tokio::test]
 async fn adapter_families_single_adapter_populates_one_family() {
     let cfg = H2AIConfig::default();
-    let a = KindedMockAdapter::cloud("answer");
+    let a = kinded_mock_cloud("answer");
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["prompt".into()],
@@ -579,8 +562,8 @@ async fn adapter_families_single_adapter_populates_one_family() {
 #[tokio::test]
 async fn adapter_families_same_family_sets_single_family_warning() {
     let cfg = H2AIConfig::default();
-    let a = KindedMockAdapter::cloud("answer A");
-    let b = KindedMockAdapter::cloud("answer B");
+    let a = kinded_mock_cloud("answer A");
+    let b = kinded_mock_cloud("answer B");
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["prompt one".into()],
@@ -613,8 +596,8 @@ async fn adapter_families_same_family_sets_single_family_warning() {
 #[tokio::test]
 async fn adapter_families_cross_family_sets_verification_match() {
     let cfg = H2AIConfig::default();
-    let a = KindedMockAdapter::anthropic("anthropic response");
-    let b = KindedMockAdapter::local("local llm response");
+    let a = kinded_mock_anthropic("anthropic response");
+    let b = kinded_mock_local("local llm response");
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["prompt".into()],
@@ -646,9 +629,9 @@ async fn adapter_families_cross_family_sets_verification_match() {
 #[tokio::test]
 async fn adapter_families_three_distinct_families() {
     let cfg = H2AIConfig::default();
-    let a = KindedMockAdapter::anthropic("anthropic");
-    let b = KindedMockAdapter::local("local");
-    let c = KindedMockAdapter::cloud("cloud");
+    let a = kinded_mock_anthropic("anthropic");
+    let b = kinded_mock_local("local");
+    let c = kinded_mock_cloud("cloud");
     let input = CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["prompt A".into(), "prompt B".into()],
@@ -693,9 +676,9 @@ impl h2ai_context::embedding::EmbeddingModel for FixedEmbeddingModel {
 #[tokio::test]
 async fn calibration_with_embedding_model_uses_epistemic_beta() {
     // Arrange: 3 adapters + an embedding model → epistemic β₀ path triggers
-    let a1 = MockAdapter::new("solution one: stateless JWT auth".into());
-    let a2 = MockAdapter::new("solution two: session token redis".into());
-    let a3 = MockAdapter::new("solution three: OAuth2 flow with PKCE".into());
+    let a1 = mock_adapter("solution one: stateless JWT auth");
+    let a2 = mock_adapter("solution two: session token redis");
+    let a3 = mock_adapter("solution three: OAuth2 flow with PKCE");
     let cfg = H2AIConfig::default();
     let model = FixedEmbeddingModel;
     let input = CalibrationInput {
@@ -738,8 +721,8 @@ async fn calibration_with_embedding_model_uses_epistemic_beta() {
 async fn calibration_baseline_accuracy_proxy_uses_from_measured_p() {
     // Lines 172-175: EnsembleCalibration::from_measured_p is called when
     // baseline_accuracy_proxy > 0.0 (non-default). Two adapters satisfy adapter_outputs.len() >= 2.
-    let a1 = mock_adapter();
-    let a2 = mock_adapter();
+    let a1 = calibration_mock_adapter();
+    let a2 = calibration_mock_adapter();
     let cfg = H2AIConfig {
         baseline_accuracy_proxy: 0.75,
         ..H2AIConfig::default()
@@ -766,8 +749,8 @@ async fn calibration_baseline_accuracy_proxy_uses_from_measured_p() {
 async fn calibration_embedding_model_with_no_task_prompts_uses_cosine_prior_fallback() {
     // Line 262: embedding_model present but k_prompts==0 (empty task_prompts) →
     // n_eff_cosine_prior = 1.0 fallback.
-    let a1 = mock_adapter();
-    let a2 = mock_adapter();
+    let a1 = calibration_mock_adapter();
+    let a2 = calibration_mock_adapter();
     let model = FixedEmbeddingModel;
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
@@ -900,8 +883,8 @@ fn yield_from_history_skips_zero_n_max() {
 #[tokio::test]
 async fn calibration_returns_error_on_adapter_failure() {
     // Exercises error propagation (L483 map_err, L496 r?, L91/L101/L112 await?) when adapters fail.
-    let failing = FailingAdapter::new();
-    let good = mock_adapter();
+    let failing = failing_adapter();
+    let good = calibration_mock_adapter();
     let cfg = H2AIConfig::default();
     let input = CalibrationInput {
         calibration_id: TaskId::new(),

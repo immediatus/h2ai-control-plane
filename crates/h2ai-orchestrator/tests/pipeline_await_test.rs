@@ -88,12 +88,12 @@ async fn connect() -> Option<(h2ai_state::nats::NatsClient, async_nats::Client)>
 }
 
 async fn spawn_fake_agent(nats: Client) {
+    // Create the subscription before spawning so it is registered before we return
+    let mut sub = nats
+        .subscribe(format!("{}.*", "h2ai.tasks.ephemeral"))
+        .await
+        .expect("subscribe");
     tokio::spawn(async move {
-        let mut sub = nats
-            .subscribe(format!("{}.*", "h2ai.tasks.ephemeral"))
-            .await
-            .expect("subscribe");
-
         if let Some(msg) = sub.next().await {
             let payload: TaskPayload = serde_json::from_slice(&msg.payload).expect("parse payload");
             let agent_id = payload.agent_id.clone();
@@ -143,7 +143,6 @@ async fn execute_and_await_returns_task_result() {
     );
 
     spawn_fake_agent(nats).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let agent = AgentDescriptor {
         model: "gpt-4o".into(),

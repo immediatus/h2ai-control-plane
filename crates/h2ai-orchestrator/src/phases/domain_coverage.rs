@@ -8,7 +8,7 @@ pub struct Output {
 pub fn run(input: &EngineInput<'_>) -> Result<Output, EngineError> {
     let task_id = input.task_id.clone();
 
-    // ── GAP-C3: Domain Coverage Pre-check ──────────────────────────────────
+    // ── Domain Coverage Pre-check ──────────────────────────────────
     // Slot domain assignments don't change between retries, so check once here.
     // Fires DiversityGuardDegradedEvent when coverage < domain_coverage_threshold.
     // Fails the task immediately when require_bivariate_cg = true.

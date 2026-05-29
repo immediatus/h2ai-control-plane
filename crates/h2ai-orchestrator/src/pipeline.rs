@@ -310,11 +310,15 @@ impl<'a> ExecutionPipeline<'a> {
         let retry_count_u32 = retry_count as u32;
 
         // Derive the active context for Phase 3 from retry_context or base system_context.
-        let active_ctx: String = params
+        let mut active_ctx: String = params
             .retry_context
             .as_deref()
             .unwrap_or(&self.bootstrap.system_context)
             .to_owned();
+        // GAP-H3: Append budget hint when cost conservation is active.
+        if let Some(ref hint) = params.budget_hint {
+            active_ctx.push_str(hint);
+        }
 
         // ── Phase 2: Topology Provisioning ─────────────────────────────────────
         let topology_out = phase!(
@@ -406,7 +410,7 @@ impl<'a> ExecutionPipeline<'a> {
         let all_raw_texts_this_wave = gen_out.all_raw_texts.clone();
         let turn1_map = gen_out.turn1_map.clone();
 
-        // ── GAP-C1: Correlated Hallucination Detection ──────────────────────────
+        // ── Correlated Hallucination Detection ──────────────────────────
         let gen_out = phase!(
             phases::hallucination::run(
                 gen_out,
@@ -465,6 +469,10 @@ impl<'a> ExecutionPipeline<'a> {
                     .collect();
             events.wave_proposal_texts = texts;
         }
+
+        // ── GAP-H3: Capture token cost before proposals are consumed by verify ───
+        let wave_token_cost: u64 = gen_out.proposals.iter().map(|p| p.token_cost).sum();
+        events.wave_token_cost = wave_token_cost;
 
         // ── Phase 3.5: Verification (LLM-as-Judge) ──────────────────────────────
         // Apply adaptive threshold relaxation: scale Hard thresholds by 0.9^retry_count.
@@ -719,6 +727,8 @@ impl<'a> ExecutionPipeline<'a> {
                 oracle_gate_passed: oracle_gate_passed_flag,
                 tau_values,
                 iteration_verification_events,
+                wave_token_cost,
+                pairwise_cosine_mean: None,
             };
 
             return PipelineWaveResult {
@@ -802,7 +812,9 @@ impl<'a> ExecutionPipeline<'a> {
             .extend(iteration_verification_events.iter().cloned());
 
         match merge_step {
-            phases::StepResult::Done(merge_out) => {
+            phases::StepResult::Done(mut merge_out) => {
+                // Populate GAP-H3 cost fields on the merge output.
+                merge_out.wave_token_cost = wave_token_cost;
                 // Quality measurement for the controller's quality_history.
                 events.quality_measurement = Some(crate::self_optimizer::QualityMeasurement {
                     params: params.optimizer.clone(),

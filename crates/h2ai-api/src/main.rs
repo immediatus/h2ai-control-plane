@@ -162,6 +162,7 @@ async fn main() {
                 endpoint: "mock://localhost".into(),
                 api_key_env: "MOCK".into(),
                 model: None,
+                provider: Default::default(),
             },
             |p| p.kind.clone(),
         );
@@ -263,7 +264,7 @@ async fn main() {
         );
     }
 
-    // ── GAP-I1 gap research chain: DuckDuckGo + LLM distiller ───────────────
+    // ── gap research chain: DuckDuckGo + LLM distiller ───────────────
     {
         use h2ai_orchestrator::srani_grounding::{SraniGroundingChain, WebSearchGrounder};
         use h2ai_tools::web_search::DuckDuckGoSearchBackend;
@@ -280,7 +281,7 @@ async fn main() {
             chain
         };
         app_state.gap_research_chain = Some(std::sync::Arc::new(chain));
-        tracing::info!(target: "h2ai.startup", "GAP-I1 gap research chain built (DuckDuckGo + distiller)");
+        tracing::info!(target: "h2ai.startup", "gap research chain built (DuckDuckGo + distiller)");
     }
 
     // Wire knowledge provider

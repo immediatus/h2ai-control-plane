@@ -56,11 +56,13 @@ use h2ai_config::H2AIConfig;
 use h2ai_orchestrator::synthesis::{
     CritiqueDocument, CritiqueVerdict, SynthesisError, SynthesisInput, SynthesisPhase,
 };
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_test_utils::{mock_adapter, sequenced_adapter, MockIComputeAdapter};
+use h2ai_types::adapter::AdapterError;
 use h2ai_types::config::AdapterKind;
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::TauValue;
+use std::sync::{Arc, Mutex};
 
 fn make_proposal(output: &str) -> ProposalEvent {
     ProposalEvent {
@@ -74,90 +76,9 @@ fn make_proposal(output: &str) -> ProposalEvent {
             endpoint: "mock://test".into(),
             api_key_env: "NONE".into(),
             model: None,
+            provider: Default::default(),
         },
         timestamp: Utc::now(),
-    }
-}
-
-// An adapter that returns the same output for every call
-#[derive(Debug)]
-struct FixedAdapter {
-    output: String,
-    cost: u64,
-    kind: AdapterKind,
-}
-
-impl FixedAdapter {
-    fn new(output: String, cost: u64) -> Self {
-        Self {
-            output,
-            cost,
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://fixed".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IComputeAdapter for FixedAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Ok(ComputeResponse {
-            output: self.output.clone(),
-            token_cost: self.cost,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
-
-// An adapter that returns different outputs on successive calls
-use std::sync::{Arc, Mutex};
-
-#[derive(Debug)]
-struct SequencedAdapter {
-    responses: Arc<Mutex<Vec<String>>>,
-    kind: AdapterKind,
-}
-
-impl SequencedAdapter {
-    fn new(responses: Vec<String>) -> Self {
-        Self {
-            responses: Arc::new(Mutex::new(responses)),
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://sequenced".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IComputeAdapter for SequencedAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        let mut responses = self.responses.lock().unwrap();
-        let output = if responses.is_empty() {
-            "fallback".to_string()
-        } else {
-            responses.remove(0)
-        };
-        Ok(ComputeResponse {
-            output,
-            token_cost: 100,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
     }
 }
 
@@ -202,7 +123,7 @@ async fn synthesis_phase_succeeds_with_valid_critique_and_synthesis() {
         "synthesis_guidance": "Use p2 as foundation."
     }"#;
 
-    let adapter = SequencedAdapter::new(vec![
+    let adapter = sequenced_adapter(vec![
         valid_critique.to_string(),
         "Unified synthesis output combining both proposals.".to_string(),
     ]);
@@ -228,8 +149,8 @@ async fn synthesis_phase_succeeds_with_valid_critique_and_synthesis() {
         "Unified synthesis output combining both proposals."
     );
     assert_eq!(output.critique_doc.proposal_critiques.len(), 2);
-    assert_eq!(output.critique_tokens, 100);
-    assert_eq!(output.synthesis_tokens, 100);
+    assert_eq!(output.critique_tokens, 10);
+    assert_eq!(output.synthesis_tokens, 10);
 }
 
 #[tokio::test]
@@ -243,7 +164,7 @@ async fn synthesis_phase_retries_critique_once_on_bad_json() {
         "synthesis_guidance": "Use p1."
     }"#;
 
-    let adapter = SequencedAdapter::new(vec![
+    let adapter = sequenced_adapter(vec![
         "not valid json at all".to_string(), // first attempt — bad JSON
         valid_critique.to_string(),          // retry — valid JSON
         "Synthesis text after retry.".to_string(), // synthesis call
@@ -273,7 +194,7 @@ async fn synthesis_phase_retries_critique_once_on_bad_json() {
 
 #[tokio::test]
 async fn synthesis_phase_returns_critique_failed_on_two_bad_json() {
-    let adapter = FixedAdapter::new("not valid json".to_string(), 10);
+    let adapter = mock_adapter("not valid json");
     let proposals = vec![make_proposal("text one"), make_proposal("text two")];
     let cfg = H2AIConfig::default();
     let input = SynthesisInput {
@@ -303,7 +224,7 @@ fn critique_verdict_weak_deserializes() {
 
 #[tokio::test]
 async fn synthesis_phase_returns_adapter_error_on_invalid_tau() {
-    let adapter = FixedAdapter::new("{}".to_string(), 0);
+    let adapter = mock_adapter("{}");
     let proposals = vec![make_proposal("text")];
     let cfg = H2AIConfig {
         synthesis_tau: -1.0, // invalid tau → TauValue::new fails
@@ -327,51 +248,44 @@ async fn synthesis_phase_returns_adapter_error_on_invalid_tau() {
 #[tokio::test]
 async fn synthesis_phase_returns_adapter_error_when_stage2_fails() {
     // Stage 1 (critique) succeeds with valid JSON; Stage 2 (synthesis adapter) fails.
-    use h2ai_types::adapter::AdapterError;
-
-    #[derive(Debug)]
-    struct FailSecondAdapter {
-        first_output: String,
-        call_count: Arc<Mutex<usize>>,
-        kind: AdapterKind,
-    }
-    #[async_trait::async_trait]
-    impl IComputeAdapter for FailSecondAdapter {
-        async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-            let mut count = self.call_count.lock().unwrap();
-            *count += 1;
-            if *count == 1 {
-                Ok(ComputeResponse {
-                    output: self.first_output.clone(),
-                    token_cost: 10,
-                    adapter_kind: self.kind.clone(),
-                    tokens_used: None,
-                    reasoning_trace: None,
-                })
-            } else {
-                Err(AdapterError::NetworkError("stage2 network failure".into()))
-            }
-        }
-        fn kind(&self) -> &AdapterKind {
-            &self.kind
-        }
-    }
-
     let valid_critique = r#"{
         "proposal_critiques": [{"proposal_id": "p1", "strengths": ["s"], "weaknesses": [], "verdict": "strong"}],
         "contradictions": [],
         "synthesis_guidance": "go."
     }"#;
 
-    let adapter = FailSecondAdapter {
-        first_output: valid_critique.to_string(),
-        call_count: Arc::new(Mutex::new(0)),
-        kind: AdapterKind::CloudGeneric {
-            endpoint: "mock://failsecond".into(),
-            api_key_env: "NONE".into(),
-            model: None,
-        },
+    let call_count = Arc::new(Mutex::new(0usize));
+    let call_count2 = call_count.clone();
+    let first_output = valid_critique.to_string();
+    let kind = AdapterKind::CloudGeneric {
+        endpoint: "mock://failsecond".into(),
+        api_key_env: "NONE".into(),
+        model: None,
+        provider: Default::default(),
     };
+    let kind2 = kind.clone();
+    let mut adapter = MockIComputeAdapter::new();
+    adapter.expect_execute().returning(move |_| {
+        let n = {
+            let mut c = call_count2.lock().unwrap();
+            let v = *c;
+            *c += 1;
+            v
+        };
+        if n == 0 {
+            Ok(h2ai_types::adapter::ComputeResponse {
+                output: first_output.clone(),
+                token_cost: 10,
+                adapter_kind: kind.clone(),
+                tokens_used: None,
+                reasoning_trace: None,
+            })
+        } else {
+            Err(AdapterError::NetworkError("stage2 network failure".into()))
+        }
+    });
+    adapter.expect_kind().return_const(kind2).times(0..);
+
     let proposals = vec![make_proposal("proposal text")];
     let cfg = H2AIConfig::default();
     let input = SynthesisInput {

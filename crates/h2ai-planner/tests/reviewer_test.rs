@@ -1,28 +1,10 @@
-use async_trait::async_trait;
 use chrono::Utc;
 use h2ai_planner::decomposer::PlannerError;
 use h2ai_planner::reviewer::{PlanReviewer, ReviewOutcome};
-use h2ai_test_utils::MockAdapter;
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
-use h2ai_types::config::AdapterKind;
+use h2ai_test_utils::{failing_adapter, mock_adapter};
 use h2ai_types::identity::{SubtaskId, TaskId};
 use h2ai_types::plan::{PlanStatus, Subtask, SubtaskPlan};
 use h2ai_types::sizing::TauValue;
-
-/// Adapter that always returns an error — covers the adapter-failure branch in `evaluate()`.
-#[derive(Debug)]
-struct FailingAdapter;
-
-#[async_trait]
-impl IComputeAdapter for FailingAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::NetworkError("simulated failure".into()))
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        unimplemented!()
-    }
-}
 
 fn two_step_plan() -> SubtaskPlan {
     let a = SubtaskId::new();
@@ -51,8 +33,7 @@ fn two_step_plan() -> SubtaskPlan {
 
 #[tokio::test]
 async fn reviewer_approves_when_llm_returns_true() {
-    let adapter =
-        MockAdapter::new(r#"{"approved": true, "reason": "Plan fully covers the task."}"#.into());
+    let adapter = mock_adapter(r#"{"approved": true, "reason": "Plan fully covers the task."}"#);
     let outcome = PlanReviewer::evaluate(
         &two_step_plan(),
         "Build a REST API for user authentication",
@@ -66,8 +47,7 @@ async fn reviewer_approves_when_llm_returns_true() {
 
 #[tokio::test]
 async fn reviewer_rejects_when_llm_returns_false() {
-    let adapter =
-        MockAdapter::new(r#"{"approved": false, "reason": "Missing token refresh step."}"#.into());
+    let adapter = mock_adapter(r#"{"approved": false, "reason": "Missing token refresh step."}"#);
     let outcome = PlanReviewer::evaluate(
         &two_step_plan(),
         "Build auth with token refresh",
@@ -82,7 +62,7 @@ async fn reviewer_rejects_when_llm_returns_false() {
 #[tokio::test]
 async fn reviewer_rejects_empty_plan_without_llm_call() {
     // Adapter returns malformed JSON to prove no call was made.
-    let adapter = MockAdapter::new("NOT JSON".into());
+    let adapter = mock_adapter("NOT JSON");
     let empty = SubtaskPlan {
         plan_id: TaskId::new(),
         parent_task_id: TaskId::new(),
@@ -98,7 +78,7 @@ async fn reviewer_rejects_empty_plan_without_llm_call() {
 
 #[tokio::test]
 async fn reviewer_rejects_cyclic_plan_without_llm_call() {
-    let adapter = MockAdapter::new("NOT JSON".into());
+    let adapter = mock_adapter("NOT JSON");
     let a = SubtaskId::new();
     let b = SubtaskId::new();
     // A depends on B, B depends on A — direct cycle.
@@ -134,7 +114,7 @@ async fn reviewer_rejects_cyclic_plan_without_llm_call() {
 #[tokio::test]
 async fn reviewer_rejects_self_referential_cycle() {
     // A depends on itself — the simplest cycle.
-    let adapter = MockAdapter::new("NOT JSON".into());
+    let adapter = mock_adapter("NOT JSON");
     let a = SubtaskId::new();
     let plan = SubtaskPlan {
         plan_id: TaskId::new(),
@@ -160,7 +140,7 @@ async fn reviewer_rejects_self_referential_cycle() {
 #[tokio::test]
 async fn reviewer_rejects_three_node_cycle() {
     // A → B → C → A
-    let adapter = MockAdapter::new("NOT JSON".into());
+    let adapter = mock_adapter("NOT JSON");
     let a = SubtaskId::new();
     let b = SubtaskId::new();
     let c = SubtaskId::new();
@@ -203,7 +183,7 @@ async fn reviewer_rejects_three_node_cycle() {
 async fn reviewer_returns_parse_error_when_approved_field_missing() {
     // LLM omits the "approved" field — strict deserialization must fail.
     use h2ai_planner::decomposer::PlannerError;
-    let adapter = MockAdapter::new(r#"{"reason": "looks fine to me"}"#.into());
+    let adapter = mock_adapter(r#"{"reason": "looks fine to me"}"#);
     let result = PlanReviewer::evaluate(
         &two_step_plan(),
         "anything",
@@ -222,7 +202,7 @@ async fn reviewer_propagates_adapter_error() {
     let result = PlanReviewer::evaluate(
         &two_step_plan(),
         "Build a REST API",
-        &FailingAdapter,
+        &failing_adapter(),
         TauValue::new(0.2).unwrap(),
     )
     .await;
@@ -255,9 +235,8 @@ async fn reviewer_formats_unknown_dependency_id_in_summary() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let adapter = MockAdapter::new(
-        r#"{"approved": true, "reason": "Looks good despite unknown dep."}"#.into(),
-    );
+    let adapter =
+        mock_adapter(r#"{"approved": true, "reason": "Looks good despite unknown dep."}"#);
     let outcome = PlanReviewer::evaluate(&plan, "some task", &adapter, TauValue::new(0.2).unwrap())
         .await
         .unwrap();

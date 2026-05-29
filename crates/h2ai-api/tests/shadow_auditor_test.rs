@@ -9,14 +9,14 @@ use std::sync::Arc;
 
 use h2ai_api::{shadow_auditor::ShadowAuditorAccumulator, state::AppState};
 use h2ai_config::{H2AIConfig, SafetyConfig, ShadowAuditorConfig};
-use h2ai_test_utils::DecompositionMockAdapter;
+use h2ai_test_utils::decomposition_adapter;
 use h2ai_types::{
     events::ShadowAuditorResultEvent,
     identity::{ExplorerId, TaskId},
 };
 
 fn make_state_with_shadow_cfg(cfg: ShadowAuditorConfig) -> AppState {
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock".into()));
+    let adapter = Arc::new(decomposition_adapter("mock"));
     let h2ai_cfg = H2AIConfig {
         safety: SafetyConfig {
             shadow_auditor: cfg,
@@ -32,7 +32,7 @@ fn make_state_with_shadow_cfg(cfg: ShadowAuditorConfig) -> AppState {
 }
 
 fn make_state() -> AppState {
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock".into()));
+    let adapter = Arc::new(decomposition_adapter("mock"));
     AppState::new_for_tests(
         H2AIConfig::default(),
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],

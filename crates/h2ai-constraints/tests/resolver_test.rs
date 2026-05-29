@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use h2ai_constraints::index::ConstraintIndex;
 use h2ai_constraints::resolver::ConstraintResolver;
 use h2ai_constraints::source::ConstraintError;
@@ -8,57 +7,27 @@ use h2ai_constraints::types::{
 };
 use std::sync::Arc;
 
-// ── Minimal mock implementations ─────────────────────────────────────────────
+// ── Mock declarations ─────────────────────────────────────────────────────────
 
-struct MockIndex {
-    docs: Vec<ConstraintDoc>,
-}
-
-#[async_trait]
-impl ConstraintIndex for MockIndex {
-    async fn find_by_ids(&self, ids: &[String]) -> Vec<String> {
-        ids.iter()
-            .filter(|id| self.docs.iter().any(|d| &d.id == *id))
-            .cloned()
-            .collect()
-    }
-
-    async fn find_by_tags(&self, tags: &[String]) -> Vec<String> {
-        self.docs
-            .iter()
-            .filter(|d| {
-                tags.iter()
-                    .any(|t| d.domains.contains(t) || d.mandatory_for_tags.contains(t))
-            })
-            .map(|d| d.id.clone())
-            .collect()
-    }
-
-    async fn search(&self, query: &str, top_k: usize) -> Vec<String> {
-        // Simple keyword match for tests
-        self.docs
-            .iter()
-            .filter(|d| d.description.contains(query) || d.id.contains(query))
-            .take(top_k)
-            .map(|d| d.id.clone())
-            .collect()
+mockall::mock! {
+    pub Index {}
+    #[async_trait::async_trait]
+    impl ConstraintIndex for Index {
+        async fn find_by_ids(&self, ids: &[String]) -> Vec<String>;
+        async fn find_by_tags(&self, tags: &[String]) -> Vec<String>;
+        async fn search(&self, query: &str, top_k: usize) -> Vec<String>;
     }
 }
 
-struct MockStore {
-    docs: Vec<ConstraintDoc>,
-}
-
-#[async_trait]
-impl ConstraintStore for MockStore {
-    async fn load(&self, id: &str) -> Result<ConstraintDoc, ConstraintError> {
-        self.docs
-            .iter()
-            .find(|d| d.id == id)
-            .cloned()
-            .ok_or_else(|| ConstraintError::NotFound(id.to_string()))
+mockall::mock! {
+    pub Store {}
+    #[async_trait::async_trait]
+    impl ConstraintStore for Store {
+        async fn load(&self, id: &str) -> Result<ConstraintDoc, ConstraintError>;
     }
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn make_doc(id: &str, domains: &[&str], tags: &[&str]) -> ConstraintDoc {
     ConstraintDoc {
@@ -87,9 +56,59 @@ fn make_doc(id: &str, domains: &[&str], tags: &[&str]) -> ConstraintDoc {
 }
 
 fn make_resolver(docs: Vec<ConstraintDoc>) -> ConstraintResolver {
-    let index = Arc::new(MockIndex { docs: docs.clone() });
-    let store = Arc::new(MockStore { docs });
-    ConstraintResolver::new(index, store)
+    let docs_clone = docs.clone();
+    let mut index = MockIndex::new();
+    let mut store = MockStore::new();
+
+    // find_by_ids: return ids that exist in docs
+    {
+        let docs_for_ids = docs.clone();
+        index.expect_find_by_ids().returning(move |ids| {
+            ids.iter()
+                .filter(|id| docs_for_ids.iter().any(|d| &d.id == *id))
+                .cloned()
+                .collect()
+        });
+    }
+
+    // find_by_tags: return ids of docs matching any tag
+    {
+        let docs_for_tags = docs.clone();
+        index.expect_find_by_tags().returning(move |tags| {
+            docs_for_tags
+                .iter()
+                .filter(|d| {
+                    tags.iter()
+                        .any(|t| d.domains.contains(t) || d.mandatory_for_tags.contains(t))
+                })
+                .map(|d| d.id.clone())
+                .collect()
+        });
+    }
+
+    // search: simple keyword match
+    {
+        let docs_for_search = docs.clone();
+        index.expect_search().returning(move |query, top_k| {
+            docs_for_search
+                .iter()
+                .filter(|d| d.description.contains(query) || d.id.contains(query))
+                .take(top_k)
+                .map(|d| d.id.clone())
+                .collect()
+        });
+    }
+
+    // load: return doc by id
+    store.expect_load().returning(move |id| {
+        docs_clone
+            .iter()
+            .find(|d| d.id == id)
+            .cloned()
+            .ok_or_else(|| ConstraintError::NotFound(id.to_string()))
+    });
+
+    ConstraintResolver::new(Arc::new(index), Arc::new(store))
 }
 
 // ── Explicit IDs path ─────────────────────────────────────────────────────────

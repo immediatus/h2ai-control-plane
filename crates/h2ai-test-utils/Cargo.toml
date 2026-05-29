@@ -11,6 +11,7 @@ h2ai-types    = { path = "../h2ai-types" }
 h2ai-tools    = { path = "../h2ai-tools" }
 h2ai-adapters = { path = "../h2ai-adapters" }
 async-trait   = { workspace = true }
+mockall       = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

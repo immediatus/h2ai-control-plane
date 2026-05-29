@@ -6,6 +6,9 @@ nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
 max_autonomic_retries = 4
 
+calibration_adapter_count = 1
+calibration_max_tokens    = 512
+
 [safety]
 profile = "production"
 
@@ -17,43 +20,43 @@ corpus_path = "tests/e2e/constraints"
 name = "local-1"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [[adapter_profiles]]
 name = "local-2"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [[adapter_profiles]]
 name = "local-3"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [[adapter_profiles]]
 name = "local-4"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [[adapter_profiles]]
 name = "local-5"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [[adapter_profiles]]
 name = "researcher"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [[adapter_profiles]]
 name = "shadow_auditor"
 [adapter_profiles.kind.CloudGeneric]
 endpoint    = "http://host.docker.internal:8080/v1"
-api_key_env = ""
+api_key_env = "NONE"
 
 [hitl]
 enabled = false
@@ -71,3 +74,23 @@ cold_check_threshold     = 0.0
 synthesis_min_confidence = 0.7
 max_gap_records_per_wave = 3
 researcher_timeout_secs  = 300
+
+# ── Complexity-Ceiling Routing ────────────────────────────────────────
+# OSWorld tasks are constructive multi-step planning (complexity 3). The probe
+# rarely fires decompose routing (threshold 4) but the intra-retry detector acts
+# as a safety net: if constraint failures concentrate on the same step after 2
+# waves, ceiling is detected and the task grafts instead of exhausting retries.
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 4   # score ≥ 4 → graft; OSWorld tasks typically score 3
+hitl_threshold                 = 5   # score = 5 → HITL immediately
+verifier_decomposition_enabled = false
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2

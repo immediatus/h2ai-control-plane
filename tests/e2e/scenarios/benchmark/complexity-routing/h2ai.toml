@@ -1,0 +1,97 @@
+# Benchmark: Complexity-Ceiling Routing — end-to-end validation
+# Validates: ComplexityProbe, AgentDropout N-reduction, BEYOND_BUDGET verifier injection,
+#            over-decomposition guards in sequential grafting loop.
+# Safety profile "research": shadow_auditor enabled, strict=false.
+
+nats_url = "nats://host.docker.internal:4222"
+verifier_consensus_passes = 1
+max_autonomic_retries = 4
+
+calibration_adapter_count = 1
+calibration_max_tokens    = 512
+
+[safety]
+profile = "development"
+
+[safety.shadow_auditor]
+enabled = true
+strict  = false
+
+[constraint_wiki]
+mode = "fs"
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 2
+coverage_threshold = 0.70
+
+debug_log_path = "/tmp/h2ai-debug-complexity-routing.ndjson"
+
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 120
+
+# ── Complexity-Ceiling Routing ─────────────────────────────────────────
+# This scenario is purpose-built to exercise the full complexity routing
+# stack end-to-end:
+#   - ComplexityProbe fires for every task (enabled=true)
+#   - decompose_threshold=3 triggers BEYOND_BUDGET verifier injection on
+#     tasks rated ≥3 (most synthetic benchmark tasks qualify)
+#   - verifier_decomposition_enabled injects the BEYOND_BUDGET addendum
+#   - agent_dropout reduces N on retry ≥2 when N_eff is low
+#   - intra_retry ceiling detector routes to grafting after 2 failed waves
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 3
+hitl_threshold                 = 5
+verifier_decomposition_enabled = true
+
+[complexity_routing.agent_dropout]
+enabled                  = true
+n_eff_dropout_threshold  = 0.5
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2

@@ -130,7 +130,7 @@ fn task_manifest_deserialises_from_api_shape() {
 
 #[test]
 fn task_manifest_oracle_field_accessible() {
-    // Verify oracle field exists and defaults to None — compile-time guard for GAP-E1 Phase 6.
+    // Verify oracle field exists and defaults to None — compile-time guard Phase 6.
     let raw = json!({
         "description": "test",
         "pareto_weights": {"diversity": 0.4, "containment": 0.3, "throughput": 0.3},

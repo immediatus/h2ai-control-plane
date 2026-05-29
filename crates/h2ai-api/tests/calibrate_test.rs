@@ -61,7 +61,7 @@ use axum::{
 use chrono::Utc;
 use h2ai_api::{routes::calibrate_router, state::AppState};
 use h2ai_config::{FamilyConstraint, H2AIConfig};
-use h2ai_test_utils::{DecompositionMockAdapter, MockAdapter};
+use h2ai_test_utils::{decomposition_adapter, mock_adapter};
 use h2ai_types::{
     events::{CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode},
     identity::{TaskId, TenantId},
@@ -96,7 +96,7 @@ fn synthetic_calibration() -> CalibrationCompletedEvent {
 }
 
 fn make_state() -> AppState {
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock response".into()));
+    let adapter = Arc::new(decomposition_adapter("mock response"));
     AppState::new_for_tests(
         H2AIConfig::default(),
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
@@ -183,7 +183,7 @@ async fn start_calibration_returns_202_accepted() {
 
 #[tokio::test]
 async fn start_calibration_returns_error_for_require_diverse_single_pool() {
-    let adapter = Arc::new(MockAdapter::new("mock".into()));
+    let adapter = Arc::new(mock_adapter("mock"));
     let mut cfg = H2AIConfig::default();
     cfg.safety.family_constraint = FamilyConstraint::RequireDiverse;
     let state = AppState::new_for_tests(
@@ -212,7 +212,7 @@ async fn start_calibration_returns_error_for_require_diverse_single_pool() {
 async fn run_calibration_core_stores_calibration_in_state() {
     use h2ai_api::routes::calibrate::run_calibration_core;
 
-    let adapter = Arc::new(MockAdapter::new("mock calibration response".into()));
+    let adapter = Arc::new(mock_adapter("mock calibration response"));
     let cfg = H2AIConfig {
         calibration_adapter_count: 1,
         ..H2AIConfig::default()

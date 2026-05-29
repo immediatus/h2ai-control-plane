@@ -54,38 +54,20 @@ H2AI measures both forces, finds their intersection, and enforces a Common Groun
 
 ## Why It Exists
 
-| Problem | Standard Approach | H2AI Approach |
-|---|---|---|
-| Hallucination amplification | Hope the model self-corrects | Auditor node (τ→0) mathematically blocks propagation |
-| Judge self-preference bias | Same model judges itself | `JudgePanel` — cross-family verification panel; supermajority aggregation (≥2 families) or unanimous persona-diversity rule (single family); `ConstraintAmbiguityEvent` fires when corpus rubric is ambiguous |
-| State lives in the model | LLM context window (lossy) | Orchestrator owns state; models are stateless `f(ctx, τ) → text`. CRDTs track **constraint-satisfaction fingerprints** (metadata), never LLM text. Text is reconciled by the synthesis LLM. |
-| Safety is probabilistic | "Don't do X" in the prompt | Topological interlocks — invalid output cannot reach the human by graph construction |
-| More agents = worse results | Keep adding until it breaks | MAPE-K loop computes N_max, shifts topology before retrograde |
-| Retry loop repeats same failed approach | Hope next attempt differs | Epistemic Leader — Krum-elected leader generates Socratic diagnostic question per failed wave; follower context forced to distinct constraint dimensions; credibility-weighted rotation on stagnation |
-| Retry discards all prior work and regenerates from scratch — constraints that were passing get violated again; retry prompt uses only static YAML hints, ignoring the verifier's actual rejection reasoning | Retry with stronger hint and hope for the best | CSPR-v2 + Progressive Verifier Feedback — `ConstraintConflictGraph` detects structurally-incompatible constraint pairs; `RetryWithTargets` anchors on the best prior proposal; `build_repair_context()` uses a three-slot sandwich with breadth escalation: wave 1 → top-1 scored reason ("VERIFIER INTERPRETATION"), wave 2 → top-2, wave 3+ → all unique (Jaccard-deduped at 0.7); score shown inline so LLM knows how close the best attempt was; `prior_best_score` emits global-best compliance header; static `remediation_hint` ("GUIDANCE") fallback when no reasons; MetaRepair block added when competing constraints would produce contradictory directives; dynamic Jaccard divergence logged when `min_j < mean_j × 0.5` (domain-adaptive, never drops signal to None); FALCON Bounded-Locality Theorem guarantees quality loss `∝ v(x̂)` not unconstrained as in full regeneration |
-| LLM satisfies each binary constraint check in isolation (constraint dispersion) — different proposals pass different checks, `verified=0` even after all retries | Retry more; hope a future wave holds all checks in context simultaneously | Constraint-Informed Synthesis (GAP-D6) — (B1) `ConstraintDoc.binary_checks` injected as numbered compliance checklist at retry ≥ 1; (B2) `select_orthogonal_partials` (greedy set-cover) picks the maximally-diverse subset of partial-pass proposals with per-check PASS ✓ / FAIL ✗ labels, 1500-char truncation, primacy-bias order; (A) terminal synthesis wave after exhaustion: Coherence Mandate + checklist + ≤3 orthogonal partials → single LLM call → re-verify; global best partial exposed in `MaxRetriesExhausted.best_partial_text` for HITL gate |
-| AIMD slow-start collapses N_max to 1–2 under model degradation — BFT/Krum merge strategies silently lose their minimum quorum | Cap retries; hope the next calibration recovers | N_max Quorum Floor — `n_max_ci()` hard-floors both CI bounds at 3.0 (minimum quorum for Krum/OutlierResistant); `n_max_degraded()` preserves unclamped value for circuit-breaker telemetry; `QuorumDegradedBelowMinimum { unclamped_n_max }` fails fast outside shadow mode before burning API tokens; three-layer redundant enforcement in `sizing.rs`, `complexity.rs`, `topology.rs`, and `engine.rs` |
-| Two correlated oracle services (e.g. JSON Schema + Z3) both fail on malformed output — FUSE counts them as two independent votes, doubling the penalty for a single root cause | Run one oracle per task | Multi-Oracle FUSE — `oracle_specs: Vec<OracleSpec>` enables parallel oracle dispatch; `fuse_reduce_by_family` groups by `OracleFamily` (Syntactic/Semantic/Human), takes `min(score)` within each family to prevent correlated-failure double-counting, then `mean` across independent families |
-| Score-blind synthesis merges failing proposals (score=0.0) symmetrically with passing ones — merged output is worse than the best single passing proposal | Hope the synthesiser discards bad inputs | Optimal Synthesis Policy (OSP) — `OspRegime` classifies proposals into `ZeroSurvival` / `SingleSurvivor` / `ClearLeader` / `TightCluster` before merge dispatch; `AuditChannelBuilder` extracts Zone 3 findings from structured `ConstraintViolation` IR only (Pink Elephant prevention — no raw proposal text); `RetryAccumulator` tracks per-constraint violation rates across retries with λ=0.7 leaky decay; `zone3_hints` on `MergeResolvedEvent` carries positive guidance framing into next-wave prompts |
-| Retry loop treats all exhaustion identically — O(n³)+ tasks cannot be solved by deeper retrying because a single LLM forward pass cannot carry out computation exceeding O(N²·d) | Increase max_retries and hope | Complexity Ceiling awareness (GAP-J1) — Sikka & Sikka Theorem 1 (arXiv 2507.07505): LLMs unavoidably hallucinate on embedded tasks of O(n³)+ complexity regardless of retry depth; complexity probe routes these tasks to H1 hierarchical decomposition before the retry budget is spent; `LlmJudge` ECE drift / `pass_rate=0.0` flagged as potential complexity-ceiling signal |
-| Parallel proposals with orthogonal constraint-satisfaction — wave passes Constraint A, another wave passes Constraint B, but neither produces a proposal satisfying both | Retry with full generation and hope a future wave satisfies all constraints simultaneously | Sequential Constraint Grafting (GAP-H1) — when `sequential_grafting_enabled = true` and ≥2 orthogonal partials exist, the terminal wave is replaced by an iterative grafting loop: highest-scoring partial as base; each iteration calls `missing_constraint_ids()` to find constraint clusters the candidate covers that the base doesn't; `build_graft_context()` produces a focused synthesis prompt (base + candidate text for those clusters only); accept when `new_score ≥ base_score` (Monotonicity Invariant); rollback otherwise. Literature basis: Sequential Edge (Xie et al. 2025, arXiv 2503.12345) — +46.7% constraint satisfaction over parallel merge |
-| LLM provider silently updates model weights — `EnsembleCalibration` (α, β, CG_mean) goes stale without any signal; ensemble operates on wrong N_max | Re-run calibration on a schedule and hope the window is short | Calibration Drift Detection (GAP-H2) — three-layer `DriftMonitor` on `consensus_agreement_rate`: Layer 1 DDM O(1) fast-lane fires `CalibrationDriftWarning` at `\|mean_recent − mean_ref\| > 2.5σ`; Layer 2 BOCPD (Adams & MacKay 2007) with Normal-Inverse-Gamma prior fires `CalibrationChangepoint` when P(run_length ≤ 4) > 0.90; Layer 3 ORCA conformal margin widens the verification gate during active drift to preserve coverage |
-| Verifier consistently rejects proposals on knowledge-intensive checks whose domain nouns are absent from the task specification — the model lacks ground-truth facts, not reasoning ability | Retry with stronger hint; hope the model guesses the domain knowledge | Knowledge Gap Detection (GAP-I1) — `detect_cold_checks()` identifies binary checks with domain nouns absent from the task spec; `build_gap_queries()` converts them to targeted research queries; `run_gap_researcher()` dispatches to a researcher LLM (+ optional `DuckDuckGoSearchGrounder`) and distils results to ≤1200 chars; `build_repair_context()` injects distilled domain knowledge as a `[DOMAIN KNOWLEDGE]` slot in the next generation prompt |
-| Ambiguous binary check text causes the LlmJudge to produce confident but random verdicts across waves (Jaccard < 0.10 between rejection reasons) — the retry budget burns on verifier noise, not solution quality | Accept that some constraints are untestable; manually rewrite them | Constraint Coherence (GAP-K1) — `CoherenceProbe` calls the LlmJudge N=5 times on the constraint's `pass` rubric; when consistency < 0.80 triggers `MapeKDecision::SpecAmbiguous`; `SpecRepairAdvisor` generates rewrite candidates, probes each, CAS-writes the best (consistency ≥ 0.90) via `NatsVersionedSource` with TOCTOU-safe write lock, then signals the engine to reload the corpus and restart from wave 0 |
-| Repair prompts lead with prohibition-forward language ("avoid the above failure mode", "Do not reuse patterns", "WRONG BELIEF") — LLMs absorb false training patterns even after explicit "do not" warnings; positive assertions suppress false-belief adoption far more effectively | Retry with stronger negative warnings | Positive Assertion Framing (Mayne et al. arXiv 2605.13829) — `build_repair_context()` Slot A emits `TARGET BEHAVIOR:\n<criteria.pass>` when `RepairTarget.criteria_pass` is set (sourced from `ConstraintDoc.rubric.pass`, propagated through `ComplianceResult → ConstraintViolation → RepairTarget`); fallback YOUR TASK text reads "satisfies the constraint requirement" (positive) replacing the old prohibition-forward phrasing; I1 grounding header renamed `PRIOR APPROACH` (was `WRONG BELIEF`); constraint YAML `remediation_hint`, `description`, and `title` fields across all affected constraints rewritten to lead with positive outcomes — prohibited alternatives retained as parenthetical contrast only |
-| Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates; `constraint_error_cost = 1 − compliance` |
-| Constraint corpus is static and fragile | Bulk file reload loses history | Constraint Wiki (`H2AI_CONSTRAINT_WIKI` KV) — hot-reload via NATS KV watch; `ConstraintSource` trait decouples corpus access from storage; `ConstraintSnapshot` in every checkpoint records which wiki revision was active |
-| Flat constraint retrieval returns all-or-nothing | Inject entire corpus or keyword-match | Hierarchical Knowledge Provider — `Bm25WikiProvider` scores constraints via BM25+/PPR across a Global → Topic → Leaf tree; dual RAPTOR modes (TreeTraversal + CollapsedTree); PPR multi-hop expansion surfaces related constraints; role-stratified `KnowledgeProfile` (Coordinator → CollapsedTree/top_k=3; Executor → TreeTraversal/PPR expand_hops=2; Evaluator → TreeTraversal; Synthesizer → CollapsedTree+1 PPR hop + `ConstraintTension` injection); cross-task `InductionStore` (NATS KV) promotes high-hit-rate node IDs to `explicit_ids` on subsequent tasks with matching domain tags |
-| Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
-| Low-confidence outputs reach callers silently | Every output looks the same | HITL Approval Gate — `q_confidence < threshold` or `require_approval = true` parks the output in `H2AI_APPROVALS` KV; `PendingApprovalEvent` streams immediately; 30-minute reaper auto-rejects expired records |
-| Proposals converge on the same ungrounded architectural entities — fabricated APIs, hallucinated patterns — that pass constraint checks | Accept or manually filter proposals referencing unknown components | SRANI (Specification-Relative Architectural Noun Intersection) — CFI (Correlated Fabrication Index) measures max pairwise overlap of ungrounded entity sets; adaptive sigmoid gate; SpecAnchorGrounder → LlmResearcherGrounder → WebSearchGrounder escalation; MAPE-K injects remediation hints on high-CFI waves |
-| Single-pass generation misses cross-domain interactions and tensions between requirements | One-shot prompt; tensions surface only after merge, often too late | Thinking Loop — multi-archetype iterative brainstorm converges at `coverage_score ≥ threshold`; linear τ annealing; tension-targeted injection for unresolved gaps; `ThinkingReport.shared_understanding` seeds the decomposition prompt |
-| Prompt quality drifts without feedback | Manually tune prompts per deployment | Adaptive Prompt Harness — OPRO (arXiv 2309.03409) auto-improves prompts when j_eff EMA falls; Thompson bandit selects best variant |
-| Edge agent secrets leak | Long-lived API keys in containers | Scoped NATS NKeys per task_id — token expires when task closes |
-| Shell injection via LLM output | `sh -c <llm_string>` executes metacharacters | `ShellExecutor` uses JSON contract + `Command::new(cmd).args(args)` — no shell interpreter; PGID-scoped process group kill on timeout |
-| Hardened wave still has full tooling | One tool policy for all waves | `WaveMode` (Normal/Hardened) on `TaskPayload`; `ToolRegistry::for_wave()` selects a reduced allowlist for `ConstrainedExploration` and `ModeCollapse` retries |
-| Context lost between restarts | Agents rebuild context from scratch | MemoryProvider — control plane assembles and injects context before dispatch |
-| Audit log is an afterthought | Logs scattered across containers | AuditProvider with redaction middleware — immutable telemetry on NATS JetStream |
+Each row is a failure mode H2AI addresses structurally rather than probabilistically.
+
+| Problem | H2AI Mechanism |
+|---|---|
+| **Hallucination amplification** | Auditor node (τ→0) blocks propagation before merge — mathematically, not by prompt |
+| **More agents = worse results** | USL-bounded N_max: MAPE-K shifts topology before quality falls off the cliff |
+| **Retry loop repeats same failure** | Progressive Verifier Feedback + Epistemic Leader: anchors on best prior proposal; Socratic diagnostics prevent repeated failure modes |
+| **Constraint dispersion** (proposals satisfy different checks, none satisfies all) | Constraint-Informed Synthesis + Sequential Constraint Grafting: greedy set-cover picks orthogonal partials; iterative grafting loop monotonically improves score |
+| **O(n³)+ tasks hallucinate regardless of retry depth** | Complexity Ceiling: `ComplexityProbe` routes pre-loop; AgentDropout reduces N on structurally-failing retries; BEYOND_BUDGET decomposition for sub-claims |
+| **Ambiguous constraints produce random verifier votes** | Constraint Coherence: `CoherenceProbe` detects noise; `SpecRepairAdvisor` rewrites and hot-reloads the corpus without task restart |
+| **Fabricated APIs pass constraint checks** | SRANI: Correlated Fabrication Index gates proposals; grounding escalation (spec anchor → researcher → web search) |
+| **Tacit knowledge is invisible** | Dark Knowledge Compiler: typed `ConstraintDoc` predicates become hard Auditor gates |
+
+→ **Full problem-solution map** (24 mechanisms, each with implementation detail): [`docs/architecture/architecture.md § Problem-Solution Map`](docs/architecture/architecture.md#problem-solution-map)
 
 ---
 
@@ -168,92 +150,62 @@ helm install h2ai h2ai/h2ai-control-plane \
 
 ---
 
+## Safety Profiles
+
+`[safety] profile` in your `h2ai.toml` selects a named tier. Four profiles are available:
+
+| Profile | Use case | Shadow auditor | Strict | Krum f | Family diversity |
+|---|---|---|---|---|---|
+| `development` | Local dev, single adapter, devcontainer | off | false | 0 | `single_family_ok` |
+| `production` | Staging and production | **on** | **true** | 1 | `require_diverse` |
+| `strict` | Regulated / compliance environments | **on** | **true** | 2 | `require_diverse` |
+| `custom` | E2E tests, research, partial overrides | manual | manual | manual | manual |
+
+**Choose `development`** when you have one LLM endpoint or are iterating locally. All safety gates are relaxed — a single adapter family is fine, and the shadow auditor is off.
+
+**Choose `production`** for any deployed environment with two or more adapter families. The shadow auditor runs in strict mode (audit failures abort the task, not just warn). Krum tolerates one Byzantine-equivalent outlier. The verifier and explorer pool must be from different model families — `VerifierExplorerFamilyConflict` fails the task immediately if they are not, before spending any tokens.
+
+**Choose `strict`** for finance, healthcare, or any domain where a wrong but confident output has real-world consequences. Krum fault tolerance rises to `f = 2` (requires ≥7 explorer slots to be meaningful). Cross-family diversity is required.
+
+**Choose `custom`** when you need a non-standard combination — for example, shadow auditor enabled but non-blocking (`strict = false`) in an E2E research scenario:
+
+```toml
+[safety]
+profile = "custom"
+
+[safety.shadow_auditor]
+enabled = true
+strict  = false
+```
+
+**Shadow auditor** runs a second independent audit pass on each wave result using a dedicated adapter (`adapter_key = "shadow_auditor"` in `[[adapter_profiles]]`). In strict mode it blocks the result; in non-strict mode it emits `ShadowAuditorResultEvent` for observability only.
+
+Full field reference: `docs/architecture/reference.md § Safety Profiles`.
+
+---
+
 ## The Epistemological Architecture
 
-Every problem submitted to H2AI is, at its core, a **team knowledge acquisition problem**. The system's job is not to produce text — it is to build a knowledge graph whose nodes are beliefs about the problem domain and whose edges are support, contradiction, derivation, and grounding relationships. When that graph reaches coherent closure, the system stops.
+H2AI is an **epistemic control plane**. Its job is not to run LLM inference — it is to coordinate the acquisition, validation, and grounding of knowledge about a problem. The output of a successful task is not a string; it is a belief that has survived four nested epistemological tests: **TAO** (completeness within one agent), **MAPE-K** (coherence across the committee), **Calibration** (accuracy of the system's self-model), and **Oracle / Grounding** (correspondence to external reality).
 
-This framing maps directly to four nested control loops, each with an epistemic stopping criterion rather than a mechanical one:
+The stopping criteria are epistemic, not mechanical. The system does not stop because it hit a retry limit — it stops because it has acquired enough knowledge. This is the architectural difference between H2AI and a pipeline with retries.
 
-| Loop | Scope | Stops when |
-|------|-------|-----------|
-| **TAO** (Thought–Action–Observation) | Within one agent | The agent has exhausted productive reasoning paths — no tool call changes the belief set |
-| **MAPE-K** (Monitor–Analyse–Plan–Execute) | Across the committee | The knowledge graph has reached coherent closure — surviving proposals are consistent with the constraint corpus |
-| **Calibration** | Across tasks | Calibration confidence intervals are tight enough — α, β, CG priors are stable across the adapter pool |
-| **Oracle / Grounding** | Across reality | External truth has verified the claims that are load-bearing for the output — human or automated oracle confirms the result |
-
-These loops are **not** a retry policy or a pipeline stage. They are four nested epistemological systems operating at different time-scales. The TAO loop refines a belief within a single agent-turn. The MAPE-K loop detects when the committee's collective knowledge has failed coherence and repairs it by restructuring the generation. The calibration loop updates the system's **meta-beliefs** — its beliefs about its own agent quality — so that future committees are better sized and composed. The grounding loop connects the entire system to external reality, preventing the ensemble from converging on a coherent but wrong answer.
-
-The stopping criteria are what distinguish this from a retry loop: the system stops not when it has run a fixed number of iterations, but when it has **acquired enough knowledge**. Each loop has a precise definition of "enough":
-- TAO: `tool_calls_made == 0` on the last iteration (no new evidence to gather)
-- MAPE-K: `ZeroSurvival` not triggered — all proposals passed audit
-- Calibration: confidence interval width on `(α, β, CG)` drops below the configured precision threshold
-- Oracle: `q_confidence ≥ approval_threshold` or human operator provides explicit approval signal
-
-This architecture is why H2AI is described as an **epistemic control plane** rather than an orchestration framework. Orchestration coordinates processes. H2AI coordinates the acquisition, validation, and grounding of knowledge.
+→ **Full epistemological architecture** (loop interactions, meta-accuracy, grounding model): [`docs/architecture/architecture.md § The Epistemological Architecture`](docs/architecture/architecture.md#the-epistemological-architecture)
 
 ---
 
 ## How It Works
 
-### 1. Calibration — measure the physics, then spawn
+Six phases run in sequence, all event-sourced to NATS JetStream:
 
-Before any agent runs, the calibration harness measures three parameters from the adapter pool:
+1. **Calibration** — measures α (serial bottleneck), β₀ (pairwise reconciliation cost), and CG (Common Ground) from the adapter pool, yielding `N_max = √((1−α)/β_eff)`. No task starts without this.
+2. **Bootstrap** — the Dark Knowledge Compiler assembles an immutable `system_context` from your constraint corpus. Every `ConstraintDoc` becomes a hard Auditor gate or a weighted compliance score.
+3. **Provisioning** — the MAPE-K controller selects topology (Ensemble / Hierarchical Tree / Team-Swarm Hybrid) from physics, then enforces the Multiplication Condition Gate before spawning any inference token.
+4. **Generation** — N Explorers run in parallel (`tokio::task::JoinSet`). No Explorer reads another's output. Each is a stateless edge agent with a scoped NKey that expires when the task closes. `TaoAgent` runs Thought→Action→Observation up to `agent_max_tool_iterations` turns inside each.
+5. **MAPE-K gate** — the Auditor validates proposals as they arrive. Zero survivors triggers the three-layer retry engine: 12 per-wave phase modules, typed `MapeKDecision`, Epistemic Leader cross-wave diagnostics.
+6. **Merge** — Layer 1: CRDT semilattice on constraint fingerprints (deterministic, never touches LLM text). Layer 2: OSP regime classification → two-pass critique+synthesis LLM. The Merge Authority UI presents tombstones, physics panel, and MAPE-K timeline. One human decision closes the task.
 
-- **α** — serial bottleneck fraction: time in planning, context compilation, and synthesis — phases that serialize regardless of N. Measured as the fraction of total wall time that scales with N=1 behavior.
-- **β₀** — pairwise reconciliation cost: how expensive it is to integrate each pair of agents' outputs into coherent agreement. Resolved via a three-tier cascade: (1) *epistemic formula* when an embedding model is configured and N_cal ≥ 3 — `β₀ = max((1/N_eff_adj − 1/N_cal)/(N_cal − 1), 1e-6)` where `N_eff_adj = clamp(N_eff × CG_mean^k, 1, N_cal)`; (2) *conflict-count override* (`beta_quality`) from the rolling `ConflictRateAccumulator` once ≥5 production tasks are observed; (3) *latency-based fallback* from merge-phase timing. Scales N(N−1) in the USL model.
-- **CG(i,j)** — Common Ground between every Explorer pair: mean pairwise Hamming distance on binary constraint-satisfaction fingerprints (1 bit per constraint: pass/fail). High CG = agents satisfied compatible constraints; low CG = divergence is costly to reconcile. This is a metadata measurement — the control plane never compares raw LLM text.
-
-These yield `N_max = sqrt((1−α) / β_eff)` where `β_eff = β₀ × (1 − CG_mean)`. Past `N_max`, every additional agent makes results worse. No task starts without this data — calibration is not optional and not a one-time setup.
-
-### 2. Bootstrap — dark knowledge compiled into explicit gates
-
-The task manifest arrives. The **Dark Knowledge Compiler** assembles an immutable `system_context` from your constraint corpus and the manifest. Every `ConstraintDoc` becomes either a hard gate (fail = reject the proposal) or a weighted compliance score (`constraint_error_cost = 1 − compliance`). Every agent — Explorer and Auditor alike — receives exactly this context and nothing else. Tacit knowledge is now explicit and enforceable.
-
-When `thinking_loop.enabled`, a structured multi-archetype brainstorm runs first — iterating until `coverage_score ≥ coverage_threshold`, with linear τ annealing and tension-targeted injection for unresolved gaps. The `ThinkingReport.shared_understanding` is injected into the decomposition prompt, improving decomposition quality on complex multi-domain tasks.
-
-### 3. Provisioning — topology selected by physics, not gut feel
-
-The MAPE-K controller reads `{α, β_eff, ParetoWeights}` and selects one of three topologies:
-
-- **Ensemble + CRDT** — `N ≤ N_max`, diversity-weighted. All Explorers are peers. O(N²) edges — structurally fine for small N. Pareto: T=84%, E=84%, D=90%.
-- **Hierarchical Tree** — `N > N_max` or containment-weighted. One Swarm Coordinator + k sub-groups; `k_opt = floor(N_max^flat)`. Coordination cost drops from O(N²) to O(N). Pareto: T=96%, E=96%, D=60%.
-- **Team-Swarm Hybrid** — role-differentiated Explorers (Coordinator, Executor, Evaluator, Synthesizer) with declared review gates between specified pairs. The Evaluator forms a pre-Auditor gate that blocks Executor output before it can reach synthesis. Pareto: T=84%, E=91%, D=95%.
-
-Before spawning a single inference token, the **Multiplication Condition Gate** enforces Proposition 3: competence > 0.5, error decorrelation ρ < 0.9, `CG_mean ≥ θ_coord`. Fail any one → re-enter provisioning with adjusted parameters.
-
-### 4. Generation — parallel, isolated, edge agents with full TAO loops
-
-N Explorers run in a `tokio::task::JoinSet`. No Explorer reads another's output — coordination cost during generation is structurally zero. Each Explorer is an **ephemeral, stateless edge agent** (`AgentDescriptor { model, tools }`) dispatched via NATS with a scoped NKey that expires when the task closes.
-
-The `tools` field is not a feature flag — it directly affects USL quantities:
-
-| Tool set | Effect on α | Effect on β₀ | Default c_i | Typical role |
-|---|---|---|---|---|
-| `[]` (pure LLM) | near 0 | 0 | 0.1–0.3 | Coordinator / Synthesizer |
-| `[WebSearch]` | +0.01–0.02 | +0.005 | 0.2–0.4 | Evaluator |
-| `[FileSystem]` | +0.02–0.05 | +0.01 | 0.4–0.6 | Executor |
-| `[CodeExecution]` | +0.03–0.08 | +0.015 | 0.5–0.7 | Executor |
-| `[Shell]` | +0.05–0.15 | +0.02 | 0.6–0.9 | Executor |
-
-Inside each edge agent, `TaoAgent` runs a Thought→Action→Observation loop up to `agent_max_tool_iterations` turns. Each turn: the LLM is called with accumulated context and tool schemas in the system prompt; the response is parsed for a structured tool call `{"tool": "...", "input": {...}}` via a three-strategy pipeline (direct JSON parse → strip markdown fences → find first balanced `{...}` in text); the call is dispatched through `ToolRegistry::execute`; a `ToolCallRecord` is appended to the audit trail. Tool observations are UTF-8-safely truncated at `agent_max_observation_chars` (default 8192) before being injected back into context — preventing runaway context growth. The loop terminates when the LLM produces a final answer (no tool call) or the iteration budget is exhausted.
-
-**Security invariant:** Each edge agent can only publish to `h2ai.telemetry.{agent_id}` and `h2ai.results.{task_id}`. It cannot read other agents' payloads, write to the orchestration bus, or retain credentials after the task closes. Enforced at the NATS server level — not by application code. Shell commands execute via `Command::new(cmd).args(args)` — no shell interpreter, no metacharacter injection possible.
-
-### 5. MAPE-K gate — every wave reviewed, every retry typed
-
-The Auditor spins up on `TopologyProvisionedEvent` — before generation starts. Proposals are validated as they arrive. Rejections become `BranchPrunedEvent` tombstones: permanently preserved with rejection reason and `constraint_error_cost`, visible in the Merge Authority UI. Failures are epistemic data, not noise.
-
-Zero survivors → `ZeroSurvivalEvent`. The three-layer MAPE-K engine engages: `ExecutionPipeline` runs the 12 per-wave phase modules in order (topology → multiply → diversity → generation → hallucination → SRANI → verify → audit → frontier → oracle → synthesis → merge), `MapeKController` maps the wave's `ExitReason` to one of three `MapeKDecision` variants — `Return(output)`, `Retry`, or `Fail(error)` — and `engine.rs` orchestrates the loop. The retry adjusts `{N, τ, topology}` and reruns. Bounded by `max_retries`. Exhaustion → `TaskFailedEvent` with full diagnostic payload. The MAPE-K retry loop gains cross-wave guidance via an elected Epistemic Leader that diagnoses failures and formulates Socratic questions to prevent repeated mistakes. When `leader_enabled = true` (default: false), the highest-scoring Krum survivor is elected leader after each failed wave; it generates an EIG-ranked diagnostic question (deduplicated via belief buffer) that is injected as leader context in the next wave while followers receive the question paired with an assigned constraint aspect.
-
-### 6. Merge — two layers, O(1) human decision
-
-**Layer 1 — Metadata consensus (CRDT semilattice, deterministic):** The control plane aggregates binary constraint-satisfaction fingerprints from surviving proposals into a semilattice. The BFT threshold (e.g. 0.67) is applied to fingerprint agreement rate — not raw text similarity. This layer never touches LLM output text.
-
-> The `bft_threshold` is a fractional agreement gate on constraint fingerprints — not PBFT. PBFT handles adversarial nodes with cryptographic guarantees at O(N²) message cost. Here the "Byzantine nodes" are stochastically diverging LLMs. A fractional threshold + Krum outlier rejection is the correct tool; full PBFT would be architectural overkill.
-
-**Layer 2 — Semantic reconciliation (synthesis LLM):** Before synthesis, the **OSP regime layer** (when `[osp]` configured) classifies surviving proposals: `ClearLeader` (score gap Δ ≥ 2·T_v and P(correct) ≥ 0.92) selects the leader directly without synthesis; `TightCluster` runs synthesis over passing proposals only. The synthesis LLM receives only validated proposals. Two passes: (1) **critique** at low τ produces a structured gap analysis; (2) **synthesis** reads proposals + critique and produces the final coherent output. Before synthesis runs, a diversity gate rejects mono-culture ensembles — if mean pairwise Hamming distance across fingerprints falls below `diversity_threshold`, a MAPE-K retry fires.
-
-The **Merge Authority UI** presents the valid proposals panel, tombstone panel (every rejection with reason and `c_i`), MAPE-K intervention timeline, and live physics panel (`θ_coord`, `β_eff`, `N_max`, `MergeStrategy`). One human decision. `MergeResolvedEvent` closes the task.
+→ **Full How It Works** (topology trade-offs, TAO loop internals, security invariants, USL quantities by tool set): [`docs/architecture/architecture.md § How It Works`](docs/architecture/architecture.md#how-it-works)
 
 ---
 
@@ -281,54 +233,9 @@ Reference values: **α ≈ 0.10–0.15, β₀ ≈ 0.015–0.025, N_max ≈ 4–7
 
 ## The Event Vocabulary
 
-All state is immutable event log entries on NATS JetStream. Crash recovery = replay from offset 0.
+All state is immutable event log entries on NATS JetStream. Crash recovery = replay from offset 0. Events cover core orchestration (`h2ai.tasks.{task_id}`), compound task scheduling, and edge agent telemetry (`h2ai.telemetry.*`).
 
-**Core orchestration events** (subject `h2ai.tasks.{task_id}`):
-```
-CalibrationCompletedEvent          → α, β₀, CG samples, θ_coord locked
-TaskBootstrappedEvent              → system_context locked, constraint corpus compiled
-TopologyProvisionedEvent           → DAG shape, τ values, RoleErrorCosts, MergeStrategy
-MultiplicationConditionFailedEvent → which of 3 conditions failed, re-entering Phase 2
-ProposalEvent                      → Explorer output appended, agent terminates
-ProposalFailedEvent                → Explorer crashed/OOM/timeout, terminal state guaranteed
-GenerationPhaseCompletedEvent      → JoinSet drained, stream closed
-ReviewGateTriggeredEvent           → Evaluator gating an Executor proposal
-ReviewGateBlockedEvent             → Evaluator rejected proposal (reason recorded)
-ValidationEvent                    → Auditor: proposal passed
-BranchPrunedEvent                  → Auditor: proposal rejected; violated_constraints[] per-constraint scores + remediation hints; constraint_error_cost = 1 − compliance
-ZeroSurvivalEvent                  → all proposals pruned, autonomic retry fires
-InterfaceSaturationWarningEvent    → active sub-tasks approaching N_max^interface
-ConsensusRequiredEvent             → max(c_i) > 0.85; merge strategy escalates from ScoreOrdered to ConsensusMedian/OutlierResistant (fractional BFT threshold on fingerprints — not PBFT)
-SemilatticeCompiledEvent           → merge ready, MergeStrategy recorded
-MergeResolvedEvent                 → human O(1) decision, task closed; j_eff (Ensemble Efficiency Index) = Q_realized/Q_ceiling emitted; oracle_gate_passed: Option<bool>; zone3_hints: Option<String> (OSP audit findings for next-retry guidance)
-OracleGateResultEvent              → Phase 4.5 oracle gate: gate_passed, confidence, checked/passed counts
-PendingClarificationEvent          → engine suspended awaiting operator answer; POST /{tenant_id}/tasks/{id}/clarify to resume
-OproTriggeredEvent                 → OPRO cycle started: j_eff_ema fell below threshold for adapter
-PromptVariantPromotedEvent         → Thompson bandit promoted best variant as new prompt default
-TaskFailedEvent                    → retries exhausted, full diagnostic payload
-TaoIterationEvent                  → TAO loop turn result: tool_calls[] (tool, input_json, output, iteration) + total_token_cost
-VerificationScoredEvent            → LLM-as-judge score per proposal (Phase 3.5); panel diversity_kind + quorum recorded
-ConstraintAmbiguityEvent           → ≥ambiguity_threshold proposals produced uncertain votes on the same constraint; corpus quality signal
-TaskAttributionEvent               → q_confidence decomposition: baseline × verification_filter × tao_uplift × topology_correction + synthesis_gain
-PendingApprovalEvent               → HITL gate fired; proposed_output held for review; risk_level (Medium|High); timeout_at_ms
-ApprovalResolvedEvent              → operator submitted POST /{tenant_id}/tasks/{id}/approve; approved bool + operator_id recorded
-```
-
-**Compound task events** (subject `h2ai.tasks.{task_id}`):
-```
-SubtaskPlanCreatedEvent            → CompoundTaskEngine decomposed task into SubtaskPlan (N subtasks)
-SubtaskPlanReviewedEvent           → PlanReviewer approved or rejected SubtaskPlan (reason recorded)
-SubtaskStartedEvent                → SchedulingEngine dispatched a subtask in topo-sort wave N
-SubtaskCompletedEvent              → Subtask completed; output injected as context for dependents
-```
-
-**Edge agent telemetry events** (subject `h2ai.telemetry.*`):
-```
-AgentTelemetryEvent::LlmPromptSent        → tokens dispatched to edge agent LLM
-AgentTelemetryEvent::LlmResponseReceived  → completion tokens received from edge agent
-AgentTelemetryEvent::ShellCommandExecuted → command + args (structured, no raw shell string) + exit code
-AgentTelemetryEvent::SystemError          → edge agent panic or unrecoverable error
-```
+→ **Full event vocabulary** (all 30+ events with fields and subjects): [`docs/architecture/reference.md § Event Vocabulary`](docs/architecture/reference.md#2-event-vocabulary)
 
 ---
 

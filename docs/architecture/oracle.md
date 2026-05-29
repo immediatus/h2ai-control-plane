@@ -158,7 +158,7 @@ Lower ECE = better calibration.
 ### 4. Ensemble Patch (n ≥ 10)
 
 When n ≥ 10, `patch_ensemble_p_from_oracle` updates `EnsembleCalibration.p_mean` to the
-measured oracle pass rate (clamped to `[0.5, 1.0]`). This is innovation INNOVATION-1 (GAP-B2):
+measured oracle pass rate (clamped to `[0.5, 1.0]`). This is innovation INNOVATION-1:
 oracle ground truth feeds back into ensemble sizing.
 
 Emits `OracleCalibrationPatchedEvent` on the NATS task stream.

@@ -42,7 +42,7 @@ pub struct KnowledgeNodePattern {
 ///   multi-hop traversal across constraint edges (`HippoRAG` PPR, arXiv 2405.14831)
 /// - Evaluator: `TreeTraversal` (leaf-rule precision), no PPR (neighborhood adds noise here)
 /// - Synthesizer: `CollapsedTree` (holistic), PPR `expand_hops=1` to surface cross-domain tensions
-///   (feeds GAP-F2 `ConstraintTension` injection)
+///   (feeds `ConstraintTension` injection)
 /// - Custom: inherits Executor profile
 ///
 /// Profiles are code constants — change only when the research reasoning changes.

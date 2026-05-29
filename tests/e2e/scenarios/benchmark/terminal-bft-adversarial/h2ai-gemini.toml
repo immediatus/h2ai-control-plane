@@ -1,0 +1,104 @@
+# Benchmark: Terminal-Bench — Gemini adapters (gemini-2.5-flash generators, gemini-2.0-flash support)
+# Run: python3 replay.py benchmark/terminal-bft-adversarial --config h2ai-gemini.toml
+
+nats_url = "nats://localhost:4222"
+verifier_consensus_passes = 1
+max_autonomic_retries = 4
+
+calibration_adapter_count = 1
+calibration_max_tokens    = 512
+
+[safety]
+profile = "production"
+
+[constraint_wiki]
+mode = "fs"
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.5-flash"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.5-flash"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.5-flash"
+
+[[adapter_profiles]]
+name = "local-4"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.5-flash"
+
+[[adapter_profiles]]
+name = "local-5"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.5-flash"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.0-flash"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+provider    = "gemini"
+model       = "gemini-2.0-flash"
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 3
+coverage_threshold = 0.75
+
+debug_log_path = "/tmp/h2ai-debug-terminal-bft-adversarial-gemini.ndjson"
+
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 60
+
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 4
+hitl_threshold                 = 5
+verifier_decomposition_enabled = false
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2

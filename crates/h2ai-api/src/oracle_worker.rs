@@ -45,6 +45,11 @@ impl OracleWorker {
     }
 
     pub async fn run(self) {
+        self.run_with_ready(None).await;
+    }
+
+    pub async fn run_with_ready(self, ready: impl Into<Option<tokio::sync::oneshot::Sender<()>>>) {
+        let ready = ready.into();
         let mut sub = match self.nats_raw.subscribe("h2ai.oracle.*.pending").await {
             Ok(s) => s,
             Err(e) => {
@@ -53,6 +58,9 @@ impl OracleWorker {
             }
         };
         tracing::info!("OracleWorker: subscribed to h2ai.oracle.*.pending");
+        if let Some(tx) = ready {
+            let _ = tx.send(());
+        }
 
         while let Some(msg) = sub.next().await {
             let reply_subject = msg.reply.clone();

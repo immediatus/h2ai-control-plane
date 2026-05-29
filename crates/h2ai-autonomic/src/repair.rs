@@ -232,15 +232,15 @@ pub struct RepairInput<'a> {
     pub retry_count: u32,
     pub attempts_remaining: u32,
     pub system_context_with_rubric: &'a str,
-    /// Binary check strings for GAP-F1 B1 checklist injection. Empty = no injection.
+    /// Binary check strings B1 checklist injection. Empty = no injection.
     pub checks: &'a [String],
-    /// Orthogonally selected partial-pass proposals for GAP-F1 B2 injection.
+    /// Orthogonally selected partial-pass proposals B2 injection.
     pub partial_passes: &'a [PartialPass],
     /// Best compliance score seen globally across all prior waves.
     /// When provided, emitted as a score-gradient header so the LLM knows how far
     /// the best attempt was from full compliance and can calibrate repair ambition.
     pub prior_best_score: Option<f64>,
-    /// GAP-I1 semantic correction entries. When non-empty, a DOMAIN KNOWLEDGE CORRECTION
+    /// semantic correction entries. When non-empty, a DOMAIN KNOWLEDGE CORRECTION
     /// block is prepended to the repair context before any REPAIR TARGET sections.
     /// When empty, behavior is identical to before this field was added.
     pub domain_syntheses: &'a [h2ai_types::gap_i1::DomainSynthesis],
@@ -269,7 +269,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
         domain_syntheses,
     } = input;
 
-    // GAP-I1: build semantic correction block, prepended before all other content.
+    // Build semantic correction block, prepended before all other content.
     let mut correction_block = String::new();
     if !domain_syntheses.is_empty() {
         for synth in domain_syntheses {
@@ -569,7 +569,7 @@ pub fn build_synthesis_context(input: SynthesisInput<'_>) -> String {
     out
 }
 
-/// Input for a single sequential constraint graft step (GAP-H1).
+/// Input for a single sequential constraint graft step.
 pub struct GraftInput<'a> {
     /// Current working draft — the seed or result of the previous graft round.
     pub base_text: &'a str,
@@ -612,7 +612,46 @@ pub fn build_graft_context(input: &GraftInput<'_>) -> String {
 /// `offsets` is `(constraint_id, start_check_index, check_count)` — integer indices into
 /// the flat check array. These are NOT byte offsets into string content; no UTF-8 slicing occurs.
 ///
-/// Used by the GAP-H1 grafting loop to determine which constraint cluster to integrate
+/// Returns `true` when the candidate is too similar to the base to merit grafting.
+///
+/// Computes `shared / union` over the passing check indices of `base` and the total
+/// check indices of `candidate`. When the ratio exceeds `threshold` (e.g. 0.60) the
+/// candidate would contribute minimal new coverage and should be skipped.
+pub fn graft_is_redundant(base: &PartialPass, candidate: &PartialPass, threshold: f64) -> bool {
+    let base_passing = base.passed_check_indices();
+    let candidate_all: HashSet<usize> =
+        candidate.check_results.iter().map(|(i, _, _)| *i).collect();
+    let union_count = base_passing.union(&candidate_all).count();
+    if union_count == 0 {
+        return false;
+    }
+    let shared = base_passing.intersection(&candidate_all).count();
+    (shared as f64 / union_count as f64) > threshold
+}
+
+/// Returns `true` when all `missing` constraint IDs have already been introduced via
+/// a previous graft round (cycle detected in the grafting sequence).
+///
+/// When the entire `missing` set is a subset of `already_grafted`, no new constraint
+/// coverage is possible from this candidate and the round should be skipped.
+pub fn grafted_ids_cycle_detected(missing: &[String], already_grafted: &HashSet<String>) -> bool {
+    !missing.is_empty() && missing.iter().all(|id| already_grafted.contains(id))
+}
+
+/// Returns `true` when the projected token cost of the grafted output would exceed
+/// `factor` times the base token estimate.
+///
+/// Token estimate: `text.len() / 4 + 1` (rough 4-char-per-token proxy). The projection
+/// is `(base_text.len() + candidate_text.len()) / 4`; if this exceeds `base_tokens *
+/// factor` (e.g. 1.30 = 130%), the combined text would bloat the context window and
+/// the candidate should be skipped.
+pub fn graft_token_projection_exceeds(base_text: &str, candidate_text: &str, factor: f64) -> bool {
+    let base_tokens = (base_text.len() / 4 + 1) as f64;
+    let projected = ((base_text.len() + candidate_text.len()) / 4) as f64;
+    projected > base_tokens * factor
+}
+
+/// Used by the grafting loop to determine which constraint cluster to integrate
 /// at each round.
 pub fn missing_constraint_ids(
     base: &PartialPass,

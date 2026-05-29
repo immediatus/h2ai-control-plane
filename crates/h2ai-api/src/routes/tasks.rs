@@ -596,7 +596,7 @@ pub async fn submit_task(
                     }
                 }
 
-                // INNOVATION-3 (GAP-A3): update online ρ EMA from this task's verification scores.
+                // INNOVATION-3: update online ρ EMA from this task's verification scores.
                 {
                     let scores: Vec<(String, f64)> = output
                         .verification_events
@@ -989,7 +989,7 @@ pub async fn submit_task(
                     });
                 }
                 state_clone.store.mark_resolved(&output.task_id);
-                // GAP-H2: feed consensus_agreement_rate to drift monitor after each task.
+                // Feed consensus_agreement_rate to drift monitor after each task.
                 if let Some(rate) = output.consensus_agreement_rate {
                     let events = state_clone.drift_monitor.lock().await.observe(rate);
                     for event in events {
@@ -1061,7 +1061,7 @@ pub async fn submit_task(
                             target: "h2ai.tasks",
                             task_id = %task_id_for_failure,
                             partial_chars = partial.len(),
-                            "GAP-F1: best partial surfaced for HITL gate"
+                            "best partial surfaced for HITL gate"
                         );
                     }
                 }
@@ -1084,7 +1084,7 @@ pub async fn submit_task(
                     tracing::warn!("failed to publish TaskFailedEvent: {pub_err}");
                 }
                 state_clone.store.mark_failed(&task_id_for_failure);
-                // GAP-H2: low agreement rate on failure signals degraded LLM quality.
+                // Low agreement rate on failure signals degraded LLM quality.
                 state_clone.drift_monitor.lock().await.observe(0.0);
                 // GC: delete checkpoint on failure.
                 if let Err(e) = state_clone

@@ -78,13 +78,13 @@ impl Default for OracleGateConfig {
 ///
 /// All defaults are set in `reference.toml` under `[task_complexity]`.
 /// Shadow mode (default: `true`) lets you collect routing data before the
-/// GAP-A1 experiment validates the thresholds — `ParetoRouter` is unchanged until
+/// experiment validates the thresholds — `ParetoRouter` is unchanged until
 /// `shadow_mode` is set to `false`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskComplexityConfig {
     /// When `true` (default): Phase 1.5 emits `TaskComplexityAssessedEvent` but
     /// `TopologyPlanner` ignores the quadrant — all tasks route as Coverage.
-    /// Disable only after the GAP-A1 experiment validates threshold calibration.
+    /// Disable only after the experiment validates threshold calibration.
     pub shadow_mode: bool,
     /// TCC below this threshold classifies the task as Precision (Self-MoA).
     pub tcc_precision_threshold: f64,
@@ -174,7 +174,7 @@ pub enum ConfigLoadError {
     Config(#[from] config::ConfigError),
 }
 
-/// Configuration for the Phase 4 shadow auditor (GAP-C2).
+/// Configuration for the Phase 4 shadow auditor.
 ///
 /// When `enabled = true` and a shadow adapter is configured at startup
 /// (via `H2AI_SHADOW_AUDITOR_PROVIDER`), every Phase 4 audit is accompanied
@@ -274,7 +274,7 @@ impl Default for SafetyConfig {
 }
 
 /// Configuration for SRANI — Specification-Relative Architectural Noun Intersection.
-/// Detects shared ungrounded architectural entities across proposals (GAP-C1 extension).
+/// Detects shared ungrounded architectural entities across proposals (extension).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SraniConfig {
     /// When false, SRANI check is skipped entirely. Default true.
@@ -618,7 +618,7 @@ impl Default for ReasoningMemoryConfig {
     }
 }
 
-/// Configuration for the conflict-rate β signal (GAP-D1).
+/// Configuration for the conflict-rate β signal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConflictBetaConfig {
     #[serde(default = "default_conflict_beta_enabled")]
@@ -655,7 +655,7 @@ impl Default for ConflictBetaConfig {
     }
 }
 
-/// Configuration for the multi-variant judge panel (GAP-A7).
+/// Configuration for the multi-variant judge panel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JudgePanelConfig {
     /// Supermajority fraction required for a confident `CrossFamily` verdict. Default: 0.67.
@@ -775,7 +775,7 @@ impl Default for ThinkingLoopConfig {
     }
 }
 
-/// Configuration for GAP-I1: knowledge-gap detection and domain synthesis.
+/// Configuration: knowledge-gap detection and domain synthesis.
 ///
 /// When `enabled = true`, the MAPE-K loop fires a researcher adapter on checks
 /// whose historical pass rate is at or below `cold_check_threshold`. Synthesised
@@ -784,7 +784,7 @@ impl Default for ThinkingLoopConfig {
 /// calls are issued per MAPE-K wave to bound latency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GapI1Config {
-    /// Enable the GAP-I1 researcher loop. Default: false.
+    /// Enable the researcher loop. Default: false.
     pub enabled: bool,
     /// Only fire researcher on checks with pass rate ≤ this threshold. Default: 0.0.
     pub cold_check_threshold: f64,
@@ -808,7 +808,7 @@ impl Default for GapI1Config {
     }
 }
 
-/// Configuration for GAP-K1 constraint coherence — pre-flight coherence probe and
+/// Configuration constraint coherence — pre-flight coherence probe and
 /// runtime instability circuit breaker with automated spec repair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GapK1Config {
@@ -841,6 +841,268 @@ impl Default for GapK1Config {
             probe_runs: 5,
             repair_candidates: 3,
             probe_cache_ttl_secs: 86400,
+        }
+    }
+}
+
+/// Configuration for the intra-retry ceiling detector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntraRetryDetectorConfig {
+    /// Enable the intra-retry ceiling detector. Default: `false`.
+    pub enabled: bool,
+    /// Shannon entropy of the constraint-failure distribution below this threshold signals
+    /// a peaked (ceiling) failure pattern rather than a broad quality failure. Default: `0.6`.
+    pub entropy_threshold: f64,
+    /// Score-improvement slope (relative) between the last two waves below this threshold
+    /// signals convergence failure. Default: `0.05`.
+    pub retry_slope_threshold: f64,
+    /// N_eff × CG_mean product below this threshold signals correlated failure
+    /// (all paths fail for the same structural reason). Default: `0.3`.
+    pub n_eff_cg_product_threshold: f64,
+    /// Minimum number of completed retry waves before the detector may fire (avoids
+    /// false positives on normal wave-0 variance). Default: `2`.
+    pub min_retry_count_for_detection: u32,
+}
+
+impl Default for IntraRetryDetectorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            entropy_threshold: 0.6,
+            retry_slope_threshold: 0.05,
+            n_eff_cg_product_threshold: 0.3,
+            min_retry_count_for_detection: 2,
+        }
+    }
+}
+
+/// Configuration AgentDropout N-reduction on retry.
+///
+/// Based on Wang et al. ACL 2025 (arXiv 2503.18891): reducing the number of
+/// explorer agents when participation ratio (N_eff) is low cuts correlated
+/// token waste while maintaining performance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentDropoutConfig {
+    /// Enable AgentDropout N-reduction on retry. Default: `false`.
+    pub enabled: bool,
+    /// Reduce explorer count when N_eff falls below this threshold. Default: `0.5`.
+    pub n_eff_dropout_threshold: f64,
+}
+
+impl Default for AgentDropoutConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            n_eff_dropout_threshold: 0.5,
+        }
+    }
+}
+
+/// Configuration complexity-ceiling routing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComplexityRoutingConfig {
+    /// Enable complexity routing. When disabled, all task routing is unchanged. Default: `false`.
+    pub enabled: bool,
+    /// Adapter profile key used for the probe LLM call (should be a cheap/fast model).
+    /// Default: `"researcher"`.
+    pub complexity_probe_adapter: String,
+    /// Timeout for the probe LLM call in seconds. Default: `30`.
+    pub complexity_probe_timeout_secs: u64,
+    /// Complexity probe score (1–5) at or above which the task is routed to H1 grafting
+    /// on its first `ZeroSurvival` failure instead of burning additional retries. Default: `4`.
+    pub decompose_threshold: u8,
+    /// Complexity probe score (1–5) at or above which the task skips all retries and is
+    /// routed to the HITL gate immediately after the first failure. Default: `5`.
+    pub hitl_threshold: u8,
+    /// Enable sub-claim BEYOND_BUDGET verdict injection in the verifier prompt. Default: `false`.
+    pub verifier_decomposition_enabled: bool,
+    /// Configuration for the intra-retry ceiling detector.
+    pub intra_retry: IntraRetryDetectorConfig,
+    /// Configuration for AgentDropout N-reduction on retry waves.
+    /// Defaults to disabled so existing configs without this section parse cleanly.
+    #[serde(default)]
+    pub agent_dropout: AgentDropoutConfig,
+}
+
+impl Default for ComplexityRoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            complexity_probe_adapter: "researcher".to_string(),
+            complexity_probe_timeout_secs: 30,
+            decompose_threshold: 4,
+            hitl_threshold: 5,
+            verifier_decomposition_enabled: false,
+            intra_retry: IntraRetryDetectorConfig::default(),
+            agent_dropout: AgentDropoutConfig::default(),
+        }
+    }
+}
+
+/// Configuration for GAP-L1 Tiered Early Exit.
+///
+/// When enabled, the engine escalates the explorer count linearly from `min_n`
+/// to `max_n` across retry waves, and exits as soon as `k_for_wave(n)` proposals
+/// meet the acceptance threshold.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TieredExitConfig {
+    /// Enable tiered early exit. Default: `false`.
+    pub enabled: bool,
+    /// Explorer count for wave 0 (cheapest wave). Default: `1`.
+    pub min_n: u32,
+    /// Explorer count ceiling across all waves. Default: `5`.
+    pub max_n: u32,
+    /// Fraction of N that must pass acceptance for fast exit: K = max(1, ceil(N × quorum_fraction)).
+    /// Default: `0.5`.
+    pub quorum_fraction: f64,
+    /// Minimum `VerificationScoredEvent.score` for a proposal to count as "accepted".
+    /// Default: `0.85`.
+    pub acceptance_score: f64,
+    /// When `true`, all `binary_checks` on the constraint must pass for a proposal to
+    /// count as accepted. Default: `true`.
+    pub require_all_binary_checks: bool,
+}
+
+impl Default for TieredExitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_n: 1,
+            max_n: 5,
+            quorum_fraction: 0.5,
+            acceptance_score: 0.85,
+            require_all_binary_checks: true,
+        }
+    }
+}
+
+impl TieredExitConfig {
+    /// Explorer count for wave `wave` given `max_retries` total waves.
+    ///
+    /// Scales linearly from `min_n` (wave 0) to `max_n` (wave max_retries).
+    /// When `max_retries == 0`, always returns `max_n`.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `min_n > max_n`.
+    pub fn n_for_wave(&self, wave: u32, max_retries: u32) -> u32 {
+        debug_assert!(
+            self.min_n <= self.max_n,
+            "TieredExitConfig: min_n ({}) must be <= max_n ({})",
+            self.min_n,
+            self.max_n
+        );
+        if max_retries == 0 {
+            return self.max_n;
+        }
+        let frac = wave as f64 / max_retries as f64;
+        let n = self.min_n as f64 + (frac * (self.max_n as f64 - self.min_n as f64)).round();
+        n.clamp(self.min_n as f64, self.max_n as f64) as u32
+    }
+
+    /// Minimum number of proposals that must meet the acceptance threshold.
+    ///
+    /// `K = max(1, ceil(n × quorum_fraction))`.
+    pub fn k_for_wave(&self, n: u32) -> u32 {
+        ((n as f64 * self.quorum_fraction).ceil() as u32).max(1)
+    }
+}
+
+// ── GAP-H3: Cost Guard ────────────────────────────────────────────────────────
+
+/// Per-task token budget enforcement configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CostGuardConfig {
+    /// Master switch. Default: `false`.
+    pub enabled: bool,
+    /// Per-task token ceiling (generation tokens, all waves combined). 0 = disabled.
+    pub budget_tokens_per_task: u64,
+    /// Fraction of budget at which `CostThresholdWarningEvent` is emitted.
+    pub budget_warning_fraction: f64,
+    /// Fraction of budget at which retry is blocked and best available output is returned.
+    pub budget_abort_fraction: f64,
+    /// Inject remaining-budget hint into the explorer system prompt.
+    pub budget_prompt_injection_enabled: bool,
+    /// Fraction of budget consumed above which hint injection activates.
+    pub budget_injection_warn_fraction: f64,
+    /// Maximum `ComplexityProbe` score (1–5) for which injection is applied.
+    pub budget_injection_max_complexity: u8,
+}
+
+impl Default for CostGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            budget_tokens_per_task: 100_000,
+            budget_warning_fraction: 0.80,
+            budget_abort_fraction: 1.00,
+            budget_prompt_injection_enabled: false,
+            budget_injection_warn_fraction: 0.50,
+            budget_injection_max_complexity: 3,
+        }
+    }
+}
+
+impl CostGuardConfig {
+    /// Compute remaining tokens given `tokens_used`. Returns `i64::MAX` when budget is 0 (unlimited).
+    pub fn remaining(&self, tokens_used: u64) -> i64 {
+        if self.budget_tokens_per_task == 0 {
+            return i64::MAX;
+        }
+        self.budget_tokens_per_task as i64 - tokens_used as i64
+    }
+
+    /// Fraction of budget consumed. Returns 0.0 when disabled or budget is 0.
+    pub fn fraction_used(&self, tokens_used: u64) -> f64 {
+        if self.budget_tokens_per_task == 0 || !self.enabled {
+            return 0.0;
+        }
+        tokens_used as f64 / self.budget_tokens_per_task as f64
+    }
+}
+
+/// Consensus convergence gate configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConvergenceGateConfig {
+    /// Master switch. Default: `false`.
+    pub enabled: bool,
+    /// Pairwise cosine similarity threshold for "semantically equivalent".
+    pub theta_converge: f64,
+    /// Fraction of pairs required to exceed `theta_converge` for N=3 pools.
+    pub supermajority_fraction_n3: f64,
+    /// Fraction of pairs required to exceed `theta_converge` for N≥4 pools.
+    pub supermajority_fraction_n4plus: f64,
+    /// Minimum score all surviving proposals must achieve.
+    pub score_floor: f64,
+    /// Minimum wave index before gate can fire (0-indexed).
+    pub min_wave: u32,
+    /// Minimum `fraction_used` before convergence is checked (mode-collapse guard).
+    pub budget_floor_fraction: f64,
+}
+
+impl Default for ConvergenceGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            theta_converge: 0.87,
+            supermajority_fraction_n3: 0.67,
+            supermajority_fraction_n4plus: 0.80,
+            score_floor: 0.80,
+            min_wave: 1,
+            budget_floor_fraction: 0.30,
+        }
+    }
+}
+
+impl ConvergenceGateConfig {
+    /// Required supermajority fraction for `n_live` surviving proposals.
+    pub fn supermajority_for_n(&self, n_live: usize) -> f64 {
+        match n_live {
+            0..=2 => 1.0,
+            3 => self.supermajority_fraction_n3,
+            _ => self.supermajority_fraction_n4plus,
         }
     }
 }
@@ -937,7 +1199,7 @@ pub struct StateConfig {
     /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "`H2AI_MEMORY`".
     #[serde(default = "default_tenant_memory_bucket_prefix")]
     pub tenant_memory_bucket_prefix: String,
-    /// NATS KV bucket name prefix for per-tenant conflict-rate accumulators (GAP-D1).
+    /// NATS KV bucket name prefix for per-tenant conflict-rate accumulators.
     /// Actual bucket: `{prefix}_{tenant_bucket_safe}`. Default: "`H2AI_CONFLICT`".
     #[serde(default = "default_conflict_beta_bucket_prefix")]
     pub conflict_beta_bucket_prefix: String,
@@ -1254,7 +1516,7 @@ pub struct H2AIConfig {
     /// Enable the synthesis phase. When false, the engine uses the selection chain exclusively.
     /// Default: true. Set false to reproduce pre-synthesis behavior for benchmarking.
     pub synthesis_enabled: bool,
-    /// Enable the GAP-F1 synthesis wave — one terminal LLM call after all retries exhaust.
+    /// Enable the synthesis wave — one terminal LLM call after all retries exhaust.
     /// Fires only when partial-pass proposals exist. Default: true.
     pub synthesis_wave_enabled: bool,
     /// Minimum number of verified proposals required to attempt synthesis.
@@ -1272,7 +1534,7 @@ pub struct H2AIConfig {
     /// Represents non-partial content (system prompt, task description, repair context) in
     /// units of partial-slot equivalents. Default: 5.0.
     pub partial_pass_overhead_factor: f64,
-    /// Enable sequential constraint grafting in the synthesis wave (GAP-H1).
+    /// Enable sequential constraint grafting in the synthesis wave.
     /// When true, the engine iteratively integrates one constraint cluster per LLM call
     /// starting from the highest-scoring partial as the seed. Each round includes
     /// intermediate verification with rollback — destructive grafts are discarded.
@@ -1347,7 +1609,7 @@ pub struct H2AIConfig {
     /// all safety field values from the profile definition.
     #[serde(default)]
     pub safety: SafetyConfig,
-    /// CV threshold below which correlated hallucination detection fires (GAP-C1).
+    /// CV threshold below which correlated hallucination detection fires.
     /// CV = `std_dev(pairwise_jaccard_distances)` / `mean(pairwise_jaccard_distances)`.
     /// Low CV = proposals are semantically clustered → correlated assumption risk.
     /// Default 0.30. Set to 0.0 to disable C1 detection entirely.
@@ -1359,12 +1621,12 @@ pub struct H2AIConfig {
     /// C1 fires only when BOTH cv < `cv_threshold` AND `mean_jaccard` < this floor.
     #[serde(default = "default_correlated_hallucination_min_jaccard_floor")]
     pub correlated_hallucination_min_jaccard_floor: f64,
-    /// Minimum fraction of constraint corpus domains that slot assignments must cover (GAP-C3).
+    /// Minimum fraction of constraint corpus domains that slot assignments must cover.
     /// `coverage_score` = |`covered_domains` ∩ `corpus_domains`| / |`corpus_domains`|.
     /// Fires `DiversityGuardDegradedEvent` when below this threshold. Default 0.40.
     #[serde(default = "default_domain_coverage_threshold")]
     pub domain_coverage_threshold: f64,
-    /// SRANI correlated fabrication detection configuration (GAP-C1 extension).
+    /// SRANI correlated fabrication detection configuration (extension).
     #[serde(default)]
     pub srani: SraniConfig,
     /// Optional path to an NDJSON debug log file. When set, every completed task
@@ -1404,10 +1666,10 @@ pub struct H2AIConfig {
     /// Persistent Reasoning Memory configuration — checkpoint writes, induction cycles, retrieval.
     #[serde(default)]
     pub reasoning_memory: ReasoningMemoryConfig,
-    /// Conflict-rate β accumulator configuration (GAP-D1).
+    /// Conflict-rate β accumulator configuration.
     #[serde(default)]
     pub conflict_beta: ConflictBetaConfig,
-    /// Judge panel configuration for Phase 3.5 multi-variant evaluation (GAP-A7).
+    /// Judge panel configuration for Phase 3.5 multi-variant evaluation.
     #[serde(default)]
     pub judge_panel: JudgePanelConfig,
     /// Knowledge provider configuration. When absent, uses `PassthroughProvider`
@@ -1438,12 +1700,24 @@ pub struct H2AIConfig {
     /// Default: "`H2AI_ORACLE_HUMAN`".
     #[serde(default = "default_oracle_human_bucket")]
     pub oracle_human_bucket: String,
-    /// GAP-I1 knowledge-gap detection and domain synthesis configuration.
+    /// knowledge-gap detection and domain synthesis configuration.
     #[serde(default)]
     pub gap_i1: GapI1Config,
-    /// GAP-K1 constraint coherence configuration.
+    /// constraint coherence configuration.
     #[serde(default)]
     pub gap_k1: GapK1Config,
+    /// complexity-ceiling routing configuration.
+    #[serde(default)]
+    pub complexity_routing: ComplexityRoutingConfig,
+    /// GAP-L1 tiered early exit configuration.
+    #[serde(default)]
+    pub tiered_exit: TieredExitConfig,
+    /// GAP-H3 per-task token budget enforcement.
+    #[serde(default)]
+    pub cost_guard: CostGuardConfig,
+    /// GAP-H3 consensus convergence gate — stop retrying when verified proposals converge.
+    #[serde(default)]
+    pub convergence_gate: ConvergenceGateConfig,
 }
 
 fn default_oracle_human_bucket() -> String {
@@ -1897,5 +2171,240 @@ mod tests {
         cfg.safety.profile = SafetyProfile::Development;
         apply_safety_profile(&mut cfg);
         assert!(!cfg.safety.shadow_auditor.strict);
+    }
+}
+
+#[cfg(test)]
+mod complexity_routing_tests {
+    use super::*;
+
+    #[test]
+    fn complexity_routing_config_defaults() {
+        let cfg = ComplexityRoutingConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.complexity_probe_adapter, "researcher");
+        assert_eq!(cfg.complexity_probe_timeout_secs, 30);
+        assert_eq!(cfg.decompose_threshold, 4);
+        assert_eq!(cfg.hitl_threshold, 5);
+        assert!(!cfg.verifier_decomposition_enabled);
+        assert!(!cfg.intra_retry.enabled);
+        assert_eq!(cfg.intra_retry.entropy_threshold, 0.6);
+        assert_eq!(cfg.intra_retry.retry_slope_threshold, 0.05);
+        assert_eq!(cfg.intra_retry.n_eff_cg_product_threshold, 0.3);
+        assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 2);
+    }
+
+    #[test]
+    fn agent_dropout_config_defaults() {
+        let cfg = ComplexityRoutingConfig::default();
+        assert!(!cfg.agent_dropout.enabled);
+        assert_eq!(cfg.agent_dropout.n_eff_dropout_threshold, 0.5);
+    }
+
+    #[test]
+    fn complexity_routing_config_toml_roundtrip() {
+        let toml_str = r#"
+            enabled = true
+            complexity_probe_adapter = "explorer"
+            complexity_probe_timeout_secs = 60
+            decompose_threshold = 3
+            hitl_threshold = 4
+            verifier_decomposition_enabled = true
+
+            [intra_retry]
+            enabled = true
+            entropy_threshold = 0.5
+            retry_slope_threshold = 0.02
+            n_eff_cg_product_threshold = 0.25
+            min_retry_count_for_detection = 3
+        "#;
+        let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.complexity_probe_adapter, "explorer");
+        assert_eq!(cfg.complexity_probe_timeout_secs, 60);
+        assert_eq!(cfg.decompose_threshold, 3);
+        assert_eq!(cfg.hitl_threshold, 4);
+        assert!(cfg.verifier_decomposition_enabled);
+        assert!(cfg.intra_retry.enabled);
+        assert_eq!(cfg.intra_retry.entropy_threshold, 0.5);
+        assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 3);
+    }
+}
+
+#[cfg(test)]
+mod tiered_exit_tests {
+    use super::*;
+
+    fn cfg(min_n: u32, max_n: u32, quorum_fraction: f64) -> TieredExitConfig {
+        TieredExitConfig {
+            enabled: true,
+            min_n,
+            max_n,
+            quorum_fraction,
+            acceptance_score: 0.85,
+            require_all_binary_checks: true,
+        }
+    }
+
+    #[test]
+    fn n_for_wave_wave0_returns_min_n() {
+        let c = cfg(1, 5, 0.5);
+        assert_eq!(c.n_for_wave(0, 4), 1);
+    }
+
+    #[test]
+    fn n_for_wave_last_wave_returns_max_n() {
+        let c = cfg(1, 5, 0.5);
+        assert_eq!(c.n_for_wave(4, 4), 5);
+    }
+
+    #[test]
+    fn n_for_wave_midpoint_rounds_correctly() {
+        let c = cfg(1, 5, 0.5);
+        // wave=2, max=4: frac=0.5, n = 1 + round(0.5 * 4) = 1 + 2 = 3
+        assert_eq!(c.n_for_wave(2, 4), 3);
+    }
+
+    #[test]
+    fn n_for_wave_zero_max_retries_returns_max_n() {
+        let c = cfg(1, 5, 0.5);
+        assert_eq!(c.n_for_wave(0, 0), 5);
+    }
+
+    #[test]
+    fn n_for_wave_clamps_to_bounds() {
+        let c = cfg(3, 3, 0.5);
+        assert_eq!(c.n_for_wave(0, 4), 3);
+        assert_eq!(c.n_for_wave(4, 4), 3);
+    }
+
+    #[test]
+    fn k_for_wave_fraction_half() {
+        let c = cfg(1, 5, 0.5);
+        assert_eq!(c.k_for_wave(1), 1); // ceil(0.5) = 1
+        assert_eq!(c.k_for_wave(3), 2); // ceil(1.5) = 2
+        assert_eq!(c.k_for_wave(5), 3); // ceil(2.5) = 3
+    }
+
+    #[test]
+    fn k_for_wave_never_zero() {
+        let c = cfg(1, 5, 0.01);
+        assert_eq!(c.k_for_wave(1), 1);
+    }
+
+    #[test]
+    fn default_is_disabled() {
+        let c = TieredExitConfig::default();
+        assert!(!c.enabled);
+    }
+
+    #[test]
+    fn toml_roundtrip() {
+        let toml_str = r#"
+            enabled                   = true
+            min_n                     = 2
+            max_n                     = 6
+            quorum_fraction           = 0.4
+            acceptance_score          = 0.90
+            require_all_binary_checks = false
+        "#;
+        let c: TieredExitConfig = toml::from_str(toml_str).expect("parse");
+        assert!(c.enabled);
+        assert_eq!(c.min_n, 2);
+        assert_eq!(c.max_n, 6);
+        assert!((c.quorum_fraction - 0.4).abs() < 1e-9);
+        assert!((c.acceptance_score - 0.90).abs() < 1e-9);
+        assert!(!c.require_all_binary_checks);
+    }
+
+    #[test]
+    fn n_for_wave_wave_beyond_max_retries_clamps_to_max_n() {
+        let c = cfg(1, 5, 0.5);
+        // wave=6 > max_retries=4: frac=1.5, raw n=7, clamped to max_n=5
+        assert_eq!(c.n_for_wave(6, 4), 5);
+    }
+
+    #[test]
+    fn k_for_wave_n_zero_returns_one() {
+        let c = cfg(1, 5, 0.5);
+        // ceil(0 * 0.5) = 0, max(1, 0) = 1
+        assert_eq!(c.k_for_wave(0), 1);
+    }
+
+    #[test]
+    fn reference_toml_contains_tiered_exit() {
+        let src = include_str!("../reference.toml");
+        assert!(
+            src.contains("[tiered_exit]"),
+            "reference.toml must have [tiered_exit] section"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cost_guard_tests {
+    use super::*;
+
+    #[test]
+    fn cost_guard_default_disabled() {
+        let cfg = CostGuardConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.budget_tokens_per_task, 100_000);
+        assert!((cfg.budget_warning_fraction - 0.80).abs() < 1e-9);
+        assert!((cfg.budget_abort_fraction - 1.00).abs() < 1e-9);
+        assert!(!cfg.budget_prompt_injection_enabled);
+        assert!((cfg.budget_injection_warn_fraction - 0.50).abs() < 1e-9);
+        assert_eq!(cfg.budget_injection_max_complexity, 3);
+    }
+
+    #[test]
+    fn convergence_gate_default_disabled() {
+        let cfg = ConvergenceGateConfig::default();
+        assert!(!cfg.enabled);
+        assert!((cfg.theta_converge - 0.87).abs() < 1e-9);
+        assert!((cfg.supermajority_fraction_n3 - 0.67).abs() < 1e-9);
+        assert!((cfg.supermajority_fraction_n4plus - 0.80).abs() < 1e-9);
+        assert!((cfg.score_floor - 0.80).abs() < 1e-9);
+        assert_eq!(cfg.min_wave, 1);
+        assert!((cfg.budget_floor_fraction - 0.30).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cost_guard_parses_from_toml() {
+        let s = r#"
+            [cost_guard]
+            enabled = true
+            budget_tokens_per_task = 50000
+            budget_warning_fraction = 0.75
+            budget_abort_fraction = 0.95
+            budget_prompt_injection_enabled = true
+            budget_injection_warn_fraction = 0.60
+            budget_injection_max_complexity = 4
+            [convergence_gate]
+            enabled = true
+            theta_converge = 0.90
+            supermajority_fraction_n3 = 1.0
+            supermajority_fraction_n4plus = 0.80
+            score_floor = 0.75
+            min_wave = 2
+            budget_floor_fraction = 0.25
+        "#;
+        #[derive(serde::Deserialize)]
+        struct T {
+            cost_guard: CostGuardConfig,
+            convergence_gate: ConvergenceGateConfig,
+        }
+        let t: T = toml::from_str(s).expect("parse");
+        assert!(t.cost_guard.enabled);
+        assert_eq!(t.cost_guard.budget_tokens_per_task, 50_000);
+        assert!(t.convergence_gate.enabled);
+        assert!((t.convergence_gate.theta_converge - 0.90).abs() < 1e-9);
+    }
+
+    #[test]
+    fn h2ai_config_has_cost_guard_and_convergence_gate() {
+        let cfg = H2AIConfig::default();
+        assert!(!cfg.cost_guard.enabled);
+        assert!(!cfg.convergence_gate.enabled);
     }
 }

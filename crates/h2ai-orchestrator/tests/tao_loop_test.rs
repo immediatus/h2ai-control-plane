@@ -52,7 +52,7 @@
     clippy::no_effect_underscore_binding
 )]
 use h2ai_orchestrator::tao_loop::{TaoInput, TaoLoop, TaoMultiplierEstimator};
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::{OutputSchemaConfig, TaoConfig};
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -83,7 +83,7 @@ fn make_input<'a>(
 
 #[tokio::test]
 async fn tao_loop_passes_on_first_turn_when_output_matches_pattern() {
-    let adapter = MockAdapter::new("APPROVED: stateless JWT auth".into());
+    let adapter = mock_adapter("APPROVED: stateless JWT auth");
     let task_id = TaskId::new();
     let req = ComputeRequest {
         system_context: "You are a reviewer.".into(),
@@ -115,7 +115,7 @@ async fn tao_loop_passes_on_first_turn_when_output_matches_pattern() {
 
 #[tokio::test]
 async fn tao_loop_exhausts_turns_and_returns_best() {
-    let adapter = MockAdapter::new("no match here".into());
+    let adapter = mock_adapter("no match here");
     let task_id = TaskId::new();
     let req = ComputeRequest {
         system_context: "context".into(),
@@ -150,7 +150,7 @@ async fn tao_memory_accumulates_on_failed_turns() {
     use h2ai_types::adapter::IComputeAdapter;
 
     // Pattern requires "FINAL" but adapter always returns "draft" — loop runs max_turns
-    let adapter = MockAdapter::new("draft response".into());
+    let adapter = mock_adapter("draft response");
     let result = TaoLoop::run(TaoInput {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),
@@ -189,7 +189,7 @@ async fn tao_memory_accumulates_on_failed_turns() {
 
 #[tokio::test]
 async fn tao_max_turns_zero_returns_error() {
-    let adapter = MockAdapter::new("anything".into());
+    let adapter = mock_adapter("anything");
     let cfg = TaoConfig {
         max_turns: 0,
         ..Default::default()
@@ -205,7 +205,7 @@ async fn tao_max_turns_zero_returns_error() {
 
 #[tokio::test]
 async fn tao_invalid_verify_pattern_returns_error() {
-    let adapter = MockAdapter::new("output".into());
+    let adapter = mock_adapter("output");
     let cfg = TaoConfig {
         max_turns: 2,
         verify_pattern: Some("[invalid regex(".into()),
@@ -223,7 +223,7 @@ async fn tao_invalid_verify_pattern_returns_error() {
 #[tokio::test]
 async fn tao_repetition_detected_returns_error() {
     // Adapter always returns identical output → similarity == 1.0 ≥ threshold 0.9
-    let adapter = MockAdapter::new("identical output tokens".into());
+    let adapter = mock_adapter("identical output tokens");
     let cfg = TaoConfig {
         max_turns: 3,
         verify_pattern: Some("NEVER_MATCHES".into()),
@@ -242,7 +242,7 @@ async fn tao_repetition_detected_returns_error() {
 #[tokio::test]
 async fn tao_schema_validation_fail_counts_as_turn_failure() {
     // Output is valid JSON but does NOT satisfy the schema (missing required "score" field).
-    let adapter = MockAdapter::new(r#"{"other": "field"}"#.into());
+    let adapter = mock_adapter(r#"{"other": "field"}"#);
     let schema_cfg = OutputSchemaConfig {
         schema_json: r#"{"type":"object","required":["score"]}"#.into(),
     };
@@ -269,7 +269,7 @@ async fn tao_schema_validation_fail_counts_as_turn_failure() {
 
 #[tokio::test]
 async fn tao_max_turns_one_with_no_pattern_passes_immediately() {
-    let adapter = MockAdapter::new("any output".into());
+    let adapter = mock_adapter("any output");
     let cfg = TaoConfig {
         max_turns: 1,
         verify_pattern: None,
@@ -385,7 +385,7 @@ fn tao_multiplier_estimator_negative_q_before_skipped() {
 
 #[tokio::test]
 async fn tao_bypass_skips_retry_loop_and_returns_single_turn() {
-    let adapter = MockAdapter::new("bypass output".into());
+    let adapter = mock_adapter("bypass output");
     let cfg = TaoConfig {
         max_turns: 3,
         verify_pattern: Some("NEVER_MATCHES".into()), // would fail if TAO ran
@@ -425,7 +425,7 @@ async fn tao_bypass_skips_retry_loop_and_returns_single_turn() {
 
 #[tokio::test]
 async fn tao_proposal_debug_format() {
-    let adapter = MockAdapter::new("answer".into());
+    let adapter = mock_adapter("answer");
     let result = TaoLoop::run(TaoInput {
         task_id: TaskId::new(),
         explorer_id: ExplorerId::new(),
@@ -484,28 +484,27 @@ fn persist_state_respects_configured_warmup() {
 
 // ── TAO timeout retry ─────────────────────────────────────────────────────────
 
-/// Mock adapter that sleeps on the first call (simulating a slow LLM) then returns
-/// immediately on subsequent calls, recording the `max_tokens` of each request.
+/// Adapter that blocks indefinitely on the first call (TAO timeout fires), then returns
+/// immediately on subsequent calls. Records `max_tokens` of each request.
 #[derive(Debug)]
 struct SlowFirstCallAdapter {
     call_count: std::sync::Arc<std::sync::Mutex<u32>>,
     recorded_max_tokens: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
-    slow_duration_secs: u64,
     output: String,
     kind: h2ai_types::config::AdapterKind,
 }
 
 impl SlowFirstCallAdapter {
-    fn new(slow_duration_secs: u64, output: impl Into<String>) -> Self {
+    fn new(output: impl Into<String>) -> Self {
         Self {
             call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
             recorded_max_tokens: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            slow_duration_secs,
             output: output.into(),
             kind: h2ai_types::config::AdapterKind::CloudGeneric {
                 endpoint: "mock://slow-first".into(),
                 api_key_env: "NONE".into(),
                 model: None,
+                provider: Default::default(),
             },
         }
     }
@@ -527,7 +526,8 @@ impl IComputeAdapter for SlowFirstCallAdapter {
             toks.push(req.max_tokens);
         }
         if call_num == 1 {
-            tokio::time::sleep(std::time::Duration::from_secs(self.slow_duration_secs)).await;
+            // Block forever — TAO's per_turn_timeout select arm fires and cancels this future.
+            std::future::pending::<()>().await;
         }
         Ok(h2ai_types::adapter::ComputeResponse {
             output: self.output.clone(),
@@ -560,7 +560,7 @@ fn retry_on_timeout_true_fields_in_default() {
 async fn retry_on_timeout_false_propagates_error() {
     // Adapter always sleeps for 3 s; timeout is 1 s → first call times out.
     // With retry_on_timeout=false the error must propagate immediately.
-    let adapter = SlowFirstCallAdapter::new(3, "would succeed");
+    let adapter = SlowFirstCallAdapter::new("would succeed");
     let cfg = TaoConfig {
         max_turns: 1,
         verify_pattern: None,
@@ -596,7 +596,7 @@ async fn retry_on_timeout_false_propagates_error() {
 async fn retry_on_timeout_true_retries_with_reduced_max_tokens() {
     // First call sleeps 3 s (past 1 s timeout); second call returns immediately.
     // retry_on_timeout=true → loop retries with max_tokens=512.
-    let adapter = SlowFirstCallAdapter::new(3, "fast retry output");
+    let adapter = SlowFirstCallAdapter::new("fast retry output");
     let recorded = adapter.recorded_max_tokens.clone();
     let cfg = TaoConfig {
         max_turns: 1,
@@ -637,7 +637,7 @@ async fn retry_on_timeout_true_retries_with_reduced_max_tokens() {
 #[tokio::test]
 async fn retry_on_timeout_bypass_path_retries_with_reduced_max_tokens() {
     // Same as above but via bypass_tao=true path.
-    let adapter = SlowFirstCallAdapter::new(3, "bypass retry output");
+    let adapter = SlowFirstCallAdapter::new("bypass retry output");
     let recorded = adapter.recorded_max_tokens.clone();
     let cfg = TaoConfig {
         max_turns: 1,
@@ -678,21 +678,20 @@ async fn retry_on_timeout_bypass_path_retries_with_reduced_max_tokens() {
     );
 }
 
-/// Mock adapter that ALWAYS sleeps for `slow_duration_secs` regardless of call count.
+/// Adapter that blocks indefinitely on every call — TAO timeout must always fire.
 #[derive(Debug)]
 struct AlwaysSlowAdapter {
-    slow_duration_secs: u64,
     kind: h2ai_types::config::AdapterKind,
 }
 
 impl AlwaysSlowAdapter {
-    fn new(slow_duration_secs: u64) -> Self {
+    fn new() -> Self {
         Self {
-            slow_duration_secs,
             kind: h2ai_types::config::AdapterKind::CloudGeneric {
                 endpoint: "mock://always-slow".into(),
                 api_key_env: "NONE".into(),
                 model: None,
+                provider: Default::default(),
             },
         }
     }
@@ -704,14 +703,9 @@ impl IComputeAdapter for AlwaysSlowAdapter {
         &self,
         _req: ComputeRequest,
     ) -> Result<h2ai_types::adapter::ComputeResponse, h2ai_types::adapter::AdapterError> {
-        tokio::time::sleep(std::time::Duration::from_secs(self.slow_duration_secs)).await;
-        Ok(h2ai_types::adapter::ComputeResponse {
-            output: "never reached".into(),
-            token_cost: 0,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
+        // Block forever — TAO's per_turn_timeout select arm cancels this future.
+        std::future::pending::<()>().await;
+        unreachable!()
     }
 
     fn kind(&self) -> &h2ai_types::config::AdapterKind {
@@ -725,7 +719,7 @@ async fn retry_on_timeout_double_timeout_propagates_error() {
     // With retry_on_timeout=true on the bypass path: first call times out,
     // retry is attempted, second call ALSO times out → must return Err containing
     // "TAO timeout".
-    let adapter = AlwaysSlowAdapter::new(3);
+    let adapter = AlwaysSlowAdapter::new();
     let cfg = TaoConfig {
         max_turns: 1,
         verify_pattern: None,

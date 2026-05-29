@@ -1,11 +1,15 @@
 #![allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 //! Unit tests for `h2ai_orchestrator::phases::oracle`.
 //!
-//! Only the two NATS-free branches are tested here:
+//! NATS-free branches:
 //! - gate disabled (default config)   → `StepResult::Done(None)`
 //! - gate enabled but nats_raw = None → `StepResult::Done(None)`
 //!
-//! The NATS-request branches are covered by integration tests that require a live server.
+//! NATS-backed integration branches (require localhost:4222):
+//! - gate passed (gate_passed = true)         → `StepResult::Done(Some(true))`
+//! - gate failed (gate_passed = false)        → `StepResult::EarlyExit(OracleBlocked)`
+//! - malformed response                       → on_timeout policy fallback
+//! - timeout (no responder within 1 second)   → on_timeout policy fallback
 
 use std::sync::Arc;
 
@@ -18,7 +22,7 @@ use h2ai_orchestrator::{
     tao_loop::TaoMultiplierEstimator,
     task_store::TaskStore,
 };
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 use h2ai_types::{
     adapter::{AdapterRegistry, IComputeAdapter},
     config::ParetoWeights,
@@ -100,6 +104,7 @@ fn make_engine_input<'a>(
                 endpoint: "mock".into(),
                 api_key_env: "NONE".into(),
                 model: None,
+                provider: Default::default(),
             },
             ..Default::default()
         },
@@ -139,11 +144,10 @@ fn make_engine_input<'a>(
 
 #[tokio::test]
 async fn oracle_phase_gate_disabled_returns_done_none() {
-    let adapter = MockAdapter::new("output".into());
+    let adapter = mock_adapter("output");
     let cfg = H2AIConfig::default(); // oracle_gate.enabled = false
     let store = TaskStore::new();
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("mock".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("mock")) as Arc<dyn IComputeAdapter>);
 
     let engine_input = make_engine_input(&adapter, &adapter, &cfg, store, &registry);
     let result = phases::oracle::run(phases::oracle::Input {
@@ -161,7 +165,7 @@ async fn oracle_phase_gate_disabled_returns_done_none() {
 
 #[tokio::test]
 async fn oracle_phase_gate_enabled_no_nats_returns_done_none() {
-    let adapter = MockAdapter::new("output".into());
+    let adapter = mock_adapter("output");
     let cfg = H2AIConfig {
         oracle_gate: OracleGateConfig {
             enabled: true,
@@ -170,8 +174,7 @@ async fn oracle_phase_gate_enabled_no_nats_returns_done_none() {
         ..H2AIConfig::default()
     };
     let store = TaskStore::new();
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("mock".into())) as Arc<dyn IComputeAdapter>);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("mock")) as Arc<dyn IComputeAdapter>);
 
     // nats_raw is None (set in make_engine_input) → gate skips to Done(None).
     let engine_input = make_engine_input(&adapter, &adapter, &cfg, store, &registry);

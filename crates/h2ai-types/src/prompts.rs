@@ -50,7 +50,7 @@ pub const EVALUATOR_SYSTEM_PROMPT: &str = concat!(
 /// Used when explorer slot configs carry `rejection_criteria` — each explorer was already
 /// instructed to look for a specific failure mode, so the verifier should probe adversarially
 /// rather than check rubric compliance. This partially restores verifier independence
-/// without requiring a separate model family (GAP-A4).
+/// without requiring a separate model family.
 /// System prompt for binary YES/NO factual checks (`SemanticPresence`, `SemanticExclusion`, `SemanticOrdering`).
 /// Must NOT use the adversarial evaluator framing — factual presence checks require neutral classification,
 /// not hostile scoring. The adversarial framing causes the model to answer NO regardless of content.
@@ -194,7 +194,7 @@ pub const SYNTHESIS_WRITE_PROMPT: &str = concat!(
     "Write only the final synthesised response. No preamble, no meta-commentary."
 );
 
-// ── GAP-F1: Constraint-Informed Synthesis prompts ─────────────────────────────
+// ── Constraint-Informed Synthesis prompts ─────────────────────────────
 
 /// B1 mechanism: compliance checklist block injected into the repair context at retry ≥ 1.
 /// Variables: `{checklist_items}` — newline-joined numbered list produced by
@@ -258,7 +258,7 @@ pub const F1_SYNTHESIS_FINAL_TASK: &str = concat!(
     "--- END SYNTHESIS WAVE ---"
 );
 
-/// GAP-H1: Single graft-step prompt. Variables:
+/// Single graft-step prompt. Variables:
 /// `{constraint_ids}` — comma-joined constraint IDs being integrated,
 /// `{base_text}` — current working draft (seed or result of previous graft),
 /// `{candidate_text}` — full text of the partial that satisfies the target constraints.

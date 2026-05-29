@@ -399,7 +399,7 @@ pub const DECOMPOSITION_CONSTRAINT_ENTRY: PromptTemplate = PromptTemplate(concat
     "Remediation hint: {hint}"
 ));
 
-// ── GAP-I1: Semantic Repair Operator ──────────────────────────────────────────
+// ── Semantic Repair Operator ──────────────────────────────────────────
 
 /// System prompt for gap extractor LLM call.
 /// No variables. Instructs the LLM to identify the incorrect belief from verifier rejection reasons.

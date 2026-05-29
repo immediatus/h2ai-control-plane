@@ -211,6 +211,7 @@ fn apply_proposal_increments_completed_and_sets_generating() {
                 endpoint: "http://example.com".into(),
                 api_key_env: "KEY".into(),
                 model: None,
+                provider: Default::default(),
             },
             timestamp: Utc::now(),
         }),
@@ -729,15 +730,15 @@ async fn note_event_triggers_snapshot_at_interval() {
     journal.note_event(&tid, 1, &state);
     journal.note_event(&tid, 2, &state); // interval hit → spawns snapshot write
 
-    // Give the spawned task time to run.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // Poll until the spawned snapshot task has written to the backend
     use h2ai_state::backend::SnapshotStore as SS;
-    let stored = backend.get_snapshot(&tid).await.unwrap();
-    assert!(
-        stored.is_some(),
-        "snapshot must have been written at interval 2"
-    );
+    let stored = loop {
+        let s = backend.get_snapshot(&tid).await.unwrap();
+        if s.is_some() {
+            break s;
+        }
+        tokio::task::yield_now().await;
+    };
     assert_eq!(stored.unwrap().last_sequence, 2);
 }
 
@@ -852,7 +853,8 @@ async fn live_nats_replay_reconstructs_resolved_task_state() {
 
     let tid = task_id();
 
-    nats.publish_event(
+    // Use publish_event_seq (awaits JetStream ack) so messages are persisted before replay
+    nats.publish_event_seq(
         &tid,
         &H2AIEvent::TaskBootstrapped(TaskBootstrappedEvent {
             task_id: tid.clone(),
@@ -864,7 +866,7 @@ async fn live_nats_replay_reconstructs_resolved_task_state() {
     .await
     .unwrap();
 
-    nats.publish_event(
+    nats.publish_event_seq(
         &tid,
         &H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: tid.clone(),
@@ -877,8 +879,6 @@ async fn live_nats_replay_reconstructs_resolved_task_state() {
     )
     .await
     .unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let journal = SessionJournal::new(nats);
     let state = journal

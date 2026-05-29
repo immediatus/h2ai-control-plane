@@ -55,7 +55,7 @@ pub struct Output {
 /// Run Phase 3: Parallel Generation.
 ///
 /// Dispatches explorer slots in parallel via TAO loops, collects proposals and failures.
-/// Also runs the proactive researcher pre-pass for search-enabled slots (GAP-C1 proactive).
+/// Also runs the proactive researcher pre-pass for search-enabled slots.
 ///
 /// Always returns `StepResult::Done(Output)`. Failed individual explorer TAO loops are
 /// captured in `Output::failed_proposals` rather than triggering a fatal error.
@@ -90,7 +90,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
     let effective_slot_configs: &[h2ai_types::manifest::ExplorerSlotConfig] =
         &engine_input.manifest.explorers.slot_configs;
 
-    // ── Proactive Researcher Pre-pass (GAP-C1 proactive path) ──────────
+    // ── Proactive Researcher Pre-pass ──────────
     // For slots with search_enabled=true, call the researcher adapter to fetch
     // current state-of-the-art grounding before generating proposals.
     let mut slot_groundings: Vec<Option<String>> = vec![None; provisioned.explorer_configs.len()];

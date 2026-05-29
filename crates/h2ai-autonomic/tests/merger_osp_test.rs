@@ -19,6 +19,7 @@ fn adapter() -> AdapterKind {
         endpoint: "https://api.test".into(),
         api_key_env: "K".into(),
         model: None,
+        provider: Default::default(),
     }
 }
 

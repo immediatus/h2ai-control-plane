@@ -193,3 +193,84 @@ fn decide_fail_on_oracle_blocked() {
     );
     assert!(matches!(decision, MapeKDecision::Fail(_)));
 }
+
+/// `last_wave_n_eff` starts at 1.0 and is updated after a ZeroSurvival wave
+/// that carries an n_eff_cosine value.
+#[test]
+fn last_wave_n_eff_initialises_to_one() {
+    let ctrl = default_controller();
+    assert_eq!(ctrl.last_wave_n_eff(), 1.0);
+}
+
+#[test]
+fn last_wave_n_eff_updates_after_zero_survival() {
+    use h2ai_orchestrator::coherence::CoherenceState;
+    let mut ctrl = default_controller();
+    let wave = empty_wave(PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
+        failure_mode: None,
+        coherence: CoherenceState::default(),
+        n_eff_cosine: Some(0.3),
+        filter_ratio: 1.0,
+        tau_values: vec![],
+    }));
+    ctrl.observe(&wave);
+    // Trigger decide so handle_exit_reason runs and sets last_wave_n_eff.
+    let _ = ctrl.decide(
+        PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
+            failure_mode: None,
+            coherence: CoherenceState::default(),
+            n_eff_cosine: Some(0.3),
+            filter_ratio: 1.0,
+            tau_values: vec![],
+        }),
+        0,
+        1.0,
+    );
+    assert_eq!(ctrl.last_wave_n_eff(), 0.3);
+}
+
+#[test]
+fn last_wave_n_eff_defaults_one_when_none() {
+    use h2ai_orchestrator::coherence::CoherenceState;
+    let mut ctrl = default_controller();
+    let wave = empty_wave(PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
+        failure_mode: None,
+        coherence: CoherenceState::default(),
+        n_eff_cosine: None,
+        filter_ratio: 1.0,
+        tau_values: vec![],
+    }));
+    ctrl.observe(&wave);
+    let _ = ctrl.decide(
+        PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
+            failure_mode: None,
+            coherence: CoherenceState::default(),
+            n_eff_cosine: None,
+            filter_ratio: 1.0,
+            tau_values: vec![],
+        }),
+        0,
+        1.0,
+    );
+    assert_eq!(ctrl.last_wave_n_eff(), 1.0);
+}
+
+#[test]
+fn mape_k_decision_complexity_overflow_variant_exists() {
+    let d = MapeKDecision::ComplexityOverflow {
+        probe_score: 5,
+        rationale: "test".into(),
+        graft_first: false,
+    };
+    match d {
+        MapeKDecision::ComplexityOverflow {
+            probe_score,
+            graft_first,
+            ..
+        } => {
+            assert_eq!(probe_score, 5);
+            assert!(!graft_first);
+        }
+        _ => panic!("unexpected variant"),
+    }
+}

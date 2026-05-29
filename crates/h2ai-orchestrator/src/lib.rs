@@ -57,6 +57,7 @@
 
 pub mod attribution;
 pub mod bandit;
+pub mod ceiling_detector;
 pub mod coherence;
 pub mod complexity;
 pub mod compound;

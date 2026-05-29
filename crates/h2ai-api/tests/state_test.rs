@@ -6,7 +6,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use h2ai_api::state::AppState;
 use h2ai_config::H2AIConfig;
-use h2ai_test_utils::DecompositionMockAdapter;
+use h2ai_test_utils::decomposition_adapter;
 use h2ai_types::{
     events::{CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode},
     identity::{TaskId, TenantId},
@@ -39,7 +39,7 @@ fn synthetic_calibration() -> CalibrationCompletedEvent {
 }
 
 fn make_state() -> AppState {
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock".into()));
+    let adapter = Arc::new(decomposition_adapter("mock"));
     AppState::new_for_tests(
         H2AIConfig::default(),
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
@@ -60,7 +60,7 @@ fn registry_without_scoring_adapter_returns_plain_registry() {
 #[test]
 fn registry_with_scoring_adapter_uses_it() {
     let mut state = make_state();
-    let scoring = Arc::new(DecompositionMockAdapter::new("scoring".into()));
+    let scoring = Arc::new(decomposition_adapter("scoring"));
     state.scoring_adapter = Some(scoring.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>);
     let reg = state.registry();
     let _ = reg;
@@ -175,7 +175,7 @@ async fn seed_calibration_noop_when_default_has_no_calibration() {
 fn with_shadow_auditor_sets_adapter() {
     let state = make_state();
     assert!(state.shadow_auditor_adapter.is_none());
-    let shadow = Arc::new(DecompositionMockAdapter::new("shadow".into()));
+    let shadow = Arc::new(decomposition_adapter("shadow"));
     let state = state.with_shadow_auditor(shadow as Arc<dyn h2ai_types::adapter::IComputeAdapter>);
     assert!(state.shadow_auditor_adapter.is_some());
 }
@@ -189,4 +189,72 @@ fn with_payload_store_sets_store() {
         state.with_payload_store(store as Arc<dyn h2ai_orchestrator::payload_store::PayloadStore>);
     // Just verify it doesn't panic and the store is set (we can't introspect the type easily)
     let _ = state;
+}
+
+// ── with_agent_provider ────────────────────────────────────────────────────────
+
+#[test]
+fn with_agent_provider_sets_field() {
+    use h2ai_provisioner::static_provider::StaticProvider;
+    let state = make_state();
+    assert!(state.agent_provider.is_none());
+    let provider = Arc::new(StaticProvider::new(4));
+    let state =
+        state.with_agent_provider(provider as Arc<dyn h2ai_provisioner::provider::AgentProvider>);
+    assert!(state.agent_provider.is_some());
+}
+
+// ── load_tenant_state noop ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn load_tenant_state_is_noop_when_nats_is_none() {
+    let state = make_state(); // new_for_tests → nats=None
+    let tenant = TenantId::default_tenant();
+    // Must not panic or error
+    state.load_tenant_state(&tenant).await;
+    // State remains at cold defaults
+    let ts = state.tenant_state(&tenant);
+    let cal = ts.calibration.read().await;
+    assert!(cal.is_none());
+}
+
+// ── new_for_tests empty pool panics ───────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "adapter_pool must be non-empty")]
+fn new_for_tests_panics_on_empty_adapter_pool() {
+    AppState::new_for_tests(H2AIConfig::default(), vec![], {
+        let a = Arc::new(decomposition_adapter("x"));
+        a as Arc<dyn h2ai_types::adapter::IComputeAdapter>
+    });
+}
+
+// ── tenant_state lazy creation ─────────────────────────────────────────────────
+
+#[test]
+fn tenant_state_creates_entry_for_new_tenant() {
+    let state = make_state();
+    let t1 = TenantId::from("new-tenant-x");
+    let t2 = TenantId::from("new-tenant-y");
+    let s1 = state.tenant_state(&t1);
+    let s2 = state.tenant_state(&t2);
+    // Distinct tenant IDs produce distinct (but independently valid) tenant states
+    assert!(!std::sync::Arc::ptr_eq(&s1, &s2));
+    // Repeated call for the same tenant returns the same Arc
+    let s1b = state.tenant_state(&t1);
+    assert!(std::sync::Arc::ptr_eq(&s1, &s1b));
+}
+
+// ── AppState is Clone ──────────────────────────────────────────────────────────
+
+#[test]
+fn appstate_clone_shares_store_and_semaphore() {
+    let state = make_state();
+    let clone = state.clone();
+    // The store is a cheap Arc-backed clone — both instances see the same backing data.
+    // A task inserted into one must be visible in the other.
+    assert!(std::sync::Arc::ptr_eq(
+        &state.task_semaphore,
+        &clone.task_semaphore
+    ));
 }

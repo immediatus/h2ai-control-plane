@@ -31,6 +31,9 @@ pub struct PipelineParams {
     pub leader_context: Option<crate::leader::LeaderContextSnapshot>,
     /// Assembled contexts from the previous wave for cross-wave delta encoding.
     pub prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
+    /// Budget hint suffix appended to `active_ctx` when cost conservation is active.
+    /// Computed by `MapeKController::params()`. `None` when cost guard is disabled.
+    pub budget_hint: Option<String>,
 }
 
 /// Talagrand feedback stored in `WaveEvents`.
@@ -88,6 +91,9 @@ pub struct WaveEvents {
     pub wave_proposal_texts: std::collections::HashMap<h2ai_types::identity::ExplorerId, String>,
     /// `AssembledContexts` from this wave's generation phase, for next-wave delta encoding.
     pub assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
+    /// Sum of `token_cost` from all ProposalEvents generated this wave.
+    /// Zero for waves where no proposals were generated (e.g. EarlyExit).
+    pub wave_token_cost: u64,
 }
 
 impl Default for WaveEvents {
@@ -114,6 +120,7 @@ impl Default for WaveEvents {
             conflict_rate: None,
             wave_proposal_texts: std::collections::HashMap::new(),
             assembled_contexts: Vec::new(),
+            wave_token_cost: 0,
         }
     }
 }
@@ -143,6 +150,11 @@ pub struct MergeOutput {
     pub tau_values: Vec<f64>,
     /// Per-iteration verification events; appended to `all_verification_events` by engine.rs.
     pub iteration_verification_events: Vec<h2ai_types::events::VerificationScoredEvent>,
+    /// Generation token cost for this wave (sum of all proposal token costs).
+    pub wave_token_cost: u64,
+    /// Mean pairwise cosine similarity across surviving verified proposal texts.
+    /// `None` when < 2 proposals survived or embedding model unavailable.
+    pub pairwise_cosine_mean: Option<f64>,
 }
 
 /// Pipeline outcome after one wave.
@@ -170,6 +182,17 @@ pub enum MapeKDecision {
         check_index: usize,
         instability_score: f64,
         divergent_reasons: Vec<String>,
+    },
+    /// Task complexity exceeds the LLM's computation budget — retries are futile.
+    /// `graft_first = true` → route to H1 grafting on first failure.
+    /// `graft_first = false` → route to HITL immediately.
+    ComplexityOverflow {
+        /// Probe score 1–5, or 0 if fired by intra-retry detector.
+        probe_score: u8,
+        /// Human-readable rationale.
+        rationale: String,
+        /// true = H1 grafting; false = HITL immediately.
+        graft_first: bool,
     },
 }
 
@@ -262,28 +285,51 @@ pub struct MapeKController {
     /// Passed from engine.rs at construction time.
     pub(crate) conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph,
 
-    // ── GAP-F1: Constraint-Informed Synthesis ────────────────────────────────
+    // ── Constraint-Informed Synthesis ────────────────────────────────
     /// Binary check strings from the constraint corpus, collected for B1/B2 injection.
     pub(crate) binary_checks: Vec<String>,
     /// Offset map: (constraint_id, start_idx_in_binary_checks, count).
     /// Used by partial_pass_from_event to attribute per-check verdicts to the right constraint.
     pub(crate) constraint_check_offsets: Vec<(String, usize, usize)>,
 
-    // ── GAP-I1: Knowledge-Gap Detection + Domain Synthesis ───────────────────
+    // ── Knowledge-Gap Detection + Domain Synthesis ───────────────────
     /// Per (constraint_id, check_idx) → validated DomainSynthesis from gap researcher.
     /// Populated lazily by `run_gap_i1_research`; cleared on task completion.
     pub(crate) domain_synthesis_cache:
         std::collections::HashMap<(String, usize), h2ai_types::gap_i1::DomainSynthesis>,
-    /// Optional LLM adapter used by the GAP-I1 researcher (e.g. `researcher_adapter`).
+    /// Optional LLM adapter used by the researcher (e.g. `researcher_adapter`).
     /// `None` when `gap_i1.enabled = false` or no researcher adapter is configured.
     pub(crate) gap_researcher_adapter:
         Option<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>>,
-    /// Grounding chain for GAP-I1 gap researcher: DDG search + LLM distiller.
+    /// Grounding chain gap researcher: DDG search + LLM distiller.
     pub(crate) gap_grounding_chain:
         Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+
+    // ── Complexity-Ceiling Routing ───────────────────────────────────
+    /// Pre-dispatch complexity probe result. `None` when probe is disabled or not yet run.
+    pub(crate) probe_result: Option<h2ai_autonomic::complexity_probe::ComplexityProbeResult>,
+
+    // ── AgentDropout N-reduction ─────────────────────────────────────
+    /// N_eff (participation ratio) from the most recently completed ZeroSurvival wave.
+    /// Initialized to `1.0` (no dropout). Updated in `handle_exit_reason` on
+    /// every `ZeroSurvival` arm. Used by engine.rs to reduce `n_agents` on retry ≥ 2.
+    pub(crate) last_wave_n_eff: f64,
+
+    // ── GAP-L1: Tiered Early Exit ─────────────────────────────────────────
+    /// Set by `decide()` when the TEE acceptance gate fires on `Resolved`.
+    /// Cleared by `take_tee_event()` so engine.rs can publish it.
+    pub(crate) tee_event: Option<h2ai_types::events::TieredExitEvent>,
+
+    // ── GAP-H3: Cost Guard ────────────────────────────────────────────────────
+    /// Cumulative generation token cost across all waves for this task.
+    pub(crate) tokens_used: u64,
+    /// Set to true when budget abort threshold is crossed; blocks further Retry returns.
+    pub(crate) budget_exhausted: bool,
+    /// Populated by decide() when convergence gate fires; taken by engine.rs to publish.
+    pub(crate) convergence_gate_event: Option<h2ai_types::events::ConvergenceGateEvent>,
 }
 
-// ── GAP-K1: Cross-wave instability detection ──────────────────────────────────
+// ── Cross-wave instability detection ──────────────────────────────────
 
 /// Mean word-bag Jaccard between two lists of reason strings.
 /// Returns 1.0 when either list is empty (no divergence signal).
@@ -307,6 +353,76 @@ struct InstabilitySignal {
     check_index: usize,
     score: f64,
     reasons: Vec<String>,
+}
+
+// ── GAP-H3: Cost Guard free functions ─────────────────────────────────────────
+
+/// Compute the budget hint suffix for the explorer system prompt.
+///
+/// Returns `Some(hint)` when:
+/// - `cfg.enabled && cfg.budget_prompt_injection_enabled`
+/// - `fraction_used ∈ [cfg.budget_injection_warn_fraction, 0.85)` (TALE elasticity paradox guard)
+/// - `complexity <= cfg.budget_injection_max_complexity`
+pub(crate) fn build_budget_hint_if_needed(
+    cfg: &h2ai_config::CostGuardConfig,
+    tokens_used: u64,
+    complexity: u8,
+) -> Option<String> {
+    if !cfg.enabled || !cfg.budget_prompt_injection_enabled {
+        return None;
+    }
+    if complexity > cfg.budget_injection_max_complexity {
+        return None;
+    }
+    let frac = cfg.fraction_used(tokens_used);
+    if frac < cfg.budget_injection_warn_fraction || frac >= 0.85 {
+        return None;
+    }
+    let remaining = cfg.remaining(tokens_used);
+    Some(format!(
+        "\n\n[Token budget: approximately {} tokens remain for this response. \
+         Prioritize the most critical compliance findings. \
+         State your conclusion first, then minimum supporting evidence. \
+         Omit elaboration, preamble, and redundant citations.]",
+        remaining.max(0)
+    ))
+}
+
+/// Check whether the convergence gate should fire.
+///
+/// Fires when ALL hold:
+/// 1. `cfg.enabled`
+/// 2. `wave >= cfg.min_wave`
+/// 3. `budget_fraction_used >= cfg.budget_floor_fraction`
+/// 4. `n_live >= 1` and `min_score >= cfg.score_floor`
+/// 5. `cosine_mean >= cfg.theta_converge`
+pub(crate) fn check_convergence_gate(
+    cfg: &h2ai_config::ConvergenceGateConfig,
+    cosine_mean: Option<f64>,
+    min_score: f64,
+    wave: u32,
+    n_live: usize,
+    budget_fraction_used: f64,
+) -> bool {
+    if !cfg.enabled {
+        return false;
+    }
+    if wave < cfg.min_wave {
+        return false;
+    }
+    if budget_fraction_used < cfg.budget_floor_fraction {
+        return false;
+    }
+    if n_live == 0 {
+        return false;
+    }
+    if min_score < cfg.score_floor {
+        return false;
+    }
+    let Some(mean) = cosine_mean else {
+        return false;
+    };
+    mean >= cfg.theta_converge
 }
 
 impl MapeKController {
@@ -433,6 +549,12 @@ impl MapeKController {
             domain_synthesis_cache: std::collections::HashMap::new(),
             gap_researcher_adapter: input.researcher_adapter.clone(),
             gap_grounding_chain: None, // wired by engine.rs after controller construction
+            probe_result: None,
+            last_wave_n_eff: 1.0,
+            tee_event: None,
+            tokens_used: 0,
+            budget_exhausted: false,
+            convergence_gate_event: None,
         }
     }
 
@@ -460,7 +582,58 @@ impl MapeKController {
                 .as_ref()
                 .map(|ls| ls.to_snapshot(self.last_wave_violated_constraint_ids.clone())),
             prev_assembled_contexts: self.prev_assembled_contexts.clone(),
+            budget_hint: {
+                let complexity = self.probe_result.as_ref().map_or(0, |p| p.complexity);
+                build_budget_hint_if_needed(&self.cfg_ref.cost_guard, self.tokens_used, complexity)
+            },
         }
+    }
+
+    // ── Complexity-Ceiling Routing ────────────────────────────────────
+
+    /// Return N_eff (participation ratio cosine) from the most recent `ZeroSurvival` wave.
+    /// Returns `1.0` before any ZeroSurvival wave has been processed (no-dropout default).
+    /// Used by engine.rs for AgentDropout N-reduction on retry ≥ 2.
+    #[must_use]
+    pub fn last_wave_n_eff(&self) -> f64 {
+        self.last_wave_n_eff
+    }
+
+    /// Returns and clears the pending `TieredExitEvent`, if any.
+    pub(crate) fn take_tee_event(&mut self) -> Option<h2ai_types::events::TieredExitEvent> {
+        self.tee_event.take()
+    }
+
+    // ── GAP-H3: Cost Guard accessors ──────────────────────────────────────────
+
+    /// Charge `wave_token_cost` to the per-task token counter.
+    pub fn observe_wave_tokens(&mut self, wave_token_cost: u64) {
+        self.tokens_used = self.tokens_used.saturating_add(wave_token_cost);
+    }
+
+    /// Current cumulative token usage.
+    pub fn tokens_used(&self) -> u64 {
+        self.tokens_used
+    }
+
+    /// Take the convergence gate event if one was set, leaving `None` in its place.
+    pub(crate) fn take_convergence_event(
+        &mut self,
+    ) -> Option<h2ai_types::events::ConvergenceGateEvent> {
+        self.convergence_gate_event.take()
+    }
+
+    /// Take and reset the budget_exhausted flag.
+    pub(crate) fn take_budget_exhausted(&mut self) -> bool {
+        std::mem::replace(&mut self.budget_exhausted, false)
+    }
+
+    /// Store the pre-dispatch complexity probe result for use in routing decisions.
+    pub fn set_probe_result(
+        &mut self,
+        result: h2ai_autonomic::complexity_probe::ComplexityProbeResult,
+    ) {
+        self.probe_result = Some(result);
     }
 
     // ── Observe ────────────────────────────────────────────────────────────────
@@ -553,7 +726,7 @@ impl MapeKController {
         retry_count: u32,
         filter_ratio: f64,
     ) -> MapeKDecision {
-        // GAP-K1: detect constraint spec instability across waves
+        // Detect constraint spec instability across waves
         if self.cfg_ref.gap_k1.enabled {
             if let Some(instability) = self.find_instability() {
                 return MapeKDecision::SpecAmbiguous {
@@ -568,6 +741,87 @@ impl MapeKController {
         match outcome {
             PipelineOutcome::Resolved(merge_out) => {
                 let merge_out = *merge_out;
+
+                // ── GAP-H3: Budget Exhaustion Gate ───────────────────────────────────
+                if self.cfg_ref.cost_guard.enabled
+                    && self.cfg_ref.cost_guard.fraction_used(self.tokens_used)
+                        >= self.cfg_ref.cost_guard.budget_abort_fraction
+                {
+                    self.budget_exhausted = true;
+                }
+
+                // ── GAP-H3: Convergence Gate ─────────────────────────────────────────
+                if self.cfg_ref.convergence_gate.enabled {
+                    let min_score = merge_out
+                        .iteration_verification_events
+                        .iter()
+                        .filter(|e| e.passed)
+                        .map(|e| e.score)
+                        .fold(f64::INFINITY, f64::min);
+                    let n_live = merge_out
+                        .iteration_verification_events
+                        .iter()
+                        .filter(|e| e.passed)
+                        .count();
+                    let budget_fraction = self.cfg_ref.cost_guard.fraction_used(self.tokens_used);
+                    if check_convergence_gate(
+                        &self.cfg_ref.convergence_gate,
+                        merge_out.pairwise_cosine_mean,
+                        if min_score.is_infinite() {
+                            0.0
+                        } else {
+                            min_score
+                        },
+                        retry_count,
+                        n_live,
+                        budget_fraction,
+                    ) {
+                        self.convergence_gate_event =
+                            Some(h2ai_types::events::ConvergenceGateEvent {
+                                task_id: merge_out.task_id.clone(),
+                                wave: retry_count,
+                                n_live,
+                                convergence_fraction: merge_out.pairwise_cosine_mean.unwrap_or(0.0),
+                                theta_converge: self.cfg_ref.convergence_gate.theta_converge,
+                                best_score: merge_out
+                                    .iteration_verification_events
+                                    .iter()
+                                    .filter(|e| e.passed)
+                                    .map(|e| e.score)
+                                    .fold(0.0_f64, f64::max),
+                                timestamp: chrono::Utc::now(),
+                            });
+                        // Fall through — convergence gate accepts current output.
+                    }
+                }
+
+                // ── GAP-L1: TEE acceptance gate ──────────────────────────────────
+                if self.cfg_ref.tiered_exit.enabled {
+                    let tee = &self.cfg_ref.tiered_exit;
+                    let n = self.current_params.n_agents;
+                    let k_required = tee.k_for_wave(n);
+                    let k_accepted = merge_out
+                        .iteration_verification_events
+                        .iter()
+                        .filter(|e| e.passed && e.score >= tee.acceptance_score)
+                        .count() as u32;
+
+                    if k_accepted < k_required
+                        && retry_count < self.cfg_ref.max_autonomic_retries
+                        && !self.budget_exhausted
+                    {
+                        return MapeKDecision::Retry;
+                    }
+
+                    self.tee_event = Some(h2ai_types::events::TieredExitEvent {
+                        wave: retry_count,
+                        n,
+                        k_required,
+                        k_accepted,
+                        acceptance_score: tee.acceptance_score,
+                    });
+                }
+
                 // Push tau_values from the successful wave.
                 self.tau_values_tried.push(merge_out.tau_values.clone());
                 // Push quality measurement from the merge result.
@@ -594,6 +848,30 @@ impl MapeKController {
         retry_count: u32,
         filter_ratio: f64,
     ) -> MapeKDecision {
+        // Probe-based routing — fires before normal retry decisions.
+        // Fires when the pre-dispatch probe classified the task as structurally
+        // intractable. Routes to HITL immediately (>= hitl_threshold) or to H1
+        // grafting on first failure (>= decompose_threshold && retry_count == 0).
+        if let Some(ref probe) = self.probe_result {
+            let cfg = &self.cfg_ref.complexity_routing;
+            if cfg.enabled {
+                if probe.complexity >= cfg.hitl_threshold {
+                    return MapeKDecision::ComplexityOverflow {
+                        probe_score: probe.complexity,
+                        rationale: probe.rationale.clone(),
+                        graft_first: false,
+                    };
+                }
+                if probe.complexity >= cfg.decompose_threshold && retry_count == 0 {
+                    return MapeKDecision::ComplexityOverflow {
+                        probe_score: probe.complexity,
+                        rationale: probe.rationale.clone(),
+                        graft_first: true,
+                    };
+                }
+            }
+        }
+
         match reason {
             ExitReason::MultiplicationFailed {
                 msg: _,
@@ -690,6 +968,52 @@ impl MapeKController {
                     }
                     None => {}
                 }
+
+                // Intra-retry ceiling detector.
+                // Fires when probe-based routing was disabled or under-classified the
+                // task and ≥2/3 ceiling signals (peaked failure entropy, stalled
+                // retry slope, low n_eff×cg_mean product) have accumulated.
+                if self.cfg_ref.complexity_routing.intra_retry.enabled
+                    && retry_count
+                        >= self
+                            .cfg_ref
+                            .complexity_routing
+                            .intra_retry
+                            .min_retry_count_for_detection
+                {
+                    let score_history: Vec<f64> = self
+                        .quality_history
+                        .iter()
+                        .map(|qm| qm.q_confidence)
+                        .collect();
+                    let n_eff = zs_n_eff_cosine.unwrap_or(1.0);
+                    let signals = crate::ceiling_detector::count_ceiling_signals(
+                        &self.last_wave_pruned,
+                        &score_history,
+                        n_eff,
+                        self.cg_mean,
+                        &self.cfg_ref.complexity_routing.intra_retry,
+                    );
+                    if signals >= 2 {
+                        tracing::info!(
+                            target: "h2ai.mape_k",
+                            task_id = %self.task_id,
+                            signals,
+                            retry_count,
+                            "ceiling detector fired"
+                        );
+                        return MapeKDecision::ComplexityOverflow {
+                            probe_score: 0,
+                            rationale: format!(
+                                "intra-retry: {signals}/3 ceiling signals fired at wave {retry_count}"
+                            ),
+                            graft_first: retry_count < 2,
+                        };
+                    }
+                }
+
+                // Record N_eff for AgentDropout dropout decisions on the next wave.
+                self.last_wave_n_eff = zs_n_eff_cosine.unwrap_or(1.0);
 
                 let zero_event = ZeroSurvivalEvent {
                     task_id: self.task_id.clone(),
@@ -803,7 +1127,7 @@ impl MapeKController {
                             self.cfg_ref.partial_pass_overhead_factor,
                         ),
                     );
-                    // Collect any cached GAP-I1 domain syntheses for the violated constraints.
+                    // Collect any cached domain syntheses for the violated constraints.
                     let syntheses: Vec<h2ai_types::gap_i1::DomainSynthesis> = targets
                         .iter()
                         .flat_map(|t| {
@@ -1170,7 +1494,7 @@ impl MapeKController {
         &self.system_context_with_rubric
     }
 
-    // ── GAP-I1: Knowledge-Gap Detection + Domain Synthesis ───────────────────
+    // ── Knowledge-Gap Detection + Domain Synthesis ───────────────────
 
     /// Returns per-(constraint_id, check_idx) mean pass rate across all accumulated
     /// pruned events.  Entries reflect only constraints that appeared in at least one
@@ -1219,7 +1543,7 @@ impl MapeKController {
             .unwrap_or_default()
     }
 
-    /// Run the GAP-I1 researcher loop: detect cold checks (low pass rate) and
+    /// Run the researcher loop: detect cold checks (low pass rate) and
     /// fire `run_gap_researcher` for each gap not yet in the synthesis cache.
     ///
     /// Gated on `cfg_ref.gap_i1.enabled`.  No-op when the flag is false or when
@@ -1264,7 +1588,7 @@ impl MapeKController {
         }
     }
 
-    // ── GAP-K1: Cross-wave instability detection ──────────────────────────────
+    // ── Cross-wave instability detection ──────────────────────────────
 
     /// Scan `last_wave_pruned` and `prev_wave_pruned` for the same constraint
     /// appearing in both waves with hard violations whose rejection reasons have
@@ -1418,6 +1742,12 @@ impl MapeKController {
             domain_synthesis_cache: std::collections::HashMap::new(),
             gap_researcher_adapter: None,
             gap_grounding_chain: None,
+            probe_result: None,
+            last_wave_n_eff: 1.0,
+            tee_event: None,
+            tokens_used: 0,
+            budget_exhausted: false,
+            convergence_gate_event: None,
         }
     }
 }
@@ -1472,5 +1802,331 @@ mod gap_i1_tests {
         // verify the gate via the default config flag.
         let cfg = h2ai_config::H2AIConfig::default();
         assert!(!cfg.gap_i1.enabled, "gap_i1 must be disabled by default");
+    }
+}
+
+#[cfg(test)]
+mod gap_l1_tee_tests {
+    use super::*;
+    use h2ai_types::sizing::{MergeStrategy, PredictionBasis};
+
+    fn make_test_merge_output(
+        verification_events: Vec<h2ai_types::events::VerificationScoredEvent>,
+    ) -> MergeOutput {
+        let task_id = h2ai_types::identity::TaskId::new();
+        let explorer_id = h2ai_types::identity::ExplorerId::new();
+        MergeOutput {
+            task_id: task_id.clone(),
+            resolved_output: "test output".to_string(),
+            selection_resolved: true,
+            selection_resolved_event: h2ai_types::events::SelectionResolvedEvent {
+                task_id: task_id.clone(),
+                valid_proposals: vec![explorer_id.clone()],
+                pruned_proposals: vec![],
+                merge_strategy: MergeStrategy::ScoreOrdered,
+                timestamp: chrono::Utc::now(),
+                merge_elapsed_secs: None,
+                n_input_proposals: 1,
+                n_failed_proposals: 0,
+            },
+            attribution: crate::attribution::HarnessAttribution {
+                baseline_quality: 0.0,
+                topology_gain: 0.0,
+                verification_gain: 0.0,
+                tao_gain: 0.0,
+                q_confidence: 1.0,
+                prediction_basis: PredictionBasis::Heuristic,
+                q_measured: None,
+                rho_adjusted: 0.0,
+                case_b_flag: false,
+                synthesis_gain: 0.0,
+            },
+            attribution_interval: None,
+            talagrand: None,
+            suggested_next_params: None,
+            waste_ratio: 0.0,
+            applied_optimizations: vec![],
+            epistemic_yield: None,
+            frontier_event: None,
+            adapter_correctness: vec![(explorer_id, true)],
+            coherence_state: crate::coherence::CoherenceState::default(),
+            comparison_events: vec![],
+            oracle_gate_passed: None,
+            tau_values: vec![],
+            iteration_verification_events: verification_events,
+            wave_token_cost: 0,
+            pairwise_cosine_mean: None,
+        }
+    }
+
+    fn make_scored_event(score: f64, passed: bool) -> h2ai_types::events::VerificationScoredEvent {
+        h2ai_types::events::VerificationScoredEvent {
+            task_id: h2ai_types::identity::TaskId::new(),
+            explorer_id: h2ai_types::identity::ExplorerId::new(),
+            score,
+            reason: "test".to_string(),
+            passed,
+            cache_hit: false,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn tee_gate_forces_retry_when_k_not_met() {
+        let cfg = h2ai_config::H2AIConfig {
+            tiered_exit: h2ai_config::TieredExitConfig {
+                enabled: true,
+                min_n: 1,
+                max_n: 3,
+                quorum_fraction: 0.5,
+                acceptance_score: 0.90,
+                require_all_binary_checks: false,
+            },
+            max_autonomic_retries: 4,
+            ..h2ai_config::H2AIConfig::default()
+        };
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.current_params.n_agents = 1;
+
+        // score 0.5 below acceptance_score 0.90
+        let merge_out = make_test_merge_output(vec![make_scored_event(0.50, true)]);
+        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 0, 1.0);
+        assert!(matches!(decision, MapeKDecision::Retry), "expected Retry");
+        assert!(ctrl.tee_event.is_none());
+    }
+
+    #[test]
+    fn tee_gate_accepts_when_k_met() {
+        let cfg = h2ai_config::H2AIConfig {
+            tiered_exit: h2ai_config::TieredExitConfig {
+                enabled: true,
+                min_n: 1,
+                max_n: 3,
+                quorum_fraction: 0.5,
+                acceptance_score: 0.85,
+                require_all_binary_checks: false,
+            },
+            max_autonomic_retries: 4,
+            ..h2ai_config::H2AIConfig::default()
+        };
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.current_params.n_agents = 1;
+
+        // score 0.95 >= acceptance_score 0.85, passed=true
+        let merge_out = make_test_merge_output(vec![make_scored_event(0.95, true)]);
+        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 0, 1.0);
+        assert!(
+            matches!(decision, MapeKDecision::Return(_)),
+            "expected Return"
+        );
+        let evt = ctrl.tee_event.as_ref().expect("tee_event should be set");
+        assert_eq!(evt.wave, 0);
+        assert_eq!(evt.n, 1);
+        assert_eq!(evt.k_required, 1);
+        assert_eq!(evt.k_accepted, 1);
+    }
+
+    #[test]
+    fn tee_gate_accepts_on_last_retry_even_if_k_not_met() {
+        let cfg = h2ai_config::H2AIConfig {
+            tiered_exit: h2ai_config::TieredExitConfig {
+                enabled: true,
+                min_n: 1,
+                max_n: 3,
+                quorum_fraction: 0.5,
+                acceptance_score: 0.90,
+                require_all_binary_checks: false,
+            },
+            max_autonomic_retries: 2,
+            ..h2ai_config::H2AIConfig::default()
+        };
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.current_params.n_agents = 1;
+
+        // score 0.50 below threshold but retry_count == max_autonomic_retries
+        let merge_out = make_test_merge_output(vec![make_scored_event(0.50, true)]);
+        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 2, 1.0);
+        assert!(
+            matches!(decision, MapeKDecision::Return(_)),
+            "expected Return on last retry"
+        );
+        assert!(
+            ctrl.tee_event.is_some(),
+            "tee_event should be set even on last retry"
+        );
+    }
+
+    #[test]
+    fn tee_disabled_does_not_interfere() {
+        // tiered_exit.enabled = false by default
+        let cfg = h2ai_config::H2AIConfig::default();
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.current_params.n_agents = 3;
+
+        // score way below any threshold — but TEE disabled so should still Return
+        let merge_out = make_test_merge_output(vec![make_scored_event(0.20, true)]);
+        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 0, 1.0);
+        assert!(
+            matches!(decision, MapeKDecision::Return(_)),
+            "TEE disabled should always Return on Resolved"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pipeline_params_budget_tests {
+    use super::*;
+
+    #[test]
+    fn wave_events_default_has_zero_token_cost() {
+        let e = WaveEvents::default();
+        assert_eq!(e.wave_token_cost, 0);
+    }
+
+    #[test]
+    fn merge_output_has_wave_token_cost_and_cosine_fields() {
+        // Compile-time check: verify the fields exist on MergeOutput with the correct types.
+        // This test will fail to compile until the fields are added to MergeOutput.
+        use h2ai_types::sizing::{MergeStrategy, PredictionBasis};
+        let task_id = h2ai_types::identity::TaskId::new();
+        let explorer_id = h2ai_types::identity::ExplorerId::new();
+        let mo = MergeOutput {
+            task_id: task_id.clone(),
+            resolved_output: "test".to_string(),
+            selection_resolved: true,
+            selection_resolved_event: h2ai_types::events::SelectionResolvedEvent {
+                task_id: task_id.clone(),
+                valid_proposals: vec![explorer_id.clone()],
+                pruned_proposals: vec![],
+                merge_strategy: MergeStrategy::ScoreOrdered,
+                timestamp: chrono::Utc::now(),
+                merge_elapsed_secs: None,
+                n_input_proposals: 1,
+                n_failed_proposals: 0,
+            },
+            attribution: crate::attribution::HarnessAttribution {
+                baseline_quality: 0.0,
+                topology_gain: 0.0,
+                verification_gain: 0.0,
+                tao_gain: 0.0,
+                q_confidence: 1.0,
+                prediction_basis: PredictionBasis::Heuristic,
+                q_measured: None,
+                rho_adjusted: 0.0,
+                case_b_flag: false,
+                synthesis_gain: 0.0,
+            },
+            attribution_interval: None,
+            talagrand: None,
+            suggested_next_params: None,
+            waste_ratio: 0.0,
+            applied_optimizations: vec![],
+            epistemic_yield: None,
+            frontier_event: None,
+            adapter_correctness: vec![(explorer_id, true)],
+            coherence_state: crate::coherence::CoherenceState::default(),
+            comparison_events: vec![],
+            oracle_gate_passed: None,
+            tau_values: vec![],
+            iteration_verification_events: vec![],
+            wave_token_cost: 42,
+            pairwise_cosine_mean: Some(0.85),
+        };
+        assert_eq!(mo.wave_token_cost, 42);
+        assert_eq!(mo.pairwise_cosine_mean, Some(0.85));
+    }
+
+    #[test]
+    fn pipeline_params_has_budget_hint_field() {
+        // Compile-time check: verify the field exists on PipelineParams with the correct type.
+        // This test will fail to compile until the field is added.
+        fn _assert_field_exists(p: &PipelineParams) -> &Option<String> {
+            &p.budget_hint
+        }
+        let _ = _assert_field_exists; // suppress unused warning
+    }
+}
+
+#[cfg(test)]
+mod cost_guard_controller_tests {
+    use h2ai_config::{ConvergenceGateConfig, CostGuardConfig};
+
+    fn enabled_cost_guard(budget: u64, inject: bool) -> CostGuardConfig {
+        CostGuardConfig {
+            enabled: true,
+            budget_tokens_per_task: budget,
+            budget_warning_fraction: 0.80,
+            budget_abort_fraction: 1.00,
+            budget_prompt_injection_enabled: inject,
+            budget_injection_warn_fraction: 0.50,
+            budget_injection_max_complexity: 3,
+        }
+    }
+
+    #[test]
+    fn fraction_used_computes_correctly_when_enabled() {
+        let cg = enabled_cost_guard(100_000, false);
+        assert!((cg.fraction_used(80_000) - 0.80).abs() < 1e-9);
+        assert!((cg.fraction_used(100_000) - 1.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn budget_hint_built_when_in_injection_window() {
+        use super::build_budget_hint_if_needed;
+        let cg = enabled_cost_guard(100_000, true);
+        let hint = build_budget_hint_if_needed(&cg, 60_000, 2);
+        assert!(hint.is_some(), "expected hint at 60% consumption");
+        assert!(hint.unwrap().contains("tokens remain"));
+    }
+
+    #[test]
+    fn budget_hint_skipped_above_85_percent() {
+        use super::build_budget_hint_if_needed;
+        let cg = enabled_cost_guard(100_000, true);
+        let hint = build_budget_hint_if_needed(&cg, 90_000, 2);
+        assert!(hint.is_none(), "must not inject above 85%");
+    }
+
+    #[test]
+    fn budget_hint_skipped_for_high_complexity() {
+        use super::build_budget_hint_if_needed;
+        let cg = enabled_cost_guard(100_000, true);
+        let hint = build_budget_hint_if_needed(&cg, 60_000, 4);
+        assert!(hint.is_none(), "must not inject for complexity > max");
+    }
+
+    fn enabled_convergence_gate() -> ConvergenceGateConfig {
+        ConvergenceGateConfig {
+            enabled: true,
+            ..ConvergenceGateConfig::default()
+        }
+    }
+
+    #[test]
+    fn convergence_gate_fires_when_conditions_met() {
+        use super::check_convergence_gate;
+        let gate = enabled_convergence_gate();
+        assert!(check_convergence_gate(&gate, Some(0.92), 0.83, 1, 2, 0.50));
+    }
+
+    #[test]
+    fn convergence_gate_skipped_below_budget_floor() {
+        use super::check_convergence_gate;
+        let gate = enabled_convergence_gate();
+        assert!(!check_convergence_gate(&gate, Some(0.92), 0.85, 1, 2, 0.10));
+    }
+
+    #[test]
+    fn convergence_gate_skipped_on_wave_zero() {
+        use super::check_convergence_gate;
+        let gate = enabled_convergence_gate();
+        assert!(!check_convergence_gate(&gate, Some(0.92), 0.85, 0, 2, 0.50));
+    }
+
+    #[test]
+    fn convergence_gate_skipped_when_score_below_floor() {
+        use super::check_convergence_gate;
+        let gate = enabled_convergence_gate();
+        assert!(!check_convergence_gate(&gate, Some(0.92), 0.75, 1, 2, 0.50));
     }
 }

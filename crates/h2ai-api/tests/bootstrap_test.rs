@@ -18,6 +18,7 @@ fn mock_kind() -> AdapterKind {
         endpoint: String::new(),
         api_key_env: String::new(),
         model: None,
+        provider: Default::default(),
     }
 }
 

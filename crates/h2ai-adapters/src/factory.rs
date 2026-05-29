@@ -36,10 +36,12 @@ impl AdapterFactory {
                 endpoint,
                 api_key_env,
                 model,
-            } => Ok(Arc::new(CloudGenericAdapter::with_thinking(
+                provider,
+            } => Ok(Arc::new(CloudGenericAdapter::with_provider(
                 endpoint.clone(),
                 api_key_env.clone(),
                 model.clone(),
+                provider.clone(),
                 enable_thinking,
             ))),
             AdapterKind::OpenAI { api_key_env, model } => {

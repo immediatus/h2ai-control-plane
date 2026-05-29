@@ -5,20 +5,28 @@ use h2ai_autonomic::epistemic::{
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::events::{ConstraintViolation, FailureMode};
 
-// ── Embedding stubs ───────────────────────────────────────────────────────────
+// ── Mock declarations ─────────────────────────────────────────────────────────
 
-/// All texts → same vector → N_eff = 1 (ModeCollapse).
-struct CollapseStub;
-impl EmbeddingModel for CollapseStub {
-    fn embed(&self, _: &str) -> Vec<f32> {
-        vec![1.0, 0.0, 0.0]
+mockall::mock! {
+    pub EpistemicEmbedding {}
+    impl EmbeddingModel for EpistemicEmbedding {
+        fn embed(&self, text: &str) -> Vec<f32>;
     }
 }
 
+// ── Embedding stub factories ──────────────────────────────────────────────────
+
+/// All texts → same vector → N_eff = 1 (ModeCollapse).
+fn collapse_stub() -> MockEpistemicEmbedding {
+    let mut m = MockEpistemicEmbedding::new();
+    m.expect_embed().returning(|_| vec![1.0, 0.0, 0.0]);
+    m
+}
+
 /// Routes on agent markers → orthogonal vectors → N_eff = N (ConstrainedExploration).
-struct DiverseStub;
-impl EmbeddingModel for DiverseStub {
-    fn embed(&self, text: &str) -> Vec<f32> {
+fn diverse_stub() -> MockEpistemicEmbedding {
+    let mut m = MockEpistemicEmbedding::new();
+    m.expect_embed().returning(|text| {
         if text.contains("[AGENT_A]") {
             vec![1.0, 0.0, 0.0]
         } else if text.contains("[AGENT_B]") {
@@ -26,19 +34,28 @@ impl EmbeddingModel for DiverseStub {
         } else {
             vec![0.0, 0.0, 1.0]
         }
-    }
+    });
+    m
 }
 
 /// [AGENT_C] → orthogonal; all others → same → N_eff ≈ 1.8 for N=3.
-struct PartialCollapseStub;
-impl EmbeddingModel for PartialCollapseStub {
-    fn embed(&self, text: &str) -> Vec<f32> {
+fn partial_collapse_stub() -> MockEpistemicEmbedding {
+    let mut m = MockEpistemicEmbedding::new();
+    m.expect_embed().returning(|text| {
         if text.contains("[AGENT_C]") {
             vec![0.0, 1.0, 0.0]
         } else {
             vec![1.0, 0.0, 0.0]
         }
-    }
+    });
+    m
+}
+
+/// Single fixed vector → used for degenerate single-text tests.
+fn single_stub() -> MockEpistemicEmbedding {
+    let mut m = MockEpistemicEmbedding::new();
+    m.expect_embed().returning(|_| vec![1.0, 0.0]);
+    m
 }
 
 // ── Test 1 ────────────────────────────────────────────────────────────────────
@@ -50,7 +67,7 @@ fn collapse_stub_n_eff_is_one() {
         "Answer [AGENT_B]".into(),
         "Answer [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &CollapseStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &collapse_stub(), 0.05);
     assert!(
         (n_eff - 1.0).abs() < 1e-5,
         "CollapseStub must give N_eff=1, got {n_eff}"
@@ -66,7 +83,7 @@ fn diverse_stub_n_eff_is_n() {
         "Answer [AGENT_B]".into(),
         "Answer [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &DiverseStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &diverse_stub(), 0.05);
     assert!(
         (n_eff - 3.0).abs() < 1e-5,
         "DiverseStub must give N_eff=3, got {n_eff}"
@@ -109,7 +126,7 @@ fn partial_collapse_boundary_classified_correctly() {
         "Answer [AGENT_B]".into(),
         "Answer [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &PartialCollapseStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &partial_collapse_stub(), 0.05);
     let fm = classify_failure_mode(n_eff, 3, 0.5);
     assert_eq!(
         fm,
@@ -181,18 +198,11 @@ fn yield_ratio_uses_n_requested_not_n_responded() {
     );
 }
 
-struct SingleStub;
-impl EmbeddingModel for SingleStub {
-    fn embed(&self, _: &str) -> Vec<f32> {
-        vec![1.0, 0.0]
-    }
-}
-
 #[test]
 fn compute_n_eff_cosine_returns_one_for_single_text() {
     // Line 14: n < 2 early return → 1.0 (degenerate: only one perspective)
     let texts = vec!["only one text".to_string()];
-    let n_eff = compute_n_eff_cosine(&texts, &SingleStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &single_stub(), 0.05);
     assert!(
         (n_eff - 1.0).abs() < 1e-9,
         "single text must return 1.0, got {n_eff}"

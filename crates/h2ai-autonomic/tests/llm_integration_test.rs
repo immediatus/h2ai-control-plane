@@ -13,7 +13,7 @@
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::CoherencyCoefficients;
@@ -76,9 +76,9 @@ fn assert_theory_invariants(coeff: &CoherencyCoefficients, label: &str) {
 /// fallback α/β₀.
 #[tokio::test]
 async fn calibration_no_corpus_fallback_cg_invariants_hold() {
-    let a1 = MockAdapter::new("JWT is a stateless token used for authentication.".into());
-    let a2 = MockAdapter::new("JWT is a stateless token used for authentication.".into());
-    let a3 = MockAdapter::new("JWT is a stateless token used for authentication.".into());
+    let a1 = mock_adapter("JWT is a stateless token used for authentication.");
+    let a2 = mock_adapter("JWT is a stateless token used for authentication.");
+    let a3 = mock_adapter("JWT is a stateless token used for authentication.");
     let cfg = H2AIConfig::default();
 
     let event = CalibrationHarness::run(CalibrationInput {
@@ -123,8 +123,8 @@ async fn calibration_no_corpus_fallback_cg_invariants_hold() {
 /// - 0.0 ≠ `calibration_cg_fallback` (0.7) → corpus measurement was used
 #[tokio::test]
 async fn calibration_with_corpus_measures_real_cg() {
-    let a1 = MockAdapter::new("Use stateless JWT tokens for API authentication.".into());
-    let a2 = MockAdapter::new("Use stateless JWT tokens for API authentication.".into());
+    let a1 = mock_adapter("Use stateless JWT tokens for API authentication.");
+    let a2 = mock_adapter("Use stateless JWT tokens for API authentication.");
     let cfg = H2AIConfig::default();
 
     let corpus = vec![

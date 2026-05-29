@@ -1,7 +1,7 @@
 use chrono::Utc;
 use h2ai_constraints::types::aggregate_compliance_score;
 use h2ai_orchestrator::verification::{new_eval_cache, VerificationInput, VerificationPhase};
-use h2ai_test_utils::{MockAdapter, SequencedMockAdapter};
+use h2ai_test_utils::{mock_adapter, sequenced_adapter};
 use h2ai_types::config::{AdapterKind, VerificationConfig};
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -20,6 +20,7 @@ fn make_proposal(task_id: TaskId, text: &str) -> ProposalEvent {
             endpoint: "mock".into(),
             api_key_env: "NONE".into(),
             model: None,
+            provider: Default::default(),
         },
         timestamp: Utc::now(),
     }
@@ -30,7 +31,7 @@ async fn verification_passes_high_score() {
     // evaluator returns score 0.85 — should pass with default threshold 0.45
     // empty corpus → fallback to __rubric__ Hard constraint; hard_passes at 0.85 >= 0.45;
     // aggregate_compliance_score returns 1.0 (no Soft constraints) → overall = 1.0
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "My proposal text");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -61,7 +62,7 @@ async fn verification_passes_high_score() {
 #[tokio::test]
 async fn verification_fails_low_score() {
     // evaluator returns score 0.3 — should fail with explicit threshold 0.6
-    let evaluator = MockAdapter::new(r#"{"score": 0.3, "reason": "missing constraints"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.3, "reason": "missing constraints"}"#);
     let proposal = make_proposal(TaskId::new(), "Incomplete proposal");
 
     let config = VerificationConfig {
@@ -95,7 +96,7 @@ async fn verification_fails_low_score() {
 #[tokio::test]
 async fn verification_parallel_multiple_proposals() {
     // 4 proposals all at score 0.85 — verify all 4 are collected via parallel execution
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let task_id = TaskId::new();
     let proposals = (0..4)
         .map(|i| make_proposal(task_id.clone(), &format!("Proposal {i}")))
@@ -130,7 +131,7 @@ async fn verification_parse_error_neutral_score() {
     // failed to evaluate — not that the proposal is wrong. The 0.7 neutral score is above
     // the default hard threshold (0.45), so the proposal passes. This is intentional:
     // a formatting failure from a small model should not silently prune valid proposals.
-    let evaluator = MockAdapter::new("not valid json".into());
+    let evaluator = mock_adapter("not valid json");
     let proposal = make_proposal(TaskId::new(), "Some proposal");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -162,7 +163,7 @@ async fn verification_parse_error_neutral_score() {
 async fn verification_evaluator_empty_output_neutral_score() {
     // Empty evaluator output (e.g. adapter timed out before writing) returns 0.7 neutral.
     // Same reasoning as parse error: absence of evaluation evidence ≠ proposal failure.
-    let evaluator = MockAdapter::new(String::new());
+    let evaluator = mock_adapter(String::new());
     let proposal = make_proposal(TaskId::new(), "Some proposal");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -195,7 +196,7 @@ async fn verification_score_exactly_at_threshold_passes() {
     // Hard threshold in __rubric__ fallback is 0.45; we set both config threshold and
     // ensure the LLM score equals the hard threshold so it just passes.
     let threshold = 0.45;
-    let evaluator = MockAdapter::new(format!(
+    let evaluator = mock_adapter(format!(
         r#"{{"score": {threshold}, "reason": "at threshold"}}"#
     ));
     let proposal = make_proposal(TaskId::new(), "Proposal at threshold");
@@ -218,7 +219,7 @@ async fn verification_score_exactly_at_threshold_passes() {
 
 #[tokio::test]
 async fn verification_empty_proposals_returns_empty_output() {
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let out = VerificationPhase::run(VerificationInput {
         proposals: vec![],
         constraint_corpus: &[],
@@ -235,7 +236,7 @@ async fn verification_empty_proposals_returns_empty_output() {
 #[tokio::test]
 async fn verification_score_clamped_above_one() {
     // LLM returns score > 1.0 — must be clamped to 1.0 and still pass.
-    let evaluator = MockAdapter::new(r#"{"score": 2.5, "reason": "way above"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 2.5, "reason": "way above"}"#);
     let proposal = make_proposal(TaskId::new(), "Test proposal");
     let out = VerificationPhase::run(VerificationInput {
         proposals: vec![proposal],
@@ -265,7 +266,7 @@ async fn verification_all_proposals_fail_below_threshold() {
     // aggregate_compliance_score (no Soft) = 1.0. overall = 1.0 >= 0.8 → PASSES!
     // So we need score < 0.45 (Hard threshold) to fail. Use score 0.3.
     let threshold = 0.5;
-    let evaluator = MockAdapter::new(r#"{"score": 0.3, "reason": "below"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.3, "reason": "below"}"#);
     let task_id = TaskId::new();
     let proposals: Vec<_> = (0..3)
         .map(|i| make_proposal(task_id.clone(), &format!("Proposal {i}")))
@@ -291,7 +292,7 @@ async fn verification_all_proposals_fail_below_threshold() {
 async fn verification_aggregate_score_used_for_passed() {
     // Verify that aggregate_compliance_score is used correctly on passed proposals.
     // With empty corpus (→ Hard __rubric__) and score 0.9, aggregate = 1.0.
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Good proposal");
     let out = VerificationPhase::run(VerificationInput {
         proposals: vec![proposal],
@@ -331,7 +332,7 @@ async fn verification_json_schema_predicate_passes_valid_json() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "unused"}"#);
     let proposal = make_proposal(TaskId::new(), r#"{"result": "ok"}"#);
 
     let out = VerificationPhase::run(VerificationInput {
@@ -373,7 +374,7 @@ async fn verification_length_range_predicate_rejects_long_output() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "unused"}"#);
     let proposal = make_proposal(
         TaskId::new(),
         "this is definitely longer than ten characters",
@@ -416,7 +417,7 @@ async fn verification_oracle_execution_unreachable_scores_zero() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "unused"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "unused"}"#);
     let proposal = make_proposal(TaskId::new(), "some output");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -451,7 +452,7 @@ async fn eval_cache_reuses_score_for_similar_proposals() {
     // Use a MockAdapter-compatible string — the mock always returns the same response.
     // We use the default MockAdapter since it doesn't provide call counting, so instead
     // we verify the cache hit flag on the output.
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     drop(call_count_clone); // unused in this simplified form
 
     let doc = ConstraintDoc {
@@ -512,7 +513,7 @@ async fn eval_cache_reuses_score_for_similar_proposals() {
 async fn eval_cache_does_not_reuse_for_dissimilar_proposals() {
     use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
 
     let doc = ConstraintDoc {
         id: "test_constraint".into(),
@@ -584,7 +585,7 @@ async fn panel_single_variant_matches_run_outcome() {
     use h2ai_orchestrator::judge_panel::JudgePanel;
 
     // Use MockAdapter returning score 0.85 — same setup as verification_passes_high_score.
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "My proposal text");
 
     let input = VerificationInput {
@@ -644,10 +645,10 @@ async fn semantic_presence_yes_majority_passes() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec![
-        "YES, concept present".into(),
+    let evaluator = sequenced_adapter(vec![
+        "YES, concept present".to_string(),
         "YES, idempotency addressed".into(),
-        "YES".into(),
+        ".to_string()YES".into(),
     ]);
     let proposal = make_proposal(TaskId::new(), "We use idempotency keys on every request.");
     let out = VerificationPhase::run(VerificationInput {
@@ -686,8 +687,11 @@ async fn semantic_presence_no_majority_fails() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator =
-        SequencedMockAdapter::new(vec!["YES".into(), "NO, not mentioned".into(), "NO".into()]);
+    let evaluator = sequenced_adapter(vec![
+        "YES".to_string(),
+        "NO, not mentioned".to_string(),
+        ".to_string()NO".to_string(),
+    ]);
     let proposal = make_proposal(
         TaskId::new(),
         "We use a simple DECRBY without any idempotency.",
@@ -731,10 +735,10 @@ async fn semantic_ordering_correct_order_passes() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec![
-        "YES, debit happens first then Kafka publish".into(),
+    let evaluator = sequenced_adapter(vec![
+        "YES, debit happens first then Kafka publish".to_string(),
         "YES".into(),
-        "YES".into(),
+        ".to_string()YES".into(),
     ]);
     let proposal = make_proposal(
         TaskId::new(),
@@ -776,10 +780,10 @@ async fn semantic_ordering_wrong_order_fails() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec![
-        "NO, Kafka publish happens before the debit".into(),
+    let evaluator = sequenced_adapter(vec![
+        "NO, Kafka publish happens before the debit".to_string(),
         "NO".into(),
-        "NO".into(),
+        ".to_string()NO".into(),
     ]);
     let proposal = make_proposal(
         TaskId::new(),
@@ -822,10 +826,10 @@ async fn semantic_ordering_no_kafka_mention_fails() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec![
-        "NO, no Kafka mentioned — uses Redis sorted set instead".into(),
+    let evaluator = sequenced_adapter(vec![
+        "NO, no Kafka mentioned — uses Redis sorted set instead".to_string(),
         "NO".into(),
-        "NO".into(),
+        ".to_string()NO".into(),
     ]);
     let proposal = make_proposal(
         TaskId::new(),
@@ -872,10 +876,10 @@ async fn semantic_exclusion_pattern_absent_passes() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec![
-        "NO, no distributed lock present".into(),
+    let evaluator = sequenced_adapter(vec![
+        "NO, no distributed lock present".to_string(),
         "NO".into(),
-        "NO".into(),
+        ".to_string()NO".into(),
     ]);
     let proposal = make_proposal(
         TaskId::new(),
@@ -916,10 +920,10 @@ async fn semantic_exclusion_pattern_present_fails() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec![
-        "YES, Redlock distributed lock is used".into(),
+    let evaluator = sequenced_adapter(vec![
+        "YES, Redlock distributed lock is used".to_string(),
         "YES".into(),
-        "YES".into(),
+        ".to_string()YES".into(),
     ]);
     let proposal = make_proposal(
         TaskId::new(),
@@ -962,7 +966,7 @@ async fn majority_vote_tie_is_conservative_fail() {
         repair_provenance: None,
         pass_criteria: None,
     };
-    let evaluator = SequencedMockAdapter::new(vec!["YES".into(), "NO".into()]);
+    let evaluator = sequenced_adapter(vec!["YES".to_string(), "NO".to_string()]);
     let proposal = make_proposal(TaskId::new(), "Ambiguous proposal.");
     let out = VerificationPhase::run(VerificationInput {
         proposals: vec![proposal],
@@ -1002,7 +1006,7 @@ async fn majority_vote_single_pass_requires_unanimous() {
     };
 
     // YES path
-    let yes_eval = SequencedMockAdapter::new(vec!["YES".into()]);
+    let yes_eval = sequenced_adapter(vec!["YES".to_string()]);
     let out_yes = VerificationPhase::run(VerificationInput {
         proposals: vec![make_proposal(TaskId::new(), "Uses idempotency keys.")],
         constraint_corpus: &[make_doc()],
@@ -1019,7 +1023,7 @@ async fn majority_vote_single_pass_requires_unanimous() {
     );
 
     // NO path
-    let no_eval = SequencedMockAdapter::new(vec!["NO".into()]);
+    let no_eval = sequenced_adapter(vec!["NO".to_string()]);
     let out_no = VerificationPhase::run(VerificationInput {
         proposals: vec![make_proposal(TaskId::new(), "No idempotency at all.")],
         constraint_corpus: &[make_doc()],
@@ -1082,7 +1086,7 @@ async fn panel_all_pass_uncertain_map_is_empty() {
     use h2ai_orchestrator::judge_panel::JudgePanel;
 
     // Score 0.85 → all constraints pass → no uncertain constraints in map.
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let task_id = TaskId::new();
     let proposals = vec![
         make_proposal(task_id.clone(), "First proposal text"),
@@ -1125,7 +1129,7 @@ async fn panel_all_pass_uncertain_map_is_empty() {
 async fn adversarial_comparison_produces_comparison_events() {
     // record_adversarial_comparison = true triggers a second adversarial pass and
     // populates comparison_events with one entry per proposal.
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "My proposal text");
 
     let config = VerificationConfig {
@@ -1159,7 +1163,7 @@ async fn adversarial_comparison_produces_comparison_events() {
 #[tokio::test]
 async fn adversarial_comparison_off_by_default_no_events() {
     // Default config has record_adversarial_comparison = false → no comparison events.
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "My proposal text");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1187,8 +1191,8 @@ async fn panel_two_variants_both_pass_no_uncertain() {
 
     // Two adapters, both returning score 0.85 → both vote pass → CrossFamily quorum
     // (2 out of 2 ≥ 0.67 quorum) → Pass verdict → no uncertain map entries.
-    let eval_a = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
-    let eval_b = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let eval_a = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
+    let eval_b = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Some proposal");
 
     let input = VerificationInput {
@@ -1239,8 +1243,8 @@ async fn panel_two_variants_both_fail_hard_constraint() {
 
     // Both adapters return score 0.2 (below Hard threshold 0.5) → both vote Fail →
     // CrossFamily quorum met for Fail → hard_fail = true → proposal fails.
-    let eval_a = MockAdapter::new(r#"{"score": 0.2, "reason": "poor"}"#.into());
-    let eval_b = MockAdapter::new(r#"{"score": 0.2, "reason": "poor"}"#.into());
+    let eval_a = mock_adapter(r#"{"score": 0.2, "reason": "poor"}"#);
+    let eval_b = mock_adapter(r#"{"score": 0.2, "reason": "poor"}"#);
 
     let doc = ConstraintDoc {
         id: "hard_constraint".into(),
@@ -1306,8 +1310,8 @@ async fn panel_two_variants_disagreement_uncertain_constraint() {
 
     // eval_a scores 0.9 (pass), eval_b scores 0.2 (fail) → CrossFamily with quorum 0.67
     // → neither side meets quorum (1/2 = 0.5 < 0.67) → Uncertain → uncertain_map populated.
-    let eval_a = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
-    let eval_b = MockAdapter::new(r#"{"score": 0.2, "reason": "poor"}"#.into());
+    let eval_a = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
+    let eval_b = mock_adapter(r#"{"score": 0.2, "reason": "poor"}"#);
 
     let doc = ConstraintDoc {
         id: "contested_constraint".into(),
@@ -1411,7 +1415,7 @@ async fn composite_and_both_pass() {
         pass_criteria: None,
     };
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "A short good proposal.");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1467,7 +1471,7 @@ async fn composite_and_static_fails_skips_llm() {
     };
 
     // LlmJudge would return 0.9, but short-circuit means it won't be called.
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let proposal = make_proposal(
         TaskId::new(),
         "This is definitely longer than five characters.",
@@ -1529,7 +1533,7 @@ async fn composite_or_first_passes_short_circuits() {
         pass_criteria: None,
     };
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Short enough.");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1584,7 +1588,7 @@ async fn composite_or_both_fail() {
         pass_criteria: None,
     };
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.85, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.85, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Non-empty text.");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1633,7 +1637,7 @@ async fn composite_not_inverts_pass_to_fail() {
         pass_criteria: None,
     };
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Short text.");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1686,7 +1690,7 @@ async fn composite_not_inverts_fail_to_pass() {
         pass_criteria: None,
     };
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Has content.");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1734,7 +1738,7 @@ async fn composite_not_empty_children_returns_zero() {
         pass_criteria: None,
     };
 
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let proposal = make_proposal(TaskId::new(), "Any proposal.");
 
     let out = VerificationPhase::run(VerificationInput {
@@ -1760,7 +1764,7 @@ async fn composite_not_empty_children_returns_zero() {
 #[tokio::test]
 async fn score_proposals_returns_aggregate_per_proposal() {
     // score_proposals returns one (proposal, score) per input in order.
-    let evaluator = MockAdapter::new(r#"{"score": 0.8, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.8, "reason": "good"}"#);
     let task_id = TaskId::new();
     let proposals = vec![
         make_proposal(task_id.clone(), "Proposal A"),
@@ -1784,7 +1788,7 @@ async fn score_proposals_returns_aggregate_per_proposal() {
 
 #[tokio::test]
 async fn score_proposals_empty_input_returns_empty() {
-    let evaluator = MockAdapter::new(r#"{"score": 0.9, "reason": "good"}"#.into());
+    let evaluator = mock_adapter(r#"{"score": 0.9, "reason": "good"}"#);
     let scores = VerificationPhase::score_proposals(
         vec![],
         &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,

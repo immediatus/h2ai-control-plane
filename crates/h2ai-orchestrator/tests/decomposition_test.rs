@@ -51,16 +51,17 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use async_trait::async_trait;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_orchestrator::decomposition::{
     compute_role_diversity, corpus_fallback, parse_decomposition_response, prune_by_orthogonality,
     run_decomposition_agent,
 };
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_test_utils::{failing_adapter, mock_adapter, MockIComputeAdapter};
+use h2ai_types::adapter::ComputeResponse;
 use h2ai_types::config::{AdapterKind, ParetoWeights};
 use h2ai_types::manifest::{CotStyle, ExplorerSlotConfig};
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn parse_valid_json_array() {
@@ -354,63 +355,14 @@ fn corpus_fallback_unknown_domain_produces_architect_slot() {
 
 // ── run_decomposition_agent ──────────────────────────────────────────────────
 
-#[derive(Debug)]
-struct MockDecompositionAdapter {
-    response: String,
-}
-
-#[async_trait]
-impl IComputeAdapter for MockDecompositionAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Ok(ComputeResponse {
-            output: self.response.clone(),
-            token_cost: 100,
-            adapter_kind: AdapterKind::CloudGeneric {
-                endpoint: String::new(),
-                api_key_env: String::new(),
-                model: None,
-            },
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-    fn kind(&self) -> &AdapterKind {
-        static KIND: std::sync::OnceLock<AdapterKind> = std::sync::OnceLock::new();
-        KIND.get_or_init(|| AdapterKind::CloudGeneric {
-            endpoint: String::new(),
-            api_key_env: String::new(),
-            model: None,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct FailingAdapter;
-
-#[async_trait]
-impl IComputeAdapter for FailingAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::Timeout)
-    }
-    fn kind(&self) -> &AdapterKind {
-        static KIND: std::sync::OnceLock<AdapterKind> = std::sync::OnceLock::new();
-        KIND.get_or_init(|| AdapterKind::CloudGeneric {
-            endpoint: String::new(),
-            api_key_env: String::new(),
-            model: None,
-        })
-    }
-}
-
 #[tokio::test]
 async fn run_decomposition_agent_uses_llm_slots_on_success() {
-    let adapter = MockDecompositionAdapter {
-        response: r#"[
+    let adapter = mock_adapter(
+        r#"[
           {"role_frame": "You are a security engineer.", "cot_style": "devil_s_advocate"},
           {"role_frame": "You are a performance engineer.", "cot_style": "first_principles"}
-        ]"#
-        .into(),
-    };
+        ]"#,
+    );
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
     let slots = run_decomposition_agent(
         "design a caching layer",
@@ -432,14 +384,13 @@ async fn run_decomposition_agent_uses_llm_slots_on_success() {
 
 #[tokio::test]
 async fn run_decomposition_agent_prunes_to_n_max() {
-    let adapter = MockDecompositionAdapter {
-        response: r#"[
+    let adapter = mock_adapter(
+        r#"[
           {"role_frame": "You are a security engineer.", "cot_style": "none"},
           {"role_frame": "You are a performance engineer.", "cot_style": "none"},
           {"role_frame": "You are a correctness engineer.", "cot_style": "none"}
-        ]"#
-        .into(),
-    };
+        ]"#,
+    );
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
     let slots =
         run_decomposition_agent("task", &[], &weights, 2, 2, &adapter, None, 2048, 8192, "")
@@ -450,7 +401,7 @@ async fn run_decomposition_agent_prunes_to_n_max() {
 
 #[tokio::test]
 async fn run_decomposition_agent_returns_err_on_adapter_failure() {
-    let adapter = FailingAdapter;
+    let adapter = failing_adapter();
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
     let result = run_decomposition_agent(
         "design a caching layer",
@@ -470,9 +421,7 @@ async fn run_decomposition_agent_returns_err_on_adapter_failure() {
 
 #[tokio::test]
 async fn run_decomposition_agent_returns_err_on_parse_failure() {
-    let adapter = MockDecompositionAdapter {
-        response: "not valid json".into(),
-    };
+    let adapter = mock_adapter("not valid json");
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
     let result = run_decomposition_agent(
         "design something",
@@ -494,9 +443,7 @@ async fn run_decomposition_agent_returns_err_on_parse_failure() {
 async fn decomposition_failure_propagates_as_err() {
     // Decomposition failure is fatal — no fallback. The task-handler publishes TaskFailed
     // and stops. This test verifies that a non-JSON response from the LLM propagates as Err.
-    let adapter = MockDecompositionAdapter {
-        response: "Here is my analysis of the problem... [no JSON array]".into(),
-    };
+    let adapter = mock_adapter("Here is my analysis of the problem... [no JSON array]");
     let corpus = vec![make_constraint("CONSTRAINT-003", vec!["rtb", "latency"])];
     let weights = ParetoWeights::new(0.5, 0.4, 0.1).unwrap();
 
@@ -521,37 +468,19 @@ async fn decomposition_failure_propagates_as_err() {
 
 // ── Request-capturing adapter ─────────────────────────────────────────────────
 
-/// Captures all `task` strings from `execute` calls while returning sequential responses.
-/// Used to assert on the content of prompts sent to each pipeline step.
-#[derive(Debug)]
-struct CapturingAdapter {
-    responses: Vec<String>,
-    captured_tasks: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    call_count: std::sync::Arc<std::sync::Mutex<usize>>,
-}
-
-impl CapturingAdapter {
-    fn new(responses: Vec<&str>) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let adapter = Self {
-            responses: responses.into_iter().map(str::to_string).collect(),
-            captured_tasks: captured.clone(),
-            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
-        };
-        (adapter, captured)
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for CapturingAdapter {
-    async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        self.captured_tasks.lock().unwrap().push(req.task.clone());
-        let mut count = self.call_count.lock().unwrap();
-        let response = self
-            .responses
+fn capturing_adapter(responses: Vec<&str>) -> (MockIComputeAdapter, Arc<Mutex<Vec<String>>>) {
+    let responses: Vec<String> = responses.into_iter().map(str::to_string).collect();
+    let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured.clone();
+    let call_count = Arc::new(Mutex::new(0usize));
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |req| {
+        captured_clone.lock().unwrap().push(req.task.clone());
+        let mut count = call_count.lock().unwrap();
+        let response = responses
             .get(*count)
             .cloned()
-            .unwrap_or_else(|| self.responses.last().cloned().unwrap_or_default());
+            .unwrap_or_else(|| responses.last().cloned().unwrap_or_default());
         *count += 1;
         Ok(ComputeResponse {
             output: response,
@@ -560,19 +489,21 @@ impl IComputeAdapter for CapturingAdapter {
                 endpoint: String::new(),
                 api_key_env: String::new(),
                 model: None,
+                provider: Default::default(),
             },
             tokens_used: None,
             reasoning_trace: None,
         })
-    }
-    fn kind(&self) -> &AdapterKind {
-        static KIND: std::sync::OnceLock<AdapterKind> = std::sync::OnceLock::new();
-        KIND.get_or_init(|| AdapterKind::CloudGeneric {
+    });
+    m.expect_kind()
+        .return_const(AdapterKind::CloudGeneric {
             endpoint: String::new(),
             api_key_env: String::new(),
             model: None,
+            provider: Default::default(),
         })
-    }
+        .times(0..);
+    (m, captured)
 }
 
 /// STEP3 prompt must contain the corpus domain vocabulary so the LLM can emit
@@ -598,7 +529,7 @@ async fn step3_prompt_contains_corpus_domain_vocabulary() {
         }
     ]"#;
 
-    let (adapter, captured) = CapturingAdapter::new(vec![
+    let (adapter, captured) = capturing_adapter(vec![
         "Step 1 analysis: auth misses token expiry; latency misses P99 under concurrent load.",
         "Step 2 roles: security engineer for auth; performance engineer for latency.",
         json_slots,
@@ -659,7 +590,7 @@ async fn step3_prompt_handles_empty_corpus_gracefully() {
          "constraint_domains": [], "search_enabled": false}
     ]"#;
 
-    let (adapter, captured) = CapturingAdapter::new(vec![
+    let (adapter, captured) = capturing_adapter(vec![
         "Step 1: no constraints, general analysis.",
         "Step 2: one general architect role.",
         json_slots,
@@ -693,32 +624,17 @@ async fn step3_prompt_handles_empty_corpus_gracefully() {
 
 // ── 3-step pipeline chain tests ───────────────────────────────────────────────
 
-/// Returns different responses in sequence (Step1 → Step2 → Step3).
-/// The counter tracks which call we're on so each step gets appropriate content.
-#[derive(Debug)]
-struct SequentialMockAdapter {
-    responses: Vec<String>,
-    call_count: std::sync::Arc<std::sync::Mutex<usize>>,
-}
-
-impl SequentialMockAdapter {
-    fn new(responses: Vec<&str>) -> Self {
-        Self {
-            responses: responses.into_iter().map(str::to_string).collect(),
-            call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for SequentialMockAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        let mut count = self.call_count.lock().unwrap();
-        let response = self
-            .responses
+fn sequential_mock_adapter(responses: Vec<&str>) -> (MockIComputeAdapter, Arc<Mutex<usize>>) {
+    let responses: Vec<String> = responses.into_iter().map(str::to_string).collect();
+    let call_count = Arc::new(Mutex::new(0usize));
+    let count_clone = call_count.clone();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_req| {
+        let mut count = count_clone.lock().unwrap();
+        let response = responses
             .get(*count)
             .cloned()
-            .unwrap_or_else(|| self.responses.last().cloned().unwrap_or_default());
+            .unwrap_or_else(|| responses.last().cloned().unwrap_or_default());
         *count += 1;
         Ok(ComputeResponse {
             output: response,
@@ -727,19 +643,21 @@ impl IComputeAdapter for SequentialMockAdapter {
                 endpoint: String::new(),
                 api_key_env: String::new(),
                 model: None,
+                provider: Default::default(),
             },
             tokens_used: None,
             reasoning_trace: None,
         })
-    }
-    fn kind(&self) -> &AdapterKind {
-        static KIND: std::sync::OnceLock<AdapterKind> = std::sync::OnceLock::new();
-        KIND.get_or_init(|| AdapterKind::CloudGeneric {
+    });
+    m.expect_kind()
+        .return_const(AdapterKind::CloudGeneric {
             endpoint: String::new(),
             api_key_env: String::new(),
             model: None,
+            provider: Default::default(),
         })
-    }
+        .times(0..);
+    (m, call_count)
 }
 
 /// Step 1 and Step 2 return free-text; Step 3 returns JSON.
@@ -767,7 +685,7 @@ async fn pipeline_uses_step3_json_output_for_slot_construction() {
       }
     ]"#;
 
-    let adapter = SequentialMockAdapter::new(vec![
+    let (adapter, call_count) = sequential_mock_adapter(vec![
         "Step 1 analysis: C-004 misses Redis TTL race; C-005 misses Kafka-before-ack ordering.",
         "Step 2 roles: Engineer 1 anchored to race condition; Engineer 2 anchored to audit ordering.",
         json_slots,
@@ -801,14 +719,14 @@ async fn pipeline_uses_step3_json_output_for_slot_construction() {
     assert!(slots[2].role_frame.contains("SRE"));
     assert_eq!(slots[2].cot_style, CotStyle::FirstPrinciples);
     // Verify call count: exactly 3 steps
-    let calls = *adapter.call_count.lock().unwrap();
+    let calls = *call_count.lock().unwrap();
     assert_eq!(calls, 3, "pipeline must make exactly 3 adapter calls");
 }
 
 /// Step 1 failure propagates immediately — pipeline does not continue to Step 2.
 #[tokio::test]
 async fn pipeline_fails_fast_on_step1_adapter_error() {
-    let adapter = FailingAdapter;
+    let adapter = failing_adapter();
     let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
     let result = run_decomposition_agent(
         "design something",
@@ -829,7 +747,7 @@ async fn pipeline_fails_fast_on_step1_adapter_error() {
 /// Steps 1-2 succeed with free text; Step 3 returns non-JSON → parse error.
 #[tokio::test]
 async fn pipeline_fails_on_step3_json_parse_error() {
-    let adapter = SequentialMockAdapter::new(vec![
+    let (adapter, call_count) = sequential_mock_adapter(vec![
         "Step 1: analysis output.",
         "Step 2: role design output.",
         "Step 3 produced no JSON array here.",
@@ -838,7 +756,7 @@ async fn pipeline_fails_on_step3_json_parse_error() {
     let result =
         run_decomposition_agent("task", &[], &weights, 2, 5, &adapter, None, 2048, 8192, "").await;
     assert!(result.is_err(), "Step 3 non-JSON must propagate as Err");
-    let calls = *adapter.call_count.lock().unwrap();
+    let calls = *call_count.lock().unwrap();
     assert_eq!(calls, 3, "all 3 steps must be attempted before parse error");
 }
 
@@ -938,7 +856,7 @@ fn step1_empty_thinking_context_produces_no_prefix() {
 #[tokio::test]
 async fn pipeline_extracts_llm_judge_rubric_into_step1_context() {
     let json_slot = r#"[{"role_frame": "You are a security engineer.", "cot_style": "step_by_step", "focus_mandate": "security constraint SEC-001", "rejection_criteria": "any security violation"}]"#;
-    let adapter = SequentialMockAdapter::new(vec![
+    let (adapter, _call_count) = sequential_mock_adapter(vec![
         "Analysis: this constraint covers no-SQL-injection.",
         "Roles: one security engineer.",
         json_slot,
@@ -973,7 +891,7 @@ async fn pipeline_extracts_llm_judge_rubric_into_step1_context() {
 #[tokio::test]
 async fn pipeline_handles_untagged_constraint_with_empty_domains() {
     let json_slot = r#"[{"role_frame": "You are an architect.", "cot_style": "step_by_step", "focus_mandate": "meet constraints", "rejection_criteria": "any violation"}]"#;
-    let adapter = SequentialMockAdapter::new(vec![
+    let (adapter, _call_count) = sequential_mock_adapter(vec![
         "Analysis: general constraint.",
         "Roles: one architect.",
         json_slot,

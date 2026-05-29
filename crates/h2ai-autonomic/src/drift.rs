@@ -1,4 +1,4 @@
-//! Calibration drift detection (GAP-H2): DDM fast-layer + BOCPD structural shift + ORCA margin.
+//! Calibration drift detection: DDM fast-layer + BOCPD structural shift + ORCA margin.
 
 use chrono::Utc;
 use h2ai_config::H2AIConfig;

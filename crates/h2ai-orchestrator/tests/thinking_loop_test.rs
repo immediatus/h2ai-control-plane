@@ -127,8 +127,8 @@ fn cfg_disabled() -> ThinkingLoopConfig {
 async fn disabled_loop_returns_empty_report() {
     // When disabled, run() must return immediately with empty ThinkingReport.
     // We pass a None embedding_model since disabled path must not touch it.
-    use h2ai_test_utils::MockAdapter;
-    let adapter = MockAdapter::new("irrelevant".into());
+    use h2ai_test_utils::mock_adapter;
+    let adapter = mock_adapter("irrelevant");
     let input = ThinkingLoopInput {
         task_description: "test task",
         constraint_ids: &[],
@@ -215,7 +215,7 @@ fn scheduled_tau_decreases_linearly() {
 /// provider never received the constraint IDs regardless of what the caller passed in.
 #[tokio::test]
 async fn run_forwards_constraint_ids_to_knowledge_query() {
-    use h2ai_test_utils::SequencedMockAdapter;
+    use h2ai_test_utils::sequenced_adapter;
 
     let (spy, captured) = SpyProvider::new();
     let cfg = ThinkingLoopConfig {
@@ -229,7 +229,7 @@ async fn run_forwards_constraint_ids_to_knowledge_query() {
     let archetype_json = r#"[{"name":"audit","persona":"You are an audit engineer.","scope":"compliance","confidence":0.8,"tau":0.3,"model_tier":"capable","cot_style":"first_principles"}]"#;
     let brainstorm_text = "Use Kafka for audit trail.";
     let synthesis_json = r#"{"shared_understanding":"publish to Kafka before HTTP 200","tensions":[],"coverage_score":0.85}"#;
-    let adapter = SequencedMockAdapter::new(vec![
+    let adapter = sequenced_adapter(vec![
         archetype_json.to_string(),
         brainstorm_text.to_string(),
         synthesis_json.to_string(),
@@ -344,7 +344,7 @@ fn parse_thinking_report_empty_shared_understanding_with_zero_coverage_falls_bac
 async fn run_with_two_iterations_covers_convergence_check() {
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
-    use h2ai_test_utils::SequencedMockAdapter;
+    use h2ai_test_utils::sequenced_adapter;
 
     let cfg = ThinkingLoopConfig {
         enabled: true,
@@ -364,7 +364,7 @@ async fn run_with_two_iterations_covers_convergence_check() {
     let synthesis2 =
         r#"{"shared_understanding":"use optimistic locking","tensions":[],"coverage_score":0.8}"#;
 
-    let adapter = SequencedMockAdapter::new(vec![
+    let adapter = sequenced_adapter(vec![
         archetype_json.to_string(),
         brainstorm1.to_string(),
         synthesis1.to_string(),
@@ -399,7 +399,7 @@ async fn run_with_two_iterations_covers_convergence_check() {
 async fn run_with_low_coverage_continues_to_next_iteration() {
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
-    use h2ai_test_utils::SequencedMockAdapter;
+    use h2ai_test_utils::sequenced_adapter;
 
     let cfg = ThinkingLoopConfig {
         enabled: true,
@@ -414,7 +414,7 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
     let brainstorm = "simple brainstorm text";
     let synthesis_low = r#"{"shared_understanding":"low coverage result","tensions":["gap1"],"coverage_score":0.3}"#;
 
-    let adapter = SequencedMockAdapter::new(vec![
+    let adapter = sequenced_adapter(vec![
         archetype.to_string(),
         brainstorm.to_string(),
         synthesis_low.to_string(),
@@ -446,7 +446,7 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
 async fn run_breaks_early_on_empty_archetypes() {
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
 
     let cfg = ThinkingLoopConfig {
         enabled: true,
@@ -455,7 +455,7 @@ async fn run_breaks_early_on_empty_archetypes() {
         ..Default::default()
     };
     // Adapter returns non-JSON → parse_archetypes returns None → archetypes empty → break
-    let adapter = MockAdapter::new("not valid json archetypes".into());
+    let adapter = mock_adapter("not valid json archetypes");
 
     let input = ThinkingLoopInput {
         task_description: "task",

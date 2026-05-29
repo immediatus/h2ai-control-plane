@@ -9,9 +9,9 @@ use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
 use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{
-    ApprovalResolvedEvent, CalibrationCompletedEvent, H2AIEvent, PendingApprovalEvent,
-    ProposalFailedEvent, SelectionResolvedEvent, TaskComplexityAssessedEvent,
-    VerificationScoredEvent,
+    ApprovalResolvedEvent, BudgetExhaustedEvent, CalibrationCompletedEvent,
+    CostThresholdWarningEvent, H2AIEvent, PendingApprovalEvent, ProposalFailedEvent,
+    SelectionResolvedEvent, TaskComplexityAssessedEvent, VerificationScoredEvent,
 };
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::TaskManifest;
@@ -20,6 +20,21 @@ use h2ai_types::reasoning_checkpoint::{
 };
 use h2ai_types::sizing::TaskQuadrant;
 use thiserror::Error;
+
+/// Appended to the verifier system prompt when `verifier_decomposition_enabled = true` and
+/// the complexity probe rated the task at or above `decompose_threshold`.
+/// Instructs the judge to decompose verification into sub-claims and tag uncomputable ones as
+/// BEYOND_BUDGET rather than UNVERIFIED, so the MAPE-K controller can distinguish
+/// "content rejected" from "computation limit reached".
+const BEYOND_BUDGET_VERIFIER_ADDENDUM: &str = "\n\n\
+    --- Sub-claim Verification Mode ---\n\
+    This task requires multi-step proof verification. Decompose your verification \
+    into sub-claims and label each as:\n\
+    - VERIFIED: sub-claim checks out\n\
+    - UNVERIFIED: sub-claim fails\n\
+    - BEYOND_BUDGET: sub-claim requires more computation than available in this pass\n\
+    Score = VERIFIED / (VERIFIED + UNVERIFIED). Report BEYOND_BUDGET items separately; \
+    do NOT score them as 0.0.";
 
 /// Errors that can abort an `ExecutionEngine::run_offline` call.
 #[derive(Debug, Error)]
@@ -143,7 +158,7 @@ pub struct EngineInput<'a> {
     /// When `Some`, the bandit selects `n_agents` and its posterior is updated on task completion.
     /// When `None`, N selection falls back to `n_optimal_hint` from `EnsembleCalibration`.
     pub bandit_state: Option<std::sync::Arc<tokio::sync::RwLock<crate::bandit::BanditState>>>,
-    /// Shadow auditor context for GAP-C2 disagreement measurement. `None` = shadow off.
+    /// Shadow auditor context disagreement measurement. `None` = shadow off.
     pub shadow_audit_ctx: Option<ShadowAuditCtx>,
     /// Optional researcher adapter for C1 grounding (proactive slot search + reactive retry).
     /// Uses `Arc` so it can be called from async closures inside the MAPE-K loop.
@@ -158,7 +173,7 @@ pub struct EngineInput<'a> {
     /// with a positive grounding context (spec anchor + LLM researcher / web search).
     /// When `None`, falls back to `SpecAnchorGrounder` inline (zero I/O).
     pub srani_grounding_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
-    /// Dedicated grounding chain for GAP-I1 gap researcher (DDG search + distiller).
+    /// Dedicated grounding chain gap researcher (DDG search + distiller).
     pub gap_research_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
     /// Raw NATS client for oracle gate NATS request/reply. `None` = oracle gate skipped
     /// even when `cfg.oracle_gate.enabled = true`.
@@ -241,7 +256,7 @@ pub struct EngineOutput {
     pub frontier_event: Option<h2ai_types::events::ConstraintFrontierEvent>,
     /// Per-explorer correctness flag from the final verification wave.
     /// `true` = proposal passed verification (score ≥ `verify_threshold`).
-    /// Used for H1 (`ρ_actual`) empirical measurement in the GAP-A1 experiment.
+    /// Used for H1 (`ρ_actual`) empirical measurement in the experiment.
     pub adapter_correctness: Vec<(h2ai_types::identity::ExplorerId, bool)>,
     /// Domain-level coherence state from all pruned proposals across all MAPE-K waves.
     pub coherence_state: crate::coherence::CoherenceState,
@@ -321,7 +336,7 @@ impl ExecutionEngine {
     /// Returns `EngineOutput` on the first successful merge, or an `EngineError` when
     /// all retries are exhausted or a non-retryable condition is encountered.
     pub async fn run_offline(mut input: EngineInput<'_>) -> Result<EngineOutput, EngineError> {
-        // ORCA conformal margin: widen verification gate under active drift (GAP-H2).
+        // ORCA conformal margin: widen verification gate under active drift.
         if input.conformal_margin > 0.0 {
             input.verification_config.threshold =
                 (input.verification_config.threshold - input.conformal_margin).max(0.0);
@@ -381,7 +396,7 @@ impl ExecutionEngine {
             None
         };
 
-        // ── GAP-D1: load conflict-rate accumulator to inject beta_quality ───────
+        // ── load conflict-rate accumulator to inject beta_quality ───────
         let conflict_beta_prefix = input.cfg.state.conflict_beta_bucket_prefix.clone();
         let conflict_acc = if input.cfg.conflict_beta.enabled {
             if let Some(nats) = &input.nats {
@@ -421,10 +436,82 @@ impl ExecutionEngine {
         // Extract diversity_degraded_event before borrowing domain_cov_out for the pipeline.
         let diversity_degraded_event = domain_cov_out.diversity_degraded_event.clone();
 
-        // GAP-K1: restart counter — capped at 1 to prevent infinite repair loops.
+        // ── pre-loop complexity probe ─────────────────────────────────────
+        // One cheap LLM call before the restart loop so the result can be
+        // wired into each controller iteration and `input.verification_config`
+        // can be mutated freely (no pipeline borrow active here).
+        //
+        // Adapter resolution order:
+        //   1. named adapter from registry (config string, e.g. "researcher")
+        //   2. researcher adapter (preferred — cheapest, instruction-following)
+        //   3. first explorer adapter (fallback)
+        //   4. None → probe skipped, result absent on controller
+        let probe_result: Option<h2ai_autonomic::complexity_probe::ComplexityProbeResult> =
+            if input.cfg.complexity_routing.enabled {
+                let probe_adapter: Option<&dyn h2ai_types::adapter::IComputeAdapter> = input
+                    .registry
+                    .get_by_name(&input.cfg.complexity_routing.complexity_probe_adapter)
+                    .or(input.researcher_adapter.as_deref())
+                    .or_else(|| input.explorer_adapters.first().copied());
+                if let Some(adapter) = probe_adapter {
+                    let probe = h2ai_autonomic::complexity_probe::ComplexityProbe::new(
+                        input.cfg.complexity_routing.clone(),
+                    );
+                    let t0 = std::time::Instant::now();
+                    let result = probe.run(&input.manifest.description, adapter).await;
+                    let latency_ms = t0.elapsed().as_millis() as u64;
+                    tracing::info!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        complexity = result.complexity,
+                        rationale = %result.rationale,
+                        decompose_recommended = result.decompose_recommended,
+                        latency_ms,
+                        "complexity probe completed"
+                    );
+                    if let Some(ref nats) = input.nats {
+                        let ev = h2ai_types::events::H2AIEvent::ComplexityProbe(
+                            h2ai_types::events::ComplexityProbeEvent {
+                                task_id: task_id.clone(),
+                                complexity: result.complexity,
+                                rationale: result.rationale.clone(),
+                                decompose_recommended: result.decompose_recommended,
+                                probe_latency_ms: latency_ms,
+                                timestamp: chrono::Utc::now(),
+                            },
+                        );
+                        let _ = nats.publish_event(&input.task_id, &ev).await;
+                    }
+                    Some(result)
+                } else {
+                    tracing::debug!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        "complexity probe skipped — no researcher/explorer adapter"
+                    );
+                    None
+                }
+            } else {
+                None
+            };
+        // Inject sub-claim BEYOND_BUDGET verifier addendum when the probe rated the task
+        // as high-complexity and verifier_decomposition_enabled is set.  Must happen before
+        // the restart loop so the pipeline sees the mutated system prompt.
+        if let Some(ref probe) = probe_result {
+            if input.cfg.complexity_routing.verifier_decomposition_enabled
+                && probe.complexity >= input.cfg.complexity_routing.decompose_threshold
+            {
+                input
+                    .verification_config
+                    .evaluator_system_prompt
+                    .push_str(BEYOND_BUDGET_VERIFIER_ADDENDUM);
+            }
+        }
+
+        // Restart counter — capped at 1 to prevent infinite repair loops.
         let mut spec_ambiguous_restarts: u32 = 0;
 
-        // ── GAP-K1 restart loop ───────────────────────────────────────────────
+        // ── restart loop ───────────────────────────────────────────────
         // Each iteration builds a fresh pipeline + controller from the (possibly
         // repaired) `input.constraint_corpus`.  The loop exits via `return` on
         // success/failure, or via `continue 'restart` after a successful spec
@@ -434,7 +521,7 @@ impl ExecutionEngine {
             // ── Inner scope: pipeline borrows &input; dropped before repair ──────
             // Returns (None, controller) when the retry loop exhausts all attempts
             // normally, or (Some(sa_info), controller) on a SpecAmbiguous signal.
-            let (spec_ambiguous_signal, mut controller) = {
+            let (spec_ambiguous_signal, complexity_overflow_graft_signal, mut controller) = {
                 let task_eval_cache = crate::verification::new_eval_cache();
                 let pipeline = crate::pipeline::ExecutionPipeline::new(
                     &input,
@@ -460,12 +547,21 @@ impl ExecutionEngine {
                     controller.gap_grounding_chain = Some(chain.clone());
                 }
 
+                // Wire pre-loop probe result into controller (probe ran before 'restart loop).
+                if let Some(ref probe) = probe_result {
+                    controller.set_probe_result(probe.clone());
+                }
+
                 // Per-task OSP retry accumulator. Local variable — never stored in NATS KV or shared
                 // state. Reset on Resolved (spec §A.3: state-leakage prevention).
                 let mut osp_accumulator = RetryAccumulator::new();
 
                 // Carry SpecAmbiguous info out of the inner block (pipeline-drop boundary).
                 let mut spec_ambiguous_signal: Option<(String, usize, Vec<String>)> = None;
+                // Signal the post-loop synthesis wave to run on ComplexityOverflow
+                // with `graft_first = true`.  Decoupled from `synthesis_wave_enabled` so a
+                // ceiling-detected task can run grafting even when the feature flag is off.
+                let mut complexity_overflow_graft_signal = false;
 
                 'wave: for retry_count in 0..=input.cfg.max_autonomic_retries {
                     if let Some(dl) = controller.deadline() {
@@ -477,15 +573,113 @@ impl ExecutionEngine {
                         }
                     }
 
+                    // ── AgentDropout N-reduction ────────────────────────────────
+                    // On retry ≥ 2, if N_eff from the previous wave was below threshold,
+                    // reduce n_agents to avoid wasting tokens on correlated agents
+                    // (Wang et al. ACL 2025, arXiv 2503.18891: −21.6% tokens, +1.14% perf).
+                    let mut wave_params = controller.params();
+                    // ── GAP-L1: TEE N escalation ─────────────────────────────────────────────
+                    if input.cfg.tiered_exit.enabled {
+                        let tee = &input.cfg.tiered_exit;
+                        let base_n = if retry_count == 0 {
+                            if input.cfg.complexity_routing.enabled {
+                                if let Some(ref probe) = controller.probe_result {
+                                    (probe.complexity as u32).clamp(tee.min_n, tee.max_n)
+                                } else {
+                                    tee.min_n
+                                }
+                            } else {
+                                tee.min_n
+                            }
+                        } else {
+                            tee.n_for_wave(retry_count, input.cfg.max_autonomic_retries)
+                        };
+                        wave_params.optimizer.n_agents = base_n;
+                        tracing::debug!(
+                            target: "h2ai.engine",
+                            task_id = %task_id,
+                            retry_count,
+                            n_agents = base_n,
+                            "TEE: set n_agents for wave"
+                        );
+                    }
+                    if input.cfg.complexity_routing.agent_dropout.enabled && retry_count >= 2 {
+                        let n_eff = controller.last_wave_n_eff();
+                        let dropout_cfg = &input.cfg.complexity_routing.agent_dropout;
+                        if n_eff < dropout_cfg.n_eff_dropout_threshold {
+                            let n = wave_params.optimizer.n_agents as usize;
+                            let drop = (n as f64 * (1.0 - n_eff)).floor() as usize;
+                            let keep = n.saturating_sub(drop).max(3.min(n));
+                            tracing::debug!(
+                                target: "h2ai.engine",
+                                task_id = %task_id,
+                                retry_count,
+                                n_eff,
+                                n_before = n,
+                                n_after = keep,
+                                "AgentDropout: reducing n_agents due to low N_eff"
+                            );
+                            wave_params.optimizer.n_agents = keep as u32;
+                        }
+                    }
                     let wave = pipeline
                         .run(
-                            controller.params(),
+                            wave_params,
                             retry_count as usize,
                             Some(&mut osp_accumulator),
                             input.cfg.osp.as_ref(),
                         )
                         .await;
                     controller.observe(&wave);
+
+                    // ── GAP-H3: charge token budget ───────────────────────────────────────
+                    {
+                        let wave_cost = match &wave.outcome {
+                            crate::mape_k::PipelineOutcome::Resolved(m) => m.wave_token_cost,
+                            _ => wave.events.wave_token_cost,
+                        };
+                        controller.observe_wave_tokens(wave_cost);
+
+                        if input.cfg.cost_guard.enabled {
+                            let frac = input.cfg.cost_guard.fraction_used(controller.tokens_used());
+                            if frac >= input.cfg.cost_guard.budget_warning_fraction {
+                                let used = controller.tokens_used();
+                                let budget = input.cfg.cost_guard.budget_tokens_per_task;
+                                tracing::warn!(
+                                    target: "h2ai.engine",
+                                    task_id = %task_id,
+                                    tokens_used = used,
+                                    budget_tokens = budget,
+                                    fraction_used = frac,
+                                    "CostGuard: token budget warning threshold reached"
+                                );
+                                if let Some(ref nats) = input.nats {
+                                    if let Err(e) = nats
+                                        .publish_event(
+                                            &task_id,
+                                            &H2AIEvent::CostThresholdWarning(
+                                                CostThresholdWarningEvent {
+                                                    task_id: task_id.clone(),
+                                                    tokens_used: used,
+                                                    budget_tokens: budget,
+                                                    fraction_used: frac,
+                                                    timestamp: chrono::Utc::now(),
+                                                },
+                                            ),
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "failed to publish CostThresholdWarningEvent: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ── Epistemic Leader Election ────────────────────────────────────
                     if input.cfg.leader_enabled && !input.explorer_adapters.is_empty() {
                         if let Some(plan) = controller.prepare_leader_election(input.cfg) {
@@ -568,7 +762,7 @@ impl ExecutionEngine {
                     // to receive a ContinueToNextWave signal and thread grounding/mandate_override
                     // into the next ContextAssemblerInput before starting the next wave.
 
-                    // ── GAP-I1: cold-check researcher (no-op when gap_i1.enabled = false) ──
+                    // ── cold-check researcher (no-op when gap_i1.enabled = false) ──
                     controller.run_gap_i1_research().await;
 
                     let filter_ratio = wave.events.filter_ratio;
@@ -840,6 +1034,82 @@ impl ExecutionEngine {
                             out.consensus_agreement_rate = Some(
                                 consensus_agreement_rate_from_events(&out.verification_events),
                             );
+
+                            // Publish TieredExitEvent if TEE gate fired.
+                            if let Some(tee_evt) = controller.take_tee_event() {
+                                if let Some(ref nats) = input.nats {
+                                    if let Err(e) = nats
+                                        .publish_event(&task_id, &H2AIEvent::TieredExit(tee_evt))
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "failed to publish TieredExitEvent: {e}"
+                                        );
+                                    }
+                                }
+                            }
+
+                            // ── GAP-H3: Publish BudgetExhaustedEvent ─────────────────────────────
+                            if controller.take_budget_exhausted() {
+                                tracing::info!(
+                                    target: "h2ai.engine",
+                                    task_id = %task_id,
+                                    tokens_used = controller.tokens_used(),
+                                    "CostGuard: budget exhausted; returning best available output"
+                                );
+                                if let Some(ref nats) = input.nats {
+                                    if let Err(e) = nats
+                                        .publish_event(
+                                            &task_id,
+                                            &H2AIEvent::BudgetExhausted(BudgetExhaustedEvent {
+                                                task_id: task_id.clone(),
+                                                tokens_used: controller.tokens_used(),
+                                                budget_tokens: input
+                                                    .cfg
+                                                    .cost_guard
+                                                    .budget_tokens_per_task,
+                                                timestamp: chrono::Utc::now(),
+                                            }),
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "failed to publish BudgetExhaustedEvent: {e}"
+                                        );
+                                    }
+                                }
+                            }
+
+                            // ── GAP-H3: Publish ConvergenceGateEvent ─────────────────────────────
+                            if let Some(cge_evt) = controller.take_convergence_event() {
+                                tracing::info!(
+                                    target: "h2ai.engine",
+                                    task_id = %task_id,
+                                    wave = cge_evt.wave,
+                                    n_live = cge_evt.n_live,
+                                    "ConvergenceGate: proposals converged; accepting output"
+                                );
+                                if let Some(ref nats) = input.nats {
+                                    if let Err(e) = nats
+                                        .publish_event(
+                                            &task_id,
+                                            &H2AIEvent::ConvergenceGate(cge_evt),
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "failed to publish ConvergenceGateEvent: {e}"
+                                        );
+                                    }
+                                }
+                            }
+
                             return Ok(out);
                         }
                         crate::mape_k::MapeKDecision::Retry => continue,
@@ -867,10 +1137,55 @@ impl ExecutionEngine {
                             divergent_reasons,
                             ..
                         } => {
-                            // GAP-K1: signal the outer restart loop to attempt spec repair.
+                            // Signal the outer restart loop to attempt spec repair.
                             spec_ambiguous_signal =
                                 Some((constraint_id, check_index, divergent_reasons));
                             break 'wave;
+                        }
+                        crate::mape_k::MapeKDecision::ComplexityOverflow {
+                            probe_score,
+                            rationale,
+                            graft_first,
+                        } => {
+                            // Task 6: complexity ceiling reached.  Either route to
+                            // the post-loop synthesis/grafting wave (`graft_first = true`)
+                            // or fail terminally (`graft_first = false` → HITL surface).
+                            tracing::warn!(
+                                target: "h2ai.engine",
+                                task_id = %task_id,
+                                probe_score,
+                                %rationale,
+                                graft_first,
+                                "complexity overflow — breaking retry loop"
+                            );
+                            if let Some(ref nats) = input.nats {
+                                let ev = h2ai_types::events::H2AIEvent::ComplexityCeilingDetected(
+                                    h2ai_types::events::ComplexityCeilingDetectedEvent {
+                                        task_id: task_id.clone(),
+                                        retry_count,
+                                        entropy: 0.0,
+                                        retry_slope: 0.0,
+                                        n_eff_cg_product: 0.0,
+                                        signals_fired: if probe_score == 0 { 2 } else { 1 },
+                                        timestamp: chrono::Utc::now(),
+                                    },
+                                );
+                                let _ = nats.publish_event(&input.task_id, &ev).await;
+                            }
+                            if graft_first {
+                                complexity_overflow_graft_signal = true;
+                                break 'wave;
+                            } else {
+                                input.store.mark_failed(&task_id);
+                                return Err(EngineError::MaxRetriesExhausted {
+                                    partial_verification_events: controller
+                                        .take_verification_events(),
+                                    best_partial_text: controller
+                                        .global_best_proposal
+                                        .as_ref()
+                                        .map(|(_, t)| t.clone()),
+                                });
+                            }
                         }
                     }
                 } // end 'wave retry loop
@@ -878,10 +1193,14 @@ impl ExecutionEngine {
                 // Return the signal and the controller together so the outer scope can
                 // run post-loop logic (synthesis wave, error return) with the controller
                 // after the pipeline borrow on `input` has been released.
-                (spec_ambiguous_signal, controller)
+                (
+                    spec_ambiguous_signal,
+                    complexity_overflow_graft_signal,
+                    controller,
+                )
             }; // ── end inner pipeline-borrow scope ─────────────────────────────────
 
-            // ── GAP-K1: spec repair handler ───────────────────────────────────────
+            // ── spec repair handler ───────────────────────────────────────
             // `input` is no longer borrowed by `pipeline` here; `constraint_corpus`
             // can be mutated if the repair succeeds.
             if let Some((constraint_id, check_index, divergent_reasons)) = spec_ambiguous_signal {
@@ -893,7 +1212,7 @@ impl ExecutionEngine {
                         constraint_id = %constraint_id,
                         spec_ambiguous_restarts,
                         auto_repair_enabled = input.cfg.gap_k1.auto_repair_enabled,
-                        "GAP-K1 SpecAmbiguous: repair limit reached or disabled; failing task"
+                        "SpecAmbiguous: repair limit reached or disabled; failing task"
                     );
                     return Err(EngineError::MaxRetriesExhausted {
                         partial_verification_events: controller.take_verification_events(),
@@ -911,7 +1230,7 @@ impl ExecutionEngine {
                     tracing::warn!(
                         target: "h2ai.engine",
                         task_id = %task_id,
-                        "GAP-K1 SpecAmbiguous: no adapter available for repair; failing task"
+                        "SpecAmbiguous: no adapter available for repair; failing task"
                     );
                     return Err(EngineError::MaxRetriesExhausted {
                         partial_verification_events: controller.take_verification_events(),
@@ -931,7 +1250,7 @@ impl ExecutionEngine {
                         target: "h2ai.engine",
                         task_id = %task_id,
                         constraint_id = %constraint_id,
-                        "GAP-K1 SpecAmbiguous: constraint not found in corpus; failing task"
+                        "SpecAmbiguous: constraint not found in corpus; failing task"
                     );
                     return Err(EngineError::MaxRetriesExhausted {
                         partial_verification_events: controller.take_verification_events(),
@@ -1039,7 +1358,7 @@ impl ExecutionEngine {
                             task_id = %task_id,
                             constraint_id = %constraint_id,
                             new_version,
-                            "GAP-K1: spec repair succeeded; reloading corpus and restarting"
+                            "spec repair succeeded; reloading corpus and restarting"
                         );
                         // Reload updated SemanticSpec list from the versioned source and
                         // recompile each spec back into a ConstraintDoc.
@@ -1056,7 +1375,7 @@ impl ExecutionEngine {
                                     target: "h2ai.engine",
                                     task_id = %task_id,
                                     error = %e,
-                                    "GAP-K1: versioned source reload failed after repair; keeping old corpus"
+                                    "versioned source reload failed after repair; keeping old corpus"
                                 );
                             }
                         }
@@ -1069,7 +1388,7 @@ impl ExecutionEngine {
                             task_id = %task_id,
                             constraint_id = %constraint_id,
                             best_score,
-                            "GAP-K1: spec repair failed; returning MaxRetriesExhausted"
+                            "spec repair failed; returning MaxRetriesExhausted"
                         );
                         return Err(EngineError::MaxRetriesExhausted {
                             partial_verification_events: controller.take_verification_events(),
@@ -1078,7 +1397,7 @@ impl ExecutionEngine {
                     }
                 }
             }
-            // ── End GAP-K1 handler ────────────────────────────────────────────────
+            // ── End handler ────────────────────────────────────────────────
 
             input.store.mark_failed(&task_id);
             // Clean up signal consumer on retry exhaustion.
@@ -1100,8 +1419,10 @@ impl ExecutionEngine {
                 "retry loop exhausted all attempts"
             );
 
-            // ── GAP-F1 Synthesis Wave (terminal, never retries) ───────────────────
-            if input.cfg.synthesis_wave_enabled {
+            // ── Synthesis Wave (terminal, never retries) ───────────────────
+            // Also runs when a ComplexityOverflow with `graft_first = true`
+            // signalled mid-loop, even if `synthesis_wave_enabled` is otherwise off.
+            if input.cfg.synthesis_wave_enabled || complexity_overflow_graft_signal {
                 let all_checks: Vec<String> = input
                     .constraint_corpus
                     .iter()
@@ -1155,13 +1476,17 @@ impl ExecutionEngine {
                                 .sequential_grafting_enabled
                                 && sorted_partials.len() > 1
                             {
-                                // ── GAP-H1 Sequential Constraint Grafting ──────────────
+                                // ── Sequential Constraint Grafting ──────────────
                                 let system_ctx = controller.system_context_with_rubric();
                                 let mut base_text = sorted_partials[0].proposal_text.clone();
                                 let mut base_partial = sorted_partials[0].clone();
                                 let mut base_score = base_partial.score;
                                 let max_rounds = input.cfg.sequential_grafting_max_rounds.max(1);
                                 let mut rounds_used = 0usize;
+                                // Track constraint IDs introduced by completed graft rounds
+                                // to detect circular dependencies in the grafting sequence.
+                                let mut grafted_ids: std::collections::HashSet<String> =
+                                    std::collections::HashSet::new();
 
                                 for candidate in sorted_partials.iter().skip(1) {
                                     if rounds_used >= max_rounds.saturating_sub(1) {
@@ -1173,6 +1498,45 @@ impl ExecutionEngine {
                                         &check_offsets,
                                     );
                                     if missing.is_empty() {
+                                        continue;
+                                    }
+                                    // ── Over-decomposition guards ──────────────────────
+                                    // 1. Redundancy: skip if candidate overlaps base by > 60%.
+                                    if h2ai_autonomic::repair::graft_is_redundant(
+                                        &base_partial,
+                                        candidate,
+                                        0.6,
+                                    ) {
+                                        tracing::debug!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "graft candidate skipped — shared constraint ratio > 0.6"
+                                        );
+                                        continue;
+                                    }
+                                    // 2. Cycle: skip if all missing IDs were already grafted.
+                                    if h2ai_autonomic::repair::grafted_ids_cycle_detected(
+                                        &missing,
+                                        &grafted_ids,
+                                    ) {
+                                        tracing::debug!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "graft candidate skipped — circular dependency detected"
+                                        );
+                                        continue;
+                                    }
+                                    // 3. Token projection: skip if merged size > 130% base.
+                                    if h2ai_autonomic::repair::graft_token_projection_exceeds(
+                                        &base_text,
+                                        &candidate.proposal_text,
+                                        1.3,
+                                    ) {
+                                        tracing::debug!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            "graft candidate skipped — token projection > 130% base"
+                                        );
                                         continue;
                                     }
                                     let graft_ctx = h2ai_autonomic::repair::build_graft_context(
@@ -1196,7 +1560,7 @@ impl ExecutionEngine {
                                                 target: "h2ai.engine",
                                                 task_id = %task_id,
                                                 error = %e,
-                                                "GAP-H1 graft round LLM call failed; stopping early"
+                                                "graft round LLM call failed; stopping early"
                                             );
                                             break;
                                         }
@@ -1265,12 +1629,13 @@ impl ExecutionEngine {
                                             }
                                         }
                                         rounds_used += 1;
+                                        grafted_ids.extend(missing.iter().cloned());
                                         tracing::debug!(
                                             target: "h2ai.engine",
                                             task_id = %task_id,
                                             round = rounds_used,
                                             new_score,
-                                            "GAP-H1 graft round accepted"
+                                            "graft round accepted"
                                         );
                                     } else {
                                         tracing::warn!(
@@ -1278,7 +1643,7 @@ impl ExecutionEngine {
                                             task_id = %task_id,
                                             new_score,
                                             base_score,
-                                            "GAP-H1 graft was destructive — rolling back"
+                                            "graft was destructive — rolling back"
                                         );
                                     }
                                 }
@@ -1337,7 +1702,7 @@ impl ExecutionEngine {
                                         target: "h2ai.engine",
                                         task_id = %task_id,
                                         grafting = input.cfg.sequential_grafting_enabled,
-                                        "GAP-F1 synthesis wave succeeded"
+                                        "synthesis wave succeeded"
                                     );
                                     use crate::mape_k::MergeOutput;
                                     use h2ai_types::events::SelectionResolvedEvent;
@@ -1383,6 +1748,8 @@ impl ExecutionEngine {
                                         oracle_gate_passed: None,
                                         tau_values: vec![input.cfg.synthesis_tau],
                                         iteration_verification_events: vec![],
+                                        wave_token_cost: 0,
+                                        pairwise_cosine_mean: None,
                                     };
                                     input.store.mark_resolved(&task_id);
                                     let mut out = controller.finalize(merge_out);
@@ -1587,8 +1954,151 @@ impl ExecutionEngine {
                 consensus_agreement_rate: None,
             })
         } else {
-            // Earlier phase or unknown phase — restart from scratch
+            // Earlier phase or unknown stage — restart from scratch
             Self::run_offline(input).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tiered_exit_engine_tests {
+    use h2ai_config::{H2AIConfig, TieredExitConfig};
+
+    fn tee_n_for_wave_standalone(cfg: &H2AIConfig, retry_count: u32) -> u32 {
+        let tee = &cfg.tiered_exit;
+        if retry_count == 0 {
+            tee.min_n
+        } else {
+            tee.n_for_wave(retry_count, cfg.max_autonomic_retries)
+        }
+    }
+
+    fn make_tee_cfg(min_n: u32, max_n: u32, max_retries: u32) -> H2AIConfig {
+        H2AIConfig {
+            tiered_exit: TieredExitConfig {
+                enabled: true,
+                min_n,
+                max_n,
+                ..TieredExitConfig::default()
+            },
+            max_autonomic_retries: max_retries,
+            ..H2AIConfig::default()
+        }
+    }
+
+    #[test]
+    fn escalation_wave0_uses_min_n() {
+        let cfg = make_tee_cfg(2, 6, 4);
+        assert_eq!(tee_n_for_wave_standalone(&cfg, 0), 2);
+    }
+
+    #[test]
+    fn escalation_wave4_uses_max_n() {
+        let cfg = make_tee_cfg(2, 6, 4);
+        assert_eq!(tee_n_for_wave_standalone(&cfg, 4), 6);
+    }
+}
+
+#[cfg(test)]
+mod beyond_budget_injection_tests {
+    use super::BEYOND_BUDGET_VERIFIER_ADDENDUM;
+    use h2ai_autonomic::complexity_probe::ComplexityProbeResult;
+    use h2ai_config::ComplexityRoutingConfig;
+    use h2ai_types::config::VerificationConfig;
+
+    fn cfg_with_decompose_enabled(decompose_threshold: u8) -> ComplexityRoutingConfig {
+        ComplexityRoutingConfig {
+            enabled: true,
+            verifier_decomposition_enabled: true,
+            decompose_threshold,
+            ..ComplexityRoutingConfig::default()
+        }
+    }
+
+    fn inject(
+        cfg: &ComplexityRoutingConfig,
+        probe: &ComplexityProbeResult,
+        vconfig: &mut VerificationConfig,
+    ) {
+        if cfg.verifier_decomposition_enabled && probe.complexity >= cfg.decompose_threshold {
+            vconfig
+                .evaluator_system_prompt
+                .push_str(BEYOND_BUDGET_VERIFIER_ADDENDUM);
+        }
+    }
+
+    #[test]
+    fn addendum_appended_when_complexity_meets_threshold() {
+        let cfg = cfg_with_decompose_enabled(4);
+        let probe = ComplexityProbeResult {
+            complexity: 4,
+            rationale: "complex".into(),
+            decompose_recommended: true,
+        };
+        let mut vconfig = VerificationConfig::default();
+        let original_len = vconfig.evaluator_system_prompt.len();
+        inject(&cfg, &probe, &mut vconfig);
+        assert!(
+            vconfig.evaluator_system_prompt.len() > original_len,
+            "addendum must be appended when complexity >= threshold"
+        );
+        assert!(
+            vconfig.evaluator_system_prompt.contains("BEYOND_BUDGET"),
+            "appended text must contain BEYOND_BUDGET label"
+        );
+    }
+
+    #[test]
+    fn addendum_not_appended_when_complexity_below_threshold() {
+        let cfg = cfg_with_decompose_enabled(4);
+        let probe = ComplexityProbeResult {
+            complexity: 3,
+            rationale: "simple".into(),
+            decompose_recommended: false,
+        };
+        let mut vconfig = VerificationConfig::default();
+        let original = vconfig.evaluator_system_prompt.clone();
+        inject(&cfg, &probe, &mut vconfig);
+        assert_eq!(
+            vconfig.evaluator_system_prompt, original,
+            "prompt must not change when complexity < threshold"
+        );
+    }
+
+    #[test]
+    fn addendum_not_appended_when_verifier_decomposition_disabled() {
+        let cfg = ComplexityRoutingConfig {
+            enabled: true,
+            verifier_decomposition_enabled: false,
+            decompose_threshold: 4,
+            ..ComplexityRoutingConfig::default()
+        };
+        let probe = ComplexityProbeResult {
+            complexity: 5,
+            rationale: "very complex".into(),
+            decompose_recommended: true,
+        };
+        let mut vconfig = VerificationConfig::default();
+        let original = vconfig.evaluator_system_prompt.clone();
+        inject(&cfg, &probe, &mut vconfig);
+        assert_eq!(
+            vconfig.evaluator_system_prompt, original,
+            "prompt must not change when verifier_decomposition_enabled = false"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cost_guard_engine_tests {
+    use h2ai_types::events::{
+        BudgetExhaustedEvent, ConvergenceGateEvent, CostThresholdWarningEvent, H2AIEvent,
+    };
+
+    #[test]
+    fn cost_guard_event_variants_exist() {
+        // Compile-time check: these variants must exist in H2AIEvent
+        let _: fn(CostThresholdWarningEvent) -> H2AIEvent = H2AIEvent::CostThresholdWarning;
+        let _: fn(BudgetExhaustedEvent) -> H2AIEvent = H2AIEvent::BudgetExhausted;
+        let _: fn(ConvergenceGateEvent) -> H2AIEvent = H2AIEvent::ConvergenceGate;
     }
 }

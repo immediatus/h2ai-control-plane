@@ -230,7 +230,7 @@ curl -sN http://localhost:8080/calibrate/cal_.../events
 
 ---
 
-## 3a. Calibration Drift Monitoring (GAP-H2)
+## 3a. Calibration Drift Monitoring
 
 The `DriftMonitor` (`crates/h2ai-autonomic/src/drift.rs`) runs online alongside every task. It tracks `consensus_agreement_rate` — the fraction of verification events per task that passed — and detects when the LLM API distribution has shifted without an explicit recalibration.
 
@@ -295,7 +295,7 @@ Only enable this if the calibration corpus is fast (< 2 min) and LLM API costs a
 ### Config fields
 
 ```toml
-# Calibration Drift Detection (GAP-H2) — reference.toml defaults
+# Calibration Drift Detection — reference.toml defaults
 drift_ddm_window = 20                    # DDM sliding window (tasks)
 drift_ddm_k = 2.5                        # DDM sigma threshold for warning
 drift_bocpd_hazard_rate = 0.01           # per-step changepoint prior probability
@@ -345,6 +345,7 @@ The control loop runs after every `ZeroSurvival` event. Operators do not configu
 - **`diversity_threshold`** is the load-bearing knob. At `0.0` (the default), Phase 2.6 is disabled and the MAPE-K classifier always returns `ConstrainedExploration` for any wave with `n_eff > 0`. Production deployments should set it to `0.5`.
 - **`max_autonomic_retries`** caps the loop at 2 retries per task by default. `TaskFailed` is emitted on exhaustion with a record of every topology and τ vector tried.
 - **`synthesis_wave_enabled`** (default `true`) — when all retries exhaust with `verified=0`, the engine fires one terminal synthesis wave: orthogonal partial-pass examples (greedy set-cover) + compliance checklist + Coherence Mandate → single LLM call → re-verify. On full pass returns resolved output; on partial pass surfaces `best_partial_text` in `MaxRetriesExhausted` for HITL. Set to `false` to skip entirely (useful when the synthesis adapter is unavailable or latency budget is tight).
+- **`complexity_routing.enabled`** (default `false`) — when `true`, a cheap pre-dispatch `ComplexityProbe` rates the task 1–5; ≥ `decompose_threshold` (4) triggers /H1 synthesis-wave grafting on first failure, ≥ `hitl_threshold` (5) skips retries entirely and surfaces to HITL. Probe failure or timeout defaults to `complexity = 2` (conservative — never misroutes easy tasks). All four benchmark scenarios ship with this enabled; reference defaults keep it opt-in. The intra-retry detector (`complexity_routing.intra_retry.enabled`) is a separate safety net that fires inside `ZeroSurvival` based on failure-signature entropy, retry-score slope, and `N_eff × CG_mean`.
 - **`adapter_rotation_offset`** is task-local. Two consecutive `ModeCollapse` retries advance the offset by 2; the next wave samples a rotated subset of the pool. The offset resets on task completion.
 - **The Constraint Violation Tombstone** is written into `TopologyProvisionedEvent.constraint_tombstone` *only* on `ConstrainedExploration` retries. It contains constraint IDs, severity labels, and per-constraint scores — never raw proposal text. The orchestrator reads this back into the next wave's `system_context` so the explorers see what the previous wave failed.
 
@@ -552,7 +553,7 @@ All fields are optional; omitting `[knowledge.scoring]` applies the defaults sho
 - **`ppr_alpha`** — higher alpha (0.25+) reduces graph diffusion and keeps results closer to direct BM25 hits; lower alpha (0.10) allows more multi-hop expansion
 - **`leaf_score_multiplier`** — raise toward 1.0 if you want direct BM25 hits to dominate PPR-expanded results
 
-### How it reaches generation (GAP-F1, live 2026-05-18)
+### How it reaches generation (live 2026-05-18)
 
 Once enabled, the provider is queried automatically during every task's Phase B1 generation. Each explorer slot's `agent_role` (Coordinator / Executor / Evaluator / Synthesizer — defaults to `Executor`) selects a different RAPTOR retrieval mode and PPR-hop depth. Results flow into the slot's context as `[KNOWLEDGE]` (global, all roles), `[DOMAIN KNOWLEDGE]` (domain-filtered, Executor/Evaluator only), and `[CONSTRAINT TENSIONS]` (cross-domain tensions, Synthesizer only).
 

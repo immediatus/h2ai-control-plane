@@ -289,7 +289,7 @@ pub struct BranchPrunedEvent {
     pub task_id: TaskId,
     pub explorer_id: ExplorerId,
     pub reason: String,
-    /// The full proposal text that was pruned. Used by GAP-F1 synthesis to build
+    /// The full proposal text that was pruned. Used by synthesis to build
     /// partial-pass examples from the actual proposal rather than the status string.
     #[serde(default)]
     pub raw_output: String,
@@ -351,7 +351,7 @@ pub struct SelectionResolvedEvent {
     #[serde(default)]
     pub n_input_proposals: usize,
     /// Number of non-pruned proposals that scored exactly 0.0 and were excluded
-    /// from selection to prevent synthesis contamination (GAP-D8).
+    /// from selection to prevent synthesis contamination.
     #[serde(default)]
     pub n_failed_proposals: usize,
 }
@@ -411,7 +411,7 @@ pub struct CoherenceIncompleteEvent {
 ///
 /// Records both standard and adversarial verifier scores for the same proposal.
 /// Does NOT affect pruning decisions — the configured verifier score drives those.
-/// Correlate with `OracleResultEvent` by `task_id` for offline A/B analysis (GAP-A4).
+/// Correlate with `OracleResultEvent` by `task_id` for offline A/B analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifierComparisonEvent {
     pub task_id: TaskId,
@@ -758,7 +758,7 @@ pub struct TaskComplexityAssessedEvent {
 /// Emitted after Phase 3.5 verification; records the full constraint satisfaction matrix
 /// across all surviving proposals for Pareto frontier coverage analysis.
 ///
-/// Used for H3 validation in the GAP-A1 experiment: measures whether cross-family
+/// Used for H3 validation in the experiment: measures whether cross-family
 /// committees actually cover more of the constraint Pareto frontier than Self-MoA.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstraintFrontierEvent {
@@ -777,7 +777,7 @@ pub struct ConstraintFrontierEvent {
 
 /// Emitted when judge panel disagreement is persistent across proposals in a wave.
 ///
-/// Fire-and-forget corpus quality signal for GAP-A7. Indicates that a constraint's
+/// Fire-and-forget corpus quality signal. Indicates that a constraint's
 /// ambiguity caused persistent uncertainty across the judge panel, suggesting the
 /// constraint wording or scope needs refinement in the corpus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -811,7 +811,97 @@ pub struct VerifierReasonContradictionEvent {
     pub min_jaccard: f64,
     /// Static remediation_hint used as fallback. None when hint was also absent.
     pub fallback_hint: Option<String>,
+    /// Number of sub-claims the verifier reported as BEYOND_BUDGET.
+    /// Non-zero indicates a complexity ceiling hit, not a content rejection.
+    #[serde(default)]
+    pub beyond_budget_count: u32,
     pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when the pre-dispatch complexity probe completes for a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplexityProbeEvent {
+    pub task_id: TaskId,
+    /// Probe score 1–5: 1 = trivial, 5 = requires multi-step proof verification.
+    pub complexity: u8,
+    /// One-sentence rationale from the probe model.
+    pub rationale: String,
+    /// Whether the probe recommended decomposition.
+    pub decompose_recommended: bool,
+    /// Wall-clock time the probe LLM call took, in milliseconds.
+    pub probe_latency_ms: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when the intra-retry ceiling detector fires.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplexityCeilingDetectedEvent {
+    pub task_id: TaskId,
+    /// MAPE-K wave index at which the ceiling was detected.
+    pub retry_count: u32,
+    /// Shannon entropy of constraint-failure distribution in the last wave.
+    pub entropy: f64,
+    /// Score-improvement slope between the last two waves.
+    pub retry_slope: f64,
+    /// N_eff × CG_mean product from the last wave.
+    pub n_eff_cg_product: f64,
+    /// Number of ceiling signals that fired (2 or 3).
+    pub signals_fired: u8,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when a task's cumulative generation token usage crosses the warning threshold.
+/// Published by the engine; does not interrupt task execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostThresholdWarningEvent {
+    pub task_id: TaskId,
+    pub tokens_used: u64,
+    pub budget_tokens: u64,
+    pub fraction_used: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when a task's cumulative generation token usage hits the abort threshold.
+/// The engine stops retrying and returns the best available partial output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetExhaustedEvent {
+    pub task_id: TaskId,
+    pub tokens_used: u64,
+    pub budget_tokens: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when the convergence gate fires: surviving verified proposals are semantically
+/// equivalent above `theta_converge` with sufficient supermajority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvergenceGateEvent {
+    pub task_id: TaskId,
+    /// Wave index (0-based) at which the gate fired.
+    pub wave: u32,
+    /// Count of surviving verified proposals.
+    pub n_live: usize,
+    /// Mean pairwise cosine similarity of surviving proposals.
+    pub convergence_fraction: f64,
+    /// The cosine threshold that was checked.
+    pub theta_converge: f64,
+    /// Best verification score among surviving proposals.
+    pub best_score: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Emitted when GAP-L1 Tiered Early Exit accepts K-of-N proposals and exits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TieredExitEvent {
+    /// Zero-based retry wave index on which the exit fired.
+    pub wave: u32,
+    /// Explorer count (N) used in this wave.
+    pub n: u32,
+    /// Minimum K required (from `k_for_wave(n)`).
+    pub k_required: u32,
+    /// Actual number of proposals that met the acceptance threshold.
+    pub k_accepted: u32,
+    /// `acceptance_score` threshold from config.
+    pub acceptance_score: f64,
 }
 
 /// Emitted when the oracle gate finishes evaluating proposed solutions before merge.
@@ -1186,7 +1276,7 @@ pub enum H2AIEvent {
     ApprovalResolved(ApprovalResolvedEvent),
     /// Wraps [`VerifierComparisonEvent`]: dual-run verifier comparison data point.
     VerifierComparison(VerifierComparisonEvent),
-    /// Per-proposal shadow auditor outcome (GAP-C2 shadow mode).
+    /// Per-proposal shadow auditor outcome (shadow mode).
     ShadowAudit(ShadowAuditorResultEvent),
     /// Domain promoted to two-auditor majority-vote mode by `ShadowAuditorAccumulator`.
     AuditDomainPromoted(AuditDomainPromotedEvent),
@@ -1220,15 +1310,27 @@ pub enum H2AIEvent {
     SocraticDiagnosis(SocraticDiagnosisEvent),
     /// Wraps [`VerifierReasonContradictionEvent`]: contradictory verifier reasons detected across proposals for the same constraint.
     VerifierReasonContradiction(VerifierReasonContradictionEvent),
-    /// GAP-K1: constraint coherence warning — binary check consistency below threshold.
+    /// Pre-dispatch complexity probe completed.
+    ComplexityProbe(ComplexityProbeEvent),
+    /// Intra-retry ceiling detector fired.
+    ComplexityCeilingDetected(ComplexityCeilingDetectedEvent),
+    /// Wraps [`TieredExitEvent`]: GAP-L1 tiered exit fired — K-of-N proposals accepted.
+    TieredExit(TieredExitEvent),
+    /// GAP-H3: per-task budget reached warning threshold.
+    CostThresholdWarning(CostThresholdWarningEvent),
+    /// GAP-H3: per-task budget exhausted; retries blocked.
+    BudgetExhausted(BudgetExhaustedEvent),
+    /// GAP-H3: convergence gate fired; verified proposals are semantically equivalent.
+    ConvergenceGate(ConvergenceGateEvent),
+    /// Constraint coherence warning — binary check consistency below threshold.
     ConstraintCoherenceWarning(ConstraintCoherenceWarning),
-    /// GAP-K1: verifier instability event — rejection reasons diverge across waves.
+    /// Verifier instability event — rejection reasons diverge across waves.
     VerifierInstability(VerifierInstabilityEvent),
-    /// GAP-K1: repair attempt started — SpecRepairAdvisor generating candidates.
+    /// Repair attempt started — SpecRepairAdvisor generating candidates.
     ConstraintRepairAttempted(ConstraintRepairAttempted),
-    /// GAP-K1: version created — CAS write succeeded for new constraint version.
+    /// Version created — CAS write succeeded for new constraint version.
     ConstraintVersionCreated(ConstraintVersionCreated),
-    /// GAP-K1: repair failed — best candidate below acceptance threshold.
+    /// Repair failed — best candidate below acceptance threshold.
     ConstraintRepairFailed(ConstraintRepairFailed),
 }
 
@@ -1321,5 +1423,141 @@ mod gap_k1_event_tests {
         let json = serde_json::to_string(&e).unwrap();
         let back: ConstraintRepairFailed = serde_json::from_str(&json).unwrap();
         assert_eq!(back.best_score, 0.42);
+    }
+
+    #[test]
+    fn complexity_probe_event_roundtrip() {
+        use chrono::Utc;
+        let ev = ComplexityProbeEvent {
+            task_id: TaskId::new(),
+            complexity: 4,
+            rationale: "formal proof".into(),
+            decompose_recommended: true,
+            probe_latency_ms: 250,
+            timestamp: Utc::now(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: ComplexityProbeEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.complexity, 4);
+        assert!(back.decompose_recommended);
+    }
+
+    #[test]
+    fn verifier_reason_contradiction_beyond_budget_defaults() {
+        // Existing events without the field must deserialise cleanly (backward compat).
+        let json = r#"{"task_id":"00000000-0000-0000-0000-000000000001","wave":1,"constraint_id":"c1","reasons":[],"min_jaccard":0.1,"fallback_hint":null,"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let ev: VerifierReasonContradictionEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.beyond_budget_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod tiered_exit_event_tests {
+    use super::*;
+
+    #[test]
+    fn tiered_exit_event_serializes() {
+        let evt = TieredExitEvent {
+            wave: 1,
+            n: 3,
+            k_required: 2,
+            k_accepted: 3,
+            acceptance_score: 0.85,
+        };
+        let json = serde_json::to_string(&evt).expect("serialize");
+        assert!(json.contains("\"wave\":1"));
+        assert!(json.contains("\"n\":3"));
+        assert!(json.contains("\"k_required\":2"));
+        assert!(json.contains("\"k_accepted\":3"));
+    }
+
+    #[test]
+    fn h2ai_event_tee_roundtrip() {
+        let evt = TieredExitEvent {
+            wave: 0,
+            n: 1,
+            k_required: 1,
+            k_accepted: 1,
+            acceptance_score: 0.9,
+        };
+        let wrapped = H2AIEvent::TieredExit(evt.clone());
+        let json = serde_json::to_string(&wrapped).expect("serialize");
+        let back: H2AIEvent = serde_json::from_str(&json).expect("deserialize");
+        if let H2AIEvent::TieredExit(inner) = back {
+            assert_eq!(inner.wave, 0);
+            assert_eq!(inner.n, 1);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+}
+
+#[cfg(test)]
+mod cost_guard_event_tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn cost_threshold_warning_event_serializes() {
+        let evt = CostThresholdWarningEvent {
+            task_id: TaskId::new(),
+            tokens_used: 8_000,
+            budget_tokens: 10_000,
+            fraction_used: 0.80,
+            timestamp: Utc::now(),
+        };
+        let s = serde_json::to_string(&evt).unwrap();
+        let back: CostThresholdWarningEvent = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.tokens_used, 8_000);
+        assert!((back.fraction_used - 0.80).abs() < 1e-9);
+    }
+
+    #[test]
+    fn budget_exhausted_event_serializes() {
+        let evt = BudgetExhaustedEvent {
+            task_id: TaskId::new(),
+            tokens_used: 10_500,
+            budget_tokens: 10_000,
+            timestamp: Utc::now(),
+        };
+        let s = serde_json::to_string(&evt).unwrap();
+        let back: BudgetExhaustedEvent = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.tokens_used, 10_500);
+    }
+
+    #[test]
+    fn convergence_gate_event_serializes() {
+        let evt = ConvergenceGateEvent {
+            task_id: TaskId::new(),
+            wave: 1,
+            n_live: 2,
+            convergence_fraction: 1.0,
+            theta_converge: 0.87,
+            best_score: 0.83,
+            timestamp: Utc::now(),
+        };
+        let s = serde_json::to_string(&evt).unwrap();
+        let back: ConvergenceGateEvent = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.wave, 1);
+        assert!((back.convergence_fraction - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn h2ai_event_wraps_cost_events() {
+        let warn = CostThresholdWarningEvent {
+            task_id: TaskId::new(),
+            tokens_used: 8_000,
+            budget_tokens: 10_000,
+            fraction_used: 0.80,
+            timestamp: Utc::now(),
+        };
+        let wrapped = H2AIEvent::CostThresholdWarning(warn);
+        let s = serde_json::to_string(&wrapped).unwrap();
+        let back: H2AIEvent = serde_json::from_str(&s).unwrap();
+        if let H2AIEvent::CostThresholdWarning(inner) = back {
+            assert_eq!(inner.tokens_used, 8_000);
+        } else {
+            panic!("wrong variant");
+        }
     }
 }

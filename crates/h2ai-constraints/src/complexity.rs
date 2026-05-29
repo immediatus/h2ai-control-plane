@@ -30,8 +30,7 @@ pub struct CorpusComplexityMetadata {
 /// Must stay in sync with `predicate_variant_name`'s match arms.
 const N_PREDICATE_VARIANTS: usize = 12;
 
-/// Default `TCC_structural` coefficients — theoretical initial priors from the GAP-A1
-/// solution spec (§2.3). Fitted values will replace these after the GAP-A1 experiment.
+/// Default `TCC_structural` coefficients — theoretical initial priors from the /// solution spec (§2.3). Fitted values will replace these after the experiment.
 /// Override via `[task_complexity]` config section in reference.toml.
 const K_SOFT: f64 = 2.0;
 const K_TYPE: f64 = 1.0;

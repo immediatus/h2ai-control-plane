@@ -51,7 +51,6 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
-use async_trait::async_trait;
 use chrono::Utc;
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::{
@@ -60,42 +59,12 @@ use h2ai_constraints::types::{
 use h2ai_orchestrator::complexity::{
     assess_task_complexity, classify_quadrant, participation_ratio, run_probe, ProbeInput,
 };
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
-use h2ai_types::config::AdapterKind;
+use h2ai_test_utils::failing_adapter;
 use h2ai_types::events::{CalibrationCompletedEvent, CalibrationQuality};
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::{
     CoherencyCoefficients, CoordinationThreshold, ProbeSkipReason, TaskQuadrant,
 };
-
-/// Adapter that always returns Err — used to test run_probe fallback.
-#[derive(Debug)]
-struct FailAdapter {
-    kind: AdapterKind,
-}
-
-impl FailAdapter {
-    fn new() -> Self {
-        Self {
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "fail://mock".into(),
-                api_key_env: "MOCK".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for FailAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::Timeout)
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
 
 fn dummy_calibration() -> CalibrationCompletedEvent {
     use h2ai_types::events::CgMode;
@@ -375,7 +344,7 @@ async fn run_probe_all_probes_fail_returns_structural_tcc() {
     cfg.tcc_coverage_threshold = 100.0;
     cfg.min_static_coverage_for_probe = 0.0;
 
-    let adapter = FailAdapter::new();
+    let adapter = failing_adapter();
     let cal = dummy_calibration();
     let corpus = vec![vocab_constraint("c1")];
 
@@ -398,7 +367,7 @@ async fn run_probe_all_probes_fail_returns_structural_tcc() {
 
 #[tokio::test]
 async fn run_probe_all_probes_agree_uses_amplified_tcc() {
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
 
     let mut cfg = H2AIConfig::default().task_complexity;
     cfg.n_probe = 3;
@@ -409,7 +378,7 @@ async fn run_probe_all_probes_agree_uses_amplified_tcc() {
     cfg.k_heavy = 0.5;
 
     // All 3 probes return "present stateless" → all VocabularyPresence("stateless") pass.
-    let adapter = MockAdapter::new("present stateless".into());
+    let adapter = mock_adapter("present stateless");
     let cal = dummy_calibration();
     // Single Static constraint: all probes agree it passes → n_informative = 0 < 2.
     let corpus = vec![vocab_constraint("c1")];
@@ -435,7 +404,7 @@ async fn run_probe_all_probes_agree_uses_amplified_tcc() {
 
 #[tokio::test]
 async fn run_probe_mixed_results_computes_tcc_empirical() {
-    use h2ai_test_utils::SequencedMockAdapter;
+    use h2ai_test_utils::sequenced_adapter;
 
     let mut cfg = H2AIConfig::default().task_complexity;
     cfg.n_probe = 3;
@@ -448,7 +417,11 @@ async fn run_probe_mixed_results_computes_tcc_empirical() {
     // Probe 2 satisfies "beta" but not "alpha".
     // Probe 3 satisfies neither.
     // Both constraints are informative (split across probes) → n_informative = 2 ≥ 2.
-    let adapter = SequencedMockAdapter::new(vec!["alpha".into(), "beta".into(), "neither".into()]);
+    let adapter = sequenced_adapter(vec![
+        "alpha".to_string(),
+        "beta".to_string(),
+        ".to_string()neither".to_string(),
+    ]);
 
     let cal = dummy_calibration();
     let make_vocab = |id: &str, term: &str| ConstraintDoc {
@@ -492,14 +465,14 @@ async fn run_probe_mixed_results_computes_tcc_empirical() {
 
 #[tokio::test]
 async fn run_probe_direct_empty_static_corpus_degenerate() {
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
 
     let mut cfg = H2AIConfig::default().task_complexity;
     cfg.n_probe = 2;
     cfg.tcc_min_informative_constraints = 1;
     cfg.k_heavy = 0.5;
 
-    let adapter = MockAdapter::new("output".into());
+    let adapter = mock_adapter("output");
     let result = run_probe(ProbeInput {
         meta_tcc_structural: 1.5,
         meta_heavy_fraction: 0.2,

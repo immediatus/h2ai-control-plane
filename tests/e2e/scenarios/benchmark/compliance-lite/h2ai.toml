@@ -1,0 +1,76 @@
+# Compliance-Lite benchmark — local Qwen3-Coder-Next adapter
+# Run: python3 replay.py benchmark/compliance-lite
+
+nats_url = "nats://host.docker.internal:4222"
+verifier_consensus_passes = 1
+max_autonomic_retries = 4
+
+calibration_adapter_count = 1
+calibration_max_tokens    = 256
+
+[safety]
+profile = "development"
+
+[constraint_wiki]
+mode = "fs"
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = false
+max_iterations     = 0
+coverage_threshold = 0.80
+
+debug_log_path = "/tmp/h2ai-debug-compliance-lite.ndjson"
+
+[tiered_exit]
+enabled                   = true
+min_n                     = 1
+max_n                     = 3
+quorum_fraction           = 0.5
+acceptance_score          = 0.80
+require_all_binary_checks = true
+
+[gap_i1]
+enabled                  = false
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 60

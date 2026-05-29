@@ -1,6 +1,6 @@
 #![allow(clippy::missing_panics_doc)]
 use h2ai_config::{McpFilesystemConfig, WasmExecutorConfig, WebSearchConfig};
-use h2ai_test_utils::{MockMcpBackend, MockSearchBackend, MockWasmBackend};
+use h2ai_test_utils::{mock_mcp, mock_search, mock_wasm};
 use h2ai_tools::mcp::McpExecutor;
 use h2ai_tools::registry::ToolRegistry;
 use h2ai_tools::wasm::WasmExecutor;
@@ -19,20 +19,15 @@ fn registry_with_mocks(cfg: &h2ai_config::H2AIConfig, mode: WaveMode) -> ToolReg
     r.register_shell(ShellExecutor::new(allowlist, cfg.shell_timeout_secs));
 
     if cfg.wasm_executor.is_some() {
-        r.register_wasm(WasmExecutor::new(Box::new(MockWasmBackend::new("mock"))));
+        r.register_wasm(WasmExecutor::new(Box::new(mock_wasm("mock"))));
     }
 
     if mode == WaveMode::Normal {
         if cfg.web_search.is_some() {
-            r.register_web_search(WebSearchExecutor::new(
-                Box::new(MockSearchBackend::new("mock")),
-                3,
-            ));
+            r.register_web_search(WebSearchExecutor::new(Box::new(mock_search("mock")), 3));
         }
         if cfg.mcp_filesystem.is_some() {
-            r.register_mcp(McpExecutor::new(Box::new(MockMcpBackend::new(
-                HashMap::new(),
-            ))));
+            r.register_mcp(McpExecutor::new(Box::new(mock_mcp(HashMap::new()))));
         }
     }
 

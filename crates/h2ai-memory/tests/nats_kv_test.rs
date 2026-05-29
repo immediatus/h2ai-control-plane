@@ -269,7 +269,6 @@ async fn nats_kv_create_storage_error_on_closed_connection() {
     };
     // Drain the connection to close it, then attempt create — should fail with Storage error
     nats.drain().await.ok();
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let result = NatsKvStore::create(&nats, "H2AI_SESSIONS_CLOSED_CREATE").await;
     // The create may fail because the connection is closed
     let _ = result;
@@ -297,8 +296,6 @@ async fn nats_kv_commit_memories_storage_error_on_closed_connection() {
 
     // Close the NATS connection, then attempt commit — may trigger Storage error
     nats.drain().await.ok();
-    // Give the drain a moment to close
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let result = p
         .commit_new_memories(&session_id, vec![serde_json::json!({"x": 1})])

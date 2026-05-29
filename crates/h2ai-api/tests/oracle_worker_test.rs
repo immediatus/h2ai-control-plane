@@ -53,10 +53,9 @@ async fn oracle_worker_processes_pending_event_and_publishes_result() {
     let mut results_sub = nats.subscribe("h2ai.oracle.results").await.unwrap();
 
     let worker = OracleWorker::new(nats.clone());
-    tokio::spawn(worker.run());
-
-    // Small delay for subscription to set up
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(worker.run_with_ready(ready_tx));
+    ready_rx.await.unwrap();
 
     let task_id = TaskId::new();
     let event = make_event(task_id.clone());
@@ -93,9 +92,9 @@ async fn oracle_worker_publishes_to_reply_subject() {
     let mut reply_sub = nats.subscribe(reply_subject.clone()).await.unwrap();
 
     let worker = OracleWorker::new(nats.clone());
-    tokio::spawn(worker.run());
-
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(worker.run_with_ready(ready_tx));
+    ready_rx.await.unwrap();
 
     let task_id = TaskId::new();
     let event = make_event(task_id.clone());
@@ -127,9 +126,9 @@ async fn oracle_worker_skips_malformed_payload_and_continues() {
     let mut results_sub = nats.subscribe("h2ai.oracle.results").await.unwrap();
 
     let worker = OracleWorker::new(nats.clone());
-    tokio::spawn(worker.run());
-
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(worker.run_with_ready(ready_tx));
+    ready_rx.await.unwrap();
 
     // Send garbage — worker must skip
     nats.publish(

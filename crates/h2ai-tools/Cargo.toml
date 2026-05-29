@@ -26,4 +26,6 @@ libc = "0.2"
 
 [dev-dependencies]
 h2ai-test-utils = { path = "../h2ai-test-utils" }
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio           = { workspace = true, features = ["test-util", "macros"] }
+wiremock        = { workspace = true }
+mockall         = { workspace = true }

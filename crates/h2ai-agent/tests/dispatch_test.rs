@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use h2ai_agent::dispatch::DispatchLoop;
 use h2ai_config::H2AIConfig;
+use h2ai_test_utils::{failing_adapter, mock_adapter};
 use h2ai_types::agent::{AgentDescriptor, ContextPayload, CostTier, TaskPayload, WaveMode};
 use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::sizing::TauValue;
@@ -106,9 +107,7 @@ async fn dispatch_executes_addressed_task_and_publishes_result() {
         cost_tier: CostTier::Low,
     };
     let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
-        Arc::new(h2ai_test_utils::MockAdapter::new("mock output".into()));
-    let active_tasks = Arc::new(AtomicU32::new(0));
-
+        Arc::new(mock_adapter("mock output"));
     // Subscribe to the result subject BEFORE starting dispatch
     let result_subject = h2ai_nats::subjects::task_result_subject(&task_id);
     let js = async_nats::jetstream::new(nats.client.clone());
@@ -123,27 +122,9 @@ async fn dispatch_executes_addressed_task_and_publishes_result() {
         .unwrap();
     let mut messages = consumer.messages().await.unwrap();
 
-    // Spawn the dispatch loop
-    let dispatch_client = nats.client.clone();
-    let dispatch_agent_id = agent_id.clone();
-    let dispatch_adapter = adapter.clone();
-    let dispatch_active = active_tasks.clone();
-    let dispatch_cfg = Arc::new(h2ai_config::H2AIConfig::default());
-    let _dispatch_handle = tokio::spawn(async move {
-        DispatchLoop::new(
-            dispatch_client,
-            dispatch_agent_id,
-            dispatch_adapter,
-            dispatch_active,
-            dispatch_cfg,
-        )
-        .run()
-        .await
-        .unwrap();
-    });
-
-    // Small delay for the dispatch loop to set up its subscription
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Spawn the dispatch loop and wait until its subscription is ready
+    let (_, ready_rx) = spawn_dispatch(&nats, agent_id.clone(), adapter, H2AIConfig::default());
+    ready_rx.await.unwrap();
 
     // Publish a task addressed to this agent
     let payload = TaskPayload {
@@ -191,8 +172,7 @@ async fn dispatch_skips_malformed_payload_and_continues() {
 
     let agent_id = AgentId::from(uuid::Uuid::new_v4().to_string());
     let task_id = TaskId::new();
-    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
-        Arc::new(h2ai_test_utils::MockAdapter::new("ok".into()));
+    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> = Arc::new(mock_adapter("ok"));
 
     let (_, ready_rx) = spawn_dispatch(&nats, agent_id.clone(), adapter, H2AIConfig::default());
     ready_rx.await.unwrap();
@@ -234,8 +214,7 @@ async fn dispatch_ignores_task_for_different_agent() {
 
     let my_agent = AgentId::from(uuid::Uuid::new_v4().to_string());
     let other_agent = AgentId::from(uuid::Uuid::new_v4().to_string());
-    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
-        Arc::new(h2ai_test_utils::MockAdapter::new("ok".into()));
+    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> = Arc::new(mock_adapter("ok"));
 
     let (_, ready_rx) = spawn_dispatch(&nats, my_agent.clone(), adapter, H2AIConfig::default());
     ready_rx.await.unwrap();
@@ -280,9 +259,8 @@ async fn dispatch_ref_context_falls_back_to_empty_string() {
 
     let agent_id = AgentId::from(uuid::Uuid::new_v4().to_string());
     let task_id = TaskId::new();
-    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> = Arc::new(
-        h2ai_test_utils::MockAdapter::new("ref-context-output".into()),
-    );
+    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
+        Arc::new(mock_adapter("ref-context-output"));
 
     let (_, ready_rx) = spawn_dispatch(&nats, agent_id.clone(), adapter, H2AIConfig::default());
     ready_rx.await.unwrap();
@@ -318,8 +296,7 @@ async fn dispatch_sets_error_field_when_adapter_fails() {
 
     let agent_id = AgentId::from(uuid::Uuid::new_v4().to_string());
     let task_id = TaskId::new();
-    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
-        Arc::new(h2ai_test_utils::FailingMockAdapter::new());
+    let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> = Arc::new(failing_adapter());
 
     let (_, ready_rx) = spawn_dispatch(&nats, agent_id.clone(), adapter, H2AIConfig::default());
     ready_rx.await.unwrap();
@@ -353,7 +330,7 @@ async fn dispatch_truncated_result_when_adapter_always_returns_tool_call() {
     // Adapter always returns a shell tool-call JSON → TaoAgent hits iteration cap
     let tool_call_json = r#"{"tool":"shell","input":{"command":"echo","args":["hi"]}}"#;
     let adapter: Arc<dyn h2ai_types::adapter::IComputeAdapter> =
-        Arc::new(h2ai_test_utils::MockAdapter::new(tool_call_json.into()));
+        Arc::new(mock_adapter(tool_call_json));
 
     let cfg = H2AIConfig {
         agent_max_tool_iterations: 1,

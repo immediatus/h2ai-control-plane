@@ -47,7 +47,7 @@ pub struct AppState {
     /// Optional dedicated adapter for `TaskProfile::Scoring`.  When `None`, the
     /// explorer adapter handles scoring tasks, which may share quota with exploration.
     pub scoring_adapter: Option<Arc<dyn IComputeAdapter>>,
-    /// Optional shadow auditor for Phase 4 bias measurement (GAP-C2).
+    /// Optional shadow auditor for Phase 4 bias measurement.
     /// Must be from a different adapter family than `auditor_adapter`.
     /// `None` = shadow mode off regardless of config.
     pub shadow_auditor_adapter: Option<Arc<dyn IComputeAdapter>>,
@@ -73,7 +73,7 @@ pub struct AppState {
     /// each engine run to update per-domain disagreement windows.
     pub shadow_accumulator:
         Option<Arc<tokio::sync::Mutex<crate::shadow_auditor::ShadowAuditorAccumulator>>>,
-    /// Optional researcher adapter for C1 grounding (GAP-C1).
+    /// Optional researcher adapter for C1 grounding.
     /// When `Some`, search-enabled slots get a pre-step and low-CV retries fetch contradiction evidence.
     /// When `None`, C1 falls back to hint-only without external web grounding.
     pub researcher_adapter: Option<Arc<dyn IComputeAdapter>>,
@@ -81,7 +81,7 @@ pub struct AppState {
     /// Built at startup from available adapters; `None` = spec anchor only (inline, no chain).
     pub srani_grounding_chain:
         Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
-    /// Dedicated grounding chain for GAP-I1 gap researcher: DuckDuckGo web search + LLM distiller.
+    /// Dedicated grounding chain gap researcher: DuckDuckGo web search + LLM distiller.
     /// `None` when researcher adapter is not configured.
     pub gap_research_chain:
         Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
@@ -96,7 +96,7 @@ pub struct AppState {
     /// Uses `Bm25WikiProvider` when [knowledge] config is present;
     /// `PassthroughProvider` otherwise.
     pub knowledge_provider: Arc<dyn KnowledgeProvider>,
-    /// Calibration drift monitor (GAP-H2): tracks consensus_agreement_rate,
+    /// Calibration drift monitor: tracks consensus_agreement_rate,
     /// fires DDM warnings and BOCPD changepoints, holds ORCA conformal margin.
     pub drift_monitor: std::sync::Arc<tokio::sync::Mutex<h2ai_autonomic::drift::DriftMonitor>>,
 }
@@ -251,7 +251,7 @@ impl AppState {
         self
     }
 
-    /// Configure a shadow auditor adapter for Phase 4 disagreement measurement (GAP-C2).
+    /// Configure a shadow auditor adapter for Phase 4 disagreement measurement.
     ///
     /// The shadow adapter MUST be from a different family than `auditor_adapter`.
     /// Callers are responsible for the family check — this method stores whatever is passed.

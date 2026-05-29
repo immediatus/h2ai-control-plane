@@ -1,15 +1,21 @@
 use h2ai_context::embedding::{cosine_similarity, semantic_jaccard, EmbeddingModel};
 
-// ── Stub models for testing ───────────────────────────────────────────────────
+// ── Mock declarations ─────────────────────────────────────────────────────────
+
+mockall::mock! {
+    pub StubEmbeddingModel {}
+    impl EmbeddingModel for StubEmbeddingModel {
+        fn embed(&self, text: &str) -> Vec<f32>;
+    }
+}
+
+// ── Stub factories ────────────────────────────────────────────────────────────
 
 /// Returns a fixed L2-normalised vector per text, keyed on content.
-struct StubEmbeddingModel;
-
-impl EmbeddingModel for StubEmbeddingModel {
-    fn embed(&self, text: &str) -> Vec<f32> {
-        // Two semantic clusters: "stateless auth" cluster and "redis cache" cluster.
-        // Texts within a cluster get identical normalised vectors → cosine = 1.0.
-        // Cross-cluster texts get orthogonal vectors → cosine = 0.0.
+/// Two semantic clusters: "stateless auth" cluster and "redis cache" cluster.
+fn stub_embedding_model() -> MockStubEmbeddingModel {
+    let mut m = MockStubEmbeddingModel::new();
+    m.expect_embed().returning(|text| {
         if text.contains("jwt") || text.contains("auth") || text.contains("token") {
             vec![1.0, 0.0] // auth cluster
         } else if text.contains("redis") || text.contains("cache") || text.contains("key-value") {
@@ -17,15 +23,14 @@ impl EmbeddingModel for StubEmbeddingModel {
         } else {
             vec![0.0, 0.0] // unknown → triggers fallback path (zero norm)
         }
-    }
+    });
+    m
 }
 
-struct EmptyEmbeddingModel;
-
-impl EmbeddingModel for EmptyEmbeddingModel {
-    fn embed(&self, _text: &str) -> Vec<f32> {
-        vec![]
-    }
+fn empty_embedding_model() -> MockStubEmbeddingModel {
+    let mut m = MockStubEmbeddingModel::new();
+    m.expect_embed().returning(|_| vec![]);
+    m
 }
 
 // ── cosine_similarity ─────────────────────────────────────────────────────────
@@ -104,7 +109,7 @@ fn semantic_jaccard_none_different_text_is_zero() {
 #[test]
 fn semantic_jaccard_model_same_cluster_is_one() {
     // "jwt" and "auth token" are both in the auth cluster → cosine = 1.0
-    let model = StubEmbeddingModel;
+    let model = stub_embedding_model();
     let sim = semantic_jaccard("jwt access token", "auth bearer token", Some(&model));
     assert!(
         (sim - 1.0).abs() < 1e-6,
@@ -115,7 +120,7 @@ fn semantic_jaccard_model_same_cluster_is_one() {
 #[test]
 fn semantic_jaccard_model_different_cluster_is_zero() {
     // auth cluster vs redis cluster → cosine = 0.0
-    let model = StubEmbeddingModel;
+    let model = stub_embedding_model();
     let sim = semantic_jaccard("jwt auth token", "redis cache key-value", Some(&model));
     assert!(
         sim.abs() < 1e-6,
@@ -127,7 +132,7 @@ fn semantic_jaccard_model_different_cluster_is_zero() {
 fn semantic_jaccard_model_synonyms_score_same_as_literal_match() {
     // Without model, "key-value store" ≠ "redis" (zero Jaccard overlap).
     // With model they're in the same cluster and score 1.0.
-    let model = StubEmbeddingModel;
+    let model = stub_embedding_model();
     let with_model = semantic_jaccard("redis cache", "key-value store", Some(&model));
     let without_model = semantic_jaccard("redis cache", "key-value store", None);
     assert!(
@@ -140,7 +145,7 @@ fn semantic_jaccard_model_synonyms_score_same_as_literal_match() {
 #[allow(clippy::float_cmp)]
 fn semantic_jaccard_model_empty_embed_falls_back_to_exact_equality() {
     // Empty embedding model → falls back to exact equality
-    let model = EmptyEmbeddingModel;
+    let model = empty_embedding_model();
     let text = "stateless jwt auth token";
     let sim = semantic_jaccard(text, text, Some(&model));
     assert!(
@@ -154,17 +159,20 @@ fn semantic_jaccard_model_empty_embed_falls_back_to_exact_equality() {
 #[test]
 fn semantic_jaccard_negative_cosine_clamped_to_zero() {
     // A model that returns anti-correlated embeddings should produce sim=0, not negative
-    struct AntiModel;
-    impl EmbeddingModel for AntiModel {
-        fn embed(&self, text: &str) -> Vec<f32> {
-            if text.starts_with('a') {
-                vec![1.0, 0.0]
-            } else {
-                vec![-1.0, 0.0]
-            }
+    mockall::mock! {
+        pub AntiModel {}
+        impl EmbeddingModel for AntiModel {
+            fn embed(&self, text: &str) -> Vec<f32>;
         }
     }
-    let model = AntiModel;
+    let mut model = MockAntiModel::new();
+    model.expect_embed().returning(|text| {
+        if text.starts_with('a') {
+            vec![1.0, 0.0]
+        } else {
+            vec![-1.0, 0.0]
+        }
+    });
     let sim = semantic_jaccard("alpha", "beta", Some(&model));
     assert!(
         sim >= 0.0,

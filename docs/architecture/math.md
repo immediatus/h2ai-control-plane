@@ -255,18 +255,22 @@ rho_mean = 1 − CG_mean
 > **Proxy status (unvalidated conventions):** Both formulas are operational conventions without derivation.
 >
 > `p_mean = 0.5 + CG_mean / 2` assumes CG_mean is a linear proxy for individual agent accuracy
-> (CG=0 → p=0.5, CG=1 → p=1.0). The oracle accumulator already measures the empirical p
-> (oracle pass rate). When `oracle_calibration_basis >= 1` (≥10 observations), `from_measured_p`
-> is the correct path and should be called automatically — this promotion is not yet implemented.
+> (CG=0 → p=0.5, CG=1 → p=1.0). The oracle accumulator measures empirical p (oracle pass rate)
+> and **automatically promotes** `EnsembleCalibration` to `from_measured_p` once
+> `n_observations ≥ 10` via `patch_ensemble_p_from_oracle` in `crates/h2ai-api/src/oracle/mod.rs`
+> (wired 2026-05-23). `prediction_basis` flips from `Heuristic` to `Empirical` and the heuristic
+> proxy is no longer load-bearing.
 >
 > `rho_mean = 1 − CG_mean` assumes low constraint agreement implies high error correlation. The
-> direction is contested. It is replaced by the online ρ_EMA from verification score Pearson
-> correlation once 30 task observations exist — this replacement is not yet implemented.
+> direction is contested. The online ρ_EMA (`crates/h2ai-api/src/rho_ema.rs`) tracks verification
+> score Pearson correlation across waves and patches `ensemble.rho_mean` once `n_observations ≥ 30`
+> (wired 2026-05-23). The CG-derived proxy is the cold-start prior, not the steady-state value.
 
 `EnsembleCalibration::from_measured_p` accepts a directly measured baseline accuracy (from the
-oracle accumulator) and switches `prediction_basis` from `Heuristic` to
-`Empirical`. This path should be triggered automatically from the oracle accumulator rather than
-requiring manual operator intervention.
+oracle accumulator) and switches `prediction_basis` from `Heuristic` to `Empirical`. As of
+2026-05-23, `patch_ensemble_p_from_oracle` (`h2ai-api/src/oracle/mod.rs`) drives this promotion
+automatically from the `OracleAccumulator` once `n_observations ≥ 10` — no manual operator
+intervention is required.
 
 `n_optimal` is the N that maximises `(Q(N, p, ρ) − p) / N` — the marginal Condorcet gain per
 adapter — capped at `max_n` (default 9 in production config).
@@ -507,14 +511,30 @@ by deeper retrying; a **complexity ceiling** (task complexity ≥ O(n³)) is not
 | Failure type | Signal | Correct response |
 |---|---|---|
 | Quality ceiling | High N_eff, varied proposals, plausible scores | Retry with repair context, rotate adapters |
-| Complexity ceiling | Exhausted retries, partial_chars≈0, ECE drift | Task decomposition via H1 graft (GAP-J1) |
+| Complexity ceiling | Exhausted retries, partial_chars≈0, ECE drift | Task decomposition via H1 graft |
 
-The current retry loop treats both as quality failures. GAP-J1 (see `gaps.md`) proposes a
-lightweight complexity probe that routes O(n³)+ tasks to hierarchical decomposition (H1 graft)
-before the retry budget is spent. The corollary further implies that `LlmJudge` verification is
-unreliable for tasks whose verification itself exceeds O(N²·d) — an ECE drift or
-`pass_rate=0.0` in the oracle accumulator can be a complexity-ceiling signal rather than pure
-calibration drift.
+The current retry loop treats both as quality failures by default. (Complexity-Ceiling vs
+Quality-Ceiling Retry Conflation, Sikka & Sikka arXiv 2507.07505) added a lightweight
+pre-dispatch complexity probe — `ComplexityProbe` in `h2ai-autonomic` — that rates the task on a
+1–5 scale before the first wave. When `complexity_routing.enabled = true` (opt-in via
+`reference.toml`; enabled in all four benchmark scenarios as of 2026-05-29), tasks rated at or
+above `decompose_threshold` route to /H1 synthesis-wave grafting on first failure, and tasks
+at `hitl_threshold` skip the retry loop entirely. An intra-retry ceiling detector
+(`failure_signature_entropy`, `retry_slope`, `N_eff × CG_mean` signals in
+`crates/h2ai-orchestrator/src/ceiling_detector.rs`) catches probe misclassifications mid-loop.
+The full implementation (2026-05-29) delivers five interacting layers:
+
+1. **Pre-loop one-shot probe** — `ComplexityProbe` runs before the `'restart` loop, where `input` is fully mutable; the result is stored in `probe_result: Option<ComplexityProbeResult>` and threaded into `MapeKController` via `set_probe_result`. Moving the probe out of the inner borrow scope avoids a borrow-checker conflict with `ExecutionPipeline::new(&input)`.
+
+2. **Named adapter registry** — `complexity_probe_adapter` is resolved via `registry.get_by_name()`, falling back to `researcher_adapter` then the first explorer; no implicit coupling.
+
+3. **AgentDropout N-reduction** — on retry ≥ 2 when `N_eff < n_eff_dropout_threshold`, the controller reduces agent count before the next wave (Wang et al. ACL 2025). This prevents burning the full ensemble on retries that are structurally unproductive.
+
+4. **BEYOND_BUDGET verifier addendum** — when `verifier_decomposition_enabled = true` and `probe.complexity ≥ decompose_threshold`, `BEYOND_BUDGET_VERIFIER_ADDENDUM` is appended to `verification_config.evaluator_system_prompt` before the first wave. The verifier is instructed to decompose its evaluation into sub-claims and report each as VERIFIED / UNVERIFIED / BEYOND_BUDGET; `beyond_budget_count: u32` on `VerifierReasonContradictionEvent` carries the count. This decouples "verifier rejected this" from "verifier could not evaluate this."
+
+5. **Over-decomposition graft guards** — the iterative grafting loop now tracks three stopping conditions: `graft_is_redundant` (Jaccard-like shared/union ratio > 0.6 between base and candidate passing-check sets), `grafted_ids_cycle_detected` (all missing constraint IDs were already grafted in a prior round), and `graft_token_projection_exceeds` ((base + candidate chars) / 4 > base_tokens × 1.3). Any guard firing skips the candidate and prevents infinite or wasteful graft loops.
+
+`pass_rate=0.0` in the oracle accumulator therefore disambiguates calibration drift from complexity ceiling once the probe result is consulted alongside it. The dedicated E2E scenario `tests/e2e/scenarios/benchmark/complexity-routing/h2ai.toml` exercises the full stack with `decompose_threshold = 3` and `verifier_decomposition_enabled = true`.
 
 ---
 
@@ -590,7 +610,7 @@ This enforces Tree-of-Thoughts-style forced diversity: each follower explores a 
 
 ---
 
-## 15. Calibration Drift Detection (GAP-H2)
+## 15. Calibration Drift Detection
 
 Source: `crates/h2ai-autonomic/src/drift.rs`.
 

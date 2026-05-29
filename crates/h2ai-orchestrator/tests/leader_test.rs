@@ -310,9 +310,9 @@ fn build_follower_prefix_out_of_range_slot_uses_default_aspect() {
 async fn generate_socratic_question_with_mock_adapter_returns_non_empty() {
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::leader::generate_socratic_question;
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
 
-    let adapter = MockAdapter::new("What if the retry logic is fundamentally broken?".into());
+    let adapter = mock_adapter("What if the retry logic is fundamentally broken?");
     let cfg = H2AIConfig::default();
     let (question, rank, _dedup) = generate_socratic_question(
         &adapter,
@@ -331,10 +331,10 @@ async fn generate_socratic_question_with_mock_adapter_returns_non_empty() {
 async fn generate_socratic_question_with_dup_in_buffer_uses_fallback() {
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::leader::{generate_socratic_question, BeliefRecord};
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
 
     let question_text = "What if the retry logic is fundamentally broken?";
-    let adapter = MockAdapter::new(question_text.into());
+    let adapter = mock_adapter(question_text);
     let cfg = H2AIConfig {
         leader_eig_candidates: 1,
         ..H2AIConfig::default()

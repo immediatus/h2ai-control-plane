@@ -108,7 +108,7 @@ async fn oracle_client_timeout_returns_fail() {
     let app = Router::new().route(
         "/evaluate",
         post(|| async {
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            std::future::pending::<()>().await;
             Json(serde_json::json!({"passed": true, "score": 1.0, "details": {}}))
         }),
     );

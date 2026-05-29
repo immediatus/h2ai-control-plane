@@ -72,7 +72,7 @@ use chrono::Utc;
 use h2ai_api::{routes::task_router, state::AppState};
 use h2ai_config::H2AIConfig;
 use h2ai_orchestrator::task_store::TaskState;
-use h2ai_test_utils::DecompositionMockAdapter;
+use h2ai_test_utils::decomposition_adapter;
 use h2ai_types::{
     events::{CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode},
     identity::{TaskId, TenantId},
@@ -109,7 +109,7 @@ fn synthetic_calibration() -> CalibrationCompletedEvent {
 }
 
 fn make_state() -> AppState {
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock response".into()));
+    let adapter = Arc::new(decomposition_adapter("mock response"));
     AppState::new_for_tests(
         H2AIConfig::default(),
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
@@ -468,7 +468,7 @@ async fn submit_task_returns_503_when_at_capacity() {
         max_concurrent_tasks: 0, // no permits → immediately at capacity
         ..H2AIConfig::default()
     };
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock response".into()));
+    let adapter = Arc::new(decomposition_adapter("mock response"));
     let state = AppState::new_for_tests(
         cfg,
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],

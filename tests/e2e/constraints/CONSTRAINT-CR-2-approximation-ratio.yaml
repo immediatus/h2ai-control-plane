@@ -1,0 +1,29 @@
+id: CONSTRAINT-CR-2
+title: "Approximation Ratio — 2-approximation for Minimum Vertex Cover with LP integrality gap proof"
+severity: hard
+domains:
+  - algorithms
+  - linear-programming
+  - approximation-algorithms
+remediation_hint: "The proposal must include: an efficient approximation algorithm for vertex cover with a proven approximation ratio, a correctly stated LP relaxation with a proven lower bound, and a complete proof that the LP integrality gap is exactly 2. Each mathematical claim requires a formal proof."
+criteria:
+  pass: |
+    All of the following are true:
+    - Maximal matching algorithm described correctly and 2-approximation ratio proved
+    - LP relaxation of MVC stated: min Σx_v subject to x_u + x_v ≥ 1 for all edges, x_v ∈ [0,1]
+    - LP lower bound proved: LP_OPT ≤ OPT
+    - Integrality gap proved to be exactly 2: both directions established — gap ≤ 2 and gap ≥ 2 (or gap = 2 as supremum)
+    - The proof correctly computes OPT_IP/LP_OPT (not the ratio of a non-optimal rounded cover to LP_OPT)
+  partial: "Maximal matching algorithm and 2-approximation ratio proved, LP relaxation stated and lower bound proved, but integrality gap analysis missing or only partially correct."
+  fail: |
+    Any of the following:
+    - Algorithm described without approximation ratio proof
+    - LP relaxation missing or incorrectly stated
+    - Integrality gap claimed to be 1 for general graphs
+    - Integrality gap proof computes OPT_IP(G)/LP_OPT(G) incorrectly for the chosen witness graph
+    - Integrality gap proof uses a rounding ratio (ratio of a specific non-optimal integer cover to LP_OPT) and presents it as OPT_IP/LP_OPT without establishing they are equal
+  checks:
+    - Does the proposal describe a polynomial-time algorithm for vertex cover and prove its output size is at most twice the optimal?
+    - Does the proposal state a continuous relaxation of the vertex cover problem and prove it lower-bounds the integer optimum?
+    - Does the proposal prove the integrality gap for vertex cover is at most 2 for any graph?
+    - Does the proposal prove the integrality gap for vertex cover is at least 2 by exhibiting a concrete graph or graph family?

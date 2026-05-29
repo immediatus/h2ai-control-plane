@@ -69,13 +69,13 @@ async fn build_test_app() -> axum::Router {
     use h2ai_api::{routes::task_router, state::AppState};
     use h2ai_config::H2AIConfig;
     use h2ai_orchestrator::task_store::TaskState;
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
     use h2ai_types::identity::TaskId;
     use std::sync::Arc;
 
     let cfg = H2AIConfig::load_layered(None).expect("load config");
-    let adapter = Arc::new(MockAdapter::new(
-        r#"{"approved":true,"score":0.9,"reason":"mock"}"#.into(),
+    let adapter = Arc::new(mock_adapter(
+        r#"{"approved":true,"score":0.9,"reason":"mock"}"#,
     ));
     let state = AppState::new_for_tests(
         cfg,

@@ -44,11 +44,14 @@ async fn heartbeat_registers_agent_and_capacity_check_passes() {
     )
     .await
     .expect("publish heartbeat");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    provider
-        .ensure_agent_capacity(&descriptor, 1)
-        .await
-        .expect("one live agent must satisfy load=1");
+    // Poll until the provider's heartbeat task processes the message into the registry
+    for _ in 0..10_000 {
+        if provider.ensure_agent_capacity(&descriptor, 1).await.is_ok() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("heartbeat was never processed into the agent registry");
 }
 
 #[tokio::test]
@@ -144,7 +147,13 @@ async fn nats_provider_capacity_limit_reached_when_load_exceeds_live() {
     )
     .await
     .expect("publish heartbeat");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll until the agent is registered (load=1 succeeds), then check load=5 fails
+    for _ in 0..10_000 {
+        if provider.ensure_agent_capacity(&descriptor, 1).await.is_ok() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     // live=1 but task_load=5 → CapacityLimitReached
     let err = provider.ensure_agent_capacity(&descriptor, 5).await;
     assert!(err.is_err(), "live=1 < need=5 → CapacityLimitReached");

@@ -57,12 +57,12 @@
 //! Run with:
 //!   NATS_URL=nats://localhost:4222 cargo test -p h2ai-orchestrator --test nats_dispatch_e2e_test -- --ignored
 
-use async_trait::async_trait;
 use h2ai_agent::dispatch::DispatchLoop;
 use h2ai_orchestrator::nats_dispatch_adapter::{NatsDispatchAdapter, NatsDispatchConfig};
 use h2ai_provisioner::nats_provider::NatsAgentProvider;
 use h2ai_state::NatsClient;
-use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_test_utils::MockIComputeAdapter;
+use h2ai_types::adapter::{ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::agent::{AgentDescriptor, CostTier, TaskRequirements};
 use h2ai_types::config::AdapterKind;
 use h2ai_types::identity::AgentId;
@@ -70,39 +70,27 @@ use h2ai_types::sizing::TauValue;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 
-/// A minimal compute adapter that returns a non-empty output and a non-zero token cost,
-/// allowing the end-to-end assertion on token_cost > 0.
-#[derive(Debug)]
-struct FixedCostAdapter {
-    output: String,
-    token_cost: u64,
-}
-
-#[async_trait]
-impl IComputeAdapter for FixedCostAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+fn fixed_cost_adapter(output: impl Into<String>, token_cost: u64) -> MockIComputeAdapter {
+    let output = output.into();
+    let kind = AdapterKind::CloudGeneric {
+        endpoint: "fixed://localhost".into(),
+        api_key_env: "NONE".into(),
+        model: None,
+        provider: Default::default(),
+    };
+    let kind2 = kind.clone();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
         Ok(ComputeResponse {
-            output: self.output.clone(),
-            token_cost: self.token_cost,
-            adapter_kind: AdapterKind::CloudGeneric {
-                endpoint: "fixed://localhost".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
+            output: output.clone(),
+            token_cost,
+            adapter_kind: kind.clone(),
             tokens_used: None,
             reasoning_trace: None,
         })
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        // static reference via a thread-local to avoid a stored field lifetime issue
-        static KIND: std::sync::OnceLock<AdapterKind> = std::sync::OnceLock::new();
-        KIND.get_or_init(|| AdapterKind::CloudGeneric {
-            endpoint: "fixed://localhost".into(),
-            api_key_env: "NONE".into(),
-            model: None,
-        })
-    }
+    });
+    m.expect_kind().return_const(kind2).times(0..);
+    m
 }
 
 /// Full end-to-end dispatch pipeline test:
@@ -135,10 +123,8 @@ async fn nats_dispatch_e2e_full_pipeline() {
         .await
         .expect("connect agent NATS client");
 
-    let mock_adapter: Arc<dyn IComputeAdapter> = Arc::new(FixedCostAdapter {
-        output: "e2e pipeline response".into(),
-        token_cost: 7,
-    });
+    let mock_adapter: Arc<dyn IComputeAdapter> =
+        Arc::new(fixed_cost_adapter("e2e pipeline response", 7));
     let active_tasks = Arc::new(AtomicU32::new(0));
 
     let dispatch_loop = DispatchLoop::new(

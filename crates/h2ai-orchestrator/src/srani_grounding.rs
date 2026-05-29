@@ -368,7 +368,7 @@ fn merge_grounding(
     }
 }
 
-// ─── GAP-I1 helpers ───────────────────────────────────────────────────────────
+// ─── helpers ───────────────────────────────────────────────────────────
 
 /// Build web search queries targeted at a specific constraint knowledge gap.
 pub fn gap_queries_from_record(record: &KnowledgeGapRecord, check_text: &str) -> Vec<String> {

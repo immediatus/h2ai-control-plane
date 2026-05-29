@@ -69,10 +69,8 @@ use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::srani_grounding::{SpecAnchorGrounder, SraniGroundingChain};
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::{TaskState, TaskStore};
-use h2ai_test_utils::{DecompositionMockAdapter, MockAdapter};
-use h2ai_types::adapter::{
-    AdapterError, AdapterRegistry, ComputeRequest, ComputeResponse, IComputeAdapter,
-};
+use h2ai_test_utils::{decomposition_adapter, mock_adapter, MockIComputeAdapter};
+use h2ai_types::adapter::{AdapterRegistry, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::{
     AdapterKind, AuditorConfig, ParetoWeights, TaoConfig, VerificationConfig,
 };
@@ -80,46 +78,30 @@ use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
 use std::sync::{Arc, Mutex};
 
-/// Verification adapter that cycles between a low score (hard-gate fail) for constraint 1
-/// and a high score (pass) for constraint 2 — forces proposals to partially fail verification.
-#[derive(Debug)]
-struct CyclingVerifAdapter {
-    responses: Vec<String>,
-    call_count: Arc<Mutex<usize>>,
-    kind: AdapterKind,
-}
-
-impl CyclingVerifAdapter {
-    fn new(responses: Vec<String>) -> Self {
-        Self {
-            responses,
-            call_count: Arc::new(Mutex::new(0)),
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://cycling".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IComputeAdapter for CyclingVerifAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        let mut count = self.call_count.lock().unwrap();
-        let idx = *count % self.responses.len();
-        *count += 1;
+fn cycling_adapter(responses: Vec<String>) -> MockIComputeAdapter {
+    let count = Arc::new(Mutex::new(0usize));
+    let kind = AdapterKind::CloudGeneric {
+        endpoint: "mock://cycling".into(),
+        api_key_env: "NONE".into(),
+        model: None,
+        provider: Default::default(),
+    };
+    let kind2 = kind.clone();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        let mut c = count.lock().unwrap();
+        let idx = *c % responses.len();
+        *c += 1;
         Ok(ComputeResponse {
-            output: self.responses[idx].clone(),
+            output: responses[idx].clone(),
             token_cost: 10,
-            adapter_kind: self.kind.clone(),
+            adapter_kind: kind.clone(),
             tokens_used: None,
             reasoning_trace: None,
         })
-    }
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
+    });
+    m.expect_kind().return_const(kind2).times(0..);
+    m
 }
 
 /// Proves:
@@ -136,8 +118,8 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
     )];
 
     // Calibrate with 2 mock adapters (identical output → CG=0.0 from Hamming)
-    let cal_a1 = MockAdapter::new("JWT is a stateless token.".into());
-    let cal_a2 = MockAdapter::new("JWT is a stateless token.".into());
+    let cal_a1 = mock_adapter("JWT is a stateless token.");
+    let cal_a2 = mock_adapter("JWT is a stateless token.");
 
     let cal_event = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
@@ -206,11 +188,10 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         TaskState::new(task_id.clone(), TenantId::default_tenant()),
     );
 
-    let explorer = DecompositionMockAdapter::new("Stateless JWT auth is recommended.".into());
-    let mock_verifier = MockAdapter::new(r#"{"score": 0.8, "reason": "compliant"}"#.into());
-    let mock_auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("reg".into())) as Arc<dyn IComputeAdapter>);
+    let explorer = decomposition_adapter("Stateless JWT auth is recommended.");
+    let mock_verifier = mock_adapter(r#"{"score": 0.8, "reason": "compliant"}"#);
+    let mock_auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("reg")) as Arc<dyn IComputeAdapter>);
 
     let manifest = TaskManifest {
         description: "Explain stateless JWT authentication in one concise sentence.".into(),
@@ -249,6 +230,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
                 endpoint: "mock".into(),
                 api_key_env: "NONE".into(),
                 model: None,
+                provider: Default::default(),
             },
             ..Default::default()
         },
@@ -324,7 +306,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
     };
 
     eprintln!("\n── Phase 0: Calibration (mock) ──────────────────────────────────");
-    let cal_a1 = MockAdapter::new("Stateless rate limiting with Redis sliding windows.".into());
+    let cal_a1 = mock_adapter("Stateless rate limiting with Redis sliding windows.");
     let corpus = vec![ConstraintDoc::new_llm_judge(
         "stateless",
         "The solution must be stateless. No server-side sessions.",
@@ -356,14 +338,12 @@ async fn engine_full_pipeline_with_mock_adapters() {
         TaskState::new(task_id.clone(), TenantId::default_tenant()),
     );
 
-    let explorer = DecompositionMockAdapter::new("Use Redis ZADD for rate limiting.".into());
-    let verifier = MockAdapter::new(r#"{"score": 0.85, "reason": "compliant"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
-    let researcher: Arc<dyn IComputeAdapter> = Arc::new(MockAdapter::new(
-        "Redis is the authoritative source.".into(),
-    ));
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("reg".into())) as Arc<dyn IComputeAdapter>);
+    let explorer = decomposition_adapter("Use Redis ZADD for rate limiting.");
+    let verifier = mock_adapter(r#"{"score": 0.85, "reason": "compliant"}"#);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
+    let researcher: Arc<dyn IComputeAdapter> =
+        Arc::new(mock_adapter("Redis is the authoritative source."));
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("reg")) as Arc<dyn IComputeAdapter>);
 
     let chain = Arc::new(SraniGroundingChain::new(vec![Box::new(SpecAnchorGrounder)]));
 
@@ -455,7 +435,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
     }
 }
 
-/// GAP-D6 Behavioral Validation — Synthesis Wave End-to-End
+/// Behavioral Validation — Synthesis Wave End-to-End
 ///
 /// Proves that when the MAPE-K retry loop exhausts all attempts but produces
 /// proposals with partial constraint coverage, the terminal synthesis wave:
@@ -524,10 +504,10 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
         },
     ];
 
-    eprintln!("\n── GAP-D6 Synthesis Wave Test ──────────────────────────────────");
+    eprintln!("\n── Synthesis Wave Test ──────────────────────────────────");
     eprintln!("  Corpus: 2 constraints each with 1 binary_check");
 
-    let cal_adapter = MockAdapter::new("Stateless JWT auth uses signed tokens.".into());
+    let cal_adapter = mock_adapter("Stateless JWT auth uses signed tokens.");
     let cal_event = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
         task_prompts: vec!["Design a stateless auth system.".into()],
@@ -549,20 +529,19 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
     );
 
     // Explorer: always returns proposal text (non-JSON → LlmJudge fallback 0.7 when used as evaluator)
-    let explorer = DecompositionMockAdapter::new(
-        "Use JWT tokens for stateless authentication. Sessions are stored client-side.".into(),
+    let explorer = decomposition_adapter(
+        "Use JWT tokens for stateless authentication. Sessions are stored client-side.",
     );
     // Verifier: cycles [c1-fail, c2-pass, c1-fail, c2-pass, ...]
     // c1 score 0.1 → fails Hard threshold 0.5 → hard_gate=false → overall=0.0 → proposal pruned
     // c2 score 0.7 → passes Hard threshold 0.5 → NOT in violated_constraints
     // violated_count=1 < checks.len()=2 → partial coverage → PartialPass score=0.5
-    let verifier = CyclingVerifAdapter::new(vec![
+    let verifier = cycling_adapter(vec![
         r#"{"score": 0.1, "reason": "lacks explicit stateless enforcement"}"#.into(),
         r#"{"score": 0.7, "reason": "uses JWT correctly"}"#.into(),
     ]);
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
-    let registry =
-        AdapterRegistry::new(Arc::new(MockAdapter::new("reg".into())) as Arc<dyn IComputeAdapter>);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
+    let registry = AdapterRegistry::new(Arc::new(mock_adapter("reg")) as Arc<dyn IComputeAdapter>);
 
     let manifest = TaskManifest {
         description: "Design a stateless authentication system using JWT tokens.".into(),
@@ -651,7 +630,7 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
                 best_partial_text.as_deref().map(|s| &s[..s.len().min(80)])
             );
             panic!(
-                "GAP-D6 synthesis wave must produce Ok(EngineOutput) when partial constraint \
+                "synthesis wave must produce Ok(EngineOutput) when partial constraint \
                  coverage exists — got MaxRetriesExhausted instead"
             );
         }

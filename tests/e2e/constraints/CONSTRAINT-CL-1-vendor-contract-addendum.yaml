@@ -1,0 +1,64 @@
+id: CONSTRAINT-CL-1
+title: Vendor Contract Addendum — Structural Compliance
+severity: hard
+version: "1.0"
+description: |
+  A software vendor contract addendum must contain six mandatory structural
+  provisions to be legally enforceable and compliant with standard commercial
+  software agreements. All six provisions must be present and correctly
+  scoped.
+
+domains:
+  - contract-law
+  - software-licensing
+  - data-protection
+
+guidance:
+  explorer: |
+    Your addendum MUST include ALL of the following provisions:
+    1. A limitation-of-liability clause that explicitly caps aggregate damages
+       at twelve (12) months of fees paid under the agreement.
+    2. A license grant that is term-limited (not perpetual) — state an explicit
+       end date or tie the license to the agreement term.
+    3. A reference to a Data Processing Agreement (DPA) and an explicit
+       statement that processing complies with GDPR Article 28 obligations.
+    4. A 30-day written cure period that must elapse before either party may
+       terminate the agreement for breach.
+    5. An explicit prohibition on unilateral amendment — any modification
+       requires written consent of both parties.
+    6. An IP ownership clause that assigns all rights in custom deliverables
+       to the customer upon full payment.
+  verifier: |
+    Score 1.0 only if all six structural provisions are present and correctly
+    scoped as described above. Score 0.0 if any provision is missing or
+    materially deficient.
+
+criteria:
+  pass: |
+    The addendum contains all six mandatory structural provisions: (1) limitation-of-liability
+    clause capping aggregate damages at twelve months of fees, (2) term-limited license grant
+    with explicit end date or tie to agreement term, (3) reference to a Data Processing Agreement
+    and explicit GDPR Article 28 compliance statement, (4) thirty-day written cure period before
+    termination for breach, (5) prohibition on unilateral amendment requiring written consent of
+    both parties, and (6) IP ownership assignment clause transferring custom deliverable rights
+    to the customer upon full payment.
+  partial: "The addendum contains some but not all six required structural provisions."
+  fail: |
+    The addendum is missing one or more of the six mandatory structural provisions, or any
+    provision is materially deficient in scope (e.g., liability cap at wrong amount, perpetual
+    license, cure period shorter than 30 days).
+  checks:
+    - Does the addendum contain a limitation-of-liability clause capping aggregate damages at twelve (12) months of fees paid?
+    - Is the license grant term-limited (not perpetual) with an explicit end date or tie to the agreement term?
+    - Does the addendum reference a Data Processing Agreement and state compliance with GDPR Article 28?
+    - Does the addendum specify a thirty (30) day written cure period before termination for breach?
+    - Does the addendum explicitly prohibit unilateral amendment and require written consent of both parties?
+    - Does the addendum contain an IP ownership assignment clause transferring custom deliverable rights to the customer upon full payment?
+
+binary_checks:
+  - "The addendum contains a limitation-of-liability clause that caps aggregate damages at twelve (12) months of fees"
+  - "The license grant in the addendum is term-limited (not perpetual) with an explicit end date or tie to agreement term"
+  - "The addendum references a Data Processing Agreement and states compliance with GDPR Article 28"
+  - "The addendum specifies a thirty (30) day written cure period before termination for breach"
+  - "The addendum explicitly prohibits unilateral amendment and requires written consent of both parties for modifications"
+  - "The addendum contains an IP ownership assignment clause transferring all custom deliverable rights to the customer upon full payment"

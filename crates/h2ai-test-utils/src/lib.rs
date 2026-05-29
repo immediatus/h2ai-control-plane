@@ -6,128 +6,86 @@ use h2ai_tools::web_search::WebSearchBackend;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::AdapterKind;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-// ── Tool mocks ────────────────────────────────────────────────────────────────
-
-pub struct MockWasmBackend {
-    response: String,
-}
-
-impl MockWasmBackend {
-    pub fn new(response: impl Into<String>) -> Self {
-        Self {
-            response: response.into(),
-        }
+fn default_kind() -> AdapterKind {
+    AdapterKind::CloudGeneric {
+        endpoint: "mock://localhost".into(),
+        api_key_env: "MOCK".into(),
+        model: None,
+        provider: Default::default(),
     }
 }
 
-#[async_trait]
-impl WasmBackend for MockWasmBackend {
-    async fn execute_script(&self, _language: &str, _script: &str) -> Result<String, ToolError> {
-        Ok(self.response.clone())
+fn make_response(output: impl Into<String>, cost: u64) -> ComputeResponse {
+    ComputeResponse {
+        output: output.into(),
+        token_cost: cost,
+        adapter_kind: default_kind(),
+        tokens_used: None,
+        reasoning_trace: None,
     }
 }
 
-pub struct MockSearchBackend {
-    response: String,
-}
+// ── Mock declarations ─────────────────────────────────────────────────────────
 
-impl MockSearchBackend {
-    pub fn new(response: impl Into<String>) -> Self {
-        Self {
-            response: response.into(),
-        }
+mockall::mock! {
+    #[derive(Debug)]
+    pub IComputeAdapter {}
+
+    #[async_trait]
+    impl IComputeAdapter for IComputeAdapter {
+        async fn execute(&self, request: ComputeRequest) -> Result<ComputeResponse, AdapterError>;
+        fn kind(&self) -> &AdapterKind;
     }
 }
 
-#[async_trait]
-impl WebSearchBackend for MockSearchBackend {
-    async fn search(&self, _query: &str, _max_results: usize) -> Result<String, ToolError> {
-        Ok(self.response.clone())
+mockall::mock! {
+    pub WebSearch {}
+
+    #[async_trait]
+    impl WebSearchBackend for WebSearch {
+        async fn search(&self, query: &str, max_results: usize) -> Result<String, ToolError>;
     }
 }
 
-pub struct MockMcpBackend {
-    files: HashMap<String, String>,
-}
+mockall::mock! {
+    pub WasmRunner {}
 
-impl MockMcpBackend {
-    #[must_use]
-    pub fn new(files: HashMap<String, String>) -> Self {
-        Self { files }
+    #[async_trait]
+    impl WasmBackend for WasmRunner {
+        async fn execute_script(&self, language: &str, script: &str) -> Result<String, ToolError>;
     }
 }
 
-#[async_trait]
-impl McpBackend for MockMcpBackend {
-    async fn call(&self, _op: &str, path: &str) -> Result<String, ToolError> {
-        self.files
-            .get(path)
-            .cloned()
-            .ok_or_else(|| ToolError::MalformedInput(format!("path not found: {path}")))
+mockall::mock! {
+    pub McpClient {}
+
+    #[async_trait]
+    impl McpBackend for McpClient {
+        async fn call(&self, op: &str, path: &str) -> Result<String, ToolError>;
     }
 }
 
-// ── Adapter mocks ─────────────────────────────────────────────────────────────
+// ── Factory helpers ───────────────────────────────────────────────────────────
 
-#[derive(Debug)]
-pub struct MockAdapter {
-    output: String,
-    kind: AdapterKind,
+/// Mock adapter that always succeeds returning `output`.
+pub fn mock_adapter(output: impl Into<String>) -> MockIComputeAdapter {
+    let output = output.into();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute()
+        .returning(move |_| Ok(make_response(output.clone(), 0)));
+    m.expect_kind().return_const(default_kind()).times(0..);
+    m
 }
 
-impl MockAdapter {
-    #[must_use]
-    pub fn new(output: String) -> Self {
-        Self {
-            output,
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://localhost".into(),
-                api_key_env: "MOCK".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for MockAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Ok(ComputeResponse {
-            output: self.output.clone(),
-            token_cost: 0,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
-}
-
-/// Returns valid decomposition JSON for STEP3 calls (detected by "JSON formatter" in system
-/// context), and `fallback_output` for all other calls. Use in e2e tests that exercise the
-/// full engine pipeline — the mandatory Path C decomposition step requires valid `RawSlot` JSON.
-#[derive(Debug)]
-pub struct DecompositionMockAdapter {
-    fallback_output: String,
-    kind: AdapterKind,
-}
-
-impl DecompositionMockAdapter {
-    #[must_use]
-    pub fn new(fallback_output: String) -> Self {
-        Self {
-            fallback_output,
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://decomposition".into(),
-                api_key_env: "MOCK".into(),
-                model: None,
-            },
-        }
-    }
+/// Mock adapter that always fails with `AdapterError::NetworkError`.
+pub fn failing_adapter() -> MockIComputeAdapter {
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute()
+        .returning(|_| Err(AdapterError::NetworkError("mock network failure".into())));
+    m.expect_kind().return_const(default_kind()).times(0..);
+    m
 }
 
 const STEP3_MOCK_JSON: &str = r#"[
@@ -149,106 +107,66 @@ const STEP3_MOCK_JSON: &str = r#"[
   }
 ]"#;
 
-#[async_trait]
-impl IComputeAdapter for DecompositionMockAdapter {
-    async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
+/// Mock adapter for the decomposition pipeline. Returns STEP3 JSON when
+/// `system_context` contains `"JSON formatter"`, `fallback` otherwise.
+pub fn decomposition_adapter(fallback: impl Into<String>) -> MockIComputeAdapter {
+    let fallback = fallback.into();
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |req| {
         let output = if req.system_context.contains("JSON formatter") {
             STEP3_MOCK_JSON.to_string()
         } else {
-            self.fallback_output.clone()
+            fallback.clone()
         };
-        Ok(ComputeResponse {
-            output,
-            token_cost: 10,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
+        Ok(make_response(output, 10))
+    });
+    m.expect_kind().return_const(default_kind()).times(0..);
+    m
 }
 
-/// Returns responses from a fixed sequence, one per call. Exhausted sequence returns `"fallback"`.
-#[derive(Debug)]
-pub struct SequencedMockAdapter {
-    responses: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    kind: AdapterKind,
-}
-
-impl SequencedMockAdapter {
-    #[must_use]
-    pub fn new(responses: Vec<String>) -> Self {
-        Self {
-            responses: std::sync::Arc::new(std::sync::Mutex::new(responses)),
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://sequenced".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for SequencedMockAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        let output = {
-            let mut lock = self.responses.lock().unwrap();
-            if lock.is_empty() {
-                "fallback".into()
-            } else {
-                lock.remove(0)
-            }
+/// Mock adapter returning `responses` in sequence; returns `"fallback"` when exhausted.
+pub fn sequenced_adapter(responses: Vec<String>) -> MockIComputeAdapter {
+    let queue = Arc::new(Mutex::new(responses));
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |_| {
+        let mut lock = queue.lock().unwrap();
+        let output = if lock.is_empty() {
+            "fallback".into()
+        } else {
+            lock.drain(..1).next().unwrap()
         };
-        Ok(ComputeResponse {
-            output,
-            token_cost: 10,
-            adapter_kind: self.kind.clone(),
-            tokens_used: None,
-            reasoning_trace: None,
-        })
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
+        Ok(make_response(output, 10))
+    });
+    m.expect_kind().return_const(default_kind()).times(0..);
+    m
 }
 
-/// Always returns `Err(AdapterError::NetworkError)`. Use to exercise `adapter_failed` paths.
-#[derive(Debug)]
-pub struct FailingMockAdapter {
-    kind: AdapterKind,
+/// Mock search backend that always succeeds returning `response`.
+pub fn mock_search(response: impl Into<String>) -> MockWebSearch {
+    let response = response.into();
+    let mut m = MockWebSearch::new();
+    m.expect_search()
+        .returning(move |_, _| Ok(response.clone()));
+    m
 }
 
-impl FailingMockAdapter {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            kind: AdapterKind::CloudGeneric {
-                endpoint: "mock://failing".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-            },
-        }
-    }
+/// Mock WASM backend that always succeeds returning `response`.
+pub fn mock_wasm(response: impl Into<String>) -> MockWasmRunner {
+    let response = response.into();
+    let mut m = MockWasmRunner::new();
+    m.expect_execute_script()
+        .returning(move |_, _| Ok(response.clone()));
+    m
 }
 
-impl Default for FailingMockAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl IComputeAdapter for FailingMockAdapter {
-    async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        Err(AdapterError::NetworkError("mock network failure".into()))
-    }
-
-    fn kind(&self) -> &AdapterKind {
-        &self.kind
-    }
+/// Mock MCP backend backed by `files` map (`path → content`).
+pub fn mock_mcp(files: HashMap<String, String>) -> MockMcpClient {
+    let mut m = MockMcpClient::new();
+    m.expect_call().returning(move |_, path| {
+        files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| ToolError::MalformedInput(format!("path not found: {path}")))
+    });
+    m
 }

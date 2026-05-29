@@ -29,6 +29,7 @@ fn compute_response_serde_round_trip() {
             endpoint: "https://api.example.com".into(),
             api_key_env: "CLOUD_API_KEY".into(),
             model: None,
+            provider: Default::default(),
         },
         tokens_used: None,
         reasoning_trace: None,
@@ -89,6 +90,7 @@ fn label(name: &str) -> std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>
             endpoint: "mock://test".into(),
             api_key_env: "NONE".into(),
             model: None,
+            provider: Default::default(),
         },
     ))
 }
@@ -229,6 +231,7 @@ fn compute_response_with_tokens_used_and_reasoning_trace() {
             endpoint: "https://api.example.com".into(),
             api_key_env: "KEY".into(),
             model: Some("gpt-4".into()),
+            provider: Default::default(),
         },
         tokens_used: Some(200),
         reasoning_trace: Some("step 1: ...\nstep 2: ...".into()),

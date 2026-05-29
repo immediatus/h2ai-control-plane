@@ -1,0 +1,78 @@
+{
+  "_benchmark": "Compliance-Lite",
+  "_h2ai_validates": "GAP-L1 Tiered Early Exit — framework exits on wave 0 or 1 when binary_checks pass; acceptance gate forces escalation when score is low",
+  "_tenant_id": "research-team",
+  "description": "Draft a software vendor contract addendum for a SaaS agreement. The addendum must include all mandatory provisions required by CONSTRAINT-CL-1: (1) limitation of liability capped at 12 months of fees; (2) term-limited license (not perpetual); (3) GDPR Article 28 DPA reference; (4) 30-day cure period before termination for breach; (5) prohibition on unilateral amendment; (6) IP ownership assignment of custom deliverables to the customer. Write the addendum in formal legal language suitable for a commercial B2B SaaS contract. Each provision should be a clearly labeled section.",
+  "pareto_weights": {
+    "diversity": 0.2,
+    "containment": 0.6,
+    "throughput": 0.2
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.1,
+    "tau_max": 0.7,
+    "slot_configs": [
+      {
+        "role_frame": "You are a commercial contracts attorney who has drafted hundreds of SaaS vendor agreements. You ensure every mandatory provision is present with precise legal language.",
+        "cot_style": "step_by_step",
+        "focus_mandate": "Draft all six required provisions: (1) liability cap at 12 months fees, (2) term-limited license, (3) GDPR Art. 28 DPA reference, (4) 30-day cure period, (5) no unilateral amendment, (6) IP assignment to customer. Each must be a separate labeled section.",
+        "rejection_criteria": "Any addendum missing even one of the six required provisions, or using perpetual license language, or failing to specify the 12-month liability cap explicitly.",
+        "constraint_domains": ["contract-law", "software-licensing", "data-protection"]
+      },
+      {
+        "role_frame": "You are a data protection officer who reviews vendor contracts for GDPR compliance. You verify that DPA obligations and IP assignments are correctly scoped.",
+        "cot_style": "devils_advocate",
+        "focus_mandate": "Ensure the GDPR Article 28 DPA reference is explicit and the IP ownership clause unambiguously assigns custom deliverable rights to the customer upon full payment.",
+        "rejection_criteria": "Addendum that references data protection obligations vaguely without citing Article 28, or IP clause that retains vendor rights after payment.",
+        "constraint_domains": ["contract-law", "data-protection"]
+      },
+      {
+        "role_frame": "You are a SaaS company's in-house counsel reviewing vendor addenda for enforceability. You focus on the liability cap, cure period, and amendment prohibition.",
+        "cot_style": "first_principles",
+        "focus_mandate": "Verify liability is capped at exactly 12 months of fees (not 6, not 24), cure period is exactly 30 days, and amendment requires written consent of both parties.",
+        "rejection_criteria": "Wrong liability cap amount, cure period shorter than 30 days, or amendment clause that allows unilateral changes.",
+        "constraint_domains": ["contract-law", "software-licensing"]
+      }
+    ],
+    "roles": [
+      {"agent_id": "exp_A", "role": "Executor", "tau": 0.2},
+      {"agent_id": "exp_B", "role": "Executor", "tau": 0.4},
+      {"agent_id": "exp_C", "role": "Executor", "tau": 0.6}
+    ]
+  },
+  "constraints": ["CONSTRAINT-CL-1"],
+  "context": "SaaS vendor contract addendum context: The main agreement is a standard SaaS subscription for a B2B software platform. The addendum modifies or supplements the main agreement on specific terms. All six provisions in CONSTRAINT-CL-1 are industry-standard requirements for enterprise SaaS contracts.",
+  "_timeout_s": 3600,
+  "_compare_semantics": "no_regression",
+  "_expected": {
+    "terminal": "MergeResolved",
+    "valid_proposals_min": 1,
+    "_review_checklist": [
+      {
+        "id": "CL/1",
+        "text": "Does the addendum contain a limitation-of-liability clause explicitly capping aggregate damages at twelve (12) months of fees paid?"
+      },
+      {
+        "id": "CL/2",
+        "text": "Is the license grant term-limited (not perpetual), with an explicit end date or tie to the agreement term?"
+      },
+      {
+        "id": "CL/3",
+        "text": "Does the addendum reference a Data Processing Agreement and state compliance with GDPR Article 28?"
+      },
+      {
+        "id": "CL/4",
+        "text": "Does the addendum specify a 30-day written cure period before termination for breach?"
+      },
+      {
+        "id": "CL/5",
+        "text": "Does the addendum explicitly prohibit unilateral amendment and require written consent of both parties?"
+      },
+      {
+        "id": "CL/6",
+        "text": "Does the addendum contain an IP ownership assignment clause transferring custom deliverable rights to the customer upon full payment?"
+      }
+    ]
+  }
+}

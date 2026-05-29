@@ -10,20 +10,28 @@ use h2ai_autonomic::epistemic::{
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::events::{ConstraintViolation, FailureMode};
 
-// ── Embedding stubs ────────────────────────────────────────────────────────────
+// ── Mock declarations ─────────────────────────────────────────────────────────
 
-/// Forces N_eff → 1. ModeCollapse discriminant fires.
-struct CollapseEmbeddingStub;
-impl EmbeddingModel for CollapseEmbeddingStub {
-    fn embed(&self, _text: &str) -> Vec<f32> {
-        vec![1.0, 0.0, 0.0]
+mockall::mock! {
+    pub BivariateEmbedding {}
+    impl EmbeddingModel for BivariateEmbedding {
+        fn embed(&self, text: &str) -> Vec<f32>;
     }
 }
 
+// ── Embedding stub factories ──────────────────────────────────────────────────
+
+/// Forces N_eff → 1. ModeCollapse discriminant fires.
+fn collapse_stub() -> MockBivariateEmbedding {
+    let mut m = MockBivariateEmbedding::new();
+    m.expect_embed().returning(|_| vec![1.0, 0.0, 0.0]);
+    m
+}
+
 /// Forces N_eff → N for texts tagged [AGENT_A], [AGENT_B], [AGENT_C].
-struct DiverseEmbeddingStub;
-impl EmbeddingModel for DiverseEmbeddingStub {
-    fn embed(&self, text: &str) -> Vec<f32> {
+fn diverse_stub() -> MockBivariateEmbedding {
+    let mut m = MockBivariateEmbedding::new();
+    m.expect_embed().returning(|text| {
         if text.contains("[AGENT_A]") {
             vec![1.0, 0.0, 0.0]
         } else if text.contains("[AGENT_B]") {
@@ -31,19 +39,21 @@ impl EmbeddingModel for DiverseEmbeddingStub {
         } else {
             vec![0.0, 0.0, 1.0]
         }
-    }
+    });
+    m
 }
 
 /// [AGENT_C] orthogonal; others same → N_eff ≈ 1.8 (PartialCollapse).
-struct PartialCollapseEmbeddingStub;
-impl EmbeddingModel for PartialCollapseEmbeddingStub {
-    fn embed(&self, text: &str) -> Vec<f32> {
+fn partial_collapse_stub() -> MockBivariateEmbedding {
+    let mut m = MockBivariateEmbedding::new();
+    m.expect_embed().returning(|text| {
         if text.contains("[AGENT_C]") {
             vec![0.0, 1.0, 0.0]
         } else {
             vec![1.0, 0.0, 0.0]
         }
-    }
+    });
+    m
 }
 
 // ── Test 1 ────────────────────────────────────────────────────────────────────
@@ -56,7 +66,7 @@ fn collapse_stub_n_eff_is_one() {
         "Output [AGENT_B] stateless auth".into(),
         "Output [AGENT_C] stateless auth".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &CollapseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &collapse_stub(), 0.05);
     assert!(
         (n_eff - 1.0).abs() < 1e-5,
         "CollapseStub → N_eff=1.0, got {n_eff}"
@@ -73,7 +83,7 @@ fn diverse_stub_n_eff_is_n() {
         "Output [AGENT_B] CQRS pattern".into(),
         "Output [AGENT_C] API boundary".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &DiverseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &diverse_stub(), 0.05);
     assert!(
         (n_eff - 3.0).abs() < 1e-5,
         "DiverseStub → N_eff=3.0, got {n_eff}"
@@ -90,7 +100,7 @@ fn collapse_discriminant_fires_mode_collapse() {
         "Output [AGENT_B]".into(),
         "Output [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &CollapseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &collapse_stub(), 0.05);
     let fm = classify_failure_mode(n_eff, 3, 0.5);
     assert_eq!(
         fm,
@@ -109,7 +119,7 @@ fn diverse_discriminant_fires_constrained_exploration() {
         "Output [AGENT_B]".into(),
         "Output [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &DiverseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &diverse_stub(), 0.05);
     let fm = classify_failure_mode(n_eff, 3, 0.5);
     assert_eq!(
         fm,
@@ -128,7 +138,7 @@ fn partial_collapse_boundary_classified_correctly() {
         "Output [AGENT_B] auth".into(),
         "Output [AGENT_C] cqrs".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &PartialCollapseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &partial_collapse_stub(), 0.05);
     assert!(
         n_eff > 1.5 && n_eff < 2.5,
         "PartialCollapseStub N_eff should be ≈1.8, got {n_eff}"
@@ -203,7 +213,7 @@ fn mode_collapse_retry_routing_signal() {
         "Output [AGENT_B]".into(),
         "Output [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &CollapseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &collapse_stub(), 0.05);
     let fm = classify_failure_mode(n_eff, 3, 0.5);
     assert_eq!(
         fm,
@@ -222,7 +232,7 @@ fn constrained_exploration_tombstone_injection_signal() {
         "Output [AGENT_B]".into(),
         "Output [AGENT_C]".into(),
     ];
-    let n_eff = compute_n_eff_cosine(&texts, &DiverseEmbeddingStub, 0.05);
+    let n_eff = compute_n_eff_cosine(&texts, &diverse_stub(), 0.05);
     let fm = classify_failure_mode(n_eff, 3, 0.5);
     assert_eq!(fm, FailureMode::ConstrainedExploration);
 

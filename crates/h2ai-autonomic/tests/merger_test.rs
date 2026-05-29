@@ -8,16 +8,25 @@ use h2ai_types::events::{BranchPrunedEvent, ProposalEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::{MergeStrategy, RoleErrorCost, TauValue};
 
+mockall::mock! {
+    pub MergerEmbedding {}
+    impl EmbeddingModel for MergerEmbedding {
+        fn embed(&self, text: &str) -> Vec<f32>;
+    }
+}
+
 /// Deterministic stub: returns a 3-D vector derived from the byte-sum of `text`.
-struct StubEmbedding;
-impl EmbeddingModel for StubEmbedding {
-    fn embed(&self, text: &str) -> Vec<f32> {
+fn stub_embedding() -> MockMergerEmbedding {
+    let mut m = MockMergerEmbedding::new();
+    m.expect_embed().returning(|text| {
         let sum: u32 = text.bytes().map(u32::from).sum();
+        #[allow(clippy::cast_precision_loss)]
         let v = (sum % 100) as f32 / 100.0;
         // L2-normalise so cosine = dot product
         let norm = (v * v + (1.0 - v) * (1.0 - v) + 0.25_f32).sqrt();
         vec![v / norm, (1.0 - v) / norm, 0.5 / norm]
-    }
+    });
+    m
 }
 
 fn adapter() -> AdapterKind {
@@ -25,6 +34,7 @@ fn adapter() -> AdapterKind {
         endpoint: "https://api.test".into(),
         api_key_env: "K".into(),
         model: None,
+        provider: Default::default(),
     }
 }
 
@@ -118,7 +128,7 @@ async fn merge_engine_zero_survival_when_proposal_set_empty() {
 
 #[tokio::test]
 async fn merge_engine_zero_survival_when_all_proposals_score_zero() {
-    // Proposals with score=0.0 must not feed the merger (GAP-D8 fix).
+    // Proposals with score=0.0 must not feed the merger (fix).
     let task_id = TaskId::new();
     let mut set = ProposalSet::new();
     set.insert_scored(
@@ -299,7 +309,7 @@ async fn merge_engine_multi_krum_returns_honest_output() {
             f64::from(score),
         );
     }
-    // Byzantine proposals score 0.0 — excluded from valid_proposals by GAP-D8 fix.
+    // Byzantine proposals score 0.0 — excluded from valid_proposals by fix.
     set.insert_scored(
         proposal(&task_id, ExplorerId::new(), "blockchain hash wrong", 10),
         0.0,
@@ -650,6 +660,7 @@ async fn krum_select_semantic_returns_none_without_embedding_model() {
         endpoint: "https://api.test".into(),
         api_key_env: "K".into(),
         model: None,
+        provider: Default::default(),
     };
     let make = |text: &str| ProposalEvent {
         task_id: task_id.clone(),
@@ -684,7 +695,7 @@ async fn krum_select_semantic_returns_none_without_embedding_model() {
 async fn merge_outlier_resistant_weiszfeld_fallback_with_embedding_model() {
     // n=4, f=1: quorum not satisfied (need 5) but embedding model present → Weiszfeld path.
     let task_id = TaskId::new();
-    let model = StubEmbedding;
+    let model = stub_embedding();
     let mut set = ProposalSet::new();
     set.insert_scored(
         proposal(&task_id, ExplorerId::new(), "jwt auth token rotation", 10),
@@ -739,7 +750,7 @@ async fn merge_outlier_resistant_weiszfeld_fallback_with_embedding_model() {
 async fn merge_multi_outlier_resistant_weiszfeld_fallback_with_embedding_model() {
     // n=6, f=2: quorum not satisfied (need 7) but embedding model present → Weiszfeld path.
     let task_id = TaskId::new();
-    let model = StubEmbedding;
+    let model = stub_embedding();
     let mut set = ProposalSet::new();
     for text in [
         "jwt auth a",
@@ -780,7 +791,7 @@ async fn merge_multi_outlier_resistant_weiszfeld_fallback_with_embedding_model()
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_outlier_resistant_krum_path_with_quorum_and_coherent_cluster() {
     let task_id = TaskId::new();
-    let model = StubEmbedding;
+    let model = stub_embedding();
     let mut set = ProposalSet::new();
     for text in ["d", "dd", "ddd", "dddd", "ddddd"] {
         set.insert_scored(proposal(&task_id, ExplorerId::new(), text, 10), 0.9);
@@ -814,7 +825,7 @@ async fn merge_outlier_resistant_krum_path_with_quorum_and_coherent_cluster() {
 #[tokio::test(flavor = "multi_thread")]
 async fn merge_multi_outlier_resistant_krum_path_with_quorum_and_coherent_cluster() {
     let task_id = TaskId::new();
-    let model = StubEmbedding;
+    let model = stub_embedding();
     let mut set = ProposalSet::new();
     for text in ["d", "dd", "ddd", "dddd", "ddddd", "dddddd", "ddddddd"] {
         set.insert_scored(proposal(&task_id, ExplorerId::new(), text, 10), 0.9);

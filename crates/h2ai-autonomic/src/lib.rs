@@ -9,6 +9,7 @@ pub mod audit_channel;
 pub mod calibration;
 pub mod checker;
 pub mod coherence_probe;
+pub mod complexity_probe;
 pub mod drift;
 pub mod epistemic;
 pub mod knowledge_gap;

@@ -265,13 +265,17 @@ pub async fn run(
                 oracle_gate_passed: input.oracle_gate_passed,
                 tau_values: input.tau_values,
                 iteration_verification_events: input.iteration_verification_events.to_vec(),
+                wave_token_cost: 0,
+                pairwise_cosine_mean: engine_input.embedding_model.and_then(|model| {
+                    h2ai_autonomic::epistemic::mean_pairwise_cosine(&input.surviving_texts, model)
+                }),
             };
 
             (StepResult::Done(merge_out), tau_expansion_next)
         }
 
         MergeOutcome::ZeroSurvival(mut zero_event) => {
-            // GAP-A4 #4: coherence-closed early exit — handled in engine.rs after we return.
+            // #4: coherence-closed early exit — handled in engine.rs after we return.
 
             // Compute epistemic diagnostics for failure mode classification.
             let detected_failure_mode = if let Some(model) = engine_input.embedding_model {

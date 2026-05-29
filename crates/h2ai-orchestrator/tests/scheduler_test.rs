@@ -261,20 +261,21 @@ async fn scheduler_returns_cyclic_dependency_error() {
 
 #[tokio::test]
 async fn scheduler_parallelises_independent_subtasks() {
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
-    use tokio::time::sleep;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
 
-    struct SlowExecutor(Arc<Mutex<Vec<Instant>>>);
+    // A 2-party barrier proves parallelism without any timing: if the scheduler
+    // ran tasks sequentially, the first task would block at the barrier waiting
+    // for the second, causing a deadlock.  Completion proves both ran concurrently.
+    struct BarrierExecutor(Arc<Barrier>);
     #[async_trait]
-    impl SubtaskExecutor for SlowExecutor {
+    impl SubtaskExecutor for BarrierExecutor {
         async fn execute(
             &self,
             id: SubtaskId,
             _m: TaskManifest,
         ) -> Result<SubtaskResult, SchedulerError> {
-            self.0.lock().unwrap().push(Instant::now());
-            sleep(Duration::from_millis(20)).await;
+            self.0.wait().await;
             Ok(SubtaskResult {
                 subtask_id: id,
                 output: "done".into(),
@@ -307,18 +308,11 @@ async fn scheduler_parallelises_independent_subtasks() {
         created_at: Utc::now(),
     };
 
-    let starts = Arc::new(Mutex::new(Vec::new()));
-    let executor = SlowExecutor(starts.clone());
-    let before = Instant::now();
+    let barrier = Arc::new(Barrier::new(2));
+    let executor = BarrierExecutor(barrier);
     SchedulingEngine::execute(plan, &base_manifest(), &executor)
         .await
         .unwrap();
-    let elapsed = before.elapsed();
-
-    assert!(
-        elapsed < Duration::from_millis(38),
-        "independent subtasks must run in parallel; elapsed={elapsed:?}"
-    );
 }
 
 #[tokio::test]

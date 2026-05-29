@@ -376,7 +376,7 @@ synthesis_max_tokens = 32768
 # partial-slot equivalents. At model_max_tokens=32768 and max_k=3: 32768*4/(3+5) = 16384 chars/partial.
 partial_pass_overhead_factor = 5.0
 
-# Enable sequential constraint grafting in the synthesis wave (GAP-H1).
+# Enable sequential constraint grafting in the synthesis wave.
 # When true the synthesis wave iteratively integrates one constraint cluster per LLM call.
 # Each round includes intermediate verification; destructive grafts are rolled back.
 # Default: false (opt-in; single-shot synthesis is the stable path).
@@ -386,7 +386,7 @@ sequential_grafting_enabled = false
 # Each round = one focused LLM call + one verification pass.
 sequential_grafting_max_rounds = 4
 
-# ── Calibration Drift Detection (GAP-H2) ──────────────────────────────────────
+# ── Calibration Drift Detection ──────────────────────────────────────
 # DDM sliding window size in tasks.
 drift_ddm_window = 20
 # DDM detection threshold in standard deviations (k × σ_reference).
@@ -460,9 +460,9 @@ signal_max_timeout_ms = 86_400_000
 # ── Phase 1.5: Task Complexity Assessment ────────────────────────────────────
 # Controls quadrant routing (Precision / Coverage / Complex / Degenerate).
 [task_complexity]
-# Phase 1.5 routing is live with analytical priors (GAP-A1 experiment pending).
+# Phase 1.5 routing is live with analytical priors (experiment pending).
 # shadow_mode = false means routing decisions are active; TCC thresholds are unfit priors.
-# The GAP-A1 controlled experiment (H2-P vs B3 vs H2-C on oracle-grounded task set) is
+# The controlled experiment (H2-P vs B3 vs H2-C on oracle-grounded task set) is
 # required to replace these coefficients with fitted values. Until that experiment runs,
 # routing decisions are made on analytical guesses — not empirical measurements.
 # Set shadow_mode = true to collect routing events without affecting topology selection.
@@ -474,8 +474,8 @@ tcc_precision_threshold = 2.0
 # TCC above this → Coverage quadrant (cross-family committee).
 tcc_coverage_threshold = 2.5
 
-# TCC_structural formula coefficients — theoretical initial priors (GAP-A1 spec §2.3).
-# These will be replaced with fitted values after the GAP-A1 experiment (spec §7.1).
+# TCC_structural formula coefficients — theoretical initial priors (spec §2.3).
+# These will be replaced with fitted values after the experiment (spec §7.1).
 # tcc = 1.0 + k_soft × soft_fraction + k_type × type_diversity
 #           + k_cross × soft_fraction × type_diversity
 k_soft  = 1.0
@@ -551,7 +551,7 @@ timeout_floor_ms     = 300000 # 5 min minimum
 [constraint_wiki]
 mode = "disabled"
 
-# ── GAP-C1: Correlated Hallucination ─────────────────────────────────────────
+# ── Correlated Hallucination ─────────────────────────────────────────
 # CV threshold for clustering detection. 0.0 disables C1.
 correlated_hallucination_cv_threshold = 0.30
 # Minimum mean pairwise Jaccard distance required for C1 to fire.
@@ -559,10 +559,10 @@ correlated_hallucination_cv_threshold = 0.30
 # Prevents spurious retries when the ensemble is diverse but uniformly so.
 correlated_hallucination_min_jaccard_floor = 0.50
 
-# ── GAP-C3: Domain Coverage ───────────────────────────────────────────────────
+# ── Domain Coverage ───────────────────────────────────────────────────
 # Minimum slot-domain coverage fraction before DiversityGuardDegradedEvent fires.
 domain_coverage_threshold = 0.40
-# ── SRANI: Specification-Relative Architectural Noun Intersection (GAP-C1 ext.) ──
+# ── SRANI: Specification-Relative Architectural Noun Intersection (ext.) ──
 # Detects shared ungrounded architectural entities across proposals.
 # CFI = max pairwise overlap of per-proposal ungrounded entity sets.
 [srani]
@@ -620,7 +620,7 @@ verifier_consensus_passes = 1
 # individual fields are ignored for non-custom profiles.
 #
 # Profiles:
-#   development — all gates off; matches pre-GAP-D5 behavior (startup logs WARN)
+#   development — all gates off; matches pre-behavior (startup logs WARN)
 #   production  — krum=1, diversity=0.15, family=require_diverse, shadow=true
 #   strict      — production + bivariate_cg=true, krum=2, diversity=0.20
 #   custom      — operator owns all values below; no overwrite
@@ -696,14 +696,14 @@ tag_gate_threshold          = 0.2
 max_archetype_boost         = 0.15
 max_archetype_penalty       = 0.20
 
-# ── Conflict-Rate β (GAP-D1) ────────────────────────────────────────────────
+# ── Conflict-Rate β ────────────────────────────────────────────────
 [conflict_beta]
 enabled                  = true
 max_samples              = 100
 halflife_secs            = 604800   # 7 days — same halflife as CG samples
 min_samples_for_override = 5        # production tasks needed before rolling overrides floor
 
-# ── Judge Panel (GAP-A7) ─────────────────────────────────────────────────────
+# ── Judge Panel ─────────────────────────────────────────────────────
 [judge_panel]
 # Supermajority fraction required for a confident CrossFamily verdict.
 quorum_fraction = 0.67
@@ -765,7 +765,7 @@ base_interval     = 10
 cache_ttl_secs    = 60
 cache_max_entries = 200
 
-# ── GAP-I1: Knowledge-Gap Detection and Domain Synthesis ─────────────────────
+# ── Knowledge-Gap Detection and Domain Synthesis ─────────────────────
 # When enabled, fires a researcher adapter on checks with pass rate ≤ cold_check_threshold.
 # Synthesised domain knowledge is accepted only when LlmJudge scores ≥ synthesis_min_confidence.
 # At most max_gap_records_per_wave researcher calls are issued per MAPE-K wave.
@@ -776,7 +776,7 @@ synthesis_min_confidence  = 0.7
 max_gap_records_per_wave  = 3
 researcher_timeout_secs   = 90
 
-# ── GAP-K1: Constraint Coherence & Automated Spec Repair ──────────────────────
+# ── Constraint Coherence & Automated Spec Repair ──────────────────────
 # Pre-flight coherence probe detects incoherent/unstable checks via repeated LlmJudge calls.
 # Runtime instability circuit breaker monitors rejection-reason consistency across waves.
 # When instability fires, SpecRepairAdvisor generates candidate rewrites.
@@ -796,3 +796,62 @@ probe_cache_ttl_secs        = 86400
 # When true, RetryWithHints anchors on the best prior proposal and emits
 # targeted per-constraint repair instructions. Default: false.
 enabled = false
+
+# ── Complexity-Ceiling vs Quality-Ceiling Retry Routing ───────────────
+# Pre-dispatch probe rates task complexity 1–5. High-complexity tasks route to
+# H1 grafting (score >= decompose_threshold) or HITL (score >= hitl_threshold)
+# on first failure instead of burning the full retry budget.
+[complexity_routing]
+enabled                          = false   # master switch; off by default
+complexity_probe_adapter         = "researcher"  # adapter used for cheap probe call
+complexity_probe_timeout_secs    = 30      # seconds before probe times out
+decompose_threshold              = 4       # score >= 4 → graft on first failure
+hitl_threshold                   = 5       # score >= 5 → HITL immediately
+verifier_decomposition_enabled   = false   # enable BEYOND_BUDGET sub-claim verdicts
+
+[complexity_routing.intra_retry]
+enabled                          = false   # enable intra-retry ceiling detector
+entropy_threshold                = 0.6     # Shannon H below this → peaked failure (ceiling signal)
+retry_slope_threshold            = 0.05    # relative score improvement below this → no convergence
+n_eff_cg_product_threshold       = 0.3    # N_eff×CG_mean below this → correlated failure
+min_retry_count_for_detection    = 2       # don't fire before this many retries
+
+# ── AgentDropout N-reduction ──────────────────────────────────────────
+# Wang et al. ACL 2025 (arXiv 2503.18891): drop correlated adapters on retry 2+
+# when participation ratio (N_eff) is low. Off by default.
+[complexity_routing.agent_dropout]
+enabled                    = false   # master switch; off by default
+n_eff_dropout_threshold    = 0.5     # reduce n_agents when N_eff falls below this
+
+# ── GAP-L1: Tiered Early Exit ────────────────────────────────────────────────
+# When enabled, the engine starts each task with `min_n` explorers and escalates
+# linearly to `max_n` across retry waves. A wave exits immediately when
+# k_for_wave(n) = max(1, ceil(n × quorum_fraction)) proposals score ≥
+# acceptance_score and (optionally) all binary_checks pass.
+[tiered_exit]
+enabled                   = false
+min_n                     = 1
+max_n                     = 5
+quorum_fraction           = 0.5
+acceptance_score          = 0.85
+require_all_binary_checks = true
+
+# ── GAP-H3: Cost Guard ─────────────────────────────────────────────────────────
+[cost_guard]
+enabled                        = false
+budget_tokens_per_task         = 100000
+budget_warning_fraction        = 0.80
+budget_abort_fraction          = 1.00
+budget_prompt_injection_enabled = false
+budget_injection_warn_fraction  = 0.50
+budget_injection_max_complexity = 3
+
+# ── GAP-H3: Convergence Gate ───────────────────────────────────────────────────
+[convergence_gate]
+enabled                     = false
+theta_converge              = 0.87
+supermajority_fraction_n3   = 0.67
+supermajority_fraction_n4plus = 0.80
+score_floor                 = 0.80
+min_wave                    = 1
+budget_floor_fraction       = 0.30

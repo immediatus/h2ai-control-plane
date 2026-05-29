@@ -34,6 +34,7 @@ fn proposal() -> ProposalEvent {
             endpoint: "mock".into(),
             api_key_env: "NONE".into(),
             model: None,
+            provider: Default::default(),
         },
         timestamp: chrono::Utc::now(),
     }

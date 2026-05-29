@@ -17,6 +17,8 @@ tracing     = { workspace = true }
 regex       = "1"
 
 [dev-dependencies]
+async-trait = { workspace = true }
+mockall     = { workspace = true }
 tokio       = { workspace = true }
 chrono      = { workspace = true }
 async-nats  = { workspace = true }

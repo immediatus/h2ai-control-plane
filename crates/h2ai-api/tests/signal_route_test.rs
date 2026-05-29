@@ -11,13 +11,13 @@ use axum::{
 use h2ai_api::{routes::task_router, state::AppState};
 use h2ai_config::H2AIConfig;
 use h2ai_orchestrator::task_store::TaskState;
-use h2ai_test_utils::DecompositionMockAdapter;
+use h2ai_test_utils::decomposition_adapter;
 use h2ai_types::identity::{TaskId, TenantId};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 fn make_state() -> AppState {
-    let adapter = Arc::new(DecompositionMockAdapter::new("mock".into()));
+    let adapter = Arc::new(decomposition_adapter("mock"));
     AppState::new_for_tests(
         H2AIConfig::default(),
         vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],

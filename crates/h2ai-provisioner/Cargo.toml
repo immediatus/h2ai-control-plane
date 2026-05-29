@@ -32,9 +32,10 @@ k8s-openapi = { version = "0.23", features = ["v1_30"], optional = true }
 
 [dev-dependencies]
 h2ai-provisioner = { path = ".", features = ["testing"] }
-tokio  = { workspace = true }
-uuid   = { workspace = true }
-chrono = { workspace = true }
+tokio   = { workspace = true }
+uuid    = { workspace = true }
+chrono  = { workspace = true }
+mockall = { workspace = true }
 
 [[test]]
 name = "scheduling_test"

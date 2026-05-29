@@ -702,12 +702,12 @@ async fn build_returns_importance_scored_on_tight_budget_no_adapter() {
 
 #[tokio::test]
 async fn build_returns_llm_summarized_with_adapter_on_tight_budget() {
-    use h2ai_test_utils::MockAdapter;
+    use h2ai_test_utils::mock_adapter;
     // Large preserved leader keeps total > budget even after trimming non-preserved sections.
     // With an adapter present, step 4 (LLM) runs.
     let large_leader = "L".repeat(5000);
     let retry = "retry hint to compress".to_string();
-    let adapter = MockAdapter::new("compressed".to_string());
+    let adapter = mock_adapter("compressed".to_string());
     let input = ContextAssemblerInput {
         active_ctx: "active ctx text",
         retry_context: Some(&retry),

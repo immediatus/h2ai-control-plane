@@ -1,8 +1,7 @@
-use async_trait::async_trait;
 use chrono::Utc;
 use h2ai_orchestrator::compound::{CompoundError, CompoundTaskEngine, CompoundTaskInput};
 use h2ai_orchestrator::scheduler::{SchedulerError, SubtaskExecutor};
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 use h2ai_types::config::ParetoWeights;
 use h2ai_types::identity::{SubtaskId, TaskId};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
@@ -36,36 +35,38 @@ fn manifest() -> TaskManifest {
     }
 }
 
-struct StubExecutor;
-#[async_trait]
-impl SubtaskExecutor for StubExecutor {
-    async fn execute(
-        &self,
-        id: SubtaskId,
-        m: TaskManifest,
-    ) -> Result<SubtaskResult, SchedulerError> {
+mockall::mock! {
+    pub StubExecutor {}
+    #[async_trait::async_trait]
+    impl SubtaskExecutor for StubExecutor {
+        async fn execute(&self, id: SubtaskId, m: TaskManifest) -> Result<SubtaskResult, SchedulerError>;
+    }
+}
+
+fn stub_executor() -> MockStubExecutor {
+    let mut m = MockStubExecutor::new();
+    m.expect_execute().returning(|id, manifest| {
         Ok(SubtaskResult {
             subtask_id: id,
-            output: format!("stub output for: {}", m.description),
+            output: format!("stub output for: {}", manifest.description),
             token_cost: 1,
             timestamp: Utc::now(),
         })
-    }
+    });
+    m
 }
 
 #[tokio::test]
 async fn compound_engine_decomposes_reviews_and_schedules() {
-    let decomp_adapter = MockAdapter::new(
+    let decomp_adapter = mock_adapter(
         r#"{
       "subtasks": [
         {"description": "Design schema", "depends_on": [], "role_hint": null},
         {"description": "Implement service", "depends_on": [0], "role_hint": null}
       ]
-    }"#
-        .into(),
+    }"#,
     );
-    let review_adapter =
-        MockAdapter::new(r#"{"approved": true, "reason": "Looks complete."}"#.into());
+    let review_adapter = mock_adapter(r#"{"approved": true, "reason": "Looks complete."}"#);
 
     let task_id = TaskId::new();
     let input = CompoundTaskInput {
@@ -74,7 +75,7 @@ async fn compound_engine_decomposes_reviews_and_schedules() {
         planning_adapter: &decomp_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
-        executor: &StubExecutor,
+        executor: &stub_executor(),
     };
 
     let output = CompoundTaskEngine::run(input).await.unwrap();
@@ -86,16 +87,15 @@ async fn compound_engine_decomposes_reviews_and_schedules() {
 
 #[tokio::test]
 async fn compound_engine_returns_plan_rejected_error_when_review_fails() {
-    let decomp_adapter = MockAdapter::new(
+    let decomp_adapter = mock_adapter(
         r#"{
       "subtasks": [
         {"description": "Only one step", "depends_on": [], "role_hint": null}
       ]
-    }"#
-        .into(),
+    }"#,
     );
     let review_adapter =
-        MockAdapter::new(r#"{"approved": false, "reason": "Missing implementation step."}"#.into());
+        mock_adapter(r#"{"approved": false, "reason": "Missing implementation step."}"#);
 
     let input = CompoundTaskInput {
         task_id: TaskId::new(),
@@ -103,7 +103,7 @@ async fn compound_engine_returns_plan_rejected_error_when_review_fails() {
         planning_adapter: &decomp_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
-        executor: &StubExecutor,
+        executor: &stub_executor(),
     };
 
     let err = CompoundTaskEngine::run(input).await.unwrap_err();
@@ -115,8 +115,8 @@ async fn compound_engine_returns_plan_rejected_error_when_review_fails() {
 
 #[tokio::test]
 async fn compound_engine_returns_error_on_invalid_decomposer_json() {
-    let decomp_adapter = MockAdapter::new("not valid json at all".into());
-    let review_adapter = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let decomp_adapter = mock_adapter("not valid json at all");
+    let review_adapter = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
 
     let input = CompoundTaskInput {
         task_id: TaskId::new(),
@@ -124,7 +124,7 @@ async fn compound_engine_returns_error_on_invalid_decomposer_json() {
         planning_adapter: &decomp_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
-        executor: &StubExecutor,
+        executor: &stub_executor(),
     };
 
     let err = CompoundTaskEngine::run(input).await.unwrap_err();
@@ -135,8 +135,8 @@ async fn compound_engine_returns_error_on_invalid_decomposer_json() {
 async fn compound_engine_empty_subtasks_from_decomposer_results_in_plan_rejected() {
     // LLM returns empty subtasks array → reviewer rejects plan locally (no LLM call)
     // → CompoundError::PlanRejected.
-    let decomp_adapter = MockAdapter::new(r#"{"subtasks": []}"#.into());
-    let review_adapter = MockAdapter::new("NOT JSON - should not be called".into());
+    let decomp_adapter = mock_adapter(r#"{"subtasks": []}"#);
+    let review_adapter = mock_adapter("NOT JSON - should not be called");
 
     let input = CompoundTaskInput {
         task_id: TaskId::new(),
@@ -144,7 +144,7 @@ async fn compound_engine_empty_subtasks_from_decomposer_results_in_plan_rejected
         planning_adapter: &decomp_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
-        executor: &StubExecutor,
+        executor: &stub_executor(),
     };
 
     let err = CompoundTaskEngine::run(input).await.unwrap_err();

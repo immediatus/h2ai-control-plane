@@ -137,6 +137,19 @@ impl std::fmt::Display for AdapterFamily {
     }
 }
 
+/// Which wire-protocol/thinking-control dialect a `CloudGeneric` adapter speaks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudProvider {
+    /// Plain OpenAI-compatible endpoint — no extra thinking fields sent.
+    #[default]
+    Generic,
+    /// llama.cpp server — uses `chat_template_kwargs: {"enable_thinking": <bool>}`.
+    LlamaCpp,
+    /// Google Gemini — uses `thinking_config: {"thinking_budget": <-1|0>}`.
+    Gemini,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdapterKind {
     LocalLlamaCpp {
@@ -148,6 +161,8 @@ pub enum AdapterKind {
         api_key_env: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(default)]
+        provider: CloudProvider,
     },
     OpenAI {
         api_key_env: String,
@@ -209,6 +224,7 @@ impl Default for AuditorConfig {
                 endpoint: String::new(),
                 api_key_env: String::new(),
                 model: None,
+                provider: CloudProvider::default(),
             },
             tau: TauValue::new(0.1).unwrap(),
             max_tokens: 4096,

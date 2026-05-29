@@ -103,6 +103,30 @@ pub async fn run_calibration_core(
                 || e.to_string().contains("timed out");
             if is_network {
                 tracing::warn!("calibration skipped — LLM adapter unreachable: {e}");
+                // Re-emit the existing cached calibration under the new cal_id so that
+                // poll-based clients (trigger_calibration_and_wait) see a fresh ID even
+                // when the adapter is rate-limited and cannot produce a new measurement.
+                let ts = state.tenant_state(&TenantId::default_tenant());
+                let existing = ts.calibration.read().await.clone();
+                if let Some(mut cached) = existing {
+                    cached.calibration_id = cal_id.clone();
+                    {
+                        let mut cal = ts.calibration.write().await;
+                        *cal = Some(cached.clone());
+                    }
+                    if let Some(nats) = &state.nats {
+                        let _ = nats.put_calibration(&cached).await;
+                    }
+                    if let Some(cid) = notify_cal_id {
+                        let subject = format!("h2ai.calibration.{cid}");
+                        if let Some(nats) = &state.nats {
+                            let _ = nats
+                                .publish_to(&subject, &H2AIEvent::CalibrationCompleted(cached))
+                                .await;
+                        }
+                    }
+                    return;
+                }
             } else {
                 tracing::error!("calibration failed: {e}");
             }

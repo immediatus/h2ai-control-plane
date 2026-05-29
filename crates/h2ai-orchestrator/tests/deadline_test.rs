@@ -1,7 +1,7 @@
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
 use h2ai_orchestrator::task_store::TaskStore;
@@ -22,7 +22,7 @@ async fn make_engine_input<'a>(
     registry: &'a AdapterRegistry,
 ) -> EngineInput<'a> {
     // Build calibration using the same pattern as engine_test.rs
-    let cal_adapter = MockAdapter::new("The proposed solution uses stateless JWT auth.".into());
+    let cal_adapter = mock_adapter("The proposed solution uses stateless JWT auth.");
     let cal_cfg = H2AIConfig::default();
     let cal = CalibrationHarness::run(CalibrationInput {
         calibration_id: TaskId::new(),
@@ -77,6 +77,7 @@ async fn make_engine_input<'a>(
                 endpoint: "mock".into(),
                 api_key_env: "NONE".into(),
                 model: None,
+                provider: Default::default(),
             },
             ..Default::default()
         },
@@ -116,16 +117,16 @@ async fn make_engine_input<'a>(
 async fn engine_deadline_exceeded_on_zero_second_budget() {
     // deadline_secs = 0 → deadline is Instant::now() at construction.
     // By the time retry_count=0 iteration starts, Instant::now() >= deadline → DeadlineExceeded.
-    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
-    let scorer = MockAdapter::new(r#"{"score": 0.9, "reason": "compliant"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let explorer = mock_adapter("stateless JWT auth — ADR-001 compliant");
+    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "compliant"}"#);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
     let cfg = H2AIConfig {
         task_deadline_secs: Some(0),
         ..H2AIConfig::default()
     };
     let store = TaskStore::new();
 
-    let reasoning: Arc<dyn IComputeAdapter> = Arc::new(MockAdapter::new("mock output".into()));
+    let reasoning: Arc<dyn IComputeAdapter> = Arc::new(mock_adapter("mock output"));
     let registry = AdapterRegistry::new(reasoning);
     let out = ExecutionEngine::run_offline(
         make_engine_input(
@@ -150,13 +151,13 @@ async fn engine_deadline_exceeded_on_zero_second_budget() {
 #[tokio::test]
 async fn engine_no_deadline_runs_normally() {
     // task_deadline_secs = None (default) → no deadline → task completes
-    let explorer = MockAdapter::new("stateless JWT auth — ADR-001 compliant".into());
-    let scorer = MockAdapter::new(r#"{"score": 0.9, "reason": "compliant"}"#.into());
-    let auditor = MockAdapter::new(r#"{"approved": true, "reason": "ok"}"#.into());
+    let explorer = mock_adapter("stateless JWT auth — ADR-001 compliant");
+    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "compliant"}"#);
+    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
     let cfg = H2AIConfig::default(); // task_deadline_secs defaults to None
     let store = TaskStore::new();
 
-    let reasoning: Arc<dyn IComputeAdapter> = Arc::new(MockAdapter::new("mock output".into()));
+    let reasoning: Arc<dyn IComputeAdapter> = Arc::new(mock_adapter("mock output"));
     let registry = AdapterRegistry::new(reasoning);
     let out = ExecutionEngine::run_offline(
         make_engine_input(

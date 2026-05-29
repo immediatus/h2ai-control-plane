@@ -511,12 +511,13 @@ def _load_constraint_context(scenario_dir: pathlib.Path, task: dict) -> str:
 
 # ── Baseline mode (direct LLM, no H2AI) ──────────────────────────────────────
 
-def _llm_endpoint_for_scenario(scenario_name: str) -> tuple[str, str, int]:
-    """Return (endpoint_url, model_name, max_tokens) for the scenario's first adapter profile.
-
-    model_max_tokens is read from the scenario's h2ai.toml; falls back to MODEL_MAX_TOKENS.
-    """
-    toml_path = SCENARIOS_DIR / scenario_name.split("/")[-1] / "h2ai.toml"
+def _llm_endpoint_for_scenario(scenario_name: str, config_name: str = "h2ai.toml") -> tuple[str, str, int, str]:
+    """Return (endpoint_url, model_name, max_tokens, api_key) for the scenario's first adapter profile."""
+    toml_path = SCENARIOS_DIR / scenario_name.split("/")[-1] / config_name
+    if not toml_path.exists():
+        toml_path = SCENARIOS_DIR / scenario_name / config_name
+    if not toml_path.exists():
+        toml_path = SCENARIOS_DIR / scenario_name.split("/")[-1] / "h2ai.toml"
     if not toml_path.exists():
         toml_path = SCENARIOS_DIR / scenario_name / "h2ai.toml"
     if toml_path.exists():
@@ -527,24 +528,42 @@ def _llm_endpoint_for_scenario(scenario_name: str) -> tuple[str, str, int]:
             for adapter_cfg in kind.values():
                 if isinstance(adapter_cfg, dict) and "endpoint" in adapter_cfg:
                     base = adapter_cfg["endpoint"].rstrip("/")
-                    model = profile.get("name", "local")
-                    return f"{base}/chat/completions", model, max_tokens
+                    model = adapter_cfg.get("model") or profile.get("name", "local")
+                    api_key_env = adapter_cfg.get("api_key_env", "")
+                    api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+                    return f"{base}/chat/completions", model, max_tokens, api_key
 
-    return "http://host.docker.internal:8080/v1/chat/completions", "local", MODEL_MAX_TOKENS
+    return "http://host.docker.internal:8080/v1/chat/completions", "local", MODEL_MAX_TOKENS, ""
 
 
-def _llm_call(endpoint: str, model: str, messages: list[dict], max_tokens: int = MODEL_MAX_TOKENS) -> str:
+def _llm_call(endpoint: str, model: str, messages: list[dict], max_tokens: int = MODEL_MAX_TOKENS, api_key: str = "") -> str:
     payload = json.dumps({"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.6}).encode()
-    req = urllib.request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
-    except (ConnectionRefusedError, urllib.error.URLError) as exc:
-        raise RuntimeError(
-            f"LLM endpoint unreachable: {endpoint}\n"
-            f"  Make sure your LLM server is running, or set:\n"
-            f"  H2AI_LLM_ENDPOINT=http://<host>:<port>/v1/chat/completions"
-        ) from None
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    delay = 5
+    for attempt in range(10):
+        req = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                data = json.loads(resp.read())
+                content = data["choices"][0]["message"].get("content") or ""
+                return content
+        except urllib.error.HTTPError as exc:
+            body = exc.read()[:300]
+            if exc.code == 429:
+                print(f"  [rate-limited 429, retry {attempt+1}/10 in {delay}s]")
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+                continue
+            raise RuntimeError(f"HTTP {exc.code} from {endpoint}: {body}") from exc
+        except (ConnectionRefusedError, urllib.error.URLError) as exc:
+            raise RuntimeError(
+                f"LLM endpoint unreachable: {endpoint}\n"
+                f"  Make sure your LLM server is running, or set:\n"
+                f"  H2AI_LLM_ENDPOINT=http://<host>:<port>/v1/chat/completions"
+            ) from None
+    raise RuntimeError(f"Rate limit exceeded after 10 retries: {endpoint}")
 
 
 def _print_checks_for_review(checks: list[dict], out_dir: pathlib.Path) -> None:
@@ -557,8 +576,8 @@ def _print_checks_for_review(checks: list[dict], out_dir: pathlib.Path) -> None:
         print(f"    [{check['id']}] {check['text']}")
 
 
-def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -> dict:
-    endpoint, model, max_tokens = _llm_endpoint_for_scenario(scenario_name)
+def run_baseline(scenario_name: str, task: dict, constraint_context: str = "", config_name: str = "h2ai.toml") -> dict:
+    endpoint, model, max_tokens, api_key = _llm_endpoint_for_scenario(scenario_name, config_name)
     mode_label = "context-augmented" if constraint_context else "bare LLM"
     print(f"  LLM endpoint: {endpoint}  model: {model}  max_tokens: {max_tokens}  mode: {mode_label}")
 
@@ -578,7 +597,7 @@ def run_baseline(scenario_name: str, task: dict, constraint_context: str = "") -
     answer = _llm_call(endpoint, model, [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
-    ], max_tokens=max_tokens)
+    ], max_tokens=max_tokens, api_key=api_key)
     elapsed = time.time() - t0
     print(f"  Answer: {len(answer)} chars in {elapsed:.0f}s")
 
@@ -813,7 +832,7 @@ def main() -> None:
             print(f"{'='*60}")
             try:
                 constraint_ctx = _load_constraint_context(scenario_dir, task) if args.context_augmented else ""
-                run_baseline(scenario_name, task, constraint_context=constraint_ctx)
+                run_baseline(scenario_name, task, constraint_context=constraint_ctx, config_name=args.config or "h2ai.toml")
                 overall[scenario_name] = "DONE"
             except Exception as e:
                 overall[scenario_name] = f"ERROR: {e}"
@@ -854,16 +873,17 @@ def main() -> None:
             print(f"{'='*60}")
             try:
                 print(f"\n[1/3 — bare LLM]")
-                llm_result = run_baseline(scenario_name, task, constraint_context="")
+                llm_result = run_baseline(scenario_name, task, constraint_context="", config_name=args.config or "h2ai.toml")
                 llm_m = _baseline_summary(llm_result)
 
                 print(f"\n[2/3 — LLM+RAG (constraints injected into system prompt)]")
                 constraint_ctx = _load_constraint_context(scenario_dir, task)
-                rag_result = run_baseline(scenario_name, task, constraint_context=constraint_ctx)
+                rag_result = run_baseline(scenario_name, task, constraint_context=constraint_ctx, config_name=args.config or "h2ai.toml")
                 rag_m = _baseline_summary(rag_result)
 
-                print(f"\n[3/3 — H2AI full (h2ai.toml)]")
-                h2ai_m = _run_h2ai_trials(scenario_name, scenario_dir, task, "h2ai.toml", args.trials)
+                h2ai_cfg = args.config or "h2ai.toml"
+                print(f"\n[3/3 — H2AI full ({h2ai_cfg})]")
+                h2ai_m = _run_h2ai_trials(scenario_name, scenario_dir, task, h2ai_cfg, args.trials)
 
                 _print_triple_table(h2ai_m, llm_m, rag_m)
 

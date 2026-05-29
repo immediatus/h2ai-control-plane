@@ -20,7 +20,7 @@ pub struct Output {
     pub generation: GenerationOutput,
 }
 
-/// Run the GAP-C1 Correlated Hallucination Detection phase.
+/// Run the Correlated Hallucination Detection phase.
 ///
 /// Checks CV of pairwise Jaccard distances on raw proposal texts. When the ensemble
 /// is semantically clustered (low CV + low mean Jaccard distance), a grounding hint
@@ -46,7 +46,7 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
     let proposals = &generation.proposals;
     let tau_values = generation.tau_values.clone();
 
-    // ── GAP-C1: Correlated Hallucination Detection ──────────────────
+    // ── Correlated Hallucination Detection ──────────────────
     // Check CV of pairwise Jaccard distances on raw proposal texts.
     // Low CV = proposals are semantically clustered → retry with grounding hint.
     if engine_input.cfg.correlated_hallucination_cv_threshold > 0.0 && proposals.len() >= 2 {

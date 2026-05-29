@@ -247,6 +247,7 @@ async fn cloud_adapter_kind_reflects_constructor_args() {
             endpoint,
             api_key_env,
             model: None,
+            ..
         } => {
             assert_eq!(endpoint, "https://api.example.com");
             assert_eq!(api_key_env, "MY_KEY");

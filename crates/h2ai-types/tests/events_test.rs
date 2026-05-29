@@ -59,6 +59,7 @@ fn cloud_adapter() -> AdapterKind {
         endpoint: "https://api.example.com".into(),
         api_key_env: "API_KEY".into(),
         model: None,
+        provider: Default::default(),
     }
 }
 fn calibration() -> CoherencyCoefficients {

@@ -58,7 +58,7 @@ use h2ai_api::opro::{
 use h2ai_config::{H2AIConfig, OproConfig};
 use h2ai_state::in_memory::InMemoryStateBackend;
 use h2ai_state::OproStore;
-use h2ai_test_utils::MockAdapter;
+use h2ai_test_utils::mock_adapter;
 use h2ai_types::prompt_variant::PromptBanditArm;
 
 fn default_opro_cfg() -> OproConfig {
@@ -260,7 +260,7 @@ fn should_trigger_opro_j_eff_above_threshold() {
 #[tokio::test]
 async fn run_opro_trigger_updates_ema_when_no_trigger() {
     let store = InMemoryStateBackend::new();
-    let adapter = MockAdapter::new("ignored".to_string());
+    let adapter = mock_adapter("ignored".to_string());
     let mut cfg = H2AIConfig::default();
     cfg.opro.enabled = true;
     cfg.opro.trigger_j_eff_threshold = 0.4; // j_eff=0.9 > 0.4 → no trigger
@@ -292,7 +292,7 @@ async fn run_opro_trigger_updates_ema_when_no_trigger() {
 async fn run_opro_trigger_stores_variant_when_triggered() {
     let store = InMemoryStateBackend::new();
     // Adapter returns a valid candidate that preserves all template vars (none here).
-    let adapter = MockAdapter::new("Improved prompt for {task} using {context}.".to_string());
+    let adapter = mock_adapter("Improved prompt for {task} using {context}.".to_string());
     let mut cfg = H2AIConfig::default();
     cfg.opro.enabled = true;
     cfg.opro.trigger_j_eff_threshold = 0.9; // j_eff=0.1 < 0.9 → trigger
@@ -353,7 +353,7 @@ async fn run_opro_trigger_suppresses_on_validation_failure() {
         .unwrap();
 
     // Adapter returns a candidate that drops {required_var} → validation fails.
-    let adapter = MockAdapter::new("Improved prompt with no variables.".to_string());
+    let adapter = mock_adapter("Improved prompt with no variables.".to_string());
     let mut cfg = H2AIConfig::default();
     cfg.opro.enabled = true;
     cfg.opro.trigger_j_eff_threshold = 0.9;

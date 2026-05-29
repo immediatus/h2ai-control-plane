@@ -100,7 +100,7 @@ pub struct SemilatticeResult {
     ///
     /// Index 0 holds the highest-scored proposal so `ScoreOrdered` merge needs
     /// only take `valid_proposals[0]`. Score=0 proposals are excluded to
-    /// prevent synthesis contamination (GAP-D8).
+    /// prevent synthesis contamination.
     pub valid_proposals: Vec<ProposalEvent>,
     /// Verification scores for each entry in `valid_proposals` (parallel vector, same index).
     /// All values are > 0.0. Sorted descending in lock-step with `valid_proposals`.

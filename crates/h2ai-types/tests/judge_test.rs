@@ -68,6 +68,7 @@ fn adapter_family_from_kind_all_variants() {
             endpoint: "https://example.com".into(),
             api_key_env: "K".into(),
             model: None,
+            provider: Default::default(),
         }),
         AdapterFamily::Cloud
     );

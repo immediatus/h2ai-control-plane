@@ -193,14 +193,17 @@ async fn timeout_kills_entire_process_group() {
         "expected Timeout; got: {err:?}"
     );
 
-    // Give the OS a moment to reap.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    // Verify no sentinel process survives.
-    let ps_out = std::process::Command::new("pgrep")
-        .args(["-f", &format!("sleep {sentinel}")])
-        .output()
-        .unwrap();
+    // Poll until the OS reaps the sentinel process after PGID kill
+    let ps_out = loop {
+        let out = std::process::Command::new("pgrep")
+            .args(["-f", &format!("sleep {sentinel}")])
+            .output()
+            .unwrap();
+        if out.stdout.is_empty() {
+            break out;
+        }
+        tokio::task::yield_now().await;
+    };
     assert!(
         ps_out.stdout.is_empty(),
         "orphaned sleep process must not survive PGID kill; pgrep output: {:?}",

@@ -683,7 +683,7 @@ impl EnsembleCalibration {
     }
 
     /// Construct with directly measured p and ρ, bypassing all proxy formulas.
-    /// Used by the online ρ EMA updater (INNOVATION-3, GAP-A3).
+    /// Used by the online ρ EMA updater (INNOVATION-3).
     /// `rho` is clamped to [0.0, 0.99] to prevent degenerate Condorcet computation.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
@@ -1012,7 +1012,7 @@ pub enum ProbeSkipReason {
     /// `CalibrationQuality::Bootstrap`: synthetic priors not suitable for probe comparison.
     BootstrapCalibration,
     /// `TCC_structural` is in the ambiguous band `(tcc_precision_threshold, tcc_coverage_threshold)`
-    /// but the N-probe step is deferred pending GAP-A1 experiment threshold validation.
+    /// but the N-probe step is deferred pending experiment threshold validation.
     /// Routes conservatively to Coverage. Remove once Path B probe is enabled in `shadow_mode=false`.
     AmbiguousBandProbeDeferred,
 }
