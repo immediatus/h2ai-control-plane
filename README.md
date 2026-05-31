@@ -65,6 +65,8 @@ Each row is a failure mode H2AI addresses structurally rather than probabilistic
 | **O(n³)+ tasks hallucinate regardless of retry depth** | Complexity Ceiling: `ComplexityProbe` routes pre-loop; AgentDropout reduces N on structurally-failing retries; BEYOND_BUDGET decomposition for sub-claims |
 | **Ambiguous constraints produce random verifier votes** | Constraint Coherence: `CoherenceProbe` detects noise; `SpecRepairAdvisor` rewrites and hot-reloads the corpus without task restart |
 | **Fabricated APIs pass constraint checks** | SRANI: Correlated Fabrication Index gates proposals; grounding escalation (spec anchor → researcher → web search) |
+| **Retry loop fires even when first wave easily passes** | Tiered Early Exit: N escalates linearly wave-to-wave; exits immediately when quorum of proposals reach acceptance score — no full retry budget spent on simple tasks |
+| **Generation budget depletes silently; converged proposals keep triggering new waves** | Cost Guard + Convergence Gate: token budget enforced per task with hint injection; semantic convergence (θ > 0.87 mean pairwise cosine) triggers early acceptance before budget exhaustion |
 | **Tacit knowledge is invisible** | Dark Knowledge Compiler: typed `ConstraintDoc` predicates become hard Auditor gates |
 
 → **Full problem-solution map** (24 mechanisms, each with implementation detail): [`docs/architecture/architecture.md § Problem-Solution Map`](docs/architecture/architecture.md#problem-solution-map)

@@ -721,6 +721,85 @@ min_retry_count_for_detection    = 2
 | `complexity_routing.intra_retry.n_eff_cg_product_threshold` | `0.3` | `N_eff × CG_mean` below this = correlated failure = ceiling signal. |
 | `complexity_routing.intra_retry.min_retry_count_for_detection` | `2` | Minimum wave count before detector may fire; suppresses first-wave variance. |
 
+### Tiered Early Exit
+
+Fast-path acceptance gate that scales the number of explorers linearly across retry waves. On wave 0 the engine spawns `min_n` explorers; by wave `max_retries` it reaches `max_n`. A wave resolves immediately once enough proposals pass — avoiding full retry-budget consumption on straightforward tasks. Used by the `compliance-lite` benchmark scenario.
+
+```toml
+[tiered_exit]
+enabled                   = false
+min_n                     = 1
+max_n                     = 5
+quorum_fraction           = 0.5
+acceptance_score          = 0.85
+require_all_binary_checks = true
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `tiered_exit.enabled` | `false` | Master toggle. When `false`, N is fixed at the calibrated value and acceptance is not checked mid-wave. |
+| `tiered_exit.min_n` | `1` | Explorer count at wave 0. |
+| `tiered_exit.max_n` | `5` | Explorer count at wave `max_retries`. Capped by `N_max` from calibration. |
+| `tiered_exit.quorum_fraction` | `0.5` | Fraction of the wave's N that must pass to trigger early exit. k_for_wave = `max(1, ceil(n × quorum_fraction))`. |
+| `tiered_exit.acceptance_score` | `0.85` | Minimum score a proposal must reach to count toward the quorum. |
+| `tiered_exit.require_all_binary_checks` | `true` | When `true`, proposals that fail any binary check are excluded from the quorum count regardless of score. |
+
+`TieredExitEvent` is published via `H2AIEvent::TieredExit` when the gate fires at resolution. The `n_for_wave` function interpolates linearly: `min_n + round((max_n − min_n) × wave / max_retries)`.
+
+### Cost Guard
+
+Per-task token-budget enforcement. Tracks cumulative generation tokens across all MAPE-K waves and blocks further retries once the budget is consumed. Provides a remaining-token hint injection to keep explorers aware of the shrinking window.
+
+```toml
+[cost_guard]
+enabled                         = false
+budget_tokens_per_task          = 100000
+budget_warning_fraction         = 0.80
+budget_abort_fraction           = 1.00
+budget_prompt_injection_enabled = false
+budget_injection_warn_fraction  = 0.50
+budget_injection_max_complexity = 3
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `cost_guard.enabled` | `false` | Master toggle. When `false`, no token tracking or injection occurs. |
+| `cost_guard.budget_tokens_per_task` | `100000` | Total token budget for one task across all waves. |
+| `cost_guard.budget_warning_fraction` | `0.80` | Fraction of budget at which `CostThresholdWarningEvent` is emitted. |
+| `cost_guard.budget_abort_fraction` | `1.00` | Fraction of budget at which further retries are blocked. Setting below `1.0` creates a safety margin before hard exhaustion. |
+| `cost_guard.budget_prompt_injection_enabled` | `false` | When `true`, a remaining-token hint is injected into `active_ctx` in the [50 %, 85 %) consumption window. |
+| `cost_guard.budget_injection_warn_fraction` | `0.50` | Lower bound of the injection window (50 % budget consumed). |
+| `cost_guard.budget_injection_max_complexity` | `3` | Hint injection is skipped for tasks with probe complexity above this threshold (high-complexity tasks generate long outputs regardless). |
+
+Events: `CostThresholdWarningEvent` (at `budget_warning_fraction`), `CostBudgetExhaustedEvent` (at `budget_abort_fraction`, blocks retry). Both carry `tokens_used` and `budget_tokens_per_task`.
+
+### Convergence Gate
+
+Semantic early-exit gate. Fires acceptance when the surviving verified proposals from a wave are semantically close enough that another retry is unlikely to improve the result. Guarded by a `budget_floor_fraction` to prevent firing on mode-collapse (where proposals agree because they are all wrong).
+
+```toml
+[convergence_gate]
+enabled                       = false
+theta_converge                = 0.87
+supermajority_fraction_n3     = 0.67
+supermajority_fraction_n4plus = 0.80
+score_floor                   = 0.80
+min_wave                      = 1
+budget_floor_fraction         = 0.30
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `convergence_gate.enabled` | `false` | Master toggle. Requires an embedding model configured for `mean_pairwise_cosine()` to be meaningful. |
+| `convergence_gate.theta_converge` | `0.87` | Mean pairwise cosine threshold above which surviving proposals are considered semantically converged. |
+| `convergence_gate.supermajority_fraction_n3` | `0.67` | When N_surviving = 3, require this fraction (≥2 of 3) to exceed `score_floor`. |
+| `convergence_gate.supermajority_fraction_n4plus` | `0.80` | When N_surviving ≥ 4, require this fraction to exceed `score_floor`. |
+| `convergence_gate.score_floor` | `0.80` | Minimum score proposals must reach before their cosine distances contribute to the convergence check. |
+| `convergence_gate.min_wave` | `1` | Do not fire on wave 0 regardless of cosine — allows at least one retry before early acceptance. |
+| `convergence_gate.budget_floor_fraction` | `0.30` | Convergence gate is suppressed when cumulative budget consumed is below this fraction (prevents mode-collapse false positives early in the task when N_eff is low). |
+
+`ConvergenceGateTriggeredEvent` is emitted when the gate fires, carrying `mean_cosine`, `n_surviving`, and `wave_index`. The `mean_pairwise_cosine()` function (`h2ai-autonomic::epistemic`) computes the upper-triangle mean cosine from surviving proposal embeddings.
+
 ### Bandit
 
 | Field | Default | Purpose |
