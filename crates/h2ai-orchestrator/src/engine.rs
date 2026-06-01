@@ -552,6 +552,16 @@ impl ExecutionEngine {
                     controller.set_probe_result(probe.clone());
                 }
 
+                if input.cfg.complexity_routing.enabled && !controller.corpus_synthesis_viable {
+                    tracing::warn!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        "complexity routing enabled but corpus has no binary_checks \
+                         — ComplexityOverflow{{graft_first:true}} is suppressed; \
+                         normal retry loop will run to exhaustion"
+                    );
+                }
+
                 // Per-task OSP retry accumulator. Local variable — never stored in NATS KV or shared
                 // state. Reset on Resolved (spec §A.3: state-leakage prevention).
                 let mut osp_accumulator = RetryAccumulator::new();
@@ -1788,6 +1798,16 @@ impl ExecutionEngine {
                             best_partial_text,
                         });
                     }
+                } else if complexity_overflow_graft_signal {
+                    // Layer 2 in mape_k.rs should prevent this path from ever being reached
+                    // (corpus_synthesis_viable=false blocks graft_first=true routing).
+                    // If we land here, a future refactor has bypassed the guard — surface immediately.
+                    tracing::error!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        "BUG: complexity_overflow_graft_signal is set but corpus has no \
+                         binary_checks — Layer 2 guard in mape_k::handle_exit_reason was bypassed"
+                    );
                 }
             }
 

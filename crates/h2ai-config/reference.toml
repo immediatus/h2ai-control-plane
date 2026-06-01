@@ -807,6 +807,7 @@ complexity_probe_adapter         = "researcher"  # adapter used for cheap probe 
 complexity_probe_timeout_secs    = 30      # seconds before probe times out
 decompose_threshold              = 4       # score >= 4 → graft on first failure
 hitl_threshold                   = 5       # score >= 5 → HITL immediately
+min_retries_before_graft         = 2       # graft fires only after this many normal retry waves (0 = immediate)
 verifier_decomposition_enabled   = false   # enable BEYOND_BUDGET sub-claim verdicts
 
 [complexity_routing.intra_retry]

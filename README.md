@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-orange)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust-orange)](https://www.rust-lang.org/)
 
-> **A Rust LLM multi-agent orchestration runtime that replaces "spawn-N-agents-and-hope" frameworks with measured, math-grounded quality guarantees.**
+> **Distributed systems consensus applied to stochastic text generators — a Rust multi-agent orchestration runtime that replaces "spawn-N-agents-and-hope" with measured, physics-grounded quality guarantees.**
 
 Most multi-agent frameworks treat quality as an output property — something you observe after the fact, hope is good enough, and retry if it isn't. H2AI treats quality as a control variable: measured before generation starts, bounded by physics, and enforced by typed constraints at every stage.
 
@@ -67,6 +67,7 @@ Each row is a failure mode H2AI addresses structurally rather than probabilistic
 | **Fabricated APIs pass constraint checks** | SRANI: Correlated Fabrication Index gates proposals; grounding escalation (spec anchor → researcher → web search) |
 | **Retry loop fires even when first wave easily passes** | Tiered Early Exit: N escalates linearly wave-to-wave; exits immediately when quorum of proposals reach acceptance score — no full retry budget spent on simple tasks |
 | **Generation budget depletes silently; converged proposals keep triggering new waves** | Cost Guard + Convergence Gate: token budget enforced per task with hint injection; semantic convergence (θ > 0.87 mean pairwise cosine) triggers early acceptance before budget exhaustion |
+| **Calibration goes stale as model behavior changes** | Calibration Drift Detection: DDM fast-layer + BOCPD changepoint detectors emit `CalibrationDriftWarning`; adaptive recalibration gate prevents stale N_max from sizing the ensemble incorrectly |
 | **Tacit knowledge is invisible** | Dark Knowledge Compiler: typed `ConstraintDoc` predicates become hard Auditor gates |
 
 → **Full problem-solution map** (24 mechanisms, each with implementation detail): [`docs/architecture/architecture.md § Problem-Solution Map`](docs/architecture/architecture.md#problem-solution-map)

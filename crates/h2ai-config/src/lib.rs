@@ -922,6 +922,15 @@ pub struct ComplexityRoutingConfig {
     /// Defaults to disabled so existing configs without this section parse cleanly.
     #[serde(default)]
     pub agent_dropout: AgentDropoutConfig,
+    /// Minimum number of ZeroSurvival failures that must occur before
+    /// `ComplexityOverflow{graft_first:true}` routing fires. Default: `2`.
+    /// Set to `0` to restore pre-guard behavior (graft on first failure).
+    #[serde(default = "default_min_retries_before_graft")]
+    pub min_retries_before_graft: u32,
+}
+
+const fn default_min_retries_before_graft() -> u32 {
+    2
 }
 
 impl Default for ComplexityRoutingConfig {
@@ -935,6 +944,7 @@ impl Default for ComplexityRoutingConfig {
             verifier_decomposition_enabled: false,
             intra_retry: IntraRetryDetectorConfig::default(),
             agent_dropout: AgentDropoutConfig::default(),
+            min_retries_before_graft: 2,
         }
     }
 }
@@ -2228,6 +2238,59 @@ mod complexity_routing_tests {
         assert!(cfg.intra_retry.enabled);
         assert_eq!(cfg.intra_retry.entropy_threshold, 0.5);
         assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 3);
+    }
+
+    #[test]
+    fn min_retries_before_graft_defaults_to_two() {
+        let cfg = ComplexityRoutingConfig::default();
+        assert_eq!(cfg.min_retries_before_graft, 2);
+    }
+
+    #[test]
+    fn min_retries_before_graft_parses_from_toml() {
+        let toml_str = r#"
+            enabled = true
+            complexity_probe_adapter = "researcher"
+            complexity_probe_timeout_secs = 30
+            decompose_threshold = 4
+            hitl_threshold = 5
+            verifier_decomposition_enabled = false
+            min_retries_before_graft = 0
+
+            [intra_retry]
+            enabled = false
+            entropy_threshold = 0.6
+            retry_slope_threshold = 0.05
+            n_eff_cg_product_threshold = 0.3
+            min_retry_count_for_detection = 2
+        "#;
+        let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
+        assert_eq!(cfg.min_retries_before_graft, 0, "explicit 0 disables floor");
+    }
+
+    #[test]
+    fn min_retries_before_graft_defaults_when_omitted_from_toml() {
+        // Existing TOML without min_retries_before_graft must still parse (backward compat).
+        let toml_str = r#"
+            enabled = true
+            complexity_probe_adapter = "explorer"
+            complexity_probe_timeout_secs = 60
+            decompose_threshold = 3
+            hitl_threshold = 4
+            verifier_decomposition_enabled = true
+
+            [intra_retry]
+            enabled = true
+            entropy_threshold = 0.5
+            retry_slope_threshold = 0.02
+            n_eff_cg_product_threshold = 0.25
+            min_retry_count_for_detection = 3
+        "#;
+        let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
+        assert_eq!(
+            cfg.min_retries_before_graft, 2,
+            "falls back to default when omitted"
+        );
     }
 }
 

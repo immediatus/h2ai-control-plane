@@ -84,7 +84,7 @@ researcher_timeout_secs  = 300
 enabled                        = true
 complexity_probe_adapter       = "researcher"
 complexity_probe_timeout_secs  = 30
-decompose_threshold            = 4   # score ≥ 4 → graft on first failure
+decompose_threshold            = 4   # score >= 4 → graft after min_retries_before_graft failures (guarded by corpus viability)
 hitl_threshold                 = 5   # score = 5 → HITL immediately
 verifier_decomposition_enabled = false
 

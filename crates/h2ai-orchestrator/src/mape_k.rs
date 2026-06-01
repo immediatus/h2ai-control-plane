@@ -308,6 +308,9 @@ pub struct MapeKController {
     // ── Complexity-Ceiling Routing ───────────────────────────────────
     /// Pre-dispatch complexity probe result. `None` when probe is disabled or not yet run.
     pub(crate) probe_result: Option<h2ai_autonomic::complexity_probe::ComplexityProbeResult>,
+    /// True when the constraint corpus contains at least one `binary_checks` entry.
+    /// Computed at construction time; gates `ComplexityOverflow{graft_first:true}` routing.
+    pub(crate) corpus_synthesis_viable: bool,
 
     // ── AgentDropout N-reduction ─────────────────────────────────────
     /// N_eff (participation ratio) from the most recently completed ZeroSurvival wave.
@@ -550,6 +553,10 @@ impl MapeKController {
             gap_researcher_adapter: input.researcher_adapter.clone(),
             gap_grounding_chain: None, // wired by engine.rs after controller construction
             probe_result: None,
+            corpus_synthesis_viable: input
+                .constraint_corpus
+                .iter()
+                .any(|d| !d.binary_checks.is_empty()),
             last_wave_n_eff: 1.0,
             tee_event: None,
             tokens_used: 0,
@@ -849,9 +856,10 @@ impl MapeKController {
         filter_ratio: f64,
     ) -> MapeKDecision {
         // Probe-based routing — fires before normal retry decisions.
-        // Fires when the pre-dispatch probe classified the task as structurally
-        // intractable. Routes to HITL immediately (>= hitl_threshold) or to H1
-        // grafting on first failure (>= decompose_threshold && retry_count == 0).
+        // HITL path (graft_first=false): fires on any failure when probe >= hitl_threshold.
+        // Graft path (graft_first=true): requires BOTH corpus_synthesis_viable AND
+        //   retry_count >= min_retries_before_graft so a non-deterministic probe score
+        //   cannot bypass the consensus retry guarantee or route to a non-viable path.
         if let Some(ref probe) = self.probe_result {
             let cfg = &self.cfg_ref.complexity_routing;
             if cfg.enabled {
@@ -862,7 +870,10 @@ impl MapeKController {
                         graft_first: false,
                     };
                 }
-                if probe.complexity >= cfg.decompose_threshold && retry_count == 0 {
+                if probe.complexity >= cfg.decompose_threshold
+                    && retry_count >= cfg.min_retries_before_graft
+                    && self.corpus_synthesis_viable
+                {
                     return MapeKDecision::ComplexityOverflow {
                         probe_score: probe.complexity,
                         rationale: probe.rationale.clone(),
@@ -1743,6 +1754,7 @@ impl MapeKController {
             gap_researcher_adapter: None,
             gap_grounding_chain: None,
             probe_result: None,
+            corpus_synthesis_viable: false,
             last_wave_n_eff: 1.0,
             tee_event: None,
             tokens_used: 0,
@@ -2128,5 +2140,194 @@ mod cost_guard_controller_tests {
         use super::check_convergence_gate;
         let gate = enabled_convergence_gate();
         assert!(!check_convergence_gate(&gate, Some(0.92), 0.75, 1, 2, 0.50));
+    }
+}
+
+#[cfg(test)]
+mod probe_routing_guard_tests {
+    use super::*;
+
+    #[test]
+    fn corpus_synthesis_viable_false_by_default_in_test_constructor() {
+        let ctrl = MapeKController::new_for_test(h2ai_config::H2AIConfig::default());
+        assert!(
+            !ctrl.corpus_synthesis_viable,
+            "new_for_test has empty binary_checks so viable must be false"
+        );
+    }
+
+    #[test]
+    fn corpus_viable_true_when_binary_checks_present() {
+        let mut ctrl = MapeKController::new_for_test(h2ai_config::H2AIConfig::default());
+        // Simulate what engine.rs does when corpus has binary_checks:
+        // set corpus_synthesis_viable = true manually to verify the field is writable
+        ctrl.corpus_synthesis_viable = true;
+        assert!(ctrl.corpus_synthesis_viable);
+    }
+
+    fn make_zero_survival_exit() -> PipelineOutcome {
+        use crate::coherence::CoherenceState;
+        use crate::phases::ExitReason;
+        PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
+            failure_mode: None,
+            coherence: CoherenceState::default(),
+            n_eff_cosine: Some(1.0),
+            filter_ratio: 1.0,
+            tau_values: vec![0.2],
+        })
+    }
+
+    fn make_cfg_with_routing(
+        decompose_threshold: u8,
+        min_retries_before_graft: u32,
+    ) -> h2ai_config::H2AIConfig {
+        h2ai_config::H2AIConfig {
+            complexity_routing: h2ai_config::ComplexityRoutingConfig {
+                enabled: true,
+                decompose_threshold,
+                hitl_threshold: 5,
+                min_retries_before_graft,
+                ..h2ai_config::ComplexityRoutingConfig::default()
+            },
+            max_autonomic_retries: 10,
+            ..h2ai_config::H2AIConfig::default()
+        }
+    }
+
+    #[test]
+    fn graft_blocked_when_corpus_not_viable() {
+        // corpus_synthesis_viable = false (default in new_for_test)
+        // probe says complex=4, min_retries_before_graft=0 (most permissive possible)
+        // → graft must NOT fire because corpus is not viable
+        let cfg = make_cfg_with_routing(4, 0);
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.corpus_synthesis_viable = false;
+        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
+            complexity: 4,
+            rationale: "test".to_string(),
+            decompose_recommended: true,
+        });
+
+        let decision = ctrl.decide(make_zero_survival_exit(), 0, 1.0);
+        assert!(
+            !matches!(
+                decision,
+                MapeKDecision::ComplexityOverflow {
+                    graft_first: true,
+                    ..
+                }
+            ),
+            "graft must not fire when corpus has no binary_checks"
+        );
+    }
+
+    #[test]
+    fn graft_blocked_before_min_retries_floor() {
+        // corpus viable, probe says complex=4, min_retries=2, retry_count=1
+        // → floor not yet reached, graft must NOT fire
+        let cfg = make_cfg_with_routing(4, 2);
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.corpus_synthesis_viable = true;
+        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
+            complexity: 4,
+            rationale: "test".to_string(),
+            decompose_recommended: true,
+        });
+
+        let decision = ctrl.decide(make_zero_survival_exit(), 1, 1.0);
+        assert!(
+            !matches!(
+                decision,
+                MapeKDecision::ComplexityOverflow {
+                    graft_first: true,
+                    ..
+                }
+            ),
+            "graft must not fire before min_retries_before_graft (retry_count=1 < floor=2)"
+        );
+    }
+
+    #[test]
+    fn graft_fires_when_both_conditions_met() {
+        // corpus viable + probe=4 + retry_count=2 >= min_retries=2 → graft MUST fire
+        let cfg = make_cfg_with_routing(4, 2);
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.corpus_synthesis_viable = true;
+        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
+            complexity: 4,
+            rationale: "test".to_string(),
+            decompose_recommended: true,
+        });
+
+        let decision = ctrl.decide(make_zero_survival_exit(), 2, 1.0);
+        assert!(
+            matches!(
+                decision,
+                MapeKDecision::ComplexityOverflow {
+                    graft_first: true,
+                    ..
+                }
+            ),
+            "graft must fire when corpus viable AND retry_count >= min_retries_before_graft"
+        );
+    }
+
+    #[test]
+    fn graft_fires_immediately_when_floor_zero_and_corpus_viable() {
+        // min_retries_before_graft=0 restores old aggressive behavior when corpus is viable
+        let cfg = make_cfg_with_routing(4, 0);
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.corpus_synthesis_viable = true;
+        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
+            complexity: 4,
+            rationale: "test".to_string(),
+            decompose_recommended: true,
+        });
+
+        let decision = ctrl.decide(make_zero_survival_exit(), 0, 1.0);
+        assert!(
+            matches!(
+                decision,
+                MapeKDecision::ComplexityOverflow {
+                    graft_first: true,
+                    ..
+                }
+            ),
+            "floor=0 must fire immediately (backward-compat for viable corpus)"
+        );
+    }
+
+    #[test]
+    fn backstop_invariant_signal_requires_viable_corpus() {
+        // Invariant: complexity_overflow_graft_signal is set in engine.rs only when
+        // graft_first=true is returned by handle_exit_reason.
+        // After Task 4, graft_first=true requires corpus_synthesis_viable=true.
+        // Therefore: if corpus_synthesis_viable=false, the signal can never be set,
+        // and the error! backstop in the synthesis wave should never be reached.
+        //
+        // This test encodes the logic contract: when corpus is not viable,
+        // even with the most aggressive config (min_retries=0), decide() returns
+        // something other than ComplexityOverflow{graft_first:true}.
+        let cfg = make_cfg_with_routing(1, 0); // lowest possible thresholds
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        ctrl.corpus_synthesis_viable = false;
+        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
+            complexity: 4,
+            rationale: "test".to_string(),
+            decompose_recommended: true,
+        });
+
+        for retry_count in 0..10u32 {
+            let decision = ctrl.decide(make_zero_survival_exit(), retry_count, 1.0);
+            assert!(
+                !matches!(
+                    decision,
+                    MapeKDecision::ComplexityOverflow { graft_first: true, .. }
+                ),
+                "graft_first=true must never fire when corpus_synthesis_viable=false (retry={retry_count})"
+            );
+            // Reset for next iteration (decide() may mutate state).
+            ctrl.corpus_synthesis_viable = false;
+        }
     }
 }

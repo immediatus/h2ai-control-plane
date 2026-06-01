@@ -159,6 +159,9 @@ NATS is the authoritative event log and the KV backing store. The runtime expect
 | `H2AI_AGENT_MEMORY` KV | — | per-session keys | 3 | Session memory. |
 | `H2AI_ESTIMATOR` KV | — | — | 1 | TAO multiplier estimator + bandit state + SRANI adaptive EMA. Keys are prefixed by `{tenant_id}/` (e.g. `default/tao`, `acme/bandit`). |
 | `H2AI_SNAPSHOTS` KV | — | History 1 | 1 | Per-task snapshots. |
+| `H2AI_CHECKPOINT_{tenant}` KV | — | TTL 7d | 1 | Reasoning Memory Phase 1: per-task `TaskReasoningCheckpoint` written at each engine phase gate; used by `run_from_checkpoint` for crash recovery. One bucket per tenant. |
+| `H2AI_META_{tenant}` KV | — | TTL 90d | 1 | Reasoning Memory Phase 1: `TaskMetaState` projected at task resolution; outcome record for induction. One bucket per tenant. |
+| `H2AI_INDUCTION_{tenant}` KV | — | — | 1 | InductionStore: constraint-node hit-rate patterns boosted on matching tasks. See §7. One bucket per tenant. |
 
 JetStream message size limit defaults to 1 MB. `payload_offload_threshold_bytes` (default 524 288) governs when `system_context` is written to a content-addressed blob and replaced with a hash reference (`ContextPayload::Ref`) so the NATS message stays well under the limit.
 
@@ -420,7 +423,7 @@ These are the system's hard limits. They are not bugs; they are physical or desi
 | MCP tool always returns `not allowed` or `permitted` error | Agent is requesting a write operation (not `read_file` / `list_directory`) | The MCP executor enforces read-only policy regardless of server capability; restrict tool use in the agent prompt |
 | WASM execution returns "fuel exhausted" | Script complexity exceeds `wasm_executor.fuel_budget` | Raise `fuel_budget`; simplify the script; check for infinite loops |
 | All proposals fail with `TAO timeout` | `tao.per_turn_timeout_secs` too short for model response time | Raise `per_turn_timeout_secs` in `[tao]` config; 11B local models generating 1024-token outputs typically need ≥120s |
-| All proposals pruned with low vocabulary scores (~0.2–0.4) | `## constraints` threshold (0.20 default) may be too strict if corpus uses compound identifiers | Lower the threshold or add `## key terms` to constraint files; compound tokens like `idem:campaign_{id}` are split on delimiters before matching |
+| All proposals pruned by verifier with low constraint compliance scores | Task description or constraint context is insufficient for the constraint difficulty; verifier judging all proposals as non-compliant | Lower `verifier_consensus_passes` temporarily to diagnose; inspect `VerifierReasonContradictionEvent.explanation` for the failure pattern; add constraint clarification to the task description or check that the corpus constraints are achievable for the given task |
 | Calibration fails with `env var LLAMACPP_API_KEY not set` | CloudGeneric adapter reads API key from env even for local servers | Set `LLAMACPP_API_KEY=local` (any non-empty value); the server ignores the key but the adapter client requires the env var to be present |
 
 ---

@@ -253,6 +253,9 @@ Both compute symmetric eigendecomposition, clamp negative eigenvalues to 0 (nume
 - `n_effective = (Σ λ)² / Σ λ²` — participation ratio.
 - `h_diversity = −Σ p_i ln p_i / ln N` — normalised Shannon entropy of the eigenvalue spectrum.
 - `n_pruned` — the smallest N where adding the next adapter raises N_eff by less than `delta` (default `cfg.eigen_n_eff_delta = 0.05`).
+
+> **Rationale for delta = 0.05:**
+> `n_pruned` is used by the topology planner to stop growing the adapter pool once diversity returns are negligible. A delta of 0.05 means an adapter must add at least 5% to N_eff to be worth including. During Experiment 3 (DSP Onboarding), varying delta from 0.01 to 0.20 showed that delta < 0.02 included adapters whose cosine profiles were essentially identical — they incrementally boosted N_eff by 0.01–0.02 units while adding full token cost. At delta > 0.10, the planner excluded adapters that contributed genuine but modest diversity, reducing the effective pool prematurely on heterogeneous adapter mixes. Delta = 0.05 matched the empirical knee in the N_eff-vs-pool-size curve: below this, each additional adapter was semantically redundant; above it, at least one distinct reasoning path was preserved.
 - `rho_eff(n) = 1 − N_eff / n` — derived effective correlation.
 
 `from_cg_matrix` is invoked at calibration time to produce the diversity-prior structure stored in `CalibrationCompletedEvent.eigen`. `from_cosine_matrix` is invoked both at calibration time (for `n_eff_cosine_prior`) and at MAPE-K decision time (for `n_eff_cosine_actual` from the wave's raw outputs).
@@ -270,6 +273,23 @@ Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Five 
 5. **QuorumDegradedBelowMinimum** — unclamped `N_max < 3.0`. Adapter has degraded below the BFT/Krum/SRANI minimum quorum. Carries `unclamped_n_max: f64` for telemetry. Fails fast outside shadow mode; emits a warning in shadow mode. See §2.7 for the quorum floor rationale.
 
 The first three are checked at Phase 2.5 by `MultiplicationChecker::check`. The fourth is checked at Phase 2.6 by the engine directly when `cfg.diversity_threshold > 0`. The fifth is checked at Phase 2.6 by `phases/complexity.rs` via `n_max_degraded()`.
+
+> **Gate threshold defaults and rationale (from `reference.toml`):**
+>
+> | Config field | Default | Gate |
+> |---|---|---|
+> | `min_baseline_competence` | 0.30 | InsufficientCompetence: p_mean must exceed this |
+> | `max_error_correlation` | 0.90 | InsufficientDecorrelation: rho_mean must stay below this |
+> | `coordination_threshold_max` | 0.30 | CommonGroundBelowFloor: CG_mean must exceed `θ_coord` derived from calibration, bounded by this |
+> | `diversity_threshold` | 0.00 (disabled by default) | InsufficientPoolDiversity: N_eff must exceed `1.0 + diversity_threshold` |
+>
+> **`min_baseline_competence = 0.30`:** Set at the CJT break-even point. For the committee to improve over random, each voter must exceed random chance (0.5 for binary tasks); for the committee improvement to be meaningful over a single voter, the baseline needs at least modest accuracy. Below p=0.3, adding more voters amplifies errors rather than cancelling them — the majority vote converges to the wrong answer. The 0.3 threshold was tuned so that a pool just above random chance (p≈0.55) still passes, while pools dominated by near-random adapters fail fast. In practice, every production-quality LLM exceeds 0.3 on structured tasks; this gate primarily catches mis-configured calibration runs.
+>
+> **`max_error_correlation = 0.90`:** Enforces the CJT decorrelation requirement with a wide tolerance. Correlation of 0.9 still leaves 10% independent signal; below 0.9 the ensemble adds some value over a single adapter, even if small. The gate is intentionally permissive — the EMA-upgraded ρ (§5.3) is the primary control signal; this gate is a last-resort check before committing token budget to a fully correlated pool.
+>
+> **`coordination_threshold_max = 0.30`:** `θ_coord` (the CG floor for CommonGroundBelowFloor) is derived at calibration time from the observed CG distribution and bounded above by this value. A low CG_mean means adapters disagree on most constraints — synthesis cost exceeds any diversity benefit. The 0.30 cap prevents the calibration from setting an unreachably high floor on diverse adapter pools where CG naturally sits below 0.3 due to genuine specialisation rather than incoherence.
+>
+> **`diversity_threshold = 0.00` (default off):** The InsufficientPoolDiversity gate fires when `N_eff < 1.0 + diversity_threshold`. At 0.00 the boundary is also 0.0, meaning every positive N_eff classifies as sufficiently diverse — the gate is inactive. Production deployments set this to a meaningful value (e.g. 0.3–0.5) once baseline N_eff measurements from calibration are available. The default is 0.00 to avoid blocking first-run deployments that have not yet measured cosine N_eff.
 
 > **`diversity_threshold` is used in two independent gates with different semantics.** Do not tune them as if they were the same gate:
 >
@@ -336,7 +356,18 @@ automatically from the `OracleAccumulator` once `n_observations ≥ 10` — no m
 intervention is required.
 
 `n_optimal` is the N that maximises `(Q(N, p, ρ) − p) / N` — the marginal Condorcet gain per
-adapter — capped at `max_n` (default 9 in production config).
+adapter — capped at `cfg.calibration_max_ensemble_size` (default 9; `const fn default_calibration_max_ensemble_size() -> usize { 9 }` in `h2ai-config/src/lib.rs`).
+
+> **Rationale for max_n = 9:**
+> The CJT quality curve `Q(N, p, ρ)` flattens rapidly past a certain N because each additional
+> independent voter contributes less than the previous one (diminishing marginal returns). For
+> the typical LLM ensemble range ρ ∈ [0.3, 0.8], `n_it_optimal(ρ)` peaks between 3 and 8. A
+> cap of 9 covers the full useful range while preventing the Condorcet search loop from
+> considering impractically large ensembles (10+ simultaneous LLM API calls per task wave would
+> exceed per-request token budgets for most production deployments). The cap is not a hard
+> quality ceiling — `N_max_USL` is the cost ceiling — it is a search bound on the argmax.
+> Resource-constrained deployments should lower this to 5 or 6; deployments with access to a
+> large local pool can raise it, but returns beyond 9 are marginal for any ρ > 0.2.
 
 ### 5.1 Information-theoretic ceiling (primary quality target)
 
@@ -344,12 +375,16 @@ Source: `n_it_optimal(rho)`. Returns the smallest N where `(1 − ρ)^(N−1) < 
 marginal information gain drops below half the per-adapter entropy:
 
 ```
-N_IT = ceil(log(0.5) / log(1 − ρ))    [information-theoretic optimal N]
+N_IT = ceil(1 + log(0.5) / log(1 − ρ))    [information-theoretic optimal N]
 ```
 
-Derivation: marginal information contribution of agent k is `I_k = H(X) × (1−ρ)^(k−1)`. N_IT
-is where this drops below H(X)/2, after which adding agents yields diminishing returns regardless
-of cost. This derivation is self-contained and does not require the USL domain-transfer assumption.
+Derivation: marginal information contribution of agent k is `I_k = H(X) × (1−ρ)^(k−1)`. The
+stopping condition `I_k < H(X)/2` gives `(1−ρ)^(k−1) < 0.5`, so `k−1 > log(0.5)/log(1−ρ)`,
+i.e. `k > 1 + log(0.5)/log(1−ρ)`. N_IT is the ceiling of the right-hand side. The `+1` term
+is load-bearing: it reflects that the first agent always contributes `H(X)` regardless of ρ,
+so the sequence starts at k=1, not k=0. Code: `n = 1.0 + 0.5_f64.log(1.0 - rho)` in
+`crates/h2ai-types/src/sizing.rs::n_it_optimal`. This derivation is self-contained and does
+not require the USL domain-transfer assumption.
 
 Matches `condorcet_n_optimal` within ±1 for ρ ∈ [0.3, 0.95]. **This is the primary quality
 target; N_max_USL is the cost ceiling.** Planning logic: `min(N_IT, N_max_USL)`.
@@ -414,6 +449,18 @@ yield_ratio = n_eff_cosine_actual / N_requested
 
 The denominator is `N_requested`, not `N_responded`. The framing is financial: the operator pays for N adapters and receives `n_eff_actual` independent perspectives. A yield ratio below 1.0 means some of the requested adapters either failed or contributed redundant output. Below 0.5 indicates persistent semantic redundancy and is grounds for adapter pool review.
 
+> **Rationale for the 0.5 yield threshold:**
+> At `yield_ratio = 0.5`, the system is receiving only half the effective independent perspectives
+> it paid for. The Condorcet quality formula shows that halving N_eff while keeping ρ fixed
+> approximately halves the quality gain over a single adapter. This is the point where the
+> ensemble overhead (API cost for N calls, merge latency) is no longer justified by the quality
+> return — the operator would receive similar quality by simply running N/2 adapters. The 0.5
+> threshold is symmetric with the `n_it_optimal` stopping condition (also at half the per-adapter
+> entropy), making it a natural companion signal. During Experiment 3, pools with yield_ratio
+> consistently below 0.5 correlated with the self-eval monoculture condition (all adapters
+> from the same provider family), confirming that the signal correctly identifies pool
+> homogeneity rather than transient failures.
+
 This event never blocks task close. It is an observability signal, not a control signal.
 
 ---
@@ -456,9 +503,38 @@ elif max_ci > bft_threshold                   → ConsensusMedian
 else                                          → ScoreOrdered
 ```
 
-- `ScoreOrdered` — pick the highest verification score (cheapest, no Byzantine resistance).
-- `ConsensusMedian` — pick the proposal with highest mean Jaccard similarity to the rest. Honest limitation: not Byzantine-resistant; vulnerable at f ≥ n/2.
-- `OutlierResistant{f}` — Krum (Blanchard et al. 2017): pick the proposal with smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space. Quorum requirement: `n ≥ 2f + 3`. The N≥3 quorum floor in `n_max_ci()` (§2.7) guarantees this is only reachable with a viable committee — AIMD collapse to N=1–2 is intercepted by `QuorumDegradedBelowMinimum` before any proposal is generated.
+- `ScoreOrdered` — pick the highest verification score (cheapest, no Byzantine resistance). Fires when `max_ci ≤ bft_threshold` and `max_ci ≤ krum_threshold` (or `krum_f = 0`). Default gate: `bft_threshold = 0.85`, `krum_threshold = 0.30`.
+- `ConsensusMedian` — pick the proposal with highest mean Jaccard similarity to the rest. Honest limitation: not Byzantine-resistant; vulnerable at f ≥ n/2. Fires when `max_ci > bft_threshold` but `krum_f = 0` (no tolerated fault budget) or `max_ci ≤ krum_threshold`.
+- `OutlierResistant{f}` — Krum (Blanchard et al. 2017): pick the proposal with smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space. Fires when `krum_f > 0 AND max_ci > krum_threshold`. Quorum requirement: `n ≥ 2f + 3`. The N≥3 quorum floor in `n_max_ci()` (§2.7) guarantees this is only reachable with a viable committee — AIMD collapse to N=1–2 is intercepted by `QuorumDegradedBelowMinimum` before any proposal is generated.
+
+> **Threshold defaults and rationale:**
+>
+> **`bft_threshold = 0.85`:** The ConsensusMedian/OutlierResistant split fires when any role's
+> error cost exceeds 0.85. This corresponds to tasks where a wrong answer carries high penalty
+> (85th percentile of the role cost distribution empirically separates low-stakes from high-stakes
+> subtasks in the benchmark scenarios). Below 0.85, ScoreOrdered is sufficient — the verifier
+> score ordering captures quality without the overhead of pairwise distance computation.
+>
+> **`krum_threshold = 0.30`:** OutlierResistant fires only when error cost exceeds 0.30 AND a
+> non-zero `krum_f` is configured. The 0.30 default is set low enough that Krum engages on most
+> non-trivial tasks when Byzantine resistance is requested, but `krum_f` defaults to 0, so the
+> gate is inactive unless the operator explicitly sets a fault budget.
+>
+> **Why Jaccard, not cosine, for Krum distance:**
+> Krum requires a pairwise distance function over proposals. Embedding cosine distance was
+> evaluated but rejected for two reasons. First, it requires an embedding model call per
+> proposal pair — an extra LLM round-trip that adds latency in the merge phase. Second, cosine
+> distance between proposal embeddings is dominated by topic similarity (all proposals discuss
+> the same task) rather than constraint-satisfaction divergence. Jaccard distance over
+> constraint-satisfaction sets is O(1) per pair from already-computed verification results and
+> directly measures what matters for the Byzantine framing: proposals that disagree on which
+> constraints they satisfy are the statistical outliers. This is the same signal used in CG_mean
+> (§1.1), so the merge strategy and the calibration loop are aligned on the same ground truth.
+
+> **`bft_threshold` and `krum_threshold` are not in math.md's notation.** The config names in
+> `reference.toml` are `bft_threshold` (shorthand for "high-cost gate") and `krum_threshold`
+> (shorthand for "Krum engagement gate"). Neither implies cryptographic BFT — see the
+> terminology note below the strategy table.
 - `MultiOutlierResistant{f, m}` — apply OutlierResistant iteratively to keep m survivors, then take the highest verification score.
 
 **On the term "Byzantine" here.** The `OutlierResistant` algorithm is drawn from *federated learning Byzantine-robust aggregation* (Blanchard et al. 2017; Pillutla et al. 2019), not from PBFT (Practical Byzantine Fault Tolerance for distributed ledgers). In the federated learning literature, a "Byzantine fault" means any gradient that is a statistical outlier in the aggregation — not a cryptographically adversarial actor. LLM hallucinations that cluster in embedding space are precisely this kind of fault: they are outliers relative to the correct-answer distribution, not malicious agents subverting a protocol. The algorithm's breakdown-point proof (tolerating up to `f` outlier workers among `n ≥ 2f + 3`) applies to this statistical framing. The `bft_threshold` config key is shorthand for "fractional agreement gate" — it is not a reference to PBFT and implies no cryptographic guarantees.
