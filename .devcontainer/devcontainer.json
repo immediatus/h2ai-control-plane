@@ -3,7 +3,7 @@
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "remoteUser": "${localEnv:USER}",
+  "remoteUser": "developer",
   "updateRemoteUserUID": true,
   "containerEnv": {
     "TZ": "America/Los_Angeles",

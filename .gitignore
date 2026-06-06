@@ -34,3 +34,10 @@ __pycache__/
 
 # Claude Code
 .claude/
+
+# podman-compose volume directories
+h2aicontrolplanedevcontainer_*/
+
+# Devcontainer lock files
+*devcontainer-lock.json
+

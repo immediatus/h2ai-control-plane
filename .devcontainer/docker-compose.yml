@@ -3,29 +3,34 @@ version: '3.8'
 services:
   app:
     userns_mode: keep-id
-    user: "${USER}"
+    security_opt:
+      - label=disable
+    user: "developer"
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        USERNAME: ${USER}
-        USER_UID: ${UID:-1000}
-        USER_GID: ${GID:-1000}
     volumes:
       - ../:/workspaces/h2ai-control-plane:z
-      - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/workspaces/h2ai-control-plane/target
-      - ${HOME}/.claude:/home/${USER}/.claude:z
-      - ${HOME}/.claude.json:/home/${USER}/.claude.json:z
-      - ${HOME}/.local/bin/claude:/home/${USER}/.local/bin/claude:z
+      - cargo-cache:/usr/local/cargo/registry:z
+      - target-cache:/workspaces/h2ai-control-plane/target:z
+      - ${HOME}/.claude:/home/developer/.claude:z
+      - ${HOME}/.claude.json:/home/developer/.claude.json:z
+      - ${HOME}/.gemini:/home/developer/.gemini:z
+      - ${HOME}/.local/bin/claude:/home/developer/.local/bin/claude:z
+      - ${HOME}/.local/share/dev-workspace/.local/bin/xclaude:/home/developer/.local/bin/xclaude:z
       - ${HOME}/.local/bin/claude:/usr/local/bin/claude:z
-      - ${HOME}/.local/share/claude:/home/${USER}/.local/share/claude:z
+      - ${HOME}/.local/share/claude:/home/developer/.local/share/claude:z
+      - ${HOME}/.local/bin/agy:/home/developer/.local/bin/agy:z
+      - ${HOME}/.local/share/dev-workspace/.local/bin/xagy:/home/developer/.local/bin/xagy:z
+      - ${HOME}/.local/bin/agy:/usr/local/bin/agy:z
+      - /run/user/1000/bus:/run/user/1000/bus:z
     command: sleep infinity
     env_file:
       - .env
     environment:
-      HOME: /home/${USER}
-      USER: ${USER}
+      HOME: /home/developer
+      USER: developer
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/1000/bus
     depends_on:
       nats:
         condition: service_healthy
@@ -35,7 +40,7 @@ services:
     command: ["-c", "/etc/nats/nats.conf"]
     volumes:
       - ../nats/dev.conf:/etc/nats/nats.conf:ro,Z
-      - nats-data:/data/jetstream      
+      - nats-data:/data/jetstream:z
     ports:
       - "4222:4222"   # client
       - "8222:8222"   # monitoring

@@ -25,20 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir --break-system-packages numpy matplotlib openai requests datasets
 
-# Rename vscode user/group to match host identity; adjust UID/GID if needed for keep-id
-ARG USERNAME=vscode
-ARG USER_UID=1000
-ARG USER_GID=1000
-RUN if [ "$USERNAME" != "vscode" ]; then \
-        groupmod -n "$USERNAME" vscode \
-        && usermod -l "$USERNAME" -d "/home/$USERNAME" -m vscode \
-        && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$USERNAME" \
-        && chmod 0440 /etc/sudoers.d/"$USERNAME"; \
-    fi \
-    && if [ "$USER_UID" != "$(id -u $USERNAME)" ]; then usermod -u "$USER_UID" "$USERNAME"; fi \
-    && if [ "$USER_GID" != "$(id -g $USERNAME)" ]; then groupmod -g "$USER_GID" "$USERNAME"; fi \
-    && chown -R "$USERNAME" /usr/local/cargo
-USER $USERNAME
-ENV USER=$USERNAME
-ENV HOME=/home/$USERNAME
-ENV PATH="/home/${USERNAME}/.local/bin:${PATH}"
+# Setup developer user by renaming default vscode user
+RUN groupmod -n developer vscode \
+    && usermod -l developer -d /home/developer -m vscode \
+    && echo "developer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/developer \
+    && chmod 0440 /etc/sudoers.d/developer \
+    && chown -R developer /usr/local/cargo
+
+USER developer
+ENV USER=developer
+ENV HOME=/home/developer
+ENV PATH="/home/developer/.local/bin:${PATH}"
+RUN mkdir -p /home/developer/.local/bin
