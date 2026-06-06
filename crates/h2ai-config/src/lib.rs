@@ -1178,6 +1178,8 @@ pub struct StateConfig {
     pub oracle_calibration_bucket: String,
     #[serde(default = "default_estimator_bucket")]
     pub estimator_bucket: String,
+    #[serde(default = "default_skills_bucket")]
+    pub skills_bucket: String,
     #[serde(default = "default_calibration_bucket")]
     pub calibration_bucket: String,
     /// KV bucket for per-adapter-profile `CalibrationRecord` telemetry. Default: "`H2AI_CALIBRATION_RECORDS`".
@@ -1245,6 +1247,9 @@ fn default_oracle_calibration_bucket() -> String {
 fn default_estimator_bucket() -> String {
     "H2AI_ESTIMATOR".to_string()
 }
+fn default_skills_bucket() -> String {
+    "H2AI_SKILLS".to_string()
+}
 fn default_calibration_bucket() -> String {
     "H2AI_CALIBRATION".to_string()
 }
@@ -1305,6 +1310,7 @@ impl Default for StateConfig {
             checkpoint_payloads_bucket: default_checkpoint_payloads_bucket(),
             oracle_calibration_bucket: default_oracle_calibration_bucket(),
             estimator_bucket: default_estimator_bucket(),
+            skills_bucket: default_skills_bucket(),
             calibration_bucket: default_calibration_bucket(),
             calibration_records_bucket: default_calibration_records_bucket(),
             auditor_health_bucket: default_auditor_health_bucket(),

@@ -38,6 +38,7 @@ mod debug_record;
 mod error;
 mod metrics;
 mod opro;
+mod task_pipeline;
 mod oracle;
 mod oracle_worker;
 mod recovery;
@@ -284,12 +285,15 @@ async fn main() {
         tracing::info!(target: "h2ai.startup", "gap research chain built (DuckDuckGo + distiller)");
     }
 
-    // Wire knowledge provider
+    // Wire knowledge provider — always a CompositeProvider that fans to [wiki, skill_provider]
+    // so that extracted skills reach the thinking loop on every query.
     app_state.knowledge_provider = {
         use h2ai_config::ConstraintWikiConfig;
         use h2ai_knowledge::factory::KnowledgeProviderFactory;
-        use h2ai_knowledge::provider::PassthroughProvider;
-        if let Some(k_cfg) = &app_state.cfg.knowledge {
+        use h2ai_knowledge::provider::{KnowledgeProvider, PassthroughProvider};
+        use h2ai_knowledge::skill_provider::CompositeProvider;
+        // Build the base wiki/passthrough provider first.
+        let base: Arc<dyn KnowledgeProvider> = if let Some(k_cfg) = &app_state.cfg.knowledge {
             tracing::info!(target: "h2ai.startup", "building knowledge provider (Bm25Wiki)");
             KnowledgeProviderFactory::build_provider(k_cfg).await
         } else {
@@ -327,7 +331,13 @@ async fn main() {
                     (*app_state.constraint_resolver).clone(),
                 ))
             }
-        }
+        };
+        // Compose base wiki provider with the live skill_provider so extracted skills reach
+        // the thinking loop on every knowledge query.
+        CompositeProvider::new(vec![
+            base,
+            Arc::clone(&app_state.skill_provider) as Arc<dyn KnowledgeProvider>,
+        ])
     };
 
     app_state
@@ -416,11 +426,9 @@ async fn main() {
         let ttl = Duration::from_secs(app_state.cfg.nats_agent_ttl_secs);
         match NatsAgentProvider::new(
             app_state
-                .nats
-                .as_ref()
-                .expect("NATS required in production")
-                .client
-                .clone(),
+                .nats_raw_client
+                .clone()
+                .expect("NATS required in production"),
             ttl,
         )
         .await
@@ -443,13 +451,9 @@ async fn main() {
     {
         let default_oracle_ts =
             app_state.tenant_state(&h2ai_types::identity::TenantId::default_tenant());
-        let nats_ref = app_state
-            .nats
-            .as_ref()
-            .expect("NATS required in production");
         let accumulator = crate::oracle::OracleAccumulator {
-            nats_raw: nats_ref.client.clone(),
-            nats_state: nats_ref.clone(),
+            nats_raw: app_state.nats_raw_client.clone().expect("NATS required in production"),
+            nats_state: app_state.nats_concrete.clone().expect("NATS required in production"),
             bandit: default_oracle_ts.bandit_state.clone(),
             metrics: app_state.metrics.clone(),
             oracle_window_size: app_state.cfg.oracle_window_size,
@@ -466,11 +470,9 @@ async fn main() {
     {
         let oracle_worker = crate::oracle_worker::OracleWorker::new(
             app_state
-                .nats
-                .as_ref()
-                .expect("NATS required in production")
-                .client
-                .clone(),
+                .nats_raw_client
+                .clone()
+                .expect("NATS required in production"),
         );
         tokio::spawn(oracle_worker.run());
     }
@@ -500,6 +502,7 @@ async fn main() {
         // v1 routes — permanent; never remove, only add new version nests alongside
         .nest("/v1", routes::task_router())
         .nest("/v1", routes::calibrate_router())
+        .nest("/v1", routes::admin_router())
         // health/ready/metrics are always at root — never versioned
         .merge(routes::health_router())
         .with_state(app_state);

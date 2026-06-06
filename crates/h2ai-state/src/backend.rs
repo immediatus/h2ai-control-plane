@@ -17,10 +17,14 @@ use futures::stream::BoxStream;
 use std::sync::Arc;
 
 use h2ai_types::calibration::CalibrationRecord;
+use h2ai_types::checkpoint::TaskCheckpoint;
+use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
 use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
+use h2ai_types::signal::ResumeSignal;
+use std::collections::HashSet;
 
 use crate::nats::NatsError;
 
@@ -172,6 +176,43 @@ pub trait EstimatorStore: Send + Sync {
     ) -> Result<(), NatsError>;
 }
 
+/// Persists and retrieves per-tenant skill nodes extracted from task resolution traces.
+/// Values are raw JSON bytes (`serde_json::to_vec(&Vec<KnowledgeNode>)`) so this trait
+/// does not depend on `h2ai-knowledge`. Callers in `h2ai-api` handle (de)serialization.
+#[async_trait]
+pub trait SkillStore: Send + Sync {
+    /// Overwrite the tenant's skill node list with `json_bytes`.
+    async fn put_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError>;
+
+    /// Load the tenant's skill node list as raw JSON bytes.
+    /// Returns an empty `Vec` (not an error) when no entry exists.
+    async fn get_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<u8>, NatsError>;
+}
+
+#[async_trait]
+impl<T: SkillStore + Send + Sync + ?Sized> SkillStore for Arc<T> {
+    async fn put_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError> {
+        (**self).put_skill_nodes(tenant_id, json_bytes).await
+    }
+    async fn get_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<u8>, NatsError> {
+        (**self).get_skill_nodes(tenant_id).await
+    }
+}
+
 /// Persists and retrieves reasoning checkpoints and task meta-state records.
 ///
 /// Implemented by `NatsClient` (NATS KV buckets) and `InMemoryStateBackend`
@@ -228,11 +269,266 @@ pub trait ReasoningStore: Send + Sync {
     ) -> Vec<TaskMetaState>;
 }
 
+/// Persists and retrieves the per-tenant conflict-rate accumulator used by
+/// the SRANI beta-quality adjustment in the engine.
+///
+/// The `bucket_prefix` argument is a caller-supplied configuration string
+/// (e.g. `"h2ai-conflict"`) that scopes the storage key.  On the in-memory
+/// backend the prefix is accepted but not used for routing — a single HashMap
+/// entry per tenant suffices for unit tests.
+#[async_trait]
+pub trait ConflictStore: Send + Sync {
+    /// Ensure the backing bucket exists.  On the in-memory backend this is a no-op.
+    async fn ensure_conflict_bucket(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError>;
+
+    /// Load the conflict-rate accumulator for a tenant.  Returns `None` if no
+    /// record has been written yet.
+    async fn get_conflict_accumulator(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<Option<ConflictRateAccumulator>, NatsError>;
+
+    /// Write (or overwrite) the conflict-rate accumulator.
+    async fn put_conflict_accumulator(
+        &self,
+        acc: &ConflictRateAccumulator,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError>;
+}
+
+#[async_trait]
+impl<T: ConflictStore + Send + Sync + ?Sized> ConflictStore for Arc<T> {
+    async fn ensure_conflict_bucket(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError> {
+        (**self).ensure_conflict_bucket(tenant_id, bucket_prefix).await
+    }
+    async fn get_conflict_accumulator(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<Option<ConflictRateAccumulator>, NatsError> {
+        (**self).get_conflict_accumulator(tenant_id, bucket_prefix).await
+    }
+    async fn put_conflict_accumulator(
+        &self,
+        acc: &ConflictRateAccumulator,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError> {
+        (**self).put_conflict_accumulator(acc, bucket_prefix).await
+    }
+}
+
+/// Subscribes to and cleans up the per-task signal stream used by the engine's
+/// wave-boundary window and HITL gate.
+///
+/// `subscribe_signals` returns a `BoxStream` so the trait is object-safe and
+/// consumers never depend on NATS-specific stream types.  On the in-memory
+/// backend the stream yields nothing — unit tests that need signal delivery
+/// use a `MockNatsBackend` instead.
+#[async_trait]
+pub trait SignalSubscriber: Send + Sync {
+    async fn subscribe_signals(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+    ) -> Result<BoxStream<'static, Result<ResumeSignal, NatsError>>, NatsError>;
+
+    /// Delete the durable pull consumer created by `subscribe_signals`.
+    /// On the in-memory backend this is a no-op.
+    async fn delete_signal_consumer(&self, task_id: &TaskId) -> Result<(), NatsError>;
+}
+
+#[async_trait]
+impl<T: SignalSubscriber + Send + Sync + ?Sized> SignalSubscriber for Arc<T> {
+    async fn subscribe_signals(
+        &self,
+        task_id: &TaskId,
+        tenant_id: &TenantId,
+    ) -> Result<BoxStream<'static, Result<ResumeSignal, NatsError>>, NatsError> {
+        (**self).subscribe_signals(task_id, tenant_id).await
+    }
+    async fn delete_signal_consumer(&self, task_id: &TaskId) -> Result<(), NatsError> {
+        (**self).delete_signal_consumer(task_id).await
+    }
+}
+
+/// Persists the set of shadow-promoted domains for the two-auditor AND-vote mode.
+///
+/// On the in-memory backend the store is a single `Arc<RwLock<HashSet<String>>>`.
+/// `get_shadow_promoted_domains` returns an empty set if nothing has been written.
+#[async_trait]
+pub trait ShadowDomainStore: Send + Sync {
+    async fn put_shadow_promoted_domains(
+        &self,
+        domains: &HashSet<String>,
+    ) -> Result<(), NatsError>;
+
+    async fn get_shadow_promoted_domains(&self) -> Result<HashSet<String>, NatsError>;
+}
+
+#[async_trait]
+impl<T: ShadowDomainStore + Send + Sync + ?Sized> ShadowDomainStore for Arc<T> {
+    async fn put_shadow_promoted_domains(
+        &self,
+        domains: &HashSet<String>,
+    ) -> Result<(), NatsError> {
+        (**self).put_shadow_promoted_domains(domains).await
+    }
+    async fn get_shadow_promoted_domains(&self) -> Result<HashSet<String>, NatsError> {
+        (**self).get_shadow_promoted_domains().await
+    }
+}
+
+/// Persists and retrieves crash-recovery `TaskCheckpoint`s.
+///
+/// Distinct from `ReasoningStore` checkpoints (`TaskReasoningCheckpoint`) —
+/// these live in a separate KV bucket and track in-flight task lease ownership
+/// for node-level crash recovery.
+///
+/// `put_task_checkpoint` returns the storage revision (`u64`) so callers can
+/// use compare-and-swap semantics (`expected_revision: Some(old_rev)`) for
+/// atomic lease acquisition.  The in-memory impl always returns `1`.
+#[async_trait]
+pub trait TaskCheckpointStore: Send + Sync {
+    async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint>;
+
+    async fn put_task_checkpoint(
+        &self,
+        cp: &TaskCheckpoint,
+        expected_revision: Option<u64>,
+    ) -> Result<u64, NatsError>;
+
+    async fn get_task_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskCheckpoint>, NatsError>;
+
+    async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), NatsError>;
+}
+
+#[async_trait]
+impl<T: TaskCheckpointStore + Send + Sync + ?Sized> TaskCheckpointStore for Arc<T> {
+    async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint> {
+        (**self).list_task_checkpoints().await
+    }
+    async fn put_task_checkpoint(
+        &self,
+        cp: &TaskCheckpoint,
+        expected_revision: Option<u64>,
+    ) -> Result<u64, NatsError> {
+        (**self).put_task_checkpoint(cp, expected_revision).await
+    }
+    async fn get_task_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskCheckpoint>, NatsError> {
+        (**self).get_task_checkpoint(task_id).await
+    }
+    async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), NatsError> {
+        (**self).delete_task_checkpoint(task_id).await
+    }
+}
+
+/// Composite supertrait: the single type that replaces `Arc<NatsClient>` in
+/// `AppState` and `EngineInput`.
+///
+/// Any type that implements all twelve component traits receives `NatsBackend`
+/// automatically via the blanket impl.  `NatsClient` satisfies the blanket once
+/// Tasks 1–4 are complete.  `MockNatsBackend` in `h2ai-test-utils` satisfies it
+/// via explicit `mockall::mock!` declarations.
+pub trait NatsBackend:
+    EventPublisher
+    + SnapshotStore
+    + CalibrationStore
+    + TailEvents
+    + SignalPublisher
+    + SignalSubscriber
+    + OproStore
+    + EstimatorStore
+    + SkillStore
+    + ReasoningStore
+    + ConflictStore
+    + ShadowDomainStore
+    + TaskCheckpointStore
+    + Send
+    + Sync
+{
+}
+
+impl<T> NatsBackend for T
+where
+    T: EventPublisher
+        + SnapshotStore
+        + CalibrationStore
+        + TailEvents
+        + SignalPublisher
+        + SignalSubscriber
+        + OproStore
+        + EstimatorStore
+        + SkillStore
+        + ReasoningStore
+        + ConflictStore
+        + ShadowDomainStore
+        + TaskCheckpointStore
+        + Send
+        + Sync
+{
+}
+
+/// Narrow trait for `NatsDispatchAdapter`: dispatches work to edge agents via
+/// NATS and waits for their result.
+///
+/// Kept separate from `NatsBackend` because `InMemoryStateBackend` has no concept
+/// of edge-agent dispatch, and `AppState` / `EngineInput` never call these methods.
+#[async_trait]
+pub trait TaskDispatchBackend: Send + Sync {
+    /// Publish a `TaskPayload` to the ephemeral task subject so an edge agent
+    /// can pick it up.
+    async fn publish_task_payload(
+        &self,
+        payload: &h2ai_types::agent::TaskPayload,
+    ) -> Result<(), NatsError>;
+
+    /// Subscribe to `H2AI_RESULTS` and return the first `TaskResult` for
+    /// `task_id` within `timeout`.  Call this BEFORE `publish_task_payload`
+    /// to avoid the race where the result arrives before the consumer exists.
+    async fn await_task_result_once(
+        &self,
+        task_id: &TaskId,
+        timeout: std::time::Duration,
+    ) -> Result<h2ai_types::agent::TaskResult, NatsError>;
+}
+
+#[async_trait]
+impl<T: TaskDispatchBackend + Send + Sync + ?Sized> TaskDispatchBackend for Arc<T> {
+    async fn publish_task_payload(
+        &self,
+        payload: &h2ai_types::agent::TaskPayload,
+    ) -> Result<(), NatsError> {
+        (**self).publish_task_payload(payload).await
+    }
+    async fn await_task_result_once(
+        &self,
+        task_id: &TaskId,
+        timeout: std::time::Duration,
+    ) -> Result<h2ai_types::agent::TaskResult, NatsError> {
+        (**self).await_task_result_once(task_id, timeout).await
+    }
+}
+
 // ── Arc<T> forwarding impls ───────────────────────────────────────────────────
 // Allow callers to pass `&Arc<T>` wherever `&T: OproStore` is expected.
 
 #[async_trait]
-impl<T: OproStore> OproStore for Arc<T> {
+impl<T: OproStore + ?Sized> OproStore for Arc<T> {
     async fn put_prompt_variant(&self, variant: &PromptVariant) -> Result<(), NatsError> {
         (**self).put_prompt_variant(variant).await
     }

@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod approval;
 pub mod calibrate;
 pub mod health;
@@ -54,4 +55,12 @@ pub fn health_router() -> Router<AppState> {
         .route("/health", get(health::liveness))
         .route("/ready", get(health::readiness))
         .route("/metrics", get(health::metrics))
+}
+
+pub fn admin_router() -> Router<AppState> {
+    use axum::routing::post;
+    Router::new().route(
+        "/:tenant_id/admin/reset-experiment-state",
+        post(admin::reset_experiment_state),
+    )
 }

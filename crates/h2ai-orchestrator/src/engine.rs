@@ -4,7 +4,7 @@ use h2ai_autonomic::retry_accumulator::RetryAccumulator;
 use h2ai_config::H2AIConfig;
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_context::embedding::EmbeddingModel;
-use h2ai_state::NatsClient;
+use h2ai_state::backend::NatsBackend;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
 use h2ai_types::conflict::ConflictRateAccumulator;
@@ -183,7 +183,7 @@ pub struct EngineInput<'a> {
     pub tenant_id: TenantId,
     /// NATS client for reasoning checkpoint writes.
     /// When `Some` and `cfg.reasoning_memory.enabled`, writes fire-and-forget at each phase gate.
-    pub nats: Option<std::sync::Arc<NatsClient>>,
+    pub nats: Option<std::sync::Arc<dyn NatsBackend>>,
     /// Assembled contexts from the previous wave for cross-wave delta encoding.
     /// Index corresponds to explorer slot index. None on wave 0.
     pub prev_assembled_contexts: Vec<Option<crate::context_assembler::AssembledContext>>,
@@ -289,10 +289,13 @@ pub struct EngineOutput {
     pub socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
     /// Fraction of verification events that passed. Fed to `DriftMonitor` by tasks.rs.
     pub consensus_agreement_rate: Option<f64>,
+    /// Total tokens consumed across all adapter calls (all MAPE-K waves + synthesis).
+    /// Sourced from `MapeKController::tokens_used()` at finalize time.
+    pub tokens_used: u64,
 }
 
 async fn write_reasoning_checkpoint(
-    nats: &std::sync::Arc<NatsClient>,
+    nats: &std::sync::Arc<dyn NatsBackend>,
     cp: &TaskReasoningCheckpoint,
     prefix: &str,
     strict: bool,
@@ -352,7 +355,7 @@ impl ExecutionEngine {
         let strict_audit = input.cfg.reasoning_memory.strict_audit_checkpoint;
         let mut reasoning_cp = if input.cfg.reasoning_memory.enabled {
             if let Some(nats) = &input.nats {
-                nats.ensure_tenant_reasoning_buckets(&input.tenant_id, &rc_prefix, &ms_prefix)
+                nats.ensure_reasoning_buckets(&input.tenant_id, &rc_prefix, &ms_prefix)
                     .await
                     .ok();
             }
@@ -400,7 +403,7 @@ impl ExecutionEngine {
         let conflict_beta_prefix = input.cfg.state.conflict_beta_bucket_prefix.clone();
         let conflict_acc = if input.cfg.conflict_beta.enabled {
             if let Some(nats) = &input.nats {
-                nats.ensure_tenant_conflict_bucket(&input.tenant_id, &conflict_beta_prefix)
+                nats.ensure_conflict_bucket(&input.tenant_id, &conflict_beta_prefix)
                     .await
                     .ok();
                 nats.get_conflict_accumulator(&input.tenant_id, &conflict_beta_prefix)
@@ -767,10 +770,59 @@ impl ExecutionEngine {
                             write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit).await?;
                         }
                     }
-                    // TODO: wire WaveContinue injection when multi-wave loop is added.
-                    // When signal_wave_window_ms > 0, open a brief tokio::select! window here
-                    // to receive a ContinueToNextWave signal and thread grounding/mandate_override
-                    // into the next ContextAssemblerInput before starting the next wave.
+                    // ── Wave-boundary WaveContinue window ────────────────────────────────
+                    // Open a brief window for an operator to inject grounding or a mandate
+                    // override into the next wave's context.  NOT a gate: execution always
+                    // continues regardless of whether a signal arrives.
+                    if input.cfg.signal_wave_window_ms > 0 {
+                        use futures::StreamExt as _;
+
+                        let now_ms = || {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64
+                        };
+
+                        // Refresh the signal stream — pull consumer messages() can
+                        // terminate when fetch requests expire between pipeline phases.
+                        if let Some(ref nats) = input.nats {
+                            match nats
+                                .subscribe_signals(&input.task_id, &input.tenant_id)
+                                .await
+                            {
+                                Ok(fresh) => {
+                                    signal_sub = Some(fresh);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "h2ai.engine",
+                                        task_id = %input.task_id,
+                                        "WaveContinue signal stream refresh failed (non-fatal): {e}"
+                                    );
+                                }
+                            }
+                        }
+
+                        if let Some(ref mut sub) = signal_sub {
+                            tokio::select! {
+                                Some(Ok(sig)) = sub.next() => {
+                                    if now_ms() <= sig.timeout_at_ms {
+                                        if let crate::signal_dispatch::ResumeAction::ContinueToNextWave {
+                                            grounding,
+                                            mandate_override,
+                                        } = crate::signal_dispatch::resolve_action(sig.payload)
+                                        {
+                                            controller.inject_wave_continue(grounding, mandate_override);
+                                        }
+                                    }
+                                }
+                                () = tokio::time::sleep(std::time::Duration::from_millis(
+                                    input.cfg.signal_wave_window_ms,
+                                )) => {}
+                            }
+                        }
+                    }
 
                     // ── cold-check researcher (no-op when gap_i1.enabled = false) ──
                     controller.run_gap_i1_research().await;
@@ -1972,6 +2024,7 @@ impl ExecutionEngine {
                 leader_elected_events: vec![],
                 socratic_diagnosis_events: vec![],
                 consensus_agreement_rate: None,
+                tokens_used: 0,
             })
         } else {
             // Earlier phase or unknown stage — restart from scratch

@@ -8,6 +8,8 @@ use std::sync::Arc;
 pub enum ProviderKind {
     Bm25Wiki,
     Passthrough,
+    Skill,
+    Composite,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +109,12 @@ impl KnowledgeProviderFactory {
             ProviderKind::Passthrough => match &cfg.source {
                 SourceKind::YamlDir { path } => Arc::new(PassthroughProvider::new_from_path(path)),
             },
+            ProviderKind::Skill => {
+                crate::skill_provider::SkillProvider::new()
+            }
+            ProviderKind::Composite => {
+                crate::skill_provider::CompositeProvider::new(vec![])
+            }
         }
     }
 

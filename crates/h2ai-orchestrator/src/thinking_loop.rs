@@ -18,7 +18,7 @@ use h2ai_config::prompts::{
 use h2ai_config::ThinkingLoopConfig;
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_knowledge::provider::KnowledgeProvider;
-use h2ai_knowledge::types::{KnowledgeQuery, NodeDepth, SearchScope};
+use h2ai_knowledge::types::{KnowledgeQuery, NodeDepth, NodeSource, SearchScope};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::config::AgentRole;
 use h2ai_types::events::OracleGateResultEvent;
@@ -121,6 +121,7 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
     }
 
     let mut report = ThinkingReport::default();
+    let mut all_retrieved: Vec<(String, NodeSource)> = vec![];
 
     for iteration in 0..input.cfg.max_iterations as usize {
         // Approximation: no per-run pass_rate tracked yet; coverage_score is directionally correlated.
@@ -139,7 +140,9 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
 
         // Query knowledge provider at each iteration. Later iterations refine the
         // query with unresolved tensions so retrieval focuses on current gaps.
-        let iteration_knowledge = fetch_iteration_knowledge(&input, &report, iteration).await;
+        let (iteration_knowledge, retrieved) =
+            fetch_iteration_knowledge(&input, &report, iteration).await;
+        all_retrieved.extend(retrieved);
         let research_context = if iteration_knowledge.is_empty() {
             input.research_context
         } else {
@@ -185,6 +188,21 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
         }
     }
 
+    // Populate ThinkingReport with retrieval tracking for post_run feedback.
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let deduplicated: Vec<(String, NodeSource)> = all_retrieved
+            .into_iter()
+            .filter(|(id, _)| seen.insert(id.clone()))
+            .collect();
+        report.skill_nodes_used = deduplicated
+            .iter()
+            .filter(|(_, src)| matches!(src, NodeSource::Synthetic))
+            .count() as u32;
+        report.retrieved_node_ids =
+            deduplicated.into_iter().map(|(id, _)| id).collect();
+    }
+
     report
 }
 
@@ -198,10 +216,10 @@ async fn fetch_iteration_knowledge(
     input: &ThinkingLoopInput<'_>,
     report: &ThinkingReport,
     iteration: usize,
-) -> String {
+) -> (String, Vec<(String, NodeSource)>) {
     let provider = match &input.knowledge_provider {
         Some(p) => p,
-        None => return String::new(),
+        None => return (String::new(), vec![]),
     };
 
     let query_text = if iteration == 0 || report.tensions.is_empty() {
@@ -227,12 +245,13 @@ async fn fetch_iteration_knowledge(
     };
 
     let result = provider.query(&query).await;
-    let synthesis: Vec<&str> = result
+    let retrieved: Vec<(String, NodeSource)> = result
         .nodes
         .iter()
-        .map(|(n, _)| n.synthesis.as_str())
+        .map(|(n, _)| (n.id.clone(), n.source.clone()))
         .collect();
-    synthesis.join("\n\n")
+    let synthesis: Vec<&str> = result.nodes.iter().map(|(n, _)| n.synthesis.as_str()).collect();
+    (synthesis.join("\n\n"), retrieved)
 }
 
 // ─── Archetype selection ──────────────────────────────────────────────────────
@@ -562,6 +581,8 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
                 coverage_score: parsed.coverage_score,
                 iteration: 0,
                 prev_similarity: 0.0,
+                retrieved_node_ids: vec![],
+                skill_nodes_used: 0,
             };
         }
     }
@@ -573,6 +594,8 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
         coverage_score: 0.5,
         iteration: 0,
         prev_similarity: 0.0,
+        retrieved_node_ids: vec![],
+        skill_nodes_used: 0,
     }
 }
 

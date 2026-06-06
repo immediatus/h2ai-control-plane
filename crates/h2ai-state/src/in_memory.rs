@@ -8,7 +8,7 @@
 //! Events published via [`EventPublisher`] are appended to an in-memory log so
 //! tests can assert on what was emitted.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -18,14 +18,17 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use h2ai_types::calibration::CalibrationRecord;
+use h2ai_types::checkpoint::TaskCheckpoint;
+use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
 use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
 
 use crate::backend::{
-    CalibrationStore, EstimatorStore, EventPublisher, OproStore, ReasoningStore, SignalPublisher,
-    SnapshotStore, TailEvents,
+    CalibrationStore, ConflictStore, EstimatorStore, EventPublisher, OproStore, ReasoningStore,
+    ShadowDomainStore, SignalPublisher, SignalSubscriber, SkillStore, SnapshotStore, TailEvents,
+    TaskCheckpointStore,
 };
 use crate::nats::NatsError;
 
@@ -61,6 +64,14 @@ pub struct InMemoryStateBackend {
     // ReasoningStore fields
     reasoning_checkpoints: Arc<RwLock<HashMap<String, TaskReasoningCheckpoint>>>,
     task_meta_states: Arc<RwLock<HashMap<String, TaskMetaState>>>,
+    // ConflictStore fields
+    conflict_accumulators: Arc<RwLock<HashMap<String, ConflictRateAccumulator>>>,
+    // ShadowDomainStore fields
+    shadow_domains: Arc<RwLock<HashSet<String>>>,
+    // TaskCheckpointStore fields
+    task_checkpoints: Arc<RwLock<HashMap<String, TaskCheckpoint>>>,
+    // SkillStore fields
+    skill_nodes: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl InMemoryStateBackend {
@@ -334,6 +345,34 @@ impl EstimatorStore for InMemoryStateBackend {
 }
 
 #[async_trait]
+impl SkillStore for InMemoryStateBackend {
+    async fn put_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError> {
+        self.skill_nodes
+            .write()
+            .await
+            .insert(tenant_id.bucket_safe(), json_bytes);
+        Ok(())
+    }
+
+    async fn get_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<u8>, NatsError> {
+        Ok(self
+            .skill_nodes
+            .read()
+            .await
+            .get(&tenant_id.bucket_safe())
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+#[async_trait]
 impl ReasoningStore for InMemoryStateBackend {
     async fn ensure_reasoning_buckets(
         &self,
@@ -405,5 +444,132 @@ impl ReasoningStore for InMemoryStateBackend {
             .take(limit)
             .map(|(_, v)| v.clone())
             .collect()
+    }
+}
+
+#[async_trait]
+impl ConflictStore for InMemoryStateBackend {
+    async fn ensure_conflict_bucket(
+        &self,
+        _tenant_id: &TenantId,
+        _bucket_prefix: &str,
+    ) -> Result<(), crate::nats::NatsError> {
+        Ok(())
+    }
+
+    async fn get_conflict_accumulator(
+        &self,
+        tenant_id: &TenantId,
+        _bucket_prefix: &str,
+    ) -> Result<Option<ConflictRateAccumulator>, crate::nats::NatsError> {
+        Ok(self
+            .conflict_accumulators
+            .read()
+            .await
+            .get(&tenant_id.to_string())
+            .cloned())
+    }
+
+    async fn put_conflict_accumulator(
+        &self,
+        acc: &ConflictRateAccumulator,
+        _bucket_prefix: &str,
+    ) -> Result<(), crate::nats::NatsError> {
+        self.conflict_accumulators
+            .write()
+            .await
+            .insert(acc.tenant_id.to_string(), acc.clone());
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SignalSubscriber for InMemoryStateBackend {
+    async fn subscribe_signals(
+        &self,
+        _task_id: &TaskId,
+        _tenant_id: &TenantId,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<h2ai_types::signal::ResumeSignal, crate::nats::NatsError>>,
+        crate::nats::NatsError,
+    > {
+        use futures::stream;
+        Ok(Box::pin(stream::empty()))
+    }
+
+    async fn delete_signal_consumer(&self, _task_id: &TaskId) -> Result<(), crate::nats::NatsError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ShadowDomainStore for InMemoryStateBackend {
+    async fn put_shadow_promoted_domains(
+        &self,
+        domains: &HashSet<String>,
+    ) -> Result<(), crate::nats::NatsError> {
+        *self.shadow_domains.write().await = domains.clone();
+        Ok(())
+    }
+
+    async fn get_shadow_promoted_domains(&self) -> Result<HashSet<String>, crate::nats::NatsError> {
+        Ok(self.shadow_domains.read().await.clone())
+    }
+}
+
+#[async_trait]
+impl TaskCheckpointStore for InMemoryStateBackend {
+    async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint> {
+        self.task_checkpoints.read().await.values().cloned().collect()
+    }
+
+    async fn put_task_checkpoint(
+        &self,
+        cp: &TaskCheckpoint,
+        _expected_revision: Option<u64>,
+    ) -> Result<u64, crate::nats::NatsError> {
+        self.task_checkpoints
+            .write()
+            .await
+            .insert(cp.task_id.clone(), cp.clone());
+        Ok(1)
+    }
+
+    async fn get_task_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<TaskCheckpoint>, crate::nats::NatsError> {
+        Ok(self.task_checkpoints.read().await.get(task_id).cloned())
+    }
+
+    async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), crate::nats::NatsError> {
+        self.task_checkpoints.write().await.remove(task_id);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::SkillStore;
+    use h2ai_types::identity::TenantId;
+
+    #[tokio::test]
+    async fn skill_store_roundtrip() {
+        let backend = InMemoryStateBackend::new();
+        let tenant = TenantId::default_tenant();
+        let bytes = b"[\"skill-node-json\"]".to_vec();
+
+        backend.put_skill_nodes(&tenant, bytes.clone()).await.unwrap();
+        let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
+        assert_eq!(loaded, bytes);
+    }
+
+    #[tokio::test]
+    async fn skill_store_empty_returns_empty_vec() {
+        let backend = InMemoryStateBackend::new();
+        let tenant = TenantId::default_tenant();
+        let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
+        assert!(loaded.is_empty());
     }
 }

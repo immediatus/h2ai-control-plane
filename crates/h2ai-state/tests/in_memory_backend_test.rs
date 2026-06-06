@@ -400,3 +400,111 @@ async fn publish_event_seq_returns_increasing_seq() {
     let s2 = backend.publish_event_seq(&tid, &event).await.unwrap();
     assert!(s2 > s1);
 }
+
+#[tokio::test]
+async fn conflict_store_roundtrip() {
+    use h2ai_state::backend::ConflictStore;
+    use h2ai_types::conflict::ConflictRateAccumulator;
+    use h2ai_types::identity::TenantId;
+
+    let backend = h2ai_state::InMemoryStateBackend::new();
+    let tenant = TenantId::from("test-tenant");
+    let prefix = "h2ai-conflict";
+
+    backend.ensure_conflict_bucket(&tenant, prefix).await.unwrap();
+
+    let initial = backend.get_conflict_accumulator(&tenant, prefix).await.unwrap();
+    assert!(initial.is_none(), "no accumulator before first write");
+
+    let acc = ConflictRateAccumulator::new(tenant.clone(), 0.5);
+    backend.put_conflict_accumulator(&acc, prefix).await.unwrap();
+
+    let loaded = backend.get_conflict_accumulator(&tenant, prefix).await.unwrap();
+    assert!(loaded.is_some(), "accumulator readable after write");
+}
+
+#[tokio::test]
+async fn signal_subscriber_empty_stream_and_delete_noop() {
+    use futures::StreamExt;
+    use h2ai_state::backend::SignalSubscriber;
+    use h2ai_types::identity::{TaskId, TenantId};
+
+    let backend = h2ai_state::InMemoryStateBackend::new();
+    let task_id = TaskId::new();
+    let tenant_id = TenantId::from("tenant-sig-test");
+
+    let mut stream = backend
+        .subscribe_signals(&task_id, &tenant_id)
+        .await
+        .unwrap();
+
+    let item = tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        stream.next(),
+    )
+    .await;
+    // An empty stream resolves immediately with None; a timeout fires with Err.
+    // Either way, no ResumeSignal is delivered.
+    assert!(
+        matches!(item, Ok(None) | Err(_)),
+        "in-memory signal stream must yield no items"
+    );
+
+    backend.delete_signal_consumer(&task_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn shadow_domain_store_roundtrip() {
+    use h2ai_state::backend::ShadowDomainStore;
+    use std::collections::HashSet;
+
+    let backend = h2ai_state::InMemoryStateBackend::new();
+
+    let initial = backend.get_shadow_promoted_domains().await.unwrap();
+    assert!(initial.is_empty(), "empty before first write");
+
+    let domains: HashSet<String> = ["auth".into(), "billing".into()].into();
+    backend.put_shadow_promoted_domains(&domains).await.unwrap();
+
+    let loaded = backend.get_shadow_promoted_domains().await.unwrap();
+    assert_eq!(loaded, domains);
+}
+
+#[tokio::test]
+async fn task_checkpoint_store_roundtrip() {
+    use h2ai_state::backend::TaskCheckpointStore;
+    use h2ai_types::checkpoint::TaskCheckpoint;
+
+    let backend = h2ai_state::InMemoryStateBackend::new();
+
+    let initial = backend.list_task_checkpoints().await;
+    assert!(initial.is_empty());
+
+    let cp = TaskCheckpoint {
+        task_id: "task-cp-1".into(),
+        phase: "ParallelGeneration".into(),
+        node_id: "test-node".into(),
+        lease_seq: 0,
+        proposals: vec![],
+        auditor_survivors: vec![],
+        resolved_output: None,
+        manifest_json: "{}".into(),
+        object_store_ref: None,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        constraint_snapshot: None,
+        j_eff: None,
+    };
+    let rev = backend.put_task_checkpoint(&cp, None).await.unwrap();
+    assert_eq!(rev, 1);
+
+    let loaded = backend.get_task_checkpoint("task-cp-1").await.unwrap();
+    assert!(loaded.is_some());
+
+    let list = backend.list_task_checkpoints().await;
+    assert_eq!(list.len(), 1);
+
+    backend.delete_task_checkpoint("task-cp-1").await.unwrap();
+    let after_delete = backend.list_task_checkpoints().await;
+    assert!(after_delete.is_empty());
+}

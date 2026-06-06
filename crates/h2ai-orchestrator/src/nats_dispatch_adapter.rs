@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use h2ai_provisioner::provider::AgentProvider;
-use h2ai_state::NatsClient;
+use h2ai_state::backend::TaskDispatchBackend;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::agent::{AgentDescriptor, TaskPayload, TaskRequirements};
 use h2ai_types::config::AdapterKind;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::payload_store::{offload_if_large, PayloadStore};
 
 pub struct NatsDispatchConfig {
-    pub nats: Arc<NatsClient>,
+    pub nats: Arc<dyn TaskDispatchBackend>,
     pub provider: Arc<dyn AgentProvider>,
     /// Used in TaskPayload.agent field (tells edge agent what capabilities to use).
     pub agent_descriptor: AgentDescriptor,
@@ -25,7 +25,7 @@ pub struct NatsDispatchConfig {
 }
 
 pub struct NatsDispatchAdapter {
-    nats: Arc<NatsClient>,
+    nats: Arc<dyn TaskDispatchBackend>,
     provider: Arc<dyn AgentProvider>,
     descriptor: AgentDescriptor,
     requirements: TaskRequirements,

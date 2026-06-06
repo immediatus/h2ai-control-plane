@@ -703,6 +703,16 @@ pub struct TaskAttributionEvent {
     /// Empty when the run was not wasteful or no applicable suggestions existed.
     #[serde(default)]
     pub applied_optimizations: Vec<AppliedOptimization>,
+    /// Total tokens consumed across all adapter calls during this task.
+    /// Populated from `MapeKController::tokens_used()` at task resolution.
+    /// Zero for tasks resolved before this field was introduced (`#[serde(default)]`).
+    #[serde(default)]
+    pub tokens_used: u64,
+    /// Number of unique Synthetic skill nodes that appeared in the thinking loop's knowledge context.
+    /// 0 = cold start (no prior failures on this domain). >0 = skill-augmented run.
+    /// Used for contrastive offline analysis (GAP-F4).
+    #[serde(default)]
+    pub skill_nodes_injected: u32,
     pub timestamp: DateTime<Utc>,
     /// When the task passed through the HITL gate, this records the reviewer's decision.
     #[serde(default)]
@@ -1559,5 +1569,54 @@ mod cost_guard_event_tests {
         } else {
             panic!("wrong variant");
         }
+    }
+}
+
+#[cfg(test)]
+mod cost_propagation_tests {
+    use super::*;
+
+    #[test]
+    fn task_attribution_event_includes_tokens_used() {
+        let json = r#"{
+            "task_id": "00000000-0000-0000-0000-000000000001",
+            "q_confidence": 0.85,
+            "prediction_basis": "Heuristic",
+            "waste_ratio": 1.0,
+            "timestamp": "2026-06-06T00:00:00Z",
+            "tokens_used": 4200
+        }"#;
+        let ev: TaskAttributionEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.tokens_used, 4200);
+    }
+
+    #[test]
+    fn task_attribution_event_tokens_used_defaults_to_zero_for_old_events() {
+        let json = r#"{
+            "task_id": "00000000-0000-0000-0000-000000000002",
+            "q_confidence": 0.75,
+            "prediction_basis": "Heuristic",
+            "waste_ratio": 1.0,
+            "timestamp": "2026-06-06T00:00:00Z"
+        }"#;
+        let ev: TaskAttributionEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.tokens_used, 0);
+    }
+
+    #[test]
+    fn task_attribution_event_backwards_compat_without_skill_nodes_injected() {
+        // Minimal JSON that existed before skill_nodes_injected was added
+        let json = r#"{
+            "task_id": "00000000-0000-0000-0000-000000000001",
+            "q_confidence": 0.8,
+            "prediction_basis": "Heuristic",
+            "waste_ratio": 1.0,
+            "tokens_used": 0,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "calibration_source": "Measured"
+        }"#;
+        let ev: TaskAttributionEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.skill_nodes_injected, 0,
+            "skill_nodes_injected must default to 0 for old events");
     }
 }

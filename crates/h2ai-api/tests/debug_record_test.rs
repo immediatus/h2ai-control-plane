@@ -147,6 +147,7 @@ fn build_produces_correct_task_id_and_resolved_output() {
         leader_elected_events: vec![],
         socratic_diagnosis_events: vec![],
         consensus_agreement_rate: Some(0.9),
+        tokens_used: 0,
     };
 
     let cfg = H2AIConfig::default();

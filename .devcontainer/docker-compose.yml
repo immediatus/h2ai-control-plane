@@ -13,17 +13,17 @@ services:
       - ../:/workspaces/h2ai-control-plane:z
       - cargo-cache:/usr/local/cargo/registry:z
       - target-cache:/workspaces/h2ai-control-plane/target:z
-      - ${HOME}/.claude:/home/developer/.claude:z
-      - ${HOME}/.claude.json:/home/developer/.claude.json:z
-      - ${HOME}/.gemini:/home/developer/.gemini:z
-      - ${HOME}/.local/bin/claude:/home/developer/.local/bin/claude:z
-      - ${HOME}/.local/share/dev-workspace/.local/bin/xclaude:/home/developer/.local/bin/xclaude:z
-      - ${HOME}/.local/bin/claude:/usr/local/bin/claude:z
-      - ${HOME}/.local/share/claude:/home/developer/.local/share/claude:z
-      - ${HOME}/.local/bin/agy:/home/developer/.local/bin/agy:z
-      - ${HOME}/.local/share/dev-workspace/.local/bin/xagy:/home/developer/.local/bin/xagy:z
-      - ${HOME}/.local/bin/agy:/usr/local/bin/agy:z
-      - /run/user/1000/bus:/run/user/1000/bus:z
+      - ${HOME}/.claude:/home/developer/.claude
+      - ${HOME}/.claude.json:/home/developer/.claude.json
+      - ${HOME}/.gemini:/home/developer/.gemini
+      - ${HOME}/.local/bin/claude:/home/developer/.local/bin/claude
+      - ${HOME}/.local/share/dev-workspace/.local/bin/xclaude:/home/developer/.local/bin/xclaude
+      - ${HOME}/.local/bin/claude:/usr/local/bin/claude
+      - ${HOME}/.local/share/claude:/home/developer/.local/share/claude
+      - ${HOME}/.local/bin/agy:/home/developer/.local/bin/agy
+      - ${HOME}/.local/share/dev-workspace/.local/bin/xagy:/home/developer/.local/bin/xagy
+      - ${HOME}/.local/bin/agy:/usr/local/bin/agy
+      - /run/user/1000/bus:/run/user/1000/bus
     command: sleep infinity
     env_file:
       - .env
@@ -40,7 +40,7 @@ services:
     command: ["-c", "/etc/nats/nats.conf"]
     volumes:
       - ../nats/dev.conf:/etc/nats/nats.conf:ro,Z
-      - nats-data:/data/jetstream:z
+      - ../nats/data:/data/jetstream:z
     ports:
       - "4222:4222"   # client
       - "8222:8222"   # monitoring
@@ -53,4 +53,3 @@ services:
 volumes:
   cargo-cache:
   target-cache:
-  nats-data:

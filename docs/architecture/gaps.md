@@ -17,7 +17,7 @@ mathematical improvement, and simulation protocol for every open gap.
 | [Group B — Math Apparatus](#brainstorm-group-b--mathematical-formula-validity) | Are the formulas principled or arbitrary? |
 | [Group D — Infrastructure](#brainstorm-group-d--infrastructure-and-operational-gaps) | Do the inputs to the math arrive correctly? |
 | [Group E — Quality Measurement](#brainstorm-group-e--quality-measurement-infrastructure) | Can we measure what we claim to optimise? |
-| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | One open production gap: small-N human rating calibration (GAP-H4); GAP-H3 Cost Guard is closed |
+| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | One open production gap: small-N human rating calibration (GAP-H4) |
 | [Shared Infrastructure](#shared-infrastructure-required-for-group-a) | Pre-work that blocks Group A experiments |
 
 ---
@@ -28,7 +28,7 @@ mathematical improvement, and simulation protocol for every open gap.
 |---|---|---|---|
 | **GAP-A1 Self-MoA vs. multi-family routing** | 🟡 PARTIAL | **Critical** | H2-P vs. B3 experiment runnable today |
 | **GAP-A2 USL N_max vs. quality curve** | 🔴 OPEN | **Critical** | Replace USL with N_IT as primary sizer; USL → cost cap only |
-| **GAP-A6 Self-MoA as direct empirical competitor** | 🔴 OPEN | **Critical** | Structured experiment with constraint compliance as primary metric |
+| **GAP-A6 Self-MoA as direct empirical competitor** | 🟡 PARTIAL | **Critical** | Tier 1 ✅ PASS (H2-P=1.0, B3=0.0); Tier 2 both fail (model capacity limit); Tier 3 running |
 | **GAP-B1 β_eff functional form** | 🟡 PARTIAL | Medium | Epistemic β₀ wired 2026-05-20 — empirical validation of linear β_eff still open |
 | GAP-B3 Attribution self-referential | 🟡 PARTIAL | Medium | Conformal prediction once oracle data exists |
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🔴 OPEN | **High** | Three interconnected heuristic proxies; online ρ_EMA mitigates rho after 30 obs |
@@ -38,11 +38,15 @@ mathematical improvement, and simulation protocol for every open gap.
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
 | **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
-| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🔴 OPEN | **High** | BM25 retrieval is wired but there is no measurement of whether it helps; solve with contrastive task pairs (with/without knowledge augmentation) isolating knowledge network contribution |
-| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🔴 OPEN | Medium | Violation signals reach `conflict_beta` bandit but never update knowledge graph edge weights; closed-loop propagation (Solvita-style) would make the retrieval layer learn from failures |
-| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🔴 OPEN | Medium | Phase 1 live (checkpoint + TaskMetaState); Phases 2 (Induction), 3 (thinking loop priors), 4 (hybrid retrieval) designed below — not yet implemented |
+| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1 logging partial: `skill_nodes_injected` in `TaskAttributionEvent` counts skill nodes that reached the LLM prompt, enabling offline delta analysis; Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open |
+| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🟡 PARTIAL | Medium | Steps 1–2 implemented in-memory: `CompositeProvider.violation_map` down-weights non-Synthetic nodes co-occurring with topology retries (delta=0.1, cap=0.9, applied before dedup/top_k); NATS persistence and Step 3 (retroactive induction trigger) remain open |
+| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live (checkpoint + TaskMetaState); skill extraction (2026-06-08) provides a depth-stratified Phase 3 analogue — Topic nodes carry Socratic diagnostic questions + resolution excerpts; Constraint-keyed and Reason-keyed Leaf nodes carry per-constraint domain signals; full Induction (Phase 2), archetype priors (Phase 3), hybrid retrieval (Phase 4) not yet implemented |
 | **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | N<10 ratings give noisy calibration; Dirichlet-Categorical posterior + credible-interval circuit breaker |
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
+
+**Infrastructure note (2026-06-08, updated):** Cross-task skill extraction is live with depth-stratified nodes. `skill_from_output` (pure fn, `h2ai-orchestrator/src/skill_extractor.rs`) emits three node types per `EngineOutput`: (1) **Topic node** (`skill:{task_id}:{domain}:topic`, `NodeDepth::Topic`) — `tensions` = exact-deduped Socratic diagnostic questions, `entry_points` = resolution excerpt (≤300 chars), `failure_modes` = tombstones + SRANI + uncovered domains, `importance` scales with retry count; (2) **Constraint-keyed Leaf** (`skill:{task_id}:{constraint_id}`, `NodeDepth::Leaf`) — one per tombstone with parseable `[A-Z]+-\d+` constraint ID, `importance=1.0` if tombstone appeared in ≥2 retries else `0.6`; (3) **Reason-keyed Leaf** (`skill:{task_id}:reason:{fnv32a(reason)}`, `NodeDepth::Leaf`) — fallback for verifier rejections not covered by a constraint-keyed leaf. `SkillProvider.query()` now filters by `query.depths` (not hardcoded to `Leaf`) so Topic nodes are visible to thinking-loop queries. `ThinkingReport` gains `retrieved_node_ids: Vec<String>` + `skill_nodes_used: u32`; `TaskAttributionEvent` gains `skill_nodes_injected: u32` (GAP-F4 partial). `CompositeProvider` gains `violation_map` + `source_cache` + `record_violations(delta=0.1, cap=0.9)`; `post_run` calls `record_violations` in both nats=None and nats=Some paths when `topology_retry_events` is non-empty (GAP-F5 Steps 1–2). Tests: `skill_injection_scenario_cross_task_learning`, `attribution_event_carries_skill_nodes_injected`, `post_run_records_violations_when_retries_occurred` in `crates/h2ai-api`.
+
+**Infrastructure note (2026-06-07):** NATS backend abstraction is now mockable. `NatsBackend` supertrait (`h2ai-state/src/backend.rs`) unifies all KV/stream operations behind a trait object. `TaskDispatchBackend` provides a narrow dispatch-only view. `MockNatsBackend` + `MockTaskDispatchBackend` in `h2ai-test-utils` enable all NATS-dependent unit tests without a live NATS server. All three production fields (`AppState.nats`, `EngineInput.nats`, `NatsDispatchConfig.nats`) are now trait objects.
 
 **Infrastructure note (2026-05-14):** Delta checkpoint encoding (JSON Patch RFC 6902, `CheckpointKind::Base/Delta`, O(N) NATS KV storage) is now live in `h2ai-state`. Previously O(N²) checkpoint growth would have exhausted NATS KV space during the long multi-task experiment runs required by GAP-A6 and GAP-A1. This blocker is resolved; experiment runs are no longer storage-constrained.
 
@@ -97,37 +101,63 @@ One cross-cutting innovation that requires implementation before running Group A
 ### INNOVATION-5 — Structured Self-MoA Experiment Protocol
 
 **Closes:** GAP-A6.  
-**Cost:** 1 week (single-model, runnable today on devcontainer).  
-**Why now:** The H2-P vs. B3 comparison does not require a second model family. It is the minimum
-viable falsification of H2AI's core claim and can run immediately.
+**Status: EXPERIMENT IN PROGRESS — Tier 1 complete, Tier 2 complete, Tier 3 running.**  
+**Implementation:** `tests/e2e/scenarios/innovation-5/` — three e2e scenarios (Tier 1/2/3).
 
-**Experiment design (phases):**
+**Experiment arms:**
 
-**Phase 0 — Baseline (B0):** Single shot, no retries.
-**Phase B3 — Self-MoA:** Same model, τ ∈ {0.2, 0.7, 1.0}, 3 proposals, majority-vote on
-  verification score, no constraint enforcement loop, no Phase 0 decomposition.
-**Phase H2-P — H2AI Precision:** Same model, τ-spread, Phase 0 decomposition, MAPE-K constraint
-  enforcement, phase 3.5 rubric scoring, full pipeline.
+**B3 — Self-MoA baseline:** `baseline.toml` with `max_autonomic_retries = 0`. Three explorers with τ-spread generate proposals; verifier scores them; synthesis selects winner. No MAPE-K retry enforcement loop.
 
-Primary metric: **constraint compliance rate** (fraction of constraint checks passed in oracle
-evaluation — NOT just internal verifier score). Secondary: oracle pass rate on code tasks.
+**H2-P — Full H2AI pipeline:** `h2ai.toml` with `max_autonomic_retries = 4`. Same three explorers, plus MAPE-K retry waves that prune non-compliant proposals and regenerate with repair context.
 
-Key prediction: H2-P > B3 on 5+ constraint tasks even when the model is the same, because:
-1. Phase 0 decomposition focuses each slot on a distinct constraint domain
-2. MAPE-K enforcement iteratively raises constraint satisfaction
-3. Self-MoA (B3) has no enforcement loop — it produces higher diversity but no constraint gate
+**How B3 is implemented:** Setting `max_autonomic_retries = 0` disables the MAPE-K retry loop while keeping all other pipeline components identical (thinking loop, gap researcher, decomposition, verifier). This makes B3 a clean ablation — the only variable is whether the enforcement loop fires.
 
-If H2-P ≤ B3 on constraint-heavy tasks, the MAPE-K enforcement adds nothing above temperature
-diversity and the core claim fails. Document that outcome and pivot to positioning H2AI as
-"structured Self-MoA with better observability."
+Primary metric: **constraint compliance rate** (fraction of `_expected.should_prune` patterns that H2-P rejects and B3 passes through). Secondary: j_eff, verification scores, token cost.
 
-**Task selection:** S2 HumanEval set stratified by constraint count:
-- Tier 1: 1–2 constraints (simple)
-- Tier 2: 3–5 constraints (moderate)
-- Tier 3: 6+ constraints (complex)
+Key prediction: H2-P > B3 on Tier 3 (6+ constraints) because:
+1. Phase 0 decomposition focuses each slot on a distinct constraint domain (same in both arms)
+2. MAPE-K enforcement iteratively prunes and regenerates non-compliant proposals (H2-P only)
+3. B3 has no enforcement loop — temperature diversity alone cannot guarantee constraint compliance
 
-Hypothesis: H2-P advantage over B3 should grow with tier (more constraints = more MAPE-K value).
-If advantage is flat across tiers, the hypothesis is wrong.
+If H2-P ≤ B3 on Tier 3 tasks, the MAPE-K loop adds latency and cost without quality benefit. Document that outcome and pivot to positioning H2AI as "structured Self-MoA with better observability."
+
+**Scenario tiers:**
+- Tier 1 (`i5-tier1-idempotent-quota`): 2 constraints, `_compare_semantics: "no_regression"` — internal validity anchor
+- Tier 2 (`i5-tier2-multi-constraint-billing`): 4 constraints, `_compare_semantics: "strict"` — intermediate enforcement
+- Tier 3 (`i5-tier3-enterprise-enforcement`): 6 constraints, `_compare_semantics: "strict"` — primary hypothesis test
+
+**Run:**
+```bash
+python3 tests/e2e/replay.py --compare innovation-5/i5-tier1-idempotent-quota
+python3 tests/e2e/replay.py --compare innovation-5/i5-tier2-multi-constraint-billing
+python3 tests/e2e/replay.py --compare innovation-5/i5-tier3-enterprise-enforcement
+```
+
+**Experiment results (single-trial, local Qwen3 model):**
+
+| Tier | Constraints | H2-P terminal | B3 terminal | pass^k H2-P | pass^k B3 | valid_proposals H2-P | valid_proposals B3 | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| Tier 1 | 2 | MergeResolved | TaskFailed | **1.000** | 0.000 | 6 | 3 | ✅ PASS (H2-P wins) |
+| Tier 2 | 4 | TaskFailed | TaskFailed | 0.000 | 0.000 | 15 | 3 | ❌ SAME/WORSE (both fail) |
+| Tier 3 | 6 | — | — | — | — | — | — | ⏳ running |
+
+**Tier 1 detail (MergeResolved):** H2-P: j_eff=0.667, avg_score=0.583, verified=6, srani_events=2. B3: TaskFailed at avg_score=0.417. Internal validity anchor confirms MAPE-K enforcement provides measurable benefit at 2 constraints.
+
+**Tier 2 detail (both TaskFailed):** H2-P exhausted 4 MAPE-K retries (15 proposals, avg_score=0.278). B3 quit after 1 wave (3 proposals, avg_score=0.271). Neither arm produced a fully compliant design — the 4-constraint task exceeds the local model's simultaneous-constraint capability. H2-P explored 5× more candidate space; structural signal positive but pass^k = 0 for both.
+
+**Primary hypothesis (H₁):** On Tier 3 tasks (6 constraints), H2-P achieves oracle-verified constraint compliance ≥ 10pp higher than B3.
+
+**Internal validity check:** `mean(H2P − B3)` at Tier 1 ≤ `mean(H2P − B3)` at Tier 3. If this fails, the comparison is confounded — do not interpret the primary hypothesis.
+
+**Pre-registered decision table (Tier 3):**
+
+| H2P − B3 delta | Cohen's d | Interpretation | Next step |
+|---|---|---|---|
+| ≥ 20pp | ≥ 0.5 | Strong validation | Full 200-task study |
+| 10–20pp | ≥ 0.25 | Moderate validation | Efficiency arm analysis |
+| 5–10pp | any | Weak signal | Extend to Tier B tasks |
+| < 5pp or CI ∋ 0 | any | Null result | Reposition H2AI |
+| H2-P < B3 | any | Regression | Debug MAPE-K path immediately |
 
 ---
 
@@ -302,7 +332,9 @@ for n in [1, 2, 3, 5, 7, 9]:
 
 ---
 
-### GAP-A6: Self-MoA Is a Direct Empirical Competitor 🔴 OPEN — **Critical**
+### GAP-A6: Self-MoA Is a Direct Empirical Competitor 🟡 PARTIAL — **Critical**
+
+**Status: PARTIAL** — Experiment infrastructure complete (3 e2e scenarios + pre-registration). Results pending.
 
 **Gap statement.**
 arXiv 2502.00674 (Li et al., 2025) — Self-MoA beats multi-family MoA by 6.6% on AlpacaEval 2.0.
@@ -729,11 +761,13 @@ The architecture maps closely to H2AI:
 | Hacker (adversarial attack) | Auditor / constraint eval | GAP-B6, GAP-C5 |
 | Trainable edge weights (REINFORCE) | Bandit state / `conflict_beta` | GAP-F4, GAP-F5 |
 
-The defining difference: **H2AI's agents don't learn across tasks**. Solvita's knowledge networks accumulate outcome signals and reshape retrieval for every subsequent problem. H2AI's pipeline is effectively stateless between tasks except for the calibration snapshot and shallow bandit state.
+The defining difference: **Solvita's agents learn via trainable edge weights (REINFORCE)**. H2AI now has a cross-task skill learning channel (2026-06-08): resolved task failure signals are extracted as `KnowledgeNode` entries via `skill_from_output` (topology retries, uncovered domains, SRANI fabrication, low verification scores), persisted to NATS KV (`H2AI_SKILLS` bucket), rehydrated at startup, and surfaced to the thinking loop on domain-matched future tasks via `SkillProvider` + `CompositeProvider([wiki, skill])`. The signal is trace-level: the thinking loop receives the failure type, constraint tombstone, and retry count — not a trained retrieval graph with outcome-weighted edge updates. Full Solvita parity (REINFORCE-weighted retrieval, violation→edge-weight feedback) remains open via GAP-F4/GAP-F5. End-to-end path verified: `skill_injection_scenario_cross_task_learning` in `h2ai-api` confirms that a topology-retry failure on a resolved task surfaces in the composite provider's query result for a future task sharing the same domain tag.
 
 ---
 
-### GAP-F4: Knowledge Provider Has No Contrastive Evaluation 🔴 OPEN — **High**
+### GAP-F4: Knowledge Provider Has No Contrastive Evaluation 🟡 PARTIAL — **High**
+
+**Update (2026-06-08):** Phase 1 logging is partially implemented. `ThinkingReport.skill_nodes_used` counts how many Synthetic (skill) nodes appeared in the thinking loop's retrieved context; this count is emitted as `TaskAttributionEvent.skill_nodes_injected`. Offline delta analysis is now possible: compute `mean(verification_score | skill_nodes_injected > 0) − mean(score | skill_nodes_injected = 0)` across 50+ tasks per domain. Falsification condition: if delta ≤ 0 across 100 tasks, skill injection is neutral or harmful. Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open.
 
 **Gap statement.**
 The BM25 knowledge provider is wired into the generation pipeline (GAP-F1 closed), but there is no mechanism to measure whether it actually improves output quality. The knowledge provider could be degrading results (irrelevant retrievals inflating context, diluting focused problem-solving) and the system would not detect it. The passthrough (no-knowledge) path produces exactly the same downstream metrics as the retrieval path, making the two indistinguishable from the bandit's perspective.
@@ -764,7 +798,9 @@ After Phase 1 logging is live: if the mean verification score delta (`knowledge_
 
 ---
 
-### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing 🔴 OPEN — Medium
+### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing 🟡 PARTIAL (Steps 1–2) — Medium
+
+**Update (2026-06-08):** Steps 1–2 are implemented in-memory. `CompositeProvider` gains a `violation_map: Arc<RwLock<HashMap<String, f32>>>` that accumulates violation penalties for non-Synthetic nodes retrieved during a task's thinking loop. `record_violations(node_ids, delta=0.1)` is called in `post_run` when `topology_retry_events` is non-empty; penalty is capped at 0.9 and applied as `score × (1 − penalty)` before the dedup/top_k merge in `query()`. Synthetic skill nodes are permanently exempt (they document failures, not guidance). The penalty map is in-memory only — it resets on restart; NATS persistence is deferred. Step 3 (retroactive induction trigger on ZeroSurvival) remains open.
 
 **Gap statement.**
 When the MAPE-K loop detects `ZeroSurvival` or `HallucinationDetected`, the failure signal reaches `conflict_beta` and the bandit, but it never reaches the knowledge retrieval layer. The retrieval graph (BM25 index, InductionStore node weights) is unchanged by the failure. The next task with identical constraint tags will retrieve the same context that contributed to the failure — the system does not learn that a particular retrieval pattern led to a bad outcome.
@@ -848,9 +884,7 @@ any gap-resolution experiments begin.
 
 ## Brainstorm Group H — Skeptical Audit Resilience
 
-Two open gaps identified in adversarial review of the H2AI architecture. GAP-H1 (sequential
-grafting) and GAP-H2 (calibration drift) are closed — see `research-state.md §2`. The remaining
-open gaps are:
+One open gap identified in adversarial review of the H2AI architecture:
 
 ---
 

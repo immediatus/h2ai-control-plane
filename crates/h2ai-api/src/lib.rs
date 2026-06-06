@@ -36,6 +36,7 @@
 pub mod bootstrap;
 pub mod debug_record;
 pub mod error;
+pub mod task_pipeline;
 pub mod metrics;
 pub mod opro;
 pub mod oracle;

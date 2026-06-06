@@ -1,0 +1,79 @@
+{
+  "_benchmark": "INNOVATION-5-Tier2",
+  "_h2ai_validates": "INNOVATION-5 — H2-P vs B3 on 4-constraint task; Tier 2 measures intermediate enforcement value",
+  "_tenant_id": "innovation-5-team",
+  "_timeout_s": 7200,
+  "_compare_semantics": "strict",
+  "description": "Design the quota change mechanism for a multi-tenant SaaS billing service. The system must simultaneously satisfy all four of the following requirements: (1) IDEMPOTENCY — if the same quota change request is retried within 30 seconds (e.g., due to network timeout), the quota must not be changed twice; (2) IMMUTABLE AUDIT — every quota change must be recorded in an append-only audit log that cannot be modified or deleted; (3) NO DISTRIBUTED LOCKS — quota enforcement must not use distributed locks, advisory locks, or WATCH/MULTI/EXEC retryable transactions; (4) TENANT ISOLATION — the tenant_id used for all quota key lookups and audit records must come exclusively from the authenticated JWT, never from user-supplied request parameters. Provide the complete write path with data structures, atomic operations, and failure handling.",
+  "pareto_weights": {
+    "diversity": 0.35,
+    "containment": 0.55,
+    "throughput": 0.1
+  },
+  "explorers": {
+    "count": 3,
+    "tau_min": 0.2,
+    "tau_max": 0.85,
+    "slot_configs": [
+      {
+        "role_frame": "You are a Redis atomicity specialist. Your rule: every multi-step read-modify-write on quota state must be a single Lua EVAL. You have fixed TOCTOU bugs where GET+DECR race conditions caused double-charging, and you have removed every WATCH/MULTI/EXEC from high-traffic hot paths because retry storms occur under load.",
+        "cot_style": "step_by_step",
+        "focus_mandate": "Quota idempotency check and decrement must be a single Lua EVAL that atomically: (1) checks if the idempotency key exists, (2) returns cached result if so, (3) otherwise decrements and stores the idempotency key with TTL. No WATCH/MULTI/EXEC, no SETNX followed by DECR, no GET+DECR sequence. The tenant_id used in all Redis key prefixes must come from the JWT 'tid' claim passed into the Lua script as a safe argument — not from any user-controlled field.",
+        "rejection_criteria": "Reject WATCH/MULTI/EXEC anywhere in the quota path. Reject designs where the idempotency check and quota decrement are not atomic. Reject tenant_id extracted from request body or headers for key construction.",
+        "constraint_domains": ["idempotency", "atomicity", "concurrency"]
+      },
+      {
+        "role_frame": "You are an audit compliance engineer who has failed SOC 2 audits because audit logs were mutable (UPDATE on audit rows) or incomplete (idempotent retries not logged). You know the difference between an audit trail and an event log.",
+        "cot_style": "backward_chaining",
+        "focus_mandate": "The audit log must use INSERT-only PostgreSQL writes. Each record must contain: tenant_id (from JWT), actor_id (from JWT sub claim), request_id (idempotency key), old_quota, new_quota, change_type ('applied' or 'deduplicated'), timestamp_ms. Idempotent retries must still emit an audit record with change_type='deduplicated'. No UPDATE or DELETE on audit rows ever. Audit write must be durable (not async fire-and-forget that can be lost).",
+        "rejection_criteria": "Reject designs where idempotent retries skip audit logging. Reject mutable audit storage. Reject actor_id from request body. Reject async audit writes without durability guarantees.",
+        "constraint_domains": ["audit", "compliance", "immutability"]
+      },
+      {
+        "role_frame": "You are a multi-tenant security architect who has investigated cross-tenant data leakage incidents. In every incident, the root cause was trusting a user-supplied tenant_id for access control instead of the authenticated JWT claim.",
+        "cot_style": "devils_advocate",
+        "focus_mandate": "All four constraints must be satisfied simultaneously with no mutual compromise. Specifically: (1) the Lua EVAL must use JWT-derived tenant_id as a safe KEYS argument — never concatenated from request parameters; (2) the audit record's tenant_id must come from the same JWT validation, not from the Lua script's return value or a request field; (3) the no-distributed-locks constraint must not be satisfied by removing atomicity (e.g., 'we just retry on failure' is a distributed lock in disguise); (4) idempotency must cover the audit write too — duplicate detection must not write two 'applied' audit records.",
+        "rejection_criteria": "Reject any design where tenant_id for Redis keys or audit records comes from user-supplied input. Reject designs where satisfying one constraint weakens another. Reject 'retry-until-success' as a substitute for atomic operations.",
+        "constraint_domains": ["multi-tenancy", "security", "idempotency"]
+      }
+    ]
+  },
+  "constraints": ["CONSTRAINT-004", "CONSTRAINT-005", "CONSTRAINT-008", "CONSTRAINT-TAU-1"],
+  "context": "Infrastructure: Redis 7.2 (quota counters, idempotency keys with 60s TTL), PostgreSQL (immutable audit log). Current broken design: quota decrement uses Redis GET + DECR sequence (TOCTOU race under retries), no idempotency key storage, no audit log, tenant_id accepted from X-Tenant-ID request header. Under load testing, concurrent retries caused quota to reach negative values — effectively unlimited usage — for three enterprise tenants.",
+  "_expected": {
+    "terminal": "MergeResolved",
+    "valid_proposals_min": 1,
+    "should_prune": [
+      {
+        "description": "Proposal that checks idempotency key with GET then decrements with DECR as separate Redis operations",
+        "violates": "CONSTRAINT-004 — TOCTOU race; concurrent retries can still double-decrement"
+      },
+      {
+        "description": "Proposal that derives tenant_id from the X-Tenant-ID HTTP header for Redis key construction",
+        "violates": "CONSTRAINT-TAU-1 — user-supplied tenant_id allows cross-tenant quota manipulation"
+      },
+      {
+        "description": "Proposal that uses WATCH/MULTI/EXEC for quota atomicity",
+        "violates": "CONSTRAINT-008 — WATCH/MULTI/EXEC is a distributed lock; creates retry storms under load"
+      }
+    ],
+    "_review_checklist": [
+      {
+        "id": "I5T2/1",
+        "text": "Does the design use a single atomic operation (Lua EVAL or equivalent) that checks the idempotency key AND decrements the quota — with no separate GET/DECR sequence?"
+      },
+      {
+        "id": "I5T2/2",
+        "text": "Does the design avoid WATCH/MULTI/EXEC, advisory locks, and distributed locks entirely in the quota decrement path?"
+      },
+      {
+        "id": "I5T2/3",
+        "text": "Does the audit log use INSERT-only semantics with change_type recorded for both 'applied' and 'deduplicated' (retry) events?"
+      },
+      {
+        "id": "I5T2/4",
+        "text": "Is the tenant_id for all quota key construction and audit records derived exclusively from the authenticated JWT — not from the request body, URL parameters, or headers?"
+      }
+    ]
+  }
+}

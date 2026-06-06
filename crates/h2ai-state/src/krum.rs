@@ -83,7 +83,7 @@ fn token_jaccard(a: &str, b: &str) -> f64 {
     let ta = tokenize(a);
     let tb = tokenize(b);
     if ta.is_empty() && tb.is_empty() {
-        return 0.0;
+        return 1.0;
     }
     let intersection = ta.intersection(&tb).count() as f64;
     let union = ta.union(&tb).count() as f64;

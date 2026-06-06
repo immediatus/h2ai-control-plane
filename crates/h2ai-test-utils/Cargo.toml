@@ -7,11 +7,15 @@ authors.workspace    = true
 license.workspace    = true
 
 [dependencies]
-h2ai-types    = { path = "../h2ai-types" }
-h2ai-tools    = { path = "../h2ai-tools" }
-h2ai-adapters = { path = "../h2ai-adapters" }
-async-trait   = { workspace = true }
-mockall       = { workspace = true }
+h2ai-types        = { path = "../h2ai-types" }
+h2ai-tools        = { path = "../h2ai-tools" }
+h2ai-adapters     = { path = "../h2ai-adapters" }
+h2ai-state        = { path = "../h2ai-state" }
+h2ai-orchestrator = { path = "../h2ai-orchestrator" }
+async-trait       = { workspace = true }
+chrono            = { workspace = true }
+futures           = { workspace = true }
+mockall           = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

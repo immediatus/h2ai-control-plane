@@ -5,6 +5,7 @@ edition     = "2021"
 
 [dependencies]
 async-trait = { workspace = true }
+futures     = { workspace = true }
 serde       = { workspace = true }
 serde_yaml  = { workspace = true }
 thiserror   = { workspace = true }

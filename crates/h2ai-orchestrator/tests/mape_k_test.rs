@@ -274,3 +274,16 @@ fn mape_k_decision_complexity_overflow_variant_exists() {
         _ => panic!("unexpected variant"),
     }
 }
+
+#[test]
+fn test_inject_wave_continue() {
+    let mut ctrl = default_controller();
+    assert!(ctrl.params().retry_context.is_none());
+
+    ctrl.inject_wave_continue(Some("Lua".into()), Some("Prefer atomic ops".into()));
+    assert_eq!(ctrl.params().retry_context.as_deref(), Some("Lua\nMANDATE OVERRIDE: Prefer atomic ops"));
+
+    ctrl.inject_wave_continue(Some("Python".into()), None);
+    assert_eq!(ctrl.params().retry_context.as_deref(), Some("Lua\nMANDATE OVERRIDE: Prefer atomic ops\nPython"));
+}
+

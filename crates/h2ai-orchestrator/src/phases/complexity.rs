@@ -72,7 +72,18 @@ pub async fn run(input: &EngineInput<'_>, system_context: &str) -> Result<Output
 
     let n_max_ceiling = cc.n_max().floor() as u32;
     // Hard floor: preserve quorum even after shadow-mode tasks or CI override paths.
+    let unclamped = n_max_ceiling;
     let n_max_ceiling = n_max_ceiling.max(QUORUM_FLOOR);
+    if n_max_ceiling > unclamped {
+        tracing::warn!(
+            target: "h2ai.engine",
+            unclamped_n_max = unclamped,
+            n_max_floor = QUORUM_FLOOR,
+            shadow_mode = input.cfg.task_complexity.shadow_mode,
+            "n_max raised to quorum floor — calibration below minimum; \
+             adapter pool may be smaller than floor implies"
+        );
+    }
 
     Ok(Output {
         assessed_quadrant,

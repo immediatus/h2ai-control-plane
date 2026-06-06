@@ -84,6 +84,7 @@ fn fake_provider(agent_id: AgentId) -> MockFakeProvider {
 /// Integration test: requires a running NATS server at NATS_URL (default nats://localhost:4222).
 /// Run with: NATS_URL=nats://localhost:4222 cargo test -p h2ai-orchestrator -- --ignored
 #[tokio::test]
+#[ignore = "integration: requires NATS — run with: cargo test -- --ignored"]
 async fn nats_dispatch_adapter_round_trip() {
     use futures::StreamExt;
 
@@ -200,6 +201,7 @@ async fn nats_dispatch_adapter_round_trip() {
 // ── kind() and Debug ──────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "integration: requires NATS — run with: cargo test -- --ignored"]
 async fn nats_dispatch_adapter_kind_is_cloud_generic() {
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = Arc::new(match NatsClient::connect(&nats_url).await {
@@ -237,6 +239,7 @@ async fn nats_dispatch_adapter_kind_is_cloud_generic() {
 }
 
 #[tokio::test]
+#[ignore = "integration: requires NATS — run with: cargo test -- --ignored"]
 async fn nats_dispatch_adapter_debug_format_contains_descriptor() {
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = Arc::new(match NatsClient::connect(&nats_url).await {
@@ -277,6 +280,7 @@ async fn nats_dispatch_adapter_debug_format_contains_descriptor() {
 // ── execute: agent selection failure ─────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "integration: requires NATS — run with: cargo test -- --ignored"]
 async fn nats_dispatch_adapter_execute_returns_network_error_on_agent_selection_failure() {
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
     let nats = Arc::new(match NatsClient::connect(&nats_url).await {
@@ -332,6 +336,7 @@ async fn nats_dispatch_adapter_execute_returns_network_error_on_agent_selection_
 // ── execute: agent returns error field → NetworkError ────────────────────────
 
 #[tokio::test]
+#[ignore = "integration: requires NATS — run with: cargo test -- --ignored"]
 async fn nats_dispatch_adapter_execute_returns_network_error_when_agent_result_has_error() {
     use futures::StreamExt;
     use h2ai_types::agent::TaskResult;
@@ -419,4 +424,71 @@ async fn nats_dispatch_adapter_execute_returns_network_error_when_agent_result_h
     );
 
     agent_handle.await.expect("agent done");
+}
+
+// ── Unit test: dispatch adapter with MockTaskDispatchBackend ──────────────────
+
+#[tokio::test]
+async fn dispatch_adapter_execute_uses_mock_nats() {
+    use h2ai_test_utils::MockTaskDispatchBackend;
+    use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
+    use h2ai_types::agent::TaskResult;
+    use h2ai_types::identity::{AgentId, TaskId};
+    use h2ai_types::sizing::TauValue;
+    use std::sync::Mutex;
+
+    let task_id_capture: Arc<Mutex<Option<TaskId>>> = Arc::new(Mutex::new(None));
+    let task_id_clone = task_id_capture.clone();
+
+    let mut mock_dispatch = MockTaskDispatchBackend::new();
+
+    mock_dispatch
+        .expect_await_task_result_once()
+        .once()
+        .returning(move |tid, _timeout| {
+            *task_id_clone.lock().unwrap() = Some(tid.clone());
+            Ok(TaskResult {
+                task_id: tid.clone(),
+                agent_id: AgentId::from("mock-agent"),
+                output: "mock output".into(),
+                token_cost: 42,
+                error: None,
+                tool_calls: vec![],
+            })
+        });
+
+    mock_dispatch
+        .expect_publish_task_payload()
+        .once()
+        .returning(|_| Ok(()));
+
+    let adapter = NatsDispatchAdapter::new(NatsDispatchConfig {
+        nats: Arc::new(mock_dispatch),
+        provider: Arc::new(fake_provider(AgentId::from("mock-agent"))),
+        agent_descriptor: AgentDescriptor {
+            model: "mock-model".into(),
+            tools: vec![],
+            cost_tier: CostTier::Low,
+        },
+        task_requirements: TaskRequirements {
+            max_cost_tier: CostTier::High,
+            required_tools: vec![],
+        },
+        task_timeout: Duration::from_secs(5),
+        payload_store: Arc::new(
+            h2ai_orchestrator::payload_store::MemoryPayloadStore::new(),
+        ),
+        offload_threshold_bytes: 524_288,
+    });
+
+    let request = ComputeRequest {
+        system_context: "ctx".into(),
+        task: "hello mock".into(),
+        tau: TauValue::new(0.5).unwrap(),
+        max_tokens: 128,
+    };
+
+    let response = adapter.execute(request).await.expect("execute succeeded");
+    assert_eq!(response.output, "mock output");
+    assert_eq!(response.token_cost, 42);
 }

@@ -1626,6 +1626,7 @@ name = "h2ai-knowledge"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "h2ai-constraints",
  "serde",
  "serde_yaml",
@@ -1795,7 +1796,11 @@ name = "h2ai-test-utils"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "futures",
  "h2ai-adapters",
+ "h2ai-orchestrator",
+ "h2ai-state",
  "h2ai-tools",
  "h2ai-types",
  "mockall",

@@ -144,6 +144,16 @@ impl NatsClient {
         })
         .await?;
 
+        // KV bucket: per-tenant skill nodes extracted from task resolution traces
+        self.ensure_kv_bucket(kv::Config {
+            bucket: self.state_cfg.skills_bucket.clone(),
+            description: "Per-tenant skill nodes extracted from resolved task traces".to_owned(),
+            history: 1,
+            storage: stream::StorageType::File,
+            ..Default::default()
+        })
+        .await?;
+
         // KV bucket: rolling oracle calibration observations for conformal interval estimation
         self.ensure_kv_bucket(kv::Config {
             bucket: self.state_cfg.oracle_calibration_bucket.clone(),
@@ -701,6 +711,40 @@ impl NatsClient {
         match kv.get(&key).await {
             Ok(Some(entry)) => Ok(Some(entry.to_vec())),
             Ok(None) => Ok(None),
+            Err(e) => Err(NatsError::KvError(e.to_string())),
+        }
+    }
+
+    pub async fn put_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.skills_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/skills", tenant_id.bucket_safe());
+        kv.put(&key, json_bytes.into())
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<u8>, NatsError> {
+        let kv = self
+            .jetstream
+            .get_key_value(&self.state_cfg.skills_bucket)
+            .await
+            .map_err(|e| NatsError::KvError(e.to_string()))?;
+        let key = format!("{}/skills", tenant_id.bucket_safe());
+        match kv.get(&key).await {
+            Ok(Some(entry)) => Ok(entry.to_vec()),
+            Ok(None) => Ok(vec![]),
             Err(e) => Err(NatsError::KvError(e.to_string())),
         }
     }
@@ -2063,5 +2107,131 @@ impl crate::backend::ReasoningStore for NatsClient {
     ) -> Vec<TaskMetaState> {
         self.list_task_meta_states(tenant_id, meta_state_prefix, limit)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::ConflictStore for NatsClient {
+    async fn ensure_conflict_bucket(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError> {
+        self.ensure_tenant_conflict_bucket(tenant_id, bucket_prefix).await
+    }
+
+    async fn get_conflict_accumulator(
+        &self,
+        tenant_id: &TenantId,
+        bucket_prefix: &str,
+    ) -> Result<Option<ConflictRateAccumulator>, NatsError> {
+        NatsClient::get_conflict_accumulator(self, tenant_id, bucket_prefix).await
+    }
+
+    async fn put_conflict_accumulator(
+        &self,
+        acc: &ConflictRateAccumulator,
+        bucket_prefix: &str,
+    ) -> Result<(), NatsError> {
+        NatsClient::put_conflict_accumulator(self, acc, bucket_prefix).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::SignalSubscriber for NatsClient {
+    async fn subscribe_signals(
+        &self,
+        task_id: &h2ai_types::identity::TaskId,
+        tenant_id: &h2ai_types::identity::TenantId,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<h2ai_types::signal::ResumeSignal, NatsError>>,
+        NatsError,
+    > {
+        NatsClient::subscribe_signals(self, task_id, tenant_id).await
+    }
+
+    async fn delete_signal_consumer(
+        &self,
+        task_id: &h2ai_types::identity::TaskId,
+    ) -> Result<(), NatsError> {
+        NatsClient::delete_signal_consumer(self, task_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::ShadowDomainStore for NatsClient {
+    async fn put_shadow_promoted_domains(
+        &self,
+        domains: &std::collections::HashSet<String>,
+    ) -> Result<(), NatsError> {
+        NatsClient::put_shadow_promoted_domains(self, domains).await
+    }
+
+    async fn get_shadow_promoted_domains(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, NatsError> {
+        NatsClient::get_shadow_promoted_domains(self).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::TaskCheckpointStore for NatsClient {
+    async fn list_task_checkpoints(&self) -> Vec<h2ai_types::checkpoint::TaskCheckpoint> {
+        NatsClient::list_task_checkpoints(self).await
+    }
+
+    async fn put_task_checkpoint(
+        &self,
+        cp: &h2ai_types::checkpoint::TaskCheckpoint,
+        expected_revision: Option<u64>,
+    ) -> Result<u64, NatsError> {
+        NatsClient::put_task_checkpoint(self, cp, expected_revision).await
+    }
+
+    async fn get_task_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<h2ai_types::checkpoint::TaskCheckpoint>, NatsError> {
+        NatsClient::get_task_checkpoint(self, task_id).await
+    }
+
+    async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), NatsError> {
+        NatsClient::delete_task_checkpoint(self, task_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::SkillStore for NatsClient {
+    async fn put_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+        json_bytes: Vec<u8>,
+    ) -> Result<(), NatsError> {
+        NatsClient::put_skill_nodes(self, tenant_id, json_bytes).await
+    }
+
+    async fn get_skill_nodes(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<u8>, NatsError> {
+        NatsClient::get_skill_nodes(self, tenant_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::backend::TaskDispatchBackend for NatsClient {
+    async fn publish_task_payload(
+        &self,
+        payload: &h2ai_types::agent::TaskPayload,
+    ) -> Result<(), NatsError> {
+        NatsClient::publish_task_payload(self, payload).await
+    }
+
+    async fn await_task_result_once(
+        &self,
+        task_id: &h2ai_types::identity::TaskId,
+        timeout: std::time::Duration,
+    ) -> Result<h2ai_types::agent::TaskResult, NatsError> {
+        NatsClient::await_task_result_once(self, task_id, timeout).await
     }
 }

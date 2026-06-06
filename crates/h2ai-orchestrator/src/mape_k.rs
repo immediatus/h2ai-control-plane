@@ -596,6 +596,40 @@ impl MapeKController {
         }
     }
 
+    // ── WaveContinue signal injection ────────────────────────────────
+
+    /// Apply operator-supplied grounding and mandate override from a `WaveContinue` signal.
+    ///
+    /// `grounding` is appended to `retry_context` so the next wave's context assembler
+    /// receives it as additional repair guidance. `mandate_override`, when present, is
+    /// prepended with a label and appended to the same context field — it will appear in
+    /// the slot context alongside the original mandate.
+    pub fn inject_wave_continue(
+        &mut self,
+        grounding: Option<String>,
+        mandate_override: Option<String>,
+    ) {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(g) = grounding {
+            if !g.trim().is_empty() {
+                parts.push(g);
+            }
+        }
+        if let Some(m) = mandate_override {
+            if !m.trim().is_empty() {
+                parts.push(format!("MANDATE OVERRIDE: {m}"));
+            }
+        }
+        if parts.is_empty() {
+            return;
+        }
+        let injection = parts.join("\n");
+        self.retry_context = Some(match self.retry_context.take() {
+            Some(existing) => format!("{existing}\n{injection}"),
+            None => injection,
+        });
+    }
+
     // ── Complexity-Ceiling Routing ────────────────────────────────────
 
     /// Return N_eff (participation ratio cosine) from the most recent `ZeroSurvival` wave.
@@ -1230,6 +1264,7 @@ impl MapeKController {
             leader_elected_events: std::mem::take(&mut self.pending_leader_elected_events),
             socratic_diagnosis_events: std::mem::take(&mut self.pending_socratic_diagnosis_events),
             consensus_agreement_rate: None,
+            tokens_used: self.tokens_used,
         }
     }
 

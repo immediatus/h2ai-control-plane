@@ -24,8 +24,9 @@ pub mod semilattice;
 pub mod weiszfeld;
 
 pub use backend::{
-    CalibrationStore, EstimatorStore, EventPublisher, OproStore, ReasoningStore, SignalPublisher,
-    SnapshotStore, StateBackend,
+    CalibrationStore, ConflictStore, EstimatorStore, EventPublisher, NatsBackend, OproStore,
+    ReasoningStore, ShadowDomainStore, SignalPublisher, SignalSubscriber, SnapshotStore,
+    StateBackend, TaskCheckpointStore, TaskDispatchBackend,
 };
 pub use in_memory::{CapturedEvent, InMemoryStateBackend};
 pub use nats::NatsClient;

@@ -170,3 +170,332 @@ pub fn mock_mcp(files: HashMap<String, String>) -> MockMcpClient {
     });
     m
 }
+
+// ── MockNatsBackend ──────────────────────────────────────────────────────────
+
+use h2ai_state::backend::{
+    CalibrationStore, ConflictStore, EstimatorStore, EventPublisher, OproStore, ReasoningStore,
+    ShadowDomainStore, SignalPublisher, SignalSubscriber, SkillStore, SnapshotStore, TailEvents,
+    TaskCheckpointStore, TaskDispatchBackend,
+};
+use h2ai_state::nats::NatsError;
+use h2ai_types::agent::{TaskPayload, TaskResult};
+use h2ai_types::calibration::CalibrationRecord;
+use h2ai_types::checkpoint::TaskCheckpoint;
+use h2ai_types::conflict::ConflictRateAccumulator;
+use h2ai_types::events::{CalibrationCompletedEvent, H2AIEvent, TaskSnapshot};
+use h2ai_types::identity::{TaskId, TenantId};
+use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
+use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
+use h2ai_types::signal::ResumeSignal;
+use futures::stream::BoxStream;
+use std::collections::HashSet;
+
+mockall::mock! {
+    pub NatsBackend {}
+
+    #[async_trait::async_trait]
+    impl EventPublisher for NatsBackend {
+        async fn publish_event(&self, task_id: &TaskId, event: &H2AIEvent) -> Result<(), NatsError>;
+        async fn publish_to(&self, subject: &str, event: &H2AIEvent) -> Result<(), NatsError>;
+        async fn publish_event_seq(&self, task_id: &TaskId, event: &H2AIEvent) -> Result<u64, NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl SnapshotStore for NatsBackend {
+        async fn put_snapshot(&self, snap: &TaskSnapshot) -> Result<(), NatsError>;
+        async fn get_snapshot(&self, task_id: &TaskId) -> Result<Option<TaskSnapshot>, NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl CalibrationStore for NatsBackend {
+        async fn put_calibration(&self, cal: &CalibrationCompletedEvent) -> Result<(), NatsError>;
+        async fn get_calibration(&self) -> Result<Option<CalibrationCompletedEvent>, NatsError>;
+        async fn get_calibration_record(&self, adapter_profile: &str) -> Result<Option<CalibrationRecord>, NatsError>;
+        async fn put_calibration_record(&self, record: &CalibrationRecord) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl TailEvents for NatsBackend {
+        async fn tail_task_events_boxed(
+            &self,
+            task_id: &TaskId,
+            from_seq: u64,
+        ) -> Result<BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl SignalPublisher for NatsBackend {
+        async fn publish_signal(&self, signal: &ResumeSignal) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl SignalSubscriber for NatsBackend {
+        async fn subscribe_signals(
+            &self,
+            task_id: &TaskId,
+            tenant_id: &TenantId,
+        ) -> Result<BoxStream<'static, Result<ResumeSignal, NatsError>>, NatsError>;
+        async fn delete_signal_consumer(&self, task_id: &TaskId) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl OproStore for NatsBackend {
+        async fn put_prompt_variant(&self, variant: &PromptVariant) -> Result<(), NatsError>;
+        async fn get_prompt_variant(&self, adapter_name: &str, prompt_key: &str, variant_id: &str) -> Result<Option<PromptVariant>, NatsError>;
+        async fn get_active_variant_ptr(&self, adapter_name: &str, prompt_key: &str) -> Result<Option<String>, NatsError>;
+        async fn set_active_variant_ptr(&self, adapter_name: &str, prompt_key: &str, variant_id: &str) -> Result<(), NatsError>;
+        async fn get_adapter_opro_state(&self, adapter_name: &str) -> Result<Option<AdapterOproState>, NatsError>;
+        async fn put_adapter_opro_state(&self, state: &AdapterOproState) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl EstimatorStore for NatsBackend {
+        async fn get_tao_estimator_state(&self, tenant_id: &TenantId) -> Result<Option<(f64, usize)>, NatsError>;
+        async fn put_tao_estimator_state(&self, tenant_id: &TenantId, ema: f64, count: usize) -> Result<(), NatsError>;
+        async fn get_srani_state(&self, tenant_id: &TenantId) -> Result<Option<(f64, usize)>, NatsError>;
+        async fn put_srani_state(&self, tenant_id: &TenantId, ema_cfi: f64, count: usize) -> Result<(), NatsError>;
+        async fn get_bandit_state(&self, tenant_id: &TenantId) -> Result<Option<Vec<u8>>, NatsError>;
+        async fn put_bandit_state(&self, tenant_id: &TenantId, json_bytes: Vec<u8>) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl ReasoningStore for NatsBackend {
+        async fn ensure_reasoning_buckets(&self, tenant_id: &TenantId, checkpoint_prefix: &str, meta_state_prefix: &str) -> Result<(), NatsError>;
+        async fn put_reasoning_checkpoint(&self, checkpoint: &TaskReasoningCheckpoint, checkpoint_prefix: &str) -> Result<(), NatsError>;
+        async fn get_reasoning_checkpoint(&self, task_id: &TaskId, tenant_id: &TenantId, checkpoint_prefix: &str) -> Result<Option<TaskReasoningCheckpoint>, NatsError>;
+        async fn put_task_meta_state(&self, meta: &TaskMetaState, meta_state_prefix: &str) -> Result<(), NatsError>;
+        async fn get_task_meta_state(&self, task_id: &TaskId, tenant_id: &TenantId, meta_state_prefix: &str) -> Result<Option<TaskMetaState>, NatsError>;
+        async fn list_task_meta_states(&self, tenant_id: &TenantId, meta_state_prefix: &str, limit: usize) -> Vec<TaskMetaState>;
+    }
+
+    #[async_trait::async_trait]
+    impl ConflictStore for NatsBackend {
+        async fn ensure_conflict_bucket(&self, tenant_id: &TenantId, bucket_prefix: &str) -> Result<(), NatsError>;
+        async fn get_conflict_accumulator(&self, tenant_id: &TenantId, bucket_prefix: &str) -> Result<Option<ConflictRateAccumulator>, NatsError>;
+        async fn put_conflict_accumulator(&self, acc: &ConflictRateAccumulator, bucket_prefix: &str) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl ShadowDomainStore for NatsBackend {
+        async fn put_shadow_promoted_domains(&self, domains: &HashSet<String>) -> Result<(), NatsError>;
+        async fn get_shadow_promoted_domains(&self) -> Result<HashSet<String>, NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl TaskCheckpointStore for NatsBackend {
+        async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint>;
+        async fn put_task_checkpoint(&self, cp: &TaskCheckpoint, expected_revision: Option<u64>) -> Result<u64, NatsError>;
+        async fn get_task_checkpoint(&self, task_id: &str) -> Result<Option<TaskCheckpoint>, NatsError>;
+        async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), NatsError>;
+    }
+
+    #[async_trait::async_trait]
+    impl SkillStore for NatsBackend {
+        async fn put_skill_nodes(&self, tenant_id: &TenantId, json_bytes: Vec<u8>) -> Result<(), NatsError>;
+        async fn get_skill_nodes(&self, tenant_id: &TenantId) -> Result<Vec<u8>, NatsError>;
+    }
+}
+
+// ── MockTaskDispatchBackend ──────────────────────────────────────────────────
+
+mockall::mock! {
+    pub TaskDispatchBackend {}
+
+    #[async_trait::async_trait]
+    impl TaskDispatchBackend for TaskDispatchBackend {
+        async fn publish_task_payload(&self, payload: &TaskPayload) -> Result<(), NatsError>;
+        async fn await_task_result_once(
+            &self,
+            task_id: &TaskId,
+            timeout: std::time::Duration,
+        ) -> Result<TaskResult, NatsError>;
+    }
+}
+
+// ── Stage runner mocks ────────────────────────────────────────────────────────
+
+use h2ai_orchestrator::decomposition::DecompositionError;
+use h2ai_orchestrator::engine::{EngineError, EngineOutput};
+use h2ai_orchestrator::task_runner::{
+    DecompositionArgs, Decomposer, EngineRunner, OwnedEngineInput, ThinkingLoopArgs,
+    ThinkingLoopRunner,
+};
+use h2ai_types::manifest::ExplorerSlotConfig;
+use h2ai_types::thinking::ThinkingReport;
+
+mockall::mock! {
+    pub ThinkingLoopRunner {}
+
+    #[async_trait::async_trait]
+    impl ThinkingLoopRunner for ThinkingLoopRunner {
+        async fn run(&self, args: ThinkingLoopArgs) -> ThinkingReport;
+    }
+}
+
+mockall::mock! {
+    pub Decomposer {}
+
+    #[async_trait::async_trait]
+    impl Decomposer for Decomposer {
+        async fn decompose(&self, args: DecompositionArgs) -> Result<Vec<ExplorerSlotConfig>, DecompositionError>;
+    }
+}
+
+mockall::mock! {
+    pub EngineRunner {}
+
+    #[async_trait::async_trait]
+    impl EngineRunner for EngineRunner {
+        async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, EngineError>;
+    }
+}
+
+pub fn stub_thinking_report() -> ThinkingReport {
+    ThinkingReport {
+        shared_understanding: "stub understanding".into(),
+        tensions: vec![],
+        coverage_score: 0.9,
+        iteration: 1,
+        prev_similarity: 0.0,
+        retrieved_node_ids: vec![],
+        skill_nodes_used: 0,
+    }
+}
+
+/// Build a minimal `TopologyProvisionedEvent` with `retry_count` set.
+/// Only `retry_count` and `constraint_tombstone` affect `skill_from_output` —
+/// all structural fields are empty/default.
+pub fn stub_topology_retry_event(
+    task_id: h2ai_types::identity::TaskId,
+    retry_count: u32,
+    constraint_tombstone: Option<String>,
+) -> h2ai_types::events::TopologyProvisionedEvent {
+    use h2ai_types::config::{AuditorConfig, TopologyKind};
+    use h2ai_types::events::TopologyProvisionedEvent;
+    use h2ai_types::sizing::{CoherencyCoefficients, CoordinationThreshold, MergeStrategy};
+    let cc = CoherencyCoefficients {
+        alpha: 0.1,
+        beta_base: 0.01,
+        beta_quality: None,
+        cg_samples: vec![0.5],
+        sample_timestamps: vec![],
+    };
+    TopologyProvisionedEvent {
+        task_id,
+        topology_kind: TopologyKind::Ensemble,
+        explorer_configs: vec![],
+        auditor_config: AuditorConfig::default(),
+        n_max: 2.0,
+        interface_n_max: None,
+        beta_eff: 0.03,
+        role_error_costs: vec![],
+        merge_strategy: MergeStrategy::ScoreOrdered,
+        coordination_threshold: CoordinationThreshold::from_calibration(&cc, 1.0),
+        review_gates: vec![],
+        retry_count,
+        timestamp: chrono::Utc::now(),
+        constraint_tombstone,
+    }
+}
+
+pub fn stub_engine_output(task_id: h2ai_types::identity::TaskId) -> EngineOutput {
+    use h2ai_orchestrator::attribution::HarnessAttribution;
+    use h2ai_orchestrator::coherence::CoherenceState;
+    use h2ai_types::events::{SelectionResolvedEvent, TaskComplexityAssessedEvent};
+    use h2ai_types::sizing::{MergeStrategy, ProbeSkipReason, TaskQuadrant};
+
+    let resolved = SelectionResolvedEvent {
+        task_id: task_id.clone(),
+        valid_proposals: vec![],
+        pruned_proposals: vec![],
+        merge_strategy: MergeStrategy::ScoreOrdered,
+        timestamp: chrono::Utc::now(),
+        merge_elapsed_secs: None,
+        n_input_proposals: 0,
+        n_failed_proposals: 0,
+    };
+    let complexity = TaskComplexityAssessedEvent {
+        task_id: task_id.clone(),
+        tcc_structural: 0.5,
+        tcc_empirical: None,
+        tcc_effective: 0.5,
+        n_eff_pool: None,
+        task_quadrant: TaskQuadrant::Precision,
+        probe_skipped: true,
+        probe_skip_reason: ProbeSkipReason::None,
+        heavy_fraction: 0.0,
+        tcc_mismatch: false,
+        probe_cost_tokens: 0,
+        n_informative_static: 0,
+        timestamp: chrono::Utc::now(),
+    };
+    let attribution = HarnessAttribution {
+        baseline_quality: 0.7,
+        topology_gain: 0.1,
+        verification_gain: 0.0,
+        tao_gain: 0.0,
+        q_confidence: 0.8,
+        prediction_basis: h2ai_types::sizing::PredictionBasis::Heuristic,
+        q_measured: None,
+        rho_adjusted: 0.7,
+        case_b_flag: false,
+        synthesis_gain: 0.0,
+    };
+    EngineOutput {
+        task_id,
+        resolved_output: "stub output".into(),
+        selection_resolved: resolved,
+        attribution,
+        attribution_interval: None,
+        verification_events: vec![],
+        failed_proposals: vec![],
+        talagrand: None,
+        suggested_next_params: None,
+        waste_ratio: 0.0,
+        applied_optimizations: vec![],
+        topology_retry_events: vec![],
+        mode_collapse_count: 0,
+        epistemic_yield: None,
+        task_quadrant: Some(TaskQuadrant::Precision),
+        complexity_event: complexity,
+        frontier_event: None,
+        adapter_correctness: vec![],
+        coherence_state: CoherenceState {
+            uncovered_domains: vec![],
+            active_contradictions: vec![],
+        },
+        comparison_events: vec![],
+        shadow_audit_events: vec![],
+        correlated_warnings: vec![],
+        researcher_grounding_events: vec![],
+        diversity_degraded_event: None,
+        srani_events: vec![],
+        srani_ema_cfi_updated: 0.0,
+        srani_count_updated: 0,
+        oracle_gate_passed: None,
+        leader_elected_events: vec![],
+        socratic_diagnosis_events: vec![],
+        consensus_agreement_rate: None,
+        tokens_used: 0,
+    }
+}
+
+#[cfg(test)]
+mod nats_mock_tests {
+    use super::*;
+    use std::sync::Arc;
+    use h2ai_state::backend::NatsBackend;
+
+    #[test]
+    fn mock_nats_backend_satisfies_nats_backend_trait() {
+        let mock = MockNatsBackend::new();
+        let _: Arc<dyn NatsBackend> = Arc::new(mock);
+    }
+
+    #[test]
+    fn mock_task_dispatch_backend_satisfies_trait() {
+        let mock = MockTaskDispatchBackend::new();
+        let _: Arc<dyn TaskDispatchBackend> = Arc::new(mock);
+    }
+}

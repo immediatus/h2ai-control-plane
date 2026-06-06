@@ -4,10 +4,16 @@ use h2ai_constraints::resolver::ConstraintResolver;
 use h2ai_constraints::source::{FsConstraintIndex, FsConstraintStore};
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_knowledge::provider::KnowledgeProvider;
+use h2ai_knowledge::skill_provider::{CompositeProvider, SkillProvider};
 use h2ai_orchestrator::payload_store::{MemoryPayloadStore, PayloadStore};
 use h2ai_orchestrator::session_journal::SessionJournal;
+use h2ai_orchestrator::task_runner::{
+    DefaultDecomposer, DefaultEngineRunner, DefaultThinkingLoopRunner, Decomposer, EngineRunner,
+    ThinkingLoopRunner,
+};
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_provisioner::provider::AgentProvider;
+use h2ai_state::backend::{NatsBackend, TaskDispatchBackend};
 use h2ai_state::nats::NatsClient;
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::identity::TenantId;
@@ -27,7 +33,16 @@ pub struct AppState {
     /// NATS client used for event publishing and KV persistence.
     ///
     /// `None` in unit-test builds that use `new_for_tests()`.
-    pub nats: Option<Arc<NatsClient>>,
+    pub nats: Option<Arc<dyn NatsBackend>>,
+    /// Raw async-nats client for oracle gate and thinking-loop oracle calls.
+    /// Populated from `NatsClient.client` at startup; `None` in test builds.
+    pub nats_raw_client: Option<async_nats::Client>,
+    /// Narrow dispatch-only view of the same NATS connection, for `NatsDispatchConfig`.
+    /// Coerced from `Arc<NatsClient>` at startup; `None` in test builds.
+    pub task_dispatch_nats: Option<Arc<dyn TaskDispatchBackend>>,
+    /// Concrete `NatsClient` for subsystems that need inherent methods not covered by traits
+    /// (e.g. `OracleAccumulator.nats_state`). `None` in test builds.
+    pub nats_concrete: Option<Arc<NatsClient>>,
     /// Resolved runtime configuration, loaded once at startup via `H2AIConfig::load_layered`.
     pub cfg: Arc<H2AIConfig>,
     /// In-memory task registry; tracks phase, status, and proposal counts per task ID.
@@ -93,12 +108,20 @@ pub struct AppState {
     /// Used to load `Vec<ConstraintDoc>` for the engine's `constraint_corpus`.
     pub constraint_resolver: Arc<ConstraintResolver>,
     /// Knowledge provider for hierarchical constraint retrieval.
-    /// Uses `Bm25WikiProvider` when [knowledge] config is present;
-    /// `PassthroughProvider` otherwise.
-    pub knowledge_provider: Arc<dyn KnowledgeProvider>,
+    /// Always a `CompositeProvider` that fans queries to both the wiki/passthrough provider
+    /// and the `skill_provider`, so extracted skills reach the thinking loop.
+    pub knowledge_provider: Arc<CompositeProvider>,
     /// Calibration drift monitor: tracks consensus_agreement_rate,
     /// fires DDM warnings and BOCPD changepoints, holds ORCA conformal margin.
     pub drift_monitor: std::sync::Arc<tokio::sync::Mutex<h2ai_autonomic::drift::DriftMonitor>>,
+    /// Thinking loop stage runner. Real: DefaultThinkingLoopRunner. Test: MockThinkingLoopRunner.
+    pub thinking_loop_runner: Arc<dyn ThinkingLoopRunner>,
+    /// Decomposition stage runner. Real: DefaultDecomposer. Test: MockDecomposer.
+    pub decomposer: Arc<dyn Decomposer>,
+    /// Engine execution runner. Real: DefaultEngineRunner. Test: MockEngineRunner.
+    pub engine_runner: Arc<dyn EngineRunner>,
+    /// Live skill node store, populated by post_run after each resolved task.
+    pub skill_provider: Arc<SkillProvider>,
 }
 
 impl AppState {
@@ -115,10 +138,14 @@ impl AppState {
         auditor_adapter: Arc<dyn IComputeAdapter>,
     ) -> Self {
         assert!(!adapter_pool.is_empty(), "adapter_pool must be non-empty");
-        let nats = Arc::new(nats);
+        let raw_client = nats.client.clone();
+        let nats_arc = Arc::new(nats);
         let snapshot_interval = cfg.snapshot_interval_events;
         let journal =
-            Arc::new(SessionJournal::new(nats.clone()).with_snapshot_interval(snapshot_interval));
+            Arc::new(SessionJournal::new(nats_arc.clone()).with_snapshot_interval(snapshot_interval));
+        let task_dispatch: Arc<dyn TaskDispatchBackend> = nats_arc.clone();
+        let nats_concrete = nats_arc.clone();
+        let nats: Arc<dyn NatsBackend> = nats_arc;
         let max_tasks = cfg.max_concurrent_tasks;
         let drift_monitor = std::sync::Arc::new(tokio::sync::Mutex::new(
             h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
@@ -146,8 +173,23 @@ impl AppState {
                 ),
             })
         };
+        // Build skill_provider before the struct literal so we can Arc::clone it into the
+        // composite.  main.rs replaces knowledge_provider with a real wiki+skill composite.
+        let skill_provider = SkillProvider::new();
+        let knowledge_provider = {
+            use h2ai_knowledge::provider::PassthroughProvider;
+            let base: Arc<dyn KnowledgeProvider> =
+                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(".")));
+            CompositeProvider::new(vec![
+                base,
+                Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
+            ])
+        };
         Self {
             nats: Some(nats),
+            nats_raw_client: Some(raw_client),
+            task_dispatch_nats: Some(task_dispatch),
+            nats_concrete: Some(nats_concrete),
             cfg: Arc::new(cfg),
             store: TaskStore::new(),
             tenant_registry: Arc::new(TenantRegistry::new()),
@@ -173,14 +215,12 @@ impl AppState {
             gap_research_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
             constraint_resolver,
-            knowledge_provider: {
-                use h2ai_knowledge::provider::PassthroughProvider;
-                // Default passthrough backed by empty corpus; overridden in main.rs
-                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
-                    ".",
-                )))
-            },
+            skill_provider,
+            knowledge_provider,
             drift_monitor,
+            thinking_loop_runner: Arc::new(DefaultThinkingLoopRunner),
+            decomposer: Arc::new(DefaultDecomposer),
+            engine_runner: Arc::new(DefaultEngineRunner),
         }
     }
 
@@ -202,8 +242,20 @@ impl AppState {
             Arc::new(FsConstraintIndex::from_docs(&[])),
             Arc::new(FsConstraintStore::from_docs(vec![])),
         ));
+        let skill_provider = SkillProvider::new();
+        let knowledge_provider = {
+            let base: Arc<dyn KnowledgeProvider> =
+                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(".")));
+            CompositeProvider::new(vec![
+                base,
+                Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
+            ])
+        };
         Self {
             nats: None,
+            nats_raw_client: None,
+            task_dispatch_nats: None,
+            nats_concrete: None,
             cfg: Arc::new(cfg),
             store: TaskStore::new(),
             tenant_registry: Arc::new(TenantRegistry::new()),
@@ -229,10 +281,12 @@ impl AppState {
             gap_research_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
             constraint_resolver,
-            knowledge_provider: Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
-                ".",
-            ))),
+            skill_provider,
+            knowledge_provider,
             drift_monitor,
+            thinking_loop_runner: Arc::new(DefaultThinkingLoopRunner),
+            decomposer: Arc::new(DefaultDecomposer),
+            engine_runner: Arc::new(DefaultEngineRunner),
         }
     }
 
@@ -393,6 +447,30 @@ impl AppState {
                 tracing::warn!(target: "h2ai.startup", error = %e, "srani state load failed; using cold-start defaults");
                 let midpoint = self.cfg.srani.cold_start_midpoint();
                 *ts.srani_state.write().await = (midpoint, 0);
+            }
+        }
+
+        // Skill nodes
+        {
+            use h2ai_knowledge::types::KnowledgeNode;
+            use h2ai_state::backend::SkillStore;
+            match nats.get_skill_nodes(tenant_id).await {
+                Ok(bytes) if !bytes.is_empty() => {
+                    match serde_json::from_slice::<Vec<KnowledgeNode>>(&bytes) {
+                        Ok(nodes) => {
+                            let n = nodes.len();
+                            self.skill_provider.push_all(nodes);
+                            tracing::info!(target: "h2ai.startup", n, "skill nodes restored from NATS KV");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "skill nodes deserialize failed; starting empty");
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "skill nodes load from NATS failed; starting empty");
+                }
             }
         }
 
