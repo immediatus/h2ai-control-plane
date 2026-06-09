@@ -56,6 +56,7 @@
 //! - [`compound`] — `CompoundTaskEngine::run` — decompose → review → schedule pipeline
 
 pub mod attribution;
+pub mod awareness_probe;
 pub mod bandit;
 pub mod ceiling_detector;
 pub mod coherence;
@@ -96,4 +97,5 @@ pub mod tao_loop;
 pub mod task_runner;
 pub mod task_store;
 pub mod thinking_loop;
+pub(crate) mod llm_parse;
 pub mod verification;

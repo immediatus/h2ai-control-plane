@@ -151,6 +151,18 @@ fn parse_thinking_tags_with_nested_brackets_do_not_confuse_scanner() {
     assert_eq!(slots.len(), 1);
 }
 
+/// Regression: rfind(']') would find the last `]` in the entire string, not the matching
+/// one. A `]` in trailing postamble text caused serde_json to receive garbage JSON.
+#[test]
+fn parse_trailing_bracket_in_postamble_does_not_confuse_scanner() {
+    let response = "Here is the committee:\n[\
+      {\"role_frame\": \"You are a performance engineer.\", \"cot_style\": \"step_by_step\"}\
+    ]\nSee options [A] and [B] above.";
+    let slots = parse_decomposition_response(response).unwrap();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].role_frame, "You are a performance engineer.");
+}
+
 /// Reasoning models (26B+) sometimes emit arrays for optional string fields.
 /// The parser must coerce them to "; "-joined strings rather than failing.
 #[test]

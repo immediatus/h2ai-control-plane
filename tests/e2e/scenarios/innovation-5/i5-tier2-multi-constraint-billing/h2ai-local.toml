@@ -1,0 +1,117 @@
+# INNOVATION-5 Tier 2 — H2-P arm (full MAPE-K enforcement)
+# 2 constraints: CONSTRAINT-004 (idempotency) + CONSTRAINT-005 (immutable audit)
+# Run: python3 tests/e2e/replay.py innovation-5/i5-tier2-multi-constraint-billing
+# Compare: python3 tests/e2e/replay.py --compare innovation-5/i5-tier2-multi-constraint-billing
+
+nats_url = "nats://host.docker.internal:4222"
+verifier_consensus_passes = 1
+max_autonomic_retries = 4
+adapter_enable_thinking = false
+knowledge_domain_scoping = true
+
+calibration_adapter_count = 1
+calibration_max_tokens    = 256
+
+[safety]
+profile = "development"
+
+[constraint_wiki]
+mode = "fs"
+corpus_path = "tests/e2e/constraints"
+
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+provider    = "llama_cpp"
+model       = "local"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+provider    = "llama_cpp"
+model       = "local"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+provider    = "llama_cpp"
+model       = "local"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+provider    = "llama_cpp"
+model       = "local"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = ""
+provider    = "llama_cpp"
+model       = "local"
+
+[hitl]
+enabled = false
+
+[thinking_loop]
+enabled            = true
+max_iterations     = 3
+coverage_threshold = 0.75
+
+debug_log_path = "/tmp/h2ai-debug-i5-tier2-h2ai.ndjson"
+
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.5
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 120
+
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 4
+hitl_threshold                 = 5
+verifier_decomposition_enabled = false
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2
+
+[gap_k1]
+enabled                     = true
+auto_repair_enabled         = true
+instability_threshold       = 0.10
+coherence_threshold         = 0.80
+repair_acceptance_threshold = 0.90
+probe_runs                  = 5
+repair_candidates           = 3
+probe_cache_ttl_secs        = 86400
+
+[ambiguity_detection]
+enabled                     = true
+score_threshold             = 0.6
+weight_multi_storage        = 0.20
+weight_fm_negation          = 0.30
+weight_remediation_conflict = 0.15
+weight_cross_check_negation = 0.20
+weight_llm_confirmed        = 0.25
+weight_jaccard_freeze_wave  = 0.15
+
+[awareness_probe]
+enabled          = true
+mode             = "shadow"
+judge_max_tokens = 1024

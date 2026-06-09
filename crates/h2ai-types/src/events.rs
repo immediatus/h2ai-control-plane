@@ -828,6 +828,34 @@ pub struct VerifierReasonContradictionEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// GAP-F8/F9: accumulated ambiguity evidence for a constraint check crossed the
+/// configured threshold.
+///
+/// Distinct from [`ConstraintAmbiguityEvent`] (judge-panel uncertain votes) and
+/// [`VerifierReasonContradictionEvent`] (single-wave reason contradiction): this
+/// event aggregates static load-time heuristics with cross-wave divergence and
+/// fires at most once per run per constraint check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintAmbiguityDetectedEvent {
+    pub task_id: TaskId,
+    pub constraint_id: String,
+    /// `Some(n)` = static scan pinpointed check `n`; routed to GAP-K1 spec repair.
+    /// `None`    = dynamic-only evidence; diagnostic, no repair attempted.
+    pub check_idx: Option<usize>,
+    /// Original text of the ambiguous check. Empty when `check_idx` is `None`.
+    pub original_check_text: String,
+    /// Accepted rewrite from `SpecRepairAdvisor`. Empty when `check_idx` is
+    /// `None`, when auto-repair is disabled, or when repair failed validation.
+    pub suggested_rewrite: String,
+    /// Human-readable evidence lines (Display-rendered `AmbiguityEvidence`).
+    pub evidence: Vec<String>,
+    /// Final accumulated score [0, 1] at the moment the threshold fired.
+    pub final_score: f32,
+    /// MAPE-K wave index at which the threshold fired.
+    pub wave: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Emitted when the pre-dispatch complexity probe completes for a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplexityProbeEvent {
@@ -1074,7 +1102,7 @@ pub struct ThinkingLoopCompletedEvent {
     pub shared_understanding_len: usize,
     /// Names of the archetypes selected in the final iteration (empty when disabled).
     pub archetypes: Vec<String>,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: DateTime<Utc>,
 }
 
 /// Emitted inside `patch_ensemble_p_from_oracle` when the oracle has accumulated enough
@@ -1087,7 +1115,7 @@ pub struct OracleCalibrationPatchedEvent {
     pub p_mean_before: f64,
     pub p_mean_after: f64,
     pub rho_mean: f64,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: DateTime<Utc>,
 }
 
 /// Emitted when `j_eff` EMA drops below the configured threshold, triggering OPRO.
@@ -1205,6 +1233,38 @@ pub struct ConstraintRepairFailed {
     pub timestamp: DateTime<Utc>,
 }
 
+// ── GAP-F6: Plan-Awareness Probe events ──────────────────────────────────────
+
+/// Per-constraint verdict entry for `AwarenessProbeCompletedEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeVerdictEntry {
+    pub constraint_id: String,
+    /// "ACKNOWLEDGED" | "NOT_ADDRESSED" | "CONTRADICTED"
+    pub verdict: String,
+    pub is_hard: bool,
+    /// True when constraint is statically ambiguous — informational only, never blocks.
+    pub gated: bool,
+    /// Truncated to 200 chars at event construction; full string lives in ProbeOutcome.
+    pub rationale: String,
+}
+
+/// Emitted by the Plan-Awareness Probe (GAP-F6) after every run.
+/// In shadow mode, pipeline is unaffected regardless of verdict values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwarenessProbeCompletedEvent {
+    pub task_id: TaskId,
+    /// "shadow" | "active" — string because h2ai-types must not depend on h2ai-config.
+    pub mode: String,
+    pub degraded: bool,
+    pub n_items: u32,
+    pub n_unjudged: u32,
+    /// Per-constraint verdicts — the falsification dataset.
+    pub verdicts: Vec<ProbeVerdictEntry>,
+    /// True when active mode triggered one thinking-loop re-iteration.
+    pub re_iterated: bool,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
 ///
 /// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
@@ -1314,6 +1374,11 @@ pub enum H2AIEvent {
     PromptVariantPromoted(PromptVariantPromotedEvent),
     /// Corpus quality signal: judge panel disagreement persistent across proposals in a wave.
     ConstraintAmbiguity(ConstraintAmbiguityEvent),
+    /// Wraps [`ConstraintAmbiguityDetectedEvent`]: accumulated ambiguity evidence crossed threshold (GAP-F8/F9).
+    ConstraintAmbiguityDetected(ConstraintAmbiguityDetectedEvent),
+    /// GAP-F6: plan-awareness probe completed; always emitted when probe is enabled.
+    /// Wraps [`AwarenessProbeCompletedEvent`]: contains constraint verdicts and probe stats.
+    AwarenessProbeCompleted(AwarenessProbeCompletedEvent),
     /// Wraps [`LeaderElectedEvent`]: Krum-elected leader installed or rotated for a new wave term.
     LeaderElected(LeaderElectedEvent),
     /// Wraps [`SocraticDiagnosisEvent`]: leader's Socratic diagnostic question for the current wave.
@@ -1356,6 +1421,44 @@ impl H2AIEvent {
             }
             _ => format!("h2ai.tasks.{task_id}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod gap_f6_event_tests {
+    use super::*;
+
+    #[test]
+    fn awareness_probe_completed_event_round_trips() {
+        let e = AwarenessProbeCompletedEvent {
+            task_id: TaskId::new(),
+            mode: "shadow".to_string(),
+            degraded: false,
+            n_items: 2,
+            n_unjudged: 0,
+            verdicts: vec![
+                ProbeVerdictEntry {
+                    constraint_id: "C-1".into(),
+                    verdict: "ACKNOWLEDGED".into(),
+                    is_hard: true,
+                    gated: false,
+                    rationale: "plan mentions Lua".into(),
+                },
+            ],
+            re_iterated: false,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&e).expect("serialize");
+        let back: AwarenessProbeCompletedEvent =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.n_items, 2);
+        assert_eq!(back.verdicts[0].constraint_id, "C-1");
+        assert_eq!(back.mode, "shadow");
+
+        let wrapped = H2AIEvent::AwarenessProbeCompleted(e);
+        let json2 = serde_json::to_string(&wrapped).expect("serialize wrapped");
+        let back2: H2AIEvent = serde_json::from_str(&json2).expect("deserialize wrapped");
+        assert!(matches!(back2, H2AIEvent::AwarenessProbeCompleted(_)));
     }
 }
 
@@ -1458,6 +1561,31 @@ mod gap_k1_event_tests {
         let json = r#"{"task_id":"00000000-0000-0000-0000-000000000001","wave":1,"constraint_id":"c1","reasons":[],"min_jaccard":0.1,"fallback_hint":null,"timestamp":"2026-01-01T00:00:00Z"}"#;
         let ev: VerifierReasonContradictionEvent = serde_json::from_str(json).unwrap();
         assert_eq!(ev.beyond_budget_count, 0);
+    }
+
+    #[test]
+    fn constraint_ambiguity_detected_event_roundtrip() {
+        let evt = ConstraintAmbiguityDetectedEvent {
+            task_id: TaskId::new(),
+            constraint_id: "CONSTRAINT-005".into(),
+            check_idx: Some(4),
+            original_check_text: "Does the proposal use a dual-ledger model?".into(),
+            suggested_rewrite: "Does the proposal use Redis as the sole charge-path ledger?".into(),
+            evidence: vec!["term 'cockroachdb' negated in rubric guidance: FM-005-2".into()],
+            final_score: 0.75,
+            wave: 3,
+            timestamp: chrono::Utc::now(),
+        };
+        let wrapped = H2AIEvent::ConstraintAmbiguityDetected(evt.clone());
+        let json = serde_json::to_string(&wrapped).expect("serialize");
+        let back: H2AIEvent = serde_json::from_str(&json).expect("deserialize");
+        if let H2AIEvent::ConstraintAmbiguityDetected(inner) = back {
+            assert_eq!(inner.constraint_id, evt.constraint_id);
+            assert_eq!(inner.check_idx, Some(4));
+            assert_eq!(inner.evidence.len(), 1);
+        } else {
+            panic!("wrong variant after roundtrip");
+        }
     }
 }
 

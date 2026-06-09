@@ -355,7 +355,7 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err());
     assert!(
-        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted { .. }),
+        matches!(result.unwrap_err(), (EngineError::MaxRetriesExhausted, _)),
         "expected MaxRetriesExhausted"
     );
 
@@ -854,10 +854,10 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
             assert_eq!(warn.cv, 0.0, "cv must be 0 for identical proposals");
             assert_eq!(warn.mean_jaccard_distance, 0.0);
         }
-        Err(EngineError::MaxRetriesExhausted { .. }) => {
+        Err((EngineError::MaxRetriesExhausted, _)) => {
             // Acceptable: retries exhausted after repeated C1 detection
         }
-        Err(e) => panic!("unexpected error: {e}"),
+        Err((e, _)) => panic!("unexpected error: {e}"),
     }
 }
 

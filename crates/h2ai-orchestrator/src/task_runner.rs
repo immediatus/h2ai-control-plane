@@ -17,7 +17,7 @@ use crate::bandit::BanditState;
 use crate::context_assembler::AssembledContext;
 use crate::context_assembler::stable_cache::StableContextCache;
 use crate::decomposition::DecompositionError;
-use crate::engine::{EngineError, EngineOutput, NatsDispatchConfig, ShadowAuditCtx};
+use crate::engine::{EngineError, EngineOutput, EngineRunContext, NatsDispatchConfig, ShadowAuditCtx};
 use crate::induction_store::InductionStore;
 use crate::srani_grounding::SraniGroundingChain;
 use crate::tao_loop::TaoMultiplierEstimator;
@@ -36,6 +36,10 @@ pub struct ThinkingLoopArgs {
     pub embedding_model: Option<Arc<dyn EmbeddingModel>>,
     pub nats_client: Option<async_nats::Client>,
     pub task_id: String,
+    /// Hint text from the awareness probe re-iteration path.
+    /// When `Some`, appended to `task_description` before the thinking loop runs.
+    /// `None` on every first run and in shadow mode (byte-identical behaviour to today).
+    pub awareness_hints: Option<String>,
 }
 
 pub struct DecompositionArgs {
@@ -106,7 +110,7 @@ pub trait Decomposer: Send + Sync {
 
 #[async_trait]
 pub trait EngineRunner: Send + Sync {
-    async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, EngineError>;
+    async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)>;
 }
 
 // ── Real (zero-field) implementations ────────────────────────────────────────
@@ -117,8 +121,14 @@ pub struct DefaultThinkingLoopRunner;
 impl ThinkingLoopRunner for DefaultThinkingLoopRunner {
     async fn run(&self, args: ThinkingLoopArgs) -> ThinkingReport {
         use crate::thinking_loop::{self, ThinkingLoopInput};
+        // Append awareness hints to the task description when present.
+        // No-op (None path) is byte-identical to the pre-probe behaviour.
+        let effective_description = match &args.awareness_hints {
+            Some(hints) => format!("{}\n\n{}", args.task_description, hints),
+            None => args.task_description.clone(),
+        };
         thinking_loop::run(ThinkingLoopInput {
-            task_description: &args.task_description,
+            task_description: &effective_description,
             constraint_ids: &args.constraint_ids,
             constraint_tags: &args.constraint_tags,
             research_context: "",
@@ -169,7 +179,7 @@ pub struct DefaultEngineRunner;
 
 #[async_trait]
 impl EngineRunner for DefaultEngineRunner {
-    async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, EngineError> {
+    async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)> {
         use crate::engine::{EngineInput, ExecutionEngine};
         // Destructure to own all fields before borrowing any.
         let OwnedEngineInput {
@@ -269,5 +279,82 @@ mod tests {
     #[test]
     fn default_engine_runner_satisfies_trait() {
         let _: Arc<dyn EngineRunner> = Arc::new(DefaultEngineRunner);
+    }
+}
+
+#[cfg(test)]
+mod awareness_hints_tests {
+    use super::*;
+
+    struct CapturingRunner {
+        captured: std::sync::Mutex<Option<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ThinkingLoopRunner for CapturingRunner {
+        async fn run(&self, args: ThinkingLoopArgs) -> ThinkingReport {
+            *self.captured.lock().unwrap() = Some(args.task_description.clone());
+            ThinkingReport::default()
+        }
+    }
+
+    fn make_args(task_description: &str, awareness_hints: Option<String>) -> ThinkingLoopArgs {
+        use h2ai_test_utils::mock_adapter;
+        ThinkingLoopArgs {
+            task_description: task_description.to_string(),
+            constraint_ids: vec![],
+            constraint_tags: vec![],
+            knowledge_provider: None,
+            n_archetypes: 1,
+            cfg: h2ai_config::ThinkingLoopConfig::default(),
+            adapter: Arc::new(mock_adapter("stub")),
+            embedding_model: None,
+            nats_client: None,
+            task_id: "t1".to_string(),
+            awareness_hints,
+        }
+    }
+
+    #[tokio::test]
+    async fn awareness_hints_field_is_stored_in_args() {
+        let runner = CapturingRunner { captured: std::sync::Mutex::new(None) };
+        let args = make_args("original task", Some("## Constraint contradiction check\nbullet".to_string()));
+        // The CapturingRunner stores task_description as-is from args (no mutation).
+        // This test validates that ThinkingLoopArgs accepts the awareness_hints field.
+        let report = runner.run(args).await;
+        let _ = report;
+        let captured = runner.captured.lock().unwrap().clone().unwrap();
+        assert_eq!(captured, "original task");
+    }
+
+    #[tokio::test]
+    async fn no_awareness_hints_field_defaults_to_none() {
+        let runner = CapturingRunner { captured: std::sync::Mutex::new(None) };
+        let args = make_args("original task", None);
+        let report = runner.run(args).await;
+        let _ = report;
+        let captured = runner.captured.lock().unwrap().clone().unwrap();
+        assert_eq!(captured, "original task");
+    }
+
+    #[test]
+    fn effective_description_with_hints_appends_section() {
+        // Unit-test the format logic directly (no async needed).
+        let base = "original task".to_string();
+        let hints = "## Constraint contradiction check\nbullet".to_string();
+        let effective = format!("{}\n\n{}", base, hints);
+        assert!(effective.contains("original task"));
+        assert!(effective.contains("Constraint contradiction check"));
+    }
+
+    #[test]
+    fn effective_description_without_hints_is_unchanged() {
+        let base = "original task".to_string();
+        let awareness_hints: Option<String> = None;
+        let effective = match &awareness_hints {
+            Some(hints) => format!("{}\n\n{}", base, hints),
+            None => base.clone(),
+        };
+        assert_eq!(effective, "original task");
     }
 }

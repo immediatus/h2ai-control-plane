@@ -114,7 +114,7 @@ fn decide_retry_or_fail_on_multiplication_failed() {
     // Either Retry (policy chose a new topology) or Fail (retries exhausted)
     assert!(matches!(
         decision,
-        MapeKDecision::Retry | MapeKDecision::Fail(_)
+        MapeKDecision::Retry | MapeKDecision::Fail(..)
     ));
 }
 
@@ -151,13 +151,9 @@ fn observe_aggregates_verification_events_across_waves() {
         0,
         1.0,
     );
-    if let MapeKDecision::Fail(EngineError::MaxRetriesExhausted {
-        partial_verification_events,
-        ..
-    }) = decision
-    {
+    if let MapeKDecision::Fail(EngineError::MaxRetriesExhausted, ctx) = decision {
         assert_eq!(
-            partial_verification_events.len(),
+            ctx.verification_events.len(),
             2,
             "expected 2 accumulated verification events across 2 waves"
         );
@@ -191,7 +187,7 @@ fn decide_fail_on_oracle_blocked() {
         0,
         1.0,
     );
-    assert!(matches!(decision, MapeKDecision::Fail(_)));
+    assert!(matches!(decision, MapeKDecision::Fail(..)));
 }
 
 /// `last_wave_n_eff` starts at 1.0 and is updated after a ZeroSurvival wave

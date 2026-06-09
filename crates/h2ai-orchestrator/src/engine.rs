@@ -36,6 +36,18 @@ const BEYOND_BUDGET_VERIFIER_ADDENDUM: &str = "\n\n\
     Score = VERIFIED / (VERIFIED + UNVERIFIED). Report BEYOND_BUDGET items separately; \
     do NOT score them as 0.0.";
 
+/// Data accumulated during an engine run. Available on the failure path where no
+/// `EngineOutput` exists. On the success path this is always default — use `EngineOutput` fields.
+#[derive(Debug, Default)]
+pub struct EngineRunContext {
+    /// Partial verification events collected before failure — forwarded to SSE and skill extraction.
+    pub verification_events: Vec<VerificationScoredEvent>,
+    /// Topology retry events from the failed run — used for skill extraction.
+    pub topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent>,
+    /// Highest-scoring partial proposal text, for HITL surfacing. `None` when none existed.
+    pub best_partial_text: Option<String>,
+}
+
 /// Errors that can abort an `ExecutionEngine::run_offline` call.
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -44,16 +56,10 @@ pub enum EngineError {
     #[error("multiplication condition failed: {0}")]
     MultiplicationConditionFailed(String),
     /// The MAPE-K autonomic retry loop hit `max_autonomic_retries` without resolving.
-    /// Increasing the retry budget or investigating calibration data is recommended.
-    /// `partial_verification_events` carries any `VerificationScoredEvent`s collected before
-    /// failure so callers can still publish them (e.g. for SSE clients tracking Phase 3).
+    /// Run-accumulated data (partial events, retry events) is carried in the paired
+    /// `EngineRunContext` returned alongside this error by `run_offline`.
     #[error("max retries exhausted")]
-    MaxRetriesExhausted {
-        partial_verification_events: Vec<VerificationScoredEvent>,
-        /// Highest-scoring partial proposal from the entire session, for HITL surfacing.
-        /// `None` when no partial passes existed (all proposals scored 0 on every check).
-        best_partial_text: Option<String>,
-    },
+    MaxRetriesExhausted,
     /// An adapter call failed or timed out; the message contains the error detail.
     /// May be transient — retrying at the caller level is reasonable.
     #[error("adapter error: {0}")]
@@ -336,9 +342,12 @@ impl ExecutionEngine {
     ///
     /// Suitable for unit tests and offline evaluation because it does not require a
     /// live NATS connection — all events remain in-process via `TaskStore`.
-    /// Returns `EngineOutput` on the first successful merge, or an `EngineError` when
-    /// all retries are exhausted or a non-retryable condition is encountered.
-    pub async fn run_offline(mut input: EngineInput<'_>) -> Result<EngineOutput, EngineError> {
+    /// Returns `EngineOutput` on the first successful merge, or an `(EngineError, EngineRunContext)`
+    /// pair when all retries are exhausted or a non-retryable condition is encountered.
+    /// `EngineRunContext` is always `default()` for non-`MaxRetriesExhausted` errors.
+    pub async fn run_offline(
+        mut input: EngineInput<'_>,
+    ) -> Result<EngineOutput, (EngineError, EngineRunContext)> {
         // ORCA conformal margin: widen verification gate under active drift.
         if input.conformal_margin > 0.0 {
             input.verification_config.threshold =
@@ -366,7 +375,9 @@ impl ExecutionEngine {
                 None,
             );
             if let Some(nats) = &input.nats {
-                write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit).await?;
+                write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit)
+                    .await
+                    .map_err(|e| (e, EngineRunContext::default()))?;
             }
             Some(cp)
         } else {
@@ -418,9 +429,12 @@ impl ExecutionEngine {
         };
 
         // ── Pre-loop: one-shot phases (no retry needed) ─────────────────────
-        let bootstrap_out = crate::phases::bootstrap::run(&input).await?;
-        let mut complexity_out =
-            crate::phases::complexity::run(&input, &bootstrap_out.system_context).await?;
+        let bootstrap_out = crate::phases::bootstrap::run(&input)
+            .await
+            .map_err(|e| (e, EngineRunContext::default()))?;
+        let mut complexity_out = crate::phases::complexity::run(&input, &bootstrap_out.system_context)
+            .await
+            .map_err(|e| (e, EngineRunContext::default()))?;
         // Override n_max_ceiling with conflict-rate-based beta when accumulator has sufficient data.
         if let Some(acc) = &conflict_acc {
             let mut cc = input.calibration.coefficients.clone();
@@ -435,7 +449,8 @@ impl ExecutionEngine {
             );
         }
 
-        let domain_cov_out = crate::phases::domain_coverage::run(&input)?;
+        let domain_cov_out = crate::phases::domain_coverage::run(&input)
+            .map_err(|e| (e, EngineRunContext::default()))?;
         // Extract diversity_degraded_event before borrowing domain_cov_out for the pipeline.
         let diversity_degraded_event = domain_cov_out.diversity_degraded_event.clone();
 
@@ -570,7 +585,7 @@ impl ExecutionEngine {
                 let mut osp_accumulator = RetryAccumulator::new();
 
                 // Carry SpecAmbiguous info out of the inner block (pipeline-drop boundary).
-                let mut spec_ambiguous_signal: Option<(String, usize, Vec<String>)> = None;
+                let mut spec_ambiguous_signal: Option<(String, usize, Vec<String>, Vec<String>, f32, u32)> = None;
                 // Signal the post-loop synthesis wave to run on ComplexityOverflow
                 // with `graft_first = true`.  Decoupled from `synthesis_wave_enabled` so a
                 // ceiling-detected task can run grafting even when the feature flag is off.
@@ -580,9 +595,9 @@ impl ExecutionEngine {
                     if let Some(dl) = controller.deadline() {
                         if std::time::Instant::now() >= dl {
                             input.store.mark_failed(&task_id);
-                            return Err(EngineError::DeadlineExceeded {
+                            return Err((EngineError::DeadlineExceeded {
                                 budget_secs: input.cfg.task_deadline_secs.unwrap_or(0),
-                            });
+                            }, EngineRunContext::default()));
                         }
                     }
 
@@ -767,7 +782,9 @@ impl ExecutionEngine {
                             adapter_outputs: vec![],
                         });
                         if let Some(nats) = &input.nats {
-                            write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit).await?;
+                            write_reasoning_checkpoint(nats, cp, &rc_prefix, strict_audit)
+                                .await
+                                .map_err(|e| (e, EngineRunContext::default()))?;
                         }
                     }
                     // ── Wave-boundary WaveContinue window ────────────────────────────────
@@ -828,7 +845,28 @@ impl ExecutionEngine {
                     controller.run_gap_i1_research().await;
 
                     let filter_ratio = wave.events.filter_ratio;
-                    match controller.decide(wave.outcome, retry_count, filter_ratio) {
+                    let decision = controller.decide(wave.outcome, retry_count, filter_ratio);
+
+                    // GAP-F9: publish diagnostic-only ambiguity events queued during decide().
+                    for ev in controller.take_pending_ambiguity_events() {
+                        tracing::error!(
+                            target: "h2ai.engine",
+                            task_id = %task_id,
+                            constraint_id = %ev.constraint_id,
+                            final_score = ev.final_score,
+                            "constraint ambiguity detected (diagnostic-only)"
+                        );
+                        if let Some(ref nats) = input.nats {
+                            let _ = nats
+                                .publish_event(
+                                    &input.task_id,
+                                    &h2ai_types::events::H2AIEvent::ConstraintAmbiguityDetected(ev),
+                                )
+                                .await;
+                        }
+                    }
+
+                    match decision {
                         crate::mape_k::MapeKDecision::Return(out) => {
                             // Record knowledge patterns for cross-task induction (best-effort).
                             if let Some(ref store) = input.induction_store {
@@ -1036,10 +1074,10 @@ impl ExecutionEngine {
                                             );
                                         }
                                     }
-                                    return Err(EngineError::HitlRejected {
+                                    return Err((EngineError::HitlRejected {
                                         operator_id: signal_operator_id,
                                         reviewer_note: signal_reviewer_note,
-                                    });
+                                    }, EngineRunContext::default()));
                                 }
                                 // Approved: fall through to normal resolve path below.
                             }
@@ -1058,7 +1096,8 @@ impl ExecutionEngine {
                                     serde_json::to_string(&out.attribution).ok();
                                 if let Some(nats) = &input.nats {
                                     write_reasoning_checkpoint(nats, &cp, &rc_prefix, strict_audit)
-                                        .await?;
+                                        .await
+                                        .map_err(|e| (e, EngineRunContext::default()))?;
                                     if let Some(meta) = cp.into_meta_state() {
                                         if let Err(e) =
                                             nats.put_task_meta_state(&meta, &ms_prefix).await
@@ -1175,7 +1214,7 @@ impl ExecutionEngine {
                             return Ok(out);
                         }
                         crate::mape_k::MapeKDecision::Retry => continue,
-                        crate::mape_k::MapeKDecision::Fail(e) => {
+                        crate::mape_k::MapeKDecision::Fail(e, ctx) => {
                             input.store.mark_failed(&task_id);
                             // Clean up signal consumer on engine failure.
                             if let Some(ref nats) = input.nats {
@@ -1191,17 +1230,25 @@ impl ExecutionEngine {
                                     }
                                 }
                             }
-                            return Err(e);
+                            return Err((e, ctx));
                         }
                         crate::mape_k::MapeKDecision::SpecAmbiguous {
                             constraint_id,
                             check_index,
                             divergent_reasons,
+                            ambiguity_evidence,
+                            ambiguity_score,
                             ..
                         } => {
                             // Signal the outer restart loop to attempt spec repair.
-                            spec_ambiguous_signal =
-                                Some((constraint_id, check_index, divergent_reasons));
+                            spec_ambiguous_signal = Some((
+                                constraint_id,
+                                check_index,
+                                divergent_reasons,
+                                ambiguity_evidence,
+                                ambiguity_score,
+                                retry_count,
+                            ));
                             break 'wave;
                         }
                         crate::mape_k::MapeKDecision::ComplexityOverflow {
@@ -1239,14 +1286,10 @@ impl ExecutionEngine {
                                 break 'wave;
                             } else {
                                 input.store.mark_failed(&task_id);
-                                return Err(EngineError::MaxRetriesExhausted {
-                                    partial_verification_events: controller
-                                        .take_verification_events(),
-                                    best_partial_text: controller
-                                        .global_best_proposal
-                                        .as_ref()
-                                        .map(|(_, t)| t.clone()),
-                                });
+                                return Err((
+                                    EngineError::MaxRetriesExhausted,
+                                    controller.take_run_context(),
+                                ));
                             }
                         }
                     }
@@ -1265,7 +1308,15 @@ impl ExecutionEngine {
             // ── spec repair handler ───────────────────────────────────────
             // `input` is no longer borrowed by `pipeline` here; `constraint_corpus`
             // can be mutated if the repair succeeds.
-            if let Some((constraint_id, check_index, divergent_reasons)) = spec_ambiguous_signal {
+            if let Some((
+                constraint_id,
+                check_index,
+                divergent_reasons,
+                ambiguity_evidence,
+                ambiguity_score,
+                ambiguity_wave,
+            )) = spec_ambiguous_signal
+            {
                 // Guard: cap restarts at 1 and respect auto_repair_enabled flag.
                 if spec_ambiguous_restarts >= 1 || !input.cfg.gap_k1.auto_repair_enabled {
                     tracing::warn!(
@@ -1276,10 +1327,29 @@ impl ExecutionEngine {
                         auto_repair_enabled = input.cfg.gap_k1.auto_repair_enabled,
                         "SpecAmbiguous: repair limit reached or disabled; failing task"
                     );
-                    return Err(EngineError::MaxRetriesExhausted {
-                        partial_verification_events: controller.take_verification_events(),
-                        best_partial_text: None,
-                    });
+                    if !ambiguity_evidence.is_empty() {
+                        if let Some(ref nats) = input.nats {
+                            let _ = nats
+                                .publish_event(
+                                    &input.task_id,
+                                    &h2ai_types::events::H2AIEvent::ConstraintAmbiguityDetected(
+                                        h2ai_types::events::ConstraintAmbiguityDetectedEvent {
+                                            task_id: input.task_id.clone(),
+                                            constraint_id: constraint_id.clone(),
+                                            check_idx: Some(check_index),
+                                            original_check_text: String::new(),
+                                            suggested_rewrite: String::new(),
+                                            evidence: ambiguity_evidence.clone(),
+                                            final_score: ambiguity_score,
+                                            wave: ambiguity_wave,
+                                            timestamp: chrono::Utc::now(),
+                                        },
+                                    ),
+                                )
+                                .await;
+                        }
+                    }
+                    return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
                 }
 
                 // Select repair adapter: prefer researcher, fall back to first explorer.
@@ -1294,10 +1364,29 @@ impl ExecutionEngine {
                         task_id = %task_id,
                         "SpecAmbiguous: no adapter available for repair; failing task"
                     );
-                    return Err(EngineError::MaxRetriesExhausted {
-                        partial_verification_events: controller.take_verification_events(),
-                        best_partial_text: None,
-                    });
+                    if !ambiguity_evidence.is_empty() {
+                        if let Some(ref nats) = input.nats {
+                            let _ = nats
+                                .publish_event(
+                                    &input.task_id,
+                                    &h2ai_types::events::H2AIEvent::ConstraintAmbiguityDetected(
+                                        h2ai_types::events::ConstraintAmbiguityDetectedEvent {
+                                            task_id: input.task_id.clone(),
+                                            constraint_id: constraint_id.clone(),
+                                            check_idx: Some(check_index),
+                                            original_check_text: String::new(),
+                                            suggested_rewrite: String::new(),
+                                            evidence: ambiguity_evidence.clone(),
+                                            final_score: ambiguity_score,
+                                            wave: ambiguity_wave,
+                                            timestamp: chrono::Utc::now(),
+                                        },
+                                    ),
+                                )
+                                .await;
+                        }
+                    }
+                    return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
                 };
 
                 // Find the affected ConstraintDoc to extract check text and current version.
@@ -1314,10 +1403,7 @@ impl ExecutionEngine {
                         constraint_id = %constraint_id,
                         "SpecAmbiguous: constraint not found in corpus; failing task"
                     );
-                    return Err(EngineError::MaxRetriesExhausted {
-                        partial_verification_events: controller.take_verification_events(),
-                        best_partial_text: None,
-                    });
+                    return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
                 };
 
                 let original_check_text = doc
@@ -1400,7 +1486,7 @@ impl ExecutionEngine {
                     task_id: task_id.to_string(),
                     constraint_id: constraint_id.clone(),
                     check_index,
-                    original_check_text,
+                    original_check_text: original_check_text.clone(),
                     divergent_reasons,
                     should_pass_example: doc.description.clone(),
                     should_prune_example: None,
@@ -1414,7 +1500,10 @@ impl ExecutionEngine {
                     .await;
 
                 match outcome {
-                    h2ai_autonomic::spec_repair::RepairOutcome::Repaired { new_version } => {
+                    h2ai_autonomic::spec_repair::RepairOutcome::Repaired {
+                        new_version,
+                        accepted_rewrite,
+                    } => {
                         tracing::info!(
                             target: "h2ai.engine",
                             task_id = %task_id,
@@ -1441,6 +1530,29 @@ impl ExecutionEngine {
                                 );
                             }
                         }
+
+                        if !ambiguity_evidence.is_empty() {
+                            if let Some(ref nats) = input.nats {
+                                let _ = nats
+                                    .publish_event(
+                                        &input.task_id,
+                                        &h2ai_types::events::H2AIEvent::ConstraintAmbiguityDetected(
+                                            h2ai_types::events::ConstraintAmbiguityDetectedEvent {
+                                                task_id: input.task_id.clone(),
+                                                constraint_id: constraint_id.clone(),
+                                                check_idx: Some(check_index),
+                                                original_check_text: original_check_text.clone(),
+                                                suggested_rewrite: accepted_rewrite.clone(),
+                                                evidence: ambiguity_evidence.clone(),
+                                                final_score: ambiguity_score,
+                                                wave: ambiguity_wave,
+                                                timestamp: chrono::Utc::now(),
+                                            },
+                                        ),
+                                    )
+                                    .await;
+                            }
+                        }
                         spec_ambiguous_restarts += 1;
                         continue 'restart;
                     }
@@ -1452,10 +1564,30 @@ impl ExecutionEngine {
                             best_score,
                             "spec repair failed; returning MaxRetriesExhausted"
                         );
-                        return Err(EngineError::MaxRetriesExhausted {
-                            partial_verification_events: controller.take_verification_events(),
-                            best_partial_text: None,
-                        });
+
+                        if !ambiguity_evidence.is_empty() {
+                            if let Some(ref nats) = input.nats {
+                                let _ = nats
+                                    .publish_event(
+                                        &input.task_id,
+                                        &h2ai_types::events::H2AIEvent::ConstraintAmbiguityDetected(
+                                            h2ai_types::events::ConstraintAmbiguityDetectedEvent {
+                                                task_id: input.task_id.clone(),
+                                                constraint_id: constraint_id.clone(),
+                                                check_idx: Some(check_index),
+                                                original_check_text: original_check_text.clone(),
+                                                suggested_rewrite: String::new(),
+                                                evidence: ambiguity_evidence.clone(),
+                                                final_score: ambiguity_score,
+                                                wave: ambiguity_wave,
+                                                timestamp: chrono::Utc::now(),
+                                            },
+                                        ),
+                                    )
+                                    .await;
+                            }
+                        }
+                        return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
                     }
                 }
             }
@@ -1845,10 +1977,9 @@ impl ExecutionEngine {
                                     .unwrap_or(std::cmp::Ordering::Equal)
                             })
                             .map(|p| p.proposal_text);
-                        return Err(EngineError::MaxRetriesExhausted {
-                            partial_verification_events: controller.take_verification_events(),
-                            best_partial_text,
-                        });
+                        let mut ctx = controller.take_run_context();
+                        ctx.best_partial_text = best_partial_text;
+                        return Err((EngineError::MaxRetriesExhausted, ctx));
                     }
                 } else if complexity_overflow_graft_signal {
                     // Layer 2 in mape_k.rs should prevent this path from ever being reached
@@ -1863,10 +1994,7 @@ impl ExecutionEngine {
                 }
             }
 
-            return Err(EngineError::MaxRetriesExhausted {
-                partial_verification_events: controller.take_verification_events(),
-                best_partial_text: None,
-            });
+            return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
         } // end 'restart: loop
     }
 
@@ -1879,7 +2007,7 @@ impl ExecutionEngine {
     pub async fn run_from_checkpoint(
         input: EngineInput<'_>,
         checkpoint: h2ai_types::checkpoint::TaskCheckpoint,
-    ) -> Result<EngineOutput, EngineError> {
+    ) -> Result<EngineOutput, (EngineError, EngineRunContext)> {
         if input.cfg.reasoning_memory.enabled {
             if let Some(nats) = &input.nats {
                 let rc_prefix = &input.cfg.state.reasoning_checkpoint_bucket_prefix;
@@ -1904,9 +2032,10 @@ impl ExecutionEngine {
         let phase = crate::task_store::TaskPhase::try_from_name_str(&checkpoint.phase);
 
         if phase == Some(crate::task_store::TaskPhase::Merging) {
-            let resolved = checkpoint.resolved_output.ok_or_else(|| {
-                EngineError::Parse("Merging checkpoint missing resolved_output".into())
-            })?;
+            let resolved = checkpoint
+                .resolved_output
+                .ok_or_else(|| EngineError::Parse("Merging checkpoint missing resolved_output".into()))
+                .map_err(|e| (e, EngineRunContext::default()))?;
 
             let task_id = input.task_id.clone();
             input.store.mark_resolved(&task_id);

@@ -1734,6 +1734,51 @@ pub struct H2AIConfig {
     /// GAP-H3 consensus convergence gate — stop retrying when verified proposals converge.
     #[serde(default)]
     pub convergence_gate: ConvergenceGateConfig,
+    /// GAP-F8/F9: constraint ambiguity detection — static scan seeding and
+    /// weighted evidence accumulation. Repair routing additionally requires
+    /// `gap_k1.enabled` + `gap_k1.auto_repair_enabled`.
+    #[serde(default)]
+    pub ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig,
+    /// GAP-F6: plan-awareness probe (shadow-mode default; opt-in).
+    #[serde(default)]
+    pub awareness_probe: AwarenessProbeConfig,
+    /// GAP-F4 Phase 1b: filter CompositeProvider results to domains matching the task.
+    #[serde(default)]
+    pub knowledge_domain_scoping: bool,
+}
+
+// ── GAP-F6: Plan-Awareness Probe config ──────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AwarenessProbeMode {
+    Shadow,
+    Active,
+}
+
+/// GAP-F6 plan-awareness probe. Named to avoid collision with `GapK1Config`'s
+/// "pre-flight coherence probe" — that probes constraint *text* quality; this
+/// probes the *plan's* relationship to constraints.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AwarenessProbeConfig {
+    /// Default: false (opt-in, consistent with all gap features).
+    pub enabled: bool,
+    /// Shadow: events only, no pipeline effect.
+    /// Active: CONTRADICTED on Hard, non-gated constraints triggers one re-iteration.
+    /// Default: Shadow.
+    pub mode: AwarenessProbeMode,
+    /// max_tokens for the batched judge call (~100 tokens/constraint). Default: 1024.
+    pub judge_max_tokens: u64,
+}
+
+impl Default for AwarenessProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: AwarenessProbeMode::Shadow,
+            judge_max_tokens: 1024,
+        }
+    }
 }
 
 fn default_oracle_human_bucket() -> String {
@@ -2160,6 +2205,42 @@ mod tests {
     }
 
     #[test]
+    fn ambiguity_detection_config_defaults() {
+        let cfg = h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default();
+        assert!(!cfg.enabled);
+        assert!((cfg.score_threshold - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn h2ai_config_has_ambiguity_detection_field() {
+        let cfg = H2AIConfig::default();
+        assert!(!cfg.ambiguity_detection.enabled);
+    }
+
+    #[test]
+    fn ambiguity_detection_parses_from_toml() {
+        let s = r#"
+            [ambiguity_detection]
+            enabled = true
+            score_threshold = 0.5
+            weight_multi_storage = 0.20
+            weight_fm_negation = 0.30
+            weight_remediation_conflict = 0.15
+            weight_cross_check_negation = 0.20
+            weight_llm_confirmed = 0.25
+            weight_jaccard_freeze_wave = 0.15
+        "#;
+        #[derive(serde::Deserialize)]
+        struct T {
+            ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig,
+        }
+        let t: T = toml::from_str(s).expect("parse");
+        assert!(t.ambiguity_detection.enabled);
+        assert!((t.ambiguity_detection.score_threshold - 0.5).abs() < f32::EPSILON);
+        assert!((t.ambiguity_detection.weight_fm_negation - 0.30).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn shadow_auditor_config_strict_default_is_false() {
         let cfg = ShadowAuditorConfig::default();
         assert!(!cfg.strict, "strict must be false by default");
@@ -2475,5 +2556,72 @@ mod cost_guard_tests {
         let cfg = H2AIConfig::default();
         assert!(!cfg.cost_guard.enabled);
         assert!(!cfg.convergence_gate.enabled);
+    }
+
+    #[test]
+    fn awareness_probe_config_defaults() {
+        let cfg = AwarenessProbeConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.mode, AwarenessProbeMode::Shadow);
+        assert_eq!(cfg.judge_max_tokens, 1024);
+    }
+
+    #[test]
+    fn h2ai_config_has_awareness_probe_field() {
+        let cfg = H2AIConfig::default();
+        assert!(!cfg.awareness_probe.enabled);
+        assert!(!cfg.knowledge_domain_scoping);
+    }
+
+    #[test]
+    fn awareness_probe_parses_from_toml() {
+        let toml = r#"
+knowledge_domain_scoping = true
+
+[awareness_probe]
+enabled = true
+mode = "active"
+judge_max_tokens = 2048
+"#;
+        #[derive(serde::Deserialize)]
+        struct T {
+            awareness_probe: AwarenessProbeConfig,
+            #[serde(default)]
+            knowledge_domain_scoping: bool,
+        }
+        let t: T = toml::from_str(toml).expect("parse");
+        assert!(t.awareness_probe.enabled);
+        assert_eq!(t.awareness_probe.mode, AwarenessProbeMode::Active);
+        assert_eq!(t.awareness_probe.judge_max_tokens, 2048);
+        assert!(t.knowledge_domain_scoping);
+    }
+
+    /// Regression guard: `knowledge_domain_scoping` placed AFTER a `[section]` header
+    /// belongs to that section in TOML, not to the top level.  Serde silently drops it,
+    /// so the field must remain `false` (its default).  If this test ever fails it means
+    /// serde somehow started hoisting inner-section keys — which would mask the real bug.
+    #[test]
+    fn knowledge_domain_scoping_must_be_top_level() {
+        // key placed inside [awareness_probe] — must NOT reach H2AIConfig.knowledge_domain_scoping
+        let toml_misplaced = r#"
+[awareness_probe]
+enabled = true
+mode = "shadow"
+judge_max_tokens = 1024
+knowledge_domain_scoping = true
+"#;
+        #[derive(serde::Deserialize)]
+        struct T {
+            awareness_probe: AwarenessProbeConfig,
+            #[serde(default)]
+            knowledge_domain_scoping: bool,
+        }
+        let t: T = toml::from_str(toml_misplaced).expect("parse");
+        assert!(t.awareness_probe.enabled);
+        // The misplaced key must NOT appear at the top level.
+        assert!(
+            !t.knowledge_domain_scoping,
+            "knowledge_domain_scoping inside [awareness_probe] must not propagate to the top level"
+        );
     }
 }

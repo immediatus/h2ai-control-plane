@@ -80,6 +80,7 @@ impl VerificationPhase {
         let sp = input.config.evaluator_system_prompt.clone();
         let tau = input.config.evaluator_tau;
         let max_tokens = input.config.evaluator_max_tokens;
+        let evaluator_timeout_secs = input.config.evaluator_timeout_secs;
         let record_adversarial_comparison = input.config.record_adversarial_comparison;
         let input_config = input.config.clone();
         let consensus_passes = input.consensus_passes;
@@ -105,6 +106,7 @@ impl VerificationPhase {
                     &cache,
                     consensus_passes,
                     threshold,
+                    evaluator_timeout_secs,
                 )
                 .await;
                 (proposal, results, any_cache_hit)
@@ -261,6 +263,7 @@ impl VerificationPhase {
         let base_sp = input.config.evaluator_system_prompt.clone();
         let tau = input.config.evaluator_tau;
         let max_tokens = input.config.evaluator_max_tokens;
+        let evaluator_timeout_secs = input.config.evaluator_timeout_secs;
         let consensus_passes = input.consensus_passes;
         let uncertainty_weight = cfg.uncertainty_weight;
 
@@ -301,6 +304,7 @@ impl VerificationPhase {
                             cache,
                             consensus_passes,
                             threshold,
+                            evaluator_timeout_secs,
                         )
                     },
                 ))
@@ -430,6 +434,7 @@ impl VerificationPhase {
         let tau = config.evaluator_tau;
         let max_tokens = config.evaluator_max_tokens;
         let threshold = config.threshold;
+        let evaluator_timeout_secs = config.evaluator_timeout_secs;
 
         let scoring_cache = new_eval_cache();
         let futures = proposals.into_iter().map(|proposal| {
@@ -448,6 +453,7 @@ impl VerificationPhase {
                     &cache,
                     1, // score_proposals uses single-pass scoring (used for TAO estimator)
                     threshold,
+                    evaluator_timeout_secs,
                 )
                 .await;
                 let score = aggregate_compliance_score(&results);
@@ -471,6 +477,7 @@ impl VerificationPhase {
         // Used as the hard pass threshold for the rubric fallback (empty corpus).
         // Respects the caller's verify_threshold rather than a hardcoded constant.
         rubric_threshold: f64,
+        timeout_secs: u64,
     ) -> (Vec<ComplianceResult>, bool) {
         // If corpus is empty, fall back to the CoT rubric (G-Eval, arxiv 2303.16634).
         // The default rubric (h2ai_config::prompts::COT_RUBRIC) is criteria-first to reduce
@@ -551,6 +558,7 @@ impl VerificationPhase {
                         tau,
                         max_tokens,
                         effective_passes,
+                        timeout_secs,
                     )
                     .await;
                     cache
@@ -601,6 +609,7 @@ impl VerificationPhase {
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
         consensus_passes: u8,
+        timeout_secs: u64,
     ) -> Pin<Box<dyn Future<Output = (f64, Option<String>)> + Send + 'a>> {
         Box::pin(async move {
             match pred {
@@ -609,7 +618,7 @@ impl VerificationPhase {
                     let mut pairs: Vec<(f64, String)> = Vec::with_capacity(passes);
                     for _ in 0..passes {
                         let pair = if let Ok(pair) = tokio::time::timeout(
-                            std::time::Duration::from_mins(10),
+                            std::time::Duration::from_secs(timeout_secs),
                             Self::llm_score_raw(rubric, output, evaluator, sp, tau, max_tokens),
                         )
                         .await
@@ -618,7 +627,8 @@ impl VerificationPhase {
                         } else {
                             tracing::warn!(
                                 target: "h2ai.verification",
-                                "LlmJudge timed out (600s); skipping — score defaults to 0.5"
+                                timeout_secs,
+                                "LlmJudge timed out; skipping — score defaults to 0.5"
                             );
                             (0.5, String::new())
                         };
@@ -728,6 +738,7 @@ impl VerificationPhase {
                                     tau,
                                     max_tokens,
                                     consensus_passes,
+                                    timeout_secs,
                                 )
                                 .await;
                                 if s < min_score {
@@ -751,6 +762,7 @@ impl VerificationPhase {
                                     tau,
                                     max_tokens,
                                     consensus_passes,
+                                    timeout_secs,
                                 )
                                 .await;
                                 max_score = max_score.max(s);
@@ -770,6 +782,7 @@ impl VerificationPhase {
                                     tau,
                                     max_tokens,
                                     consensus_passes,
+                                    timeout_secs,
                                 )
                                 .await
                                 .0
@@ -970,42 +983,26 @@ impl VerificationPhase {
 /// ensures we read the model's conclusion, not an intermediate consideration.
 pub(crate) fn extract_json_object<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> {
     // Fast path: whole string is valid JSON.
-    if let Ok(v) = serde_json::from_str::<T>(text) {
+    if let Ok(v) = serde_json::from_str::<T>(text.trim()) {
         return Some(v);
     }
-    // Scan every `{...}` span; keep the LAST one that parses successfully.
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
+    // Walk every `{...}` span; keep the LAST one that deserialises successfully.
+    // Reasoning models (DeepSeek-R1, Qwen3) embed intermediate JSON objects in their
+    // chain-of-thought — we want the final conclusion, not an intermediate step.
     let mut last_valid: Option<T> = None;
-    for start in 0..n {
-        if chars[start] != '{' {
-            continue;
-        }
-        let mut depth = 0usize;
-        let mut in_string = false;
-        let mut escaped = false;
-        for end in start..n {
-            let c = chars[end];
-            if escaped {
-                escaped = false;
-            } else if c == '\\' && in_string {
-                escaped = true;
-            } else if c == '"' {
-                in_string = !in_string;
-            } else if !in_string {
-                if c == '{' {
-                    depth += 1;
-                } else if c == '}' {
-                    depth -= 1;
-                    if depth == 0 {
-                        let slice: String = chars[start..=end].iter().collect();
-                        if let Ok(v) = serde_json::from_str::<T>(&slice) {
-                            last_valid = Some(v);
-                        }
-                        break;
-                    }
+    let mut search = text;
+    while let Some(rel) = search.find('{') {
+        let tail = &search[rel..];
+        let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(_)) => {
+                let end = stream.byte_offset();
+                if let Ok(v) = serde_json::from_str::<T>(&tail[..end]) {
+                    last_valid = Some(v);
                 }
+                search = &tail[end..];
             }
+            _ => search = &tail[1..],
         }
     }
     last_valid
@@ -1035,21 +1032,18 @@ pub fn parse_check_verdicts(reason: &str, n_checks: usize) -> Vec<bool> {
         return vec![];
     }
     let mut verdicts = vec![false; n_checks];
-    for line in reason.lines() {
-        // Match: "CHECK N: ... → PRESENT" or "CHECK N: ... → MISSING"
-        // Allow leading whitespace, variable spacing around →.
-        let trimmed = line.trim();
-        let rest = if let Some(r) = trimmed.strip_prefix("CHECK ") {
-            r
-        } else {
-            continue;
-        };
-        // Extract check number (before the first ':')
-        let colon_pos = match rest.find(':') {
+    // Models emit check verdicts in two formats:
+    //   A) "CHECK N: PRESENT (explanation)"  or  "CHECK N: MISSING (explanation)"
+    //   B) "CHECK N: explanation → PRESENT"  or  "CHECK N: explanation → MISSING"
+    // Both may appear comma-separated on a single line or as separate lines.
+    // Split on "CHECK " to handle both layouts uniformly.
+    for segment in reason.split("CHECK ").skip(1) {
+        let segment = segment.trim();
+        let colon_pos = match segment.find(':') {
             Some(p) => p,
             None => continue,
         };
-        let num_str = rest[..colon_pos].trim();
+        let num_str = segment[..colon_pos].trim();
         let check_num: usize = match num_str.parse() {
             Ok(n) if n >= 1 => n,
             _ => continue,
@@ -1058,12 +1052,64 @@ pub fn parse_check_verdicts(reason: &str, n_checks: usize) -> Vec<bool> {
         if idx >= n_checks {
             continue;
         }
-        // Determine PRESENT or MISSING from the part after →
-        let after_colon = &rest[colon_pos + 1..];
-        if let Some(arrow_pos) = after_colon.rfind('→') {
-            let verdict = after_colon[arrow_pos + '→'.len_utf8()..].trim();
-            verdicts[idx] = verdict.to_ascii_uppercase().starts_with("PRESENT");
+        let after_colon = segment[colon_pos + 1..].trim();
+        // Format B: look for → PRESENT / → MISSING
+        let verdict_str = if let Some(arrow_pos) = after_colon.rfind('→') {
+            after_colon[arrow_pos + '→'.len_utf8()..].trim()
+        } else {
+            // Format A: PRESENT or MISSING appears at the start of after_colon
+            after_colon
+        };
+        let upper = verdict_str.to_ascii_uppercase();
+        if upper.starts_with("PRESENT") {
+            verdicts[idx] = true;
         }
+        // MISSING (or anything else) keeps the default false — no else needed.
     }
     verdicts
+}
+
+#[cfg(test)]
+mod check_verdicts_tests {
+    use super::parse_check_verdicts;
+
+    #[test]
+    fn format_a_present_missing() {
+        // Format A: "CHECK N: PRESENT (reason)" / "CHECK N: MISSING (reason)"
+        let reason = "CHECK 1: PRESENT (Lua script found)\nCHECK 2: MISSING (no audit log)\nCHECK 3: PRESENT (JWT used)";
+        let v = parse_check_verdicts(reason, 3);
+        assert_eq!(v, vec![true, false, true]);
+    }
+
+    #[test]
+    fn format_b_arrow() {
+        // Format B: "CHECK N: explanation → PRESENT" / "CHECK N: explanation → MISSING"
+        let reason = "CHECK 1: some reason → PRESENT\nCHECK 2: another → MISSING";
+        let v = parse_check_verdicts(reason, 2);
+        assert_eq!(v, vec![true, false]);
+    }
+
+    #[test]
+    fn zero_checks_returns_empty() {
+        assert!(parse_check_verdicts("CHECK 1: PRESENT", 0).is_empty());
+    }
+
+    #[test]
+    fn out_of_range_check_number_ignored() {
+        let v = parse_check_verdicts("CHECK 5: PRESENT", 3);
+        assert_eq!(v, vec![false, false, false]);
+    }
+
+    #[test]
+    fn missing_defaults_to_false() {
+        let v = parse_check_verdicts("CHECK 1: MISSING (not implemented)", 2);
+        assert_eq!(v, vec![false, false]);
+    }
+
+    #[test]
+    fn mixed_formats_same_reason() {
+        let reason = "CHECK 1: PRESENT (ok), CHECK 2: description → PRESENT";
+        let v = parse_check_verdicts(reason, 2);
+        assert_eq!(v, vec![true, true]);
+    }
 }

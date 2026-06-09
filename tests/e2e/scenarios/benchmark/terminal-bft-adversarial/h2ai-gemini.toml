@@ -1,7 +1,7 @@
 # Benchmark: Terminal-Bench — Gemini adapters (gemini-2.5-flash generators, gemini-2.0-flash support)
 # Run: python3 replay.py benchmark/terminal-bft-adversarial --config h2ai-gemini.toml
 
-nats_url = "nats://localhost:4222"
+nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
 max_autonomic_retries = 4
 

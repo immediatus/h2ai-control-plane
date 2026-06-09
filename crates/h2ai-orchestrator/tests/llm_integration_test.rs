@@ -279,7 +279,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
             );
             eprintln!("  ✓ N_max ceiling enforced by engine");
         }
-        Err(e) => {
+        Err((e, _)) => {
             eprintln!("  Engine returned err (expected with mock outputs): {e}");
             let ts = store.get(&task_id);
             assert!(ts.is_some(), "task must exist in store after engine error");
@@ -425,7 +425,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
             );
             eprintln!("  ✓ Full pipeline completed — output is non-empty");
         }
-        Err(e) => {
+        Err((e, _)) => {
             eprintln!("  Engine returned err (expected with mock verifier scores): {e}");
             let ts = store.get(&task_id);
             assert!(ts.is_some(), "task must exist in store after engine error");
@@ -619,22 +619,20 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
                 "synthesis wave output must be non-empty"
             );
         }
-        Err(EngineError::MaxRetriesExhausted {
-            best_partial_text, ..
-        }) => {
+        Err((EngineError::MaxRetriesExhausted, ctx)) => {
             eprintln!(
                 "  Engine returned MaxRetriesExhausted (synthesis wave did not fire or failed)"
             );
             eprintln!(
                 "  best_partial_text: {:?}",
-                best_partial_text.as_deref().map(|s| &s[..s.len().min(80)])
+                ctx.best_partial_text.as_deref().map(|s| &s[..s.len().min(80)])
             );
             panic!(
                 "synthesis wave must produce Ok(EngineOutput) when partial constraint \
                  coverage exists — got MaxRetriesExhausted instead"
             );
         }
-        Err(e) => {
+        Err((e, _)) => {
             eprintln!("  Unexpected engine error: {e}");
             panic!("Unexpected engine error: {e}");
         }

@@ -1531,6 +1531,7 @@ name = "h2ai-config"
 version = "0.1.0"
 dependencies = [
  "config",
+ "h2ai-constraints",
  "h2ai-knowledge",
  "h2ai-types",
  "serde",

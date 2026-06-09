@@ -337,7 +337,7 @@ async fn main() {
         CompositeProvider::new(vec![
             base,
             Arc::clone(&app_state.skill_provider) as Arc<dyn KnowledgeProvider>,
-        ])
+        ], app_state.cfg.knowledge_domain_scoping)
     };
 
     app_state

@@ -172,9 +172,11 @@ fn tombstone_contains_constraint_ids_not_proposal_text() {
         tombstone.contains("CONSTRAINT-004"),
         "must list second constraint ID"
     );
+    // GAP-F7: remediation_hint is now included as "what_to_try" — the old exclusion was too
+    // conservative. Raw *proposal* text is still never injected (anchoring hazard).
     assert!(
-        !tombstone.contains("JWT"),
-        "must NOT contain remediation text"
+        tombstone.contains("JWT"),
+        "remediation hint must appear as what_to_try (GAP-F7)"
     );
     assert!(
         !tombstone.contains(raw_proposal_text),

@@ -1,5 +1,6 @@
 use crate::coherence_probe::CoherenceProbe;
 use h2ai_config::GapK1Config;
+use h2ai_constraints::ambiguity::jaccard;
 use h2ai_constraints::versioned::{RepairProvenance, VersionedConstraintSource};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
 use h2ai_types::sizing::TauValue;
@@ -18,8 +19,14 @@ pub struct RepairInput {
 
 #[derive(Debug)]
 pub enum RepairOutcome {
-    Repaired { new_version: u64 },
-    Failed { best_score: f64 },
+    Repaired {
+        new_version: u64,
+        /// The validated rewrite text that was written to the versioned source.
+        accepted_rewrite: String,
+    },
+    Failed {
+        best_score: f64,
+    },
 }
 
 pub struct SpecRepairAdvisor {
@@ -90,7 +97,7 @@ impl SpecRepairAdvisor {
             instability_score: mean_jaccard(&input.divergent_reasons),
             original_check_index: input.check_index,
             original_check_text: input.original_check_text.clone(),
-            simplified_check_text: best_text,
+            simplified_check_text: best_text.clone(),
             validation_consistency: best_score,
         };
 
@@ -104,7 +111,10 @@ impl SpecRepairAdvisor {
             )
             .await
         {
-            Ok(new_version) => RepairOutcome::Repaired { new_version },
+            Ok(new_version) => RepairOutcome::Repaired {
+                new_version,
+                accepted_rewrite: best_text.clone(),
+            },
             Err(_conflict) => {
                 // Reload and retry once
                 match source.load_latest_versioned(&input.constraint_id).await {
@@ -112,6 +122,7 @@ impl SpecRepairAdvisor {
                         if fresh.spec.version > input.current_version {
                             return RepairOutcome::Repaired {
                                 new_version: fresh.spec.version,
+                                accepted_rewrite: best_text.clone(),
                             };
                         }
                         match source
@@ -123,7 +134,10 @@ impl SpecRepairAdvisor {
                             )
                             .await
                         {
-                            Ok(v) => RepairOutcome::Repaired { new_version: v },
+                            Ok(v) => RepairOutcome::Repaired {
+                                new_version: v,
+                                accepted_rewrite: best_text,
+                            },
                             Err(_) => RepairOutcome::Failed { best_score },
                         }
                     }
@@ -190,7 +204,7 @@ fn mean_jaccard(reasons: &[String]) -> f64 {
     let mut count = 0usize;
     for i in 0..reasons.len() {
         for j in (i + 1)..reasons.len() {
-            sum += jaccard_words(&reasons[i], &reasons[j]);
+            sum += jaccard(&reasons[i], &reasons[j]);
             count += 1;
         }
     }
@@ -201,13 +215,3 @@ fn mean_jaccard(reasons: &[String]) -> f64 {
     }
 }
 
-fn jaccard_words(a: &str, b: &str) -> f64 {
-    use std::collections::HashSet;
-    let a: HashSet<&str> = a.split_whitespace().collect();
-    let b: HashSet<&str> = b.split_whitespace().collect();
-    let union = a.union(&b).count();
-    if union == 0 {
-        return 1.0;
-    }
-    a.intersection(&b).count() as f64 / union as f64
-}

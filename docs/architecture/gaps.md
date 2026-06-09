@@ -37,14 +37,14 @@ mathematical improvement, and simulation protocol for every open gap.
 | **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🔴 OPEN | Medium | Hierarchical tournament merge; bounded context |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
 | **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
-| **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus |
-| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1 logging partial: `skill_nodes_injected` in `TaskAttributionEvent` counts skill nodes that reached the LLM prompt, enabling offline delta analysis; Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open |
-| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🟡 PARTIAL | Medium | Steps 1–2 implemented in-memory: `CompositeProvider.violation_map` down-weights non-Synthetic nodes co-occurring with topology retries (delta=0.1, cap=0.9, applied before dedup/top_k); NATS persistence and Step 3 (retroactive induction trigger) remain open |
+| **GAP-F3 Wiki YAML generation tooling absent** | 🔴 OPEN | Low | `wiki/` subdirectory schema is defined and loaded by `YamlDirSource`; no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus; schema should be extended with `diagnostic_codes` section (code, rule, repair_hint) |
+| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1 logging partial: `skill_nodes_injected` in `TaskAttributionEvent` counts skill nodes that reached the LLM prompt, enabling offline delta analysis; Phase 1b (task-matched corpus scoping) ✅ shipped (`scope_by_domains` in `skill_provider.rs`, `CompositeProvider.domain_scoping`, `knowledge_domain_scoping: bool` in `H2AIConfig`); Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open |
+| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🟡 PARTIAL | Medium | Steps 1–2 implemented in-memory: `CompositeProvider.violation_map` down-weights non-Synthetic nodes co-occurring with topology retries (delta=0.1, cap=0.9, applied before dedup/top_k); NATS persistence and Step 3 (retroactive induction trigger) remain open; Step 4 (constraint difficulty map, NATS-persisted) proposed |
 | **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live (checkpoint + TaskMetaState); skill extraction (2026-06-08) provides a depth-stratified Phase 3 analogue — Topic nodes carry Socratic diagnostic questions + resolution excerpts; Constraint-keyed and Reason-keyed Leaf nodes carry per-constraint domain signals; full Induction (Phase 2), archetype priors (Phase 3), hybrid retrieval (Phase 4) not yet implemented |
 | **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | N<10 ratings give noisy calibration; Dirichlet-Categorical posterior + credible-interval circuit breaker |
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
-**Infrastructure note (2026-06-08, updated):** Cross-task skill extraction is live with depth-stratified nodes. `skill_from_output` (pure fn, `h2ai-orchestrator/src/skill_extractor.rs`) emits three node types per `EngineOutput`: (1) **Topic node** (`skill:{task_id}:{domain}:topic`, `NodeDepth::Topic`) — `tensions` = exact-deduped Socratic diagnostic questions, `entry_points` = resolution excerpt (≤300 chars), `failure_modes` = tombstones + SRANI + uncovered domains, `importance` scales with retry count; (2) **Constraint-keyed Leaf** (`skill:{task_id}:{constraint_id}`, `NodeDepth::Leaf`) — one per tombstone with parseable `[A-Z]+-\d+` constraint ID, `importance=1.0` if tombstone appeared in ≥2 retries else `0.6`; (3) **Reason-keyed Leaf** (`skill:{task_id}:reason:{fnv32a(reason)}`, `NodeDepth::Leaf`) — fallback for verifier rejections not covered by a constraint-keyed leaf. `SkillProvider.query()` now filters by `query.depths` (not hardcoded to `Leaf`) so Topic nodes are visible to thinking-loop queries. `ThinkingReport` gains `retrieved_node_ids: Vec<String>` + `skill_nodes_used: u32`; `TaskAttributionEvent` gains `skill_nodes_injected: u32` (GAP-F4 partial). `CompositeProvider` gains `violation_map` + `source_cache` + `record_violations(delta=0.1, cap=0.9)`; `post_run` calls `record_violations` in both nats=None and nats=Some paths when `topology_retry_events` is non-empty (GAP-F5 Steps 1–2). Tests: `skill_injection_scenario_cross_task_learning`, `attribution_event_carries_skill_nodes_injected`, `post_run_records_violations_when_retries_occurred` in `crates/h2ai-api`.
+**Infrastructure note (2026-06-08, updated):** Cross-task skill extraction is live with depth-stratified nodes on both success and failure paths. Core logic lives in `extract_skill_nodes` (private, `h2ai-orchestrator/src/skill_extractor.rs`); two public entry points delegate to it: `skill_from_output` (success path, takes `&EngineOutput`) and `skill_from_retry_events` (failure path, takes only `Vec<TopologyProvisionedEvent>` — called when `MaxRetriesExhausted` fires in `task_pipeline.rs`). Three node types: (1) **Topic node** (`skill:{task_id}:{domain}:topic`, `NodeDepth::Topic`) — `tensions` = exact-deduped Socratic diagnostic questions, `entry_points` = resolution excerpt (≤300 chars), `failure_modes` = tombstones + SRANI + uncovered domains, `importance` scales with retry count; (2) **Constraint-keyed Leaf** (`skill:{task_id}:{constraint_id}`, `NodeDepth::Leaf`) — one per tombstone with parseable `[A-Z]+-\d+` constraint ID, `importance=1.0` if tombstone appeared in ≥2 retries else `0.6`; (3) **Reason-keyed Leaf** (`skill:{task_id}:reason:{fnv32a(reason)}`, `NodeDepth::Leaf`) — fallback for verifier rejections not covered by a constraint-keyed leaf. `MaxRetriesExhausted` carries `topology_retry_events: Vec<TopologyProvisionedEvent>` so the failure path has retry signal. `SkillProvider.query()` filters by `query.depths` so Topic nodes are visible to thinking-loop queries. `ThinkingReport` gains `retrieved_node_ids: Vec<String>` + `skill_nodes_used: u32`; `TaskAttributionEvent` gains `skill_nodes_injected: u32` (GAP-F4 partial). `CompositeProvider` gains `violation_map` + `source_cache` + `record_violations(delta=0.1, cap=0.9)`; `post_run` calls `record_violations` when `topology_retry_events` is non-empty (GAP-F5 Steps 1–2). Tests: `skill_injection_scenario_cross_task_learning`, `attribution_event_carries_skill_nodes_injected`, `post_run_records_violations_when_retries_occurred` in `crates/h2ai-api`; `zero_valid_proposals_with_retries_produces_skills` + `zero_valid_proposals_and_zero_retries_returns_empty` in `h2ai-orchestrator`.
 
 **Infrastructure note (2026-06-07):** NATS backend abstraction is now mockable. `NatsBackend` supertrait (`h2ai-state/src/backend.rs`) unifies all KV/stream operations behind a trait object. `TaskDispatchBackend` provides a narrow dispatch-only view. `MockNatsBackend` + `MockTaskDispatchBackend` in `h2ai-test-utils` enable all NATS-dependent unit tests without a live NATS server. All three production fields (`AppState.nats`, `EngineInput.nats`, `NatsDispatchConfig.nats`) are now trait objects.
 
@@ -765,7 +765,41 @@ The defining difference: **Solvita's agents learn via trainable edge weights (RE
 
 ---
 
+### GAP-F3: Wiki YAML Generation Tooling Absent 🔴 OPEN — Low
+
+**Gap statement.**
+The `wiki/` subdirectory schema (`YamlDirSource`) is defined and loaded, but no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus. The schema also lacks a machine-actionable `diagnostic_codes` section — every constraint is documented with human-readable `description` and optional `remediation_hint`, but the structure is too loose to drive automated repair.
+
+**Enrichment from compiler-grade diagnostics (2026-06-08).**
+Zerolang's diagnostic model provides the right template: every error carries `code`, `rule` (the invariant violated), `expected` (what the compiler required), `actual` (what it received), and `repair_hint` (a structured suggestion, not prose). H2AI's `ConstraintDoc` already has `id`, `description`, and `remediation_hint` — but these are prose fields read by humans, not structured fields consumed by the retry planner.
+
+**Proposed YAML schema extension:**
+
+```yaml
+id: CONSTRAINT-008
+description: "Redis Lua scripts must atomically gate idempotency key and write the result"
+domains: [billing, atomicity]
+remediation_hint: "Move all side-effects inside a single Lua script; no I/O outside the script boundary"
+diagnostic_codes:
+  - code: C008-SYNC-PUBLISH
+    rule: "All writes within the idempotency gate must be atomic"
+    expected: "Lua MULTI/EXEC or single-script atomicity"
+    repair_hint: "Move Kafka publish outside Lua block; return idempotency key result first"
+  - code: C008-MISSING-KEY
+    rule: "Idempotency key must be written before result is returned"
+    expected: "SET NX with TTL before result write"
+    repair_hint: "Add SET NX guard as first Lua command; abort if key exists"
+```
+
+This makes `ConstraintDoc` a structured diagnostic document: the retry planner can select the specific `diagnostic_code` that matches the verifier's tombstone text and inject its `repair_hint` directly into the explorer prompt — no LLM inference needed to derive the repair.
+
+**Effort estimate.** Schema extension: 1 day (`h2ai-constraints`). CLI scaffolding for wiki generation: 3 days. Back-filling `diagnostic_codes` for existing constraints: 1 day per constraint (manual or LLM-assisted).
+
+---
+
 ### GAP-F4: Knowledge Provider Has No Contrastive Evaluation 🟡 PARTIAL — **High**
+
+**Update (2026-06-11):** Phase 1b (domain-scoped retrieval) is now implemented. `scope_by_domains` in `skill_provider.rs` + `CompositeProvider.domain_scoping` + `knowledge_domain_scoping: bool` in `H2AIConfig`. Enabled in INNOVATION-5 tier2 E2E configs. See infrastructure note above.
 
 **Update (2026-06-08):** Phase 1 logging is partially implemented. `ThinkingReport.skill_nodes_used` counts how many Synthetic (skill) nodes appeared in the thinking loop's retrieved context; this count is emitted as `TaskAttributionEvent.skill_nodes_injected`. Offline delta analysis is now possible: compute `mean(verification_score | skill_nodes_injected > 0) − mean(score | skill_nodes_injected = 0)` across 50+ tasks per domain. Falsification condition: if delta ≤ 0 across 100 tasks, skill injection is neutral or harmful. Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open.
 
@@ -793,6 +827,9 @@ Solvita requires ~5,000 training problems before knowledge network costs amortiz
 
 **Falsification condition.**
 After Phase 1 logging is live: if the mean verification score delta (`knowledge_on` − `knowledge_off`) is ≤ 0 across 100 tasks for any tenant, knowledge retrieval is net-neutral or harmful for that tenant and the passthrough should become the default for that domain. If delta > 0 and p < 0.05, retrieval is helping and Phase 2 should be enabled.
+
+**Phase 1b — Task-matched corpus scoping ✅ Implemented (2026-06-11).**
+`scope_by_domains` in `skill_provider.rs` pre-filters `CompositeProvider` candidates to `ConstraintDoc` entries whose `domains` intersect the task's domain tags before the BM25 query runs. `CompositeProvider.domain_scoping: bool` flag; `knowledge_domain_scoping: bool` in `H2AIConfig` (top-level, `#[serde(default)]`). Enabled in all three INNOVATION-5 tier2 E2E configs. On a 4-constraint billing task, auth and security constraints no longer pollute the retrieval context with irrelevant nodes.
 
 **Effort estimate.** Phase 1: 1 day. Phase 2: 1 week. Phase 3: 2 weeks (blocked on InductionStore instrumentation and sufficient task volume).
 
@@ -822,7 +859,25 @@ When `ZeroSurvival` fires on a domain that has seen ≥ 10 prior tasks, trigger 
 **Why not implement the full REINFORCE loop (Solvita Phase 3).**
 Solvita's graph-weight REINFORCE works because it has access to binary test pass/fail signals (competitive programming judges). H2AI's verification scores are LLM-judged (soft, not binary) and are subject to judge bias (GAP-B6). Computing REINFORCE gradients on soft, biased rewards would amplify judge bias into the retrieval weights. The correct sequence: close GAP-B6 (calibrated judge) first, then implement graph-weight REINFORCE.
 
-**Effort estimate.** Step 1: 2 days (InductionStore schema extension). Step 2: 1 week (retrieval filter). Step 3: 3 days (induction trigger on ZeroSurvival). Total: ~2 weeks.
+**Step 4 — Constraint difficulty map (NATS-persisted).**
+Track empirical constraint difficulty per `(constraint_id, task_quadrant)` pair across all tasks. After each `MaxRetriesExhausted` or `MergeResolved`, update a NATS KV entry `H2AI_CONSTRAINT_DIFFICULTY_{tenant}`:
+
+```rust
+pub struct ConstraintDifficultyStats {
+    pub attempts: u32,
+    pub failures: u32,
+    pub avg_score: f32,
+}
+// difficulty = failures / attempts, smoothed with Laplace prior (1 attempt, 0.5 failure rate)
+```
+
+When the MAPE-K controller provisions a topology wave and the task's constraint set contains a constraint with `difficulty > 0.75` for the current quadrant, adapt:
+- Increase N_max by 1 (budget one extra proposal)
+- Escalate to HITL after `max_retries / 2` rather than `max_retries` — the model is unlikely to self-repair on a historically hard constraint
+
+This is the H2AI equivalent of zerolang's `xfail` test model: the system knows in advance which constraints are hard for this model×quadrant combination and adapts its budget before exhausting all retries silently.
+
+**Effort estimate.** Step 1: 2 days. Step 2: 1 week. Step 3: 3 days. Step 4: 3 days (NATS schema + MAPE-K provisioning hook). Total: ~3 weeks.
 
 ---
 
@@ -844,6 +899,7 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 | Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
 |---|---|---|---|---|
 | **INNOVATION-5 H2-P vs B3 experiment** | Critical | 1 week | None (single-model) | **Week 1** |
+| **GAP-F3 ConstraintDoc diagnostic_codes schema** | Medium | 1 day + 1 day/constraint | None | **Week 1** |
 | **GAP-B5 rho_mean documentation** | Medium | 2 days | None | **Week 2** |
 | GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
 | GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
@@ -851,7 +907,7 @@ Solvita's most actionable finding for H2AI's positioning debate: freezing LLM we
 | GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
 | GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
 | **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
-| **GAP-F5 Violation → retrieval feedback** | Medium | 2 weeks | InductionStore + GAP-B6 | Week 3 |
+| **GAP-F5 Violation → retrieval feedback** | Medium | ~3 weeks (Steps 1–4) | InductionStore + GAP-B6 | Week 3 |
 | GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
 | **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
 

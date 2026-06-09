@@ -127,7 +127,13 @@ async fn repair_advisor_creates_new_version_when_candidate_accepted() {
     let outcome = advisor.run(input, source.clone(), &*adapter).await;
 
     match outcome {
-        RepairOutcome::Repaired { new_version } => assert_eq!(new_version, 2),
+        RepairOutcome::Repaired { new_version, accepted_rewrite } => {
+            assert_eq!(new_version, 2);
+            assert!(
+                !accepted_rewrite.is_empty(),
+                "Repaired outcome must carry the accepted rewrite text"
+            );
+        }
         RepairOutcome::Failed { best_score } => {
             panic!("expected Repaired, got Failed({best_score})")
         }

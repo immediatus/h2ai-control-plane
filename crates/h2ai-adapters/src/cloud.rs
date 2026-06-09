@@ -70,7 +70,7 @@ impl CloudGenericAdapter {
         else {
             unreachable!()
         };
-        if env_name.is_empty() {
+        if env_name.is_empty() || env_name == "NONE" {
             return Ok(String::new());
         }
         std::env::var(env_name)

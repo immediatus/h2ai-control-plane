@@ -1226,6 +1226,9 @@ h2ai-constraints    Constraint corpus parser (markdown ADR format), predicate ty
                     FsConstraintSource — wraps load_corpus for backward compat with flat directories.
                     WikiCache — in-memory hot-path index (context_map, metas, revision).
                     ConstraintMeta / ConstraintPayload / PredicateKind for wiki delivery.
+                    ambiguity — AmbiguityEvidence (6 variants + Display), AmbiguityScorecard,
+                    PatchMode, AmbiguityDetectionConfig; pure functions scan_constraint(),
+                    score_evidence(), most_divergent_pair(), jaccard(); seed_scorecards() (GAP-F8).
 
 h2ai-knowledge      Hierarchical BM25+/PPR knowledge retrieval layer (pure crate, no I/O deps beyond
                     serde_yaml at startup). KnowledgeSource trait (all_items, wiki_nodes, global_node).

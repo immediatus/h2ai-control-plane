@@ -19,6 +19,7 @@ services:
       - ${HOME}/.local/bin/claude:/home/developer/.local/bin/claude
       - ${HOME}/.local/share/dev-workspace/.local/bin/xclaude:/home/developer/.local/bin/xclaude
       - ${HOME}/.local/bin/claude:/usr/local/bin/claude
+      - ${HOME}/.local/share/dev-workspace/.local/bin/xclaude:/usr/local/bin/xclaude
       - ${HOME}/.local/share/claude:/home/developer/.local/share/claude
       - ${HOME}/.local/bin/agy:/home/developer/.local/bin/agy
       - ${HOME}/.local/share/dev-workspace/.local/bin/xagy:/home/developer/.local/bin/xagy
@@ -31,6 +32,8 @@ services:
       HOME: /home/developer
       USER: developer
       DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/1000/bus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       nats:
         condition: service_healthy

@@ -183,7 +183,7 @@ impl AppState {
             CompositeProvider::new(vec![
                 base,
                 Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
-            ])
+            ], cfg.knowledge_domain_scoping)
         };
         Self {
             nats: Some(nats),
@@ -249,7 +249,7 @@ impl AppState {
             CompositeProvider::new(vec![
                 base,
                 Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
-            ])
+            ], cfg.knowledge_domain_scoping)
         };
         Self {
             nats: None,

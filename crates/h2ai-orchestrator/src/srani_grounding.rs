@@ -89,7 +89,7 @@ impl GroundingProvider for LlmResearcherGrounder {
             max_tokens: 512,
         };
         let response = self.adapter.execute(research_req).await.ok()?.output;
-        let v: serde_json::Value = serde_json::from_str(&response).ok()?;
+        let v: serde_json::Value = crate::verification::extract_json_object(&response)?;
         let alternatives: Vec<String> = v["alternatives"]
             .as_array()?
             .iter()
@@ -426,24 +426,60 @@ pub async fn run_gap_researcher(
         task_description: check_text.to_string(),
     };
 
+    // Track whether we got real web grounding — if not, we skip the validator and
+    // inject a direct synthesis from the verifier feedback (scoring a tautological
+    // "correct_pattern = gap_query" always yields low scores and wastes a LLM call).
+    let mut has_web_grounding = false;
     let (correct_pattern, source) = if let Some(ch) = chain {
-        // Run full distillation pipeline: DDG search → truncate → LLM distill → truncate
+        // Run full distillation pipeline: DDG search → truncate → LLM distill → truncate.
         let grounding = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             ch.resolve(&ctx, 0),
         )
         .await
-        .ok()??;
-        let stmt = if grounding.grounding_statement.is_empty() {
-            record.gap_query.clone()
+        .ok()
+        .flatten();
+        if let Some(g) = grounding {
+            has_web_grounding = true;
+            let stmt = if g.grounding_statement.is_empty() {
+                record.gap_query.clone()
+            } else {
+                g.grounding_statement.clone()
+            };
+            (stmt, g.alternatives.first().cloned())
         } else {
-            grounding.grounding_statement.clone()
-        };
-        (stmt, grounding.alternatives.first().cloned())
+            // Web search unavailable (bot-blocked, CAPTCHA, etc.). Bypass the
+            // synthesis validator — scoring a tautological prompt yields near-zero
+            // confidence. Instead inject the verifier feedback directly.
+            (record.gap_query.clone(), None)
+        }
     } else {
-        // LLM-only path: use gap_query directly as the evidence seed.
+        // No chain configured — LLM-only path.
         (record.gap_query.clone(), None)
     };
+
+    // Fast path: when web search returned no grounding, skip the LLM validator and
+    // create a direct synthesis from the verifier feedback at exactly the threshold.
+    // The `incorrect_pattern` encodes the concrete failure; `mechanistic_reason` gives
+    // the constraint requirement — enough for the SRANI injector to correct the explorer.
+    if !has_web_grounding {
+        let synth = DomainSynthesis {
+            check_id: (record.constraint_id.clone(), record.check_idx),
+            incorrect_pattern: record.incorrect_concept.clone(),
+            correct_pattern,
+            mechanistic_reason: check_text.to_string(),
+            source: None,
+            confidence: min_confidence,
+        };
+        tracing::info!(
+            target: "h2ai.gap_i1",
+            constraint_id = %record.constraint_id,
+            check_idx = record.check_idx,
+            confidence = min_confidence,
+            "gap synthesis accepted (direct injection — web search unavailable)"
+        );
+        return Some(synth);
+    }
 
     let validation_task = I1_SYNTHESIS_VALIDATOR_TASK
         .replace("{check_text}", check_text)
@@ -459,13 +495,48 @@ pub async fn run_gap_researcher(
         max_tokens: 256,
     };
 
-    // Validation is a small 256-token call — cap it at 60s independently of web-search timeout.
-    let response = tokio::time::timeout(std::time::Duration::from_secs(60), adapter.execute(req))
-        .await
-        .ok()?
-        .ok()?
-        .output;
-    let v: serde_json::Value = serde_json::from_str(&response).ok()?;
+    // Use the configured researcher timeout for synthesis — local models can be slow.
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        adapter.execute(req),
+    )
+    .await
+    {
+        Err(_elapsed) => {
+            tracing::warn!(
+                target: "h2ai.gap_i1",
+                constraint_id = %record.constraint_id,
+                check_idx = record.check_idx,
+                timeout_secs,
+                "synthesis LLM call timed out"
+            );
+            return None;
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                target: "h2ai.gap_i1",
+                constraint_id = %record.constraint_id,
+                check_idx = record.check_idx,
+                error = %e,
+                "synthesis LLM call failed"
+            );
+            return None;
+        }
+        Ok(Ok(resp)) => resp.output,
+    };
+    let v: serde_json::Value = match crate::verification::extract_json_object(&response) {
+        None => {
+            tracing::warn!(
+                target: "h2ai.gap_i1",
+                constraint_id = %record.constraint_id,
+                check_idx = record.check_idx,
+                response = %response,
+                "synthesis response is not valid JSON"
+            );
+            return None;
+        }
+        Some(v) => v,
+    };
     let score = v["score"].as_f64().unwrap_or(0.0);
     let reason = v["reason"].as_str().unwrap_or("").to_string();
 
@@ -481,6 +552,14 @@ pub async fn run_gap_researcher(
     if synthesis_meets_threshold(&synth, min_confidence) {
         Some(synth)
     } else {
+        tracing::warn!(
+            target: "h2ai.gap_i1",
+            constraint_id = %record.constraint_id,
+            check_idx = record.check_idx,
+            score,
+            min_confidence,
+            "synthesis score below threshold"
+        );
         None
     }
 }

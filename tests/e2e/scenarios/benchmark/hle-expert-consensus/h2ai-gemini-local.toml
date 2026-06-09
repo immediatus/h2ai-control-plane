@@ -2,7 +2,7 @@
 # Uses gemini-2.5-flash for explorers (higher RPM than 2.5-pro on free tier)
 # Run: python3 replay.py benchmark/hle-expert-consensus --config h2ai-gemini.toml
 
-nats_url = "nats://localhost:4222"
+nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
 max_autonomic_retries = 4
 

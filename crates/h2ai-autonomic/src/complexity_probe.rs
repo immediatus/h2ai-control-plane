@@ -78,11 +78,10 @@ impl ComplexityProbe {
 /// Extract the first JSON object from `output` (model may add preamble text).
 fn parse_probe_result(output: &str) -> Option<ComplexityProbeResult> {
     let start = output.find('{')?;
-    let end = output.rfind('}')?;
-    if end < start {
-        return None;
-    }
-    let json_str = &output[start..=end];
+    let tail = &output[start..];
+    let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
+    stream.next()?.ok()?;
+    let json_str = &tail[..stream.byte_offset()];
     let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let complexity = v.get("complexity")?.as_u64()? as u8;
     if !(1..=5).contains(&complexity) {

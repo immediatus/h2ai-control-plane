@@ -85,6 +85,34 @@ impl KnowledgeProvider for SkillProvider {
     }
 }
 
+/// Post-filter merged knowledge nodes to those whose `domains` intersect `tags`.
+/// When `tags` is empty, no filtering is applied — no signal → no change.
+/// Untagged nodes (`domains.is_empty()`) are always retained to prevent starvation.
+/// Falls back to the unfiltered set if the intersection would be empty.
+pub(crate) fn scope_by_domains(
+    nodes: Vec<(KnowledgeNode, f32)>,
+    tags: &[String],
+) -> Vec<(KnowledgeNode, f32)> {
+    if tags.is_empty() {
+        return nodes;
+    }
+    let tag_set: std::collections::HashSet<&str> =
+        tags.iter().map(String::as_str).collect();
+    let filtered: Vec<_> = nodes
+        .iter()
+        .filter(|(n, _)| {
+            n.domains.is_empty()
+                || n.domains.iter().any(|d| tag_set.contains(d.as_str()))
+        })
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        nodes
+    } else {
+        filtered
+    }
+}
+
 pub struct CompositeProvider {
     providers: Vec<Arc<dyn KnowledgeProvider>>,
     /// Maps node_id → accumulated penalty [0.0, 0.9]. Applied as score multiplier (1 - penalty).
@@ -92,14 +120,17 @@ pub struct CompositeProvider {
     /// Populated lazily in query(). Maps node_id → is_synthetic.
     /// Lets record_violations skip Synthetic nodes without receiving source info explicitly.
     source_cache: Arc<std::sync::RwLock<std::collections::HashMap<String, bool>>>,
+    /// When true, post-filter query results by domain intersection with query.tags.
+    domain_scoping: bool,
 }
 
 impl CompositeProvider {
-    pub fn new(providers: Vec<Arc<dyn KnowledgeProvider>>) -> Arc<Self> {
+    pub fn new(providers: Vec<Arc<dyn KnowledgeProvider>>, domain_scoping: bool) -> Arc<Self> {
         Arc::new(Self {
             providers,
             violation_map: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             source_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            domain_scoping,
         })
     }
 
@@ -170,6 +201,13 @@ impl KnowledgeProvider for CompositeProvider {
 
         let mut nodes: Vec<(KnowledgeNode, f32)> = merged.into_values().collect();
         nodes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // GAP-F4 Phase 1b: filter by domain intersection BEFORE top_k truncation so
+        // in-domain nodes ranked below top_k are promoted rather than discarded.
+        if self.domain_scoping {
+            nodes = scope_by_domains(nodes, query.tags);
+        }
+
         nodes.truncate(query.top_k);
 
         {
@@ -332,7 +370,7 @@ mod tests {
         let n2 = skill_node("n2", &["billing"], "billing");
         let p1: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(n1, 0.8)]));
         let p2: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(n2, 0.6)]));
-        let composite = CompositeProvider::new(vec![p1, p2]);
+        let composite = CompositeProvider::new(vec![p1, p2], false);
         let tags: Vec<String> = vec![];
         let result = composite.query(&make_query("test", &tags)).await;
         assert_eq!(result.nodes.len(), 2);
@@ -344,7 +382,7 @@ mod tests {
         let n = skill_node("n1", &["auth"], "auth");
         let p1: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(n.clone(), 0.3)]));
         let p2: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(n.clone(), 0.7)]));
-        let composite = CompositeProvider::new(vec![p1, p2]);
+        let composite = CompositeProvider::new(vec![p1, p2], false);
         let tags: Vec<String> = vec![];
         let result = composite.query(&make_query("auth", &tags)).await;
         assert_eq!(result.nodes.len(), 1, "dedup: same id → single entry");
@@ -357,7 +395,7 @@ mod tests {
             .map(|i| (skill_node(&format!("n{i}"), &["auth"], "auth"), 0.5))
             .collect();
         let p: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(nodes));
-        let composite = CompositeProvider::new(vec![p]);
+        let composite = CompositeProvider::new(vec![p], false);
         static LEAF: &[NodeDepth] = &[NodeDepth::Leaf];
         let tags: Vec<String> = vec![];
         let query = KnowledgeQuery {
@@ -397,7 +435,7 @@ mod tests {
                 &ProviderKind::Skill
             }
         }
-        let composite = CompositeProvider::new(vec![Arc::new(NotReady)]);
+        let composite = CompositeProvider::new(vec![Arc::new(NotReady)], false);
         assert!(!composite.is_ready());
     }
 
@@ -475,7 +513,7 @@ mod tests {
             related: vec![],
         };
         let p: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(wiki_node, 0.8)]));
-        let composite = CompositeProvider::new(vec![p]);
+        let composite = CompositeProvider::new(vec![p], false);
 
         // First query — populates source_cache
         let tags: Vec<String> = vec!["auth".into()];
@@ -514,7 +552,7 @@ mod tests {
             related: vec![],
         };
         let p: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(synth_node, 0.8)]));
-        let composite = CompositeProvider::new(vec![p]);
+        let composite = CompositeProvider::new(vec![p], false);
 
         let tags: Vec<String> = vec!["auth".into()];
         // Populate source_cache via query
@@ -530,6 +568,51 @@ mod tests {
         assert!(
             (s1 - s0).abs() < 1e-5,
             "Synthetic node score must not be reduced: s0={s0} s1={s1}"
+        );
+    }
+
+    // --- CompositeProvider domain_scoping integration test ---
+
+    #[tokio::test]
+    async fn composite_domain_scoping_filters_out_of_domain_nodes() {
+        // Provider returns one in-domain node (billing) and one out-of-domain node (auth).
+        let billing_node = skill_node("billing-1", &["billing"], "billing invoice processing");
+        let auth_node = skill_node("auth-1", &["auth"], "auth token validation");
+        let p: Arc<dyn KnowledgeProvider> =
+            Arc::new(StaticProvider(vec![(billing_node, 0.8), (auth_node, 0.7)]));
+
+        // domain_scoping: true — only billing-tagged nodes should survive the post-filter.
+        let composite = CompositeProvider::new(vec![p], true);
+        let tags: Vec<String> = vec!["billing".into()];
+        let result = composite.query(&make_query("invoice", &tags)).await;
+
+        assert_eq!(
+            result.nodes.len(),
+            1,
+            "domain_scoping=true must remove the out-of-domain auth node"
+        );
+        assert_eq!(
+            result.nodes[0].0.id, "billing-1",
+            "only the billing-domain node must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn composite_domain_scoping_false_returns_all_nodes() {
+        // Sanity check: with domain_scoping disabled, both nodes are returned.
+        let billing_node = skill_node("billing-2", &["billing"], "billing invoice processing");
+        let auth_node = skill_node("auth-2", &["auth"], "auth token validation");
+        let p: Arc<dyn KnowledgeProvider> =
+            Arc::new(StaticProvider(vec![(billing_node, 0.8), (auth_node, 0.7)]));
+
+        let composite = CompositeProvider::new(vec![p], false);
+        let tags: Vec<String> = vec!["billing".into()];
+        let result = composite.query(&make_query("invoice", &tags)).await;
+
+        assert_eq!(
+            result.nodes.len(),
+            2,
+            "domain_scoping=false must not filter: both nodes must be returned"
         );
     }
 
@@ -550,7 +633,7 @@ mod tests {
             related: vec![],
         };
         let p: Arc<dyn KnowledgeProvider> = Arc::new(StaticProvider(vec![(wiki_node, 1.0)]));
-        let composite = CompositeProvider::new(vec![p]);
+        let composite = CompositeProvider::new(vec![p], false);
 
         let tags: Vec<String> = vec!["auth".into()];
         let s0 = composite.query(&make_query("auth", &tags)).await
@@ -573,5 +656,92 @@ mod tests {
             composite.violation_penalty_for("wiki-cap") <= 0.9 + 1e-5,
             "penalty must be capped at 0.9"
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_by_domains_tests {
+    use super::*;
+
+    fn node(id: &str, domains: &[&str]) -> (KnowledgeNode, f32) {
+        (KnowledgeNode {
+            id: id.to_string(),
+            depth: crate::types::NodeDepth::Leaf,
+            synthesis: id.to_string(),
+            invariants: vec![],
+            failure_modes: vec![],
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            entry_points: vec![],
+            tensions: vec![],
+            cross_references: vec![],
+            related: vec![],
+            source: crate::types::NodeSource::Synthetic,
+            importance: 0.5,
+        }, 0.8)
+    }
+
+    #[test]
+    fn empty_tags_no_filtering() {
+        let nodes = vec![node("a", &["auth"]), node("b", &["billing"])];
+        let result = scope_by_domains(nodes.clone(), &[]);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn filters_off_domain_node() {
+        let nodes = vec![node("auth-node", &["auth"]), node("billing-node", &["billing"])];
+        let result = scope_by_domains(nodes, &["billing".to_string()]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0.id, "billing-node");
+    }
+
+    #[test]
+    fn retains_untagged_nodes() {
+        // Nodes with empty domains are always retained (no starvation guarantee).
+        let nodes = vec![node("untagged", &[]), node("auth-node", &["auth"])];
+        let result = scope_by_domains(nodes, &["billing".to_string()]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0.id, "untagged");
+    }
+
+    #[test]
+    fn falls_back_to_unfiltered_when_filter_empties_result() {
+        let nodes = vec![node("auth-node", &["auth"])];
+        let result = scope_by_domains(nodes.clone(), &["billing".to_string()]);
+        // No billing nodes → fallback → return all
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0.id, "auth-node");
+    }
+
+    #[test]
+    fn multi_domain_node_retained_on_any_match() {
+        let nodes = vec![node("multi", &["auth", "billing"])];
+        let result = scope_by_domains(nodes, &["billing".to_string()]);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn scoping_disabled_no_change() {
+        // When domain_scoping flag is false, CompositeProvider must return identical
+        // node sets regardless of query.tags — this is the no-regression guarantee.
+        let nodes = vec![node("auth-node", &["auth"]), node("billing-node", &["billing"])];
+        // scope_by_domains is the pure function; flag=false means it is never called.
+        // Verify the pure function itself passes through when tags is empty (the guard path).
+        let result = scope_by_domains(nodes.clone(), &[]);
+        assert_eq!(result.len(), 2, "empty tags → no filtering → both nodes returned");
+    }
+
+    #[test]
+    fn skill_nodes_filtered_by_same_rule() {
+        // Synthetic-source nodes (cross-task skill nodes) are not exempt from domain
+        // filtering — they use the same domains field as wiki nodes.
+        let mut skill_node = node("skill:t1:billing:topic", &["billing"]);
+        skill_node.0.source = crate::types::NodeSource::Synthetic;
+        let mut wiki_node = node("wiki:auth", &["auth"]);
+        wiki_node.0.source = crate::types::NodeSource::WikiYaml { path: "auth.yaml".into() };
+        let nodes = vec![skill_node, wiki_node];
+        let result = scope_by_domains(nodes, &["billing".to_string()]);
+        assert_eq!(result.len(), 1, "only billing-domain skill node must survive");
+        assert_eq!(result[0].0.id, "skill:t1:billing:topic");
     }
 }

@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_knowledge::types::{KnowledgeNode, NodeDepth, NodeSource, TensionRef};
+use h2ai_types::events::{
+    CorrelatedFabricationEvent, SocraticDiagnosisEvent, TopologyProvisionedEvent,
+    VerificationScoredEvent,
+};
 use h2ai_types::identity::TaskId;
 
 use crate::engine::EngineOutput;
@@ -94,16 +98,23 @@ fn jaccard_dedup(mut pairs: Vec<(f32, String)>, threshold: f64) -> Vec<(f32, Str
     result
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Core extractor ────────────────────────────────────────────────────────────
 
-pub fn skill_from_output(
-    output: &EngineOutput,
+/// All skill node logic lives here. Both public entry points delegate to this function.
+#[allow(clippy::too_many_arguments)]
+fn extract_skill_nodes(
+    n_valid: usize,
+    topology_retry_events: &[TopologyProvisionedEvent],
+    uncovered_domains: &[String],
+    srani_events: &[CorrelatedFabricationEvent],
+    verification_events: &[VerificationScoredEvent],
+    resolved_output: &str,
+    socratic_diagnosis_events: &[SocraticDiagnosisEvent],
     corpus: &[ConstraintDoc],
     task_id: &TaskId,
 ) -> Vec<KnowledgeNode> {
-    // Guard: must have at least one resolved proposal.
-    let n_valid = output.selection_resolved.valid_proposals.len();
-    if n_valid == 0 {
+    let n_retries = topology_retry_events.len();
+    if n_valid == 0 && n_retries == 0 && verification_events.is_empty() {
         return vec![];
     }
 
@@ -121,19 +132,18 @@ pub fn skill_from_output(
             constraint_domain.insert(doc.id.as_str(), primary.as_str());
         }
     }
-    // constraint_domain is used in Leaf node emission below.
 
-    let n_retries = output.topology_retry_events.len();
-    let repair = match n_retries {
-        0 => format!("resolved with {n_valid} valid proposals on first topology"),
-        r => format!("resolved with {n_valid} valid proposals after {r} topology retries"),
+    let repair = match (n_valid, n_retries) {
+        (_, 0) => format!("resolved with {n_valid} valid proposals on first topology"),
+        (0, r) => format!("failed after {r} topology retries — no proposals survived"),
+        (_, r) => format!("resolved with {n_valid} valid proposals after {r} topology retries"),
     };
     let importance = (0.5_f32 + 0.5 * (n_retries as f32 / 5.0).min(1.0)).min(1.0);
 
     // Collect per-domain failure signals (for Topic node failure_modes).
     let mut domain_failures: HashMap<&str, Vec<String>> = HashMap::new();
 
-    for ev in &output.topology_retry_events {
+    for ev in topology_retry_events {
         if ev.retry_count > 0 {
             let msg = ev.constraint_tombstone.clone().unwrap_or_else(|| {
                 format!("topology retry #{}", ev.retry_count)
@@ -144,7 +154,7 @@ pub fn skill_from_output(
         }
     }
 
-    for domain in &output.coherence_state.uncovered_domains {
+    for domain in uncovered_domains {
         if domain_constraints.contains_key(domain.as_str()) {
             domain_failures
                 .entry(domain.as_str())
@@ -156,7 +166,7 @@ pub fn skill_from_output(
         }
     }
 
-    for ev in &output.srani_events {
+    for ev in srani_events {
         if ev.hint_injected && !ev.shared_ungrounded_entities.is_empty() {
             let msg = format!(
                 "ungrounded entities: {}",
@@ -168,13 +178,14 @@ pub fn skill_from_output(
         }
     }
 
-    if domain_failures.is_empty() {
+    let has_verifier_failures = verification_events.iter().any(|ev| ev.score < 0.5);
+    if domain_failures.is_empty() && !has_verifier_failures {
         return vec![];
     }
 
     // Socratic questions — exact-dedup, preserve insertion order.
     let mut socratic_qs: Vec<String> = Vec::new();
-    for ev in &output.socratic_diagnosis_events {
+    for ev in socratic_diagnosis_events {
         if !socratic_qs.contains(&ev.question) {
             socratic_qs.push(ev.question.clone());
         }
@@ -186,7 +197,7 @@ pub fn skill_from_output(
     };
 
     // Resolved output excerpt for entry_points.
-    let excerpt = trim_at_word_boundary(&output.resolved_output, 300);
+    let excerpt = trim_at_word_boundary(resolved_output, 300);
     let entry_point = format!("Resolution pattern: {excerpt}");
 
     // Emit one Topic node per domain with failure signals.
@@ -225,9 +236,8 @@ pub fn skill_from_output(
 
     // ── Constraint-keyed Leaf nodes ───────────────────────────────────────────
 
-    // Count tombstone appearances across all retry events.
     let mut tombstone_map: HashMap<String, u32> = HashMap::new();
-    for ev in &output.topology_retry_events {
+    for ev in topology_retry_events {
         if ev.retry_count > 0 {
             if let Some(ref t) = ev.constraint_tombstone {
                 *tombstone_map.entry(t.clone()).or_insert(0) += 1;
@@ -235,9 +245,7 @@ pub fn skill_from_output(
         }
     }
 
-    // Collect low-scoring verifier reasons, sorted by score ascending, Jaccard-deduped.
-    let raw_reasons: Vec<(f32, String)> = output
-        .verification_events
+    let raw_reasons: Vec<(f32, String)> = verification_events
         .iter()
         .filter(|ev| ev.score < 0.5)
         .map(|ev| (ev.score as f32, ev.reason.clone()))
@@ -286,7 +294,6 @@ pub fn skill_from_output(
         domain_constraints.keys().map(|s| s.to_string()).collect();
 
     for (_, reason) in &verifier_reasons {
-        // Skip if this reason mentions a constraint_id already covered by a Constraint-keyed Leaf.
         let already_covered = parse_constraint_id(reason)
             .map(|id| covered_constraint_ids.contains(&id))
             .unwrap_or(false);
@@ -311,6 +318,47 @@ pub fn skill_from_output(
     }
 
     nodes
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+pub fn skill_from_output(
+    output: &EngineOutput,
+    corpus: &[ConstraintDoc],
+    task_id: &TaskId,
+) -> Vec<KnowledgeNode> {
+    extract_skill_nodes(
+        output.selection_resolved.valid_proposals.len(),
+        &output.topology_retry_events,
+        &output.coherence_state.uncovered_domains,
+        &output.srani_events,
+        &output.verification_events,
+        &output.resolved_output,
+        &output.socratic_diagnosis_events,
+        corpus,
+        task_id,
+    )
+}
+
+/// Entry point for the `TaskFailed` path where no `EngineOutput` is available.
+/// Takes topology retry events and partial verification events that exist on the failure path.
+pub fn skill_from_retry_events(
+    topology_retry_events: Vec<TopologyProvisionedEvent>,
+    partial_verification_events: &[VerificationScoredEvent],
+    corpus: &[ConstraintDoc],
+    task_id: &TaskId,
+) -> Vec<KnowledgeNode> {
+    extract_skill_nodes(
+        0,
+        &topology_retry_events,
+        &[],
+        &[],
+        partial_verification_events,
+        "",
+        &[],
+        corpus,
+        task_id,
+    )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -489,7 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn zero_valid_proposals_returns_empty() {
+    fn zero_valid_proposals_with_retries_produces_skills() {
+        // TaskFailed path: 0 valid proposals but retries occurred → skills SHOULD be emitted.
         let task_id = TaskId::new();
         let output = make_output(
             task_id.clone(),
@@ -501,7 +550,24 @@ mod tests {
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
-        assert!(nodes.is_empty(), "unresolved task must produce no skills");
+        assert!(!nodes.is_empty(), "failed task with retries must produce skill nodes");
+    }
+
+    #[test]
+    fn zero_valid_proposals_and_zero_retries_returns_empty() {
+        // No signal at all → no skill nodes.
+        let task_id = TaskId::new();
+        let output = make_output(
+            task_id.clone(),
+            0,
+            vec![],
+            closed_coherence(),
+            vec![],
+            vec![],
+        );
+        let corpus = stub_corpus(&["auth"]);
+        let nodes = skill_from_output(&output, &corpus, &task_id);
+        assert!(nodes.is_empty(), "no retries and no valid proposals → no skills");
     }
 
     #[test]
@@ -879,5 +945,55 @@ mod tests {
         // Also confirm the Constraint Leaf IS present
         let constraint_leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf && n.id.contains("C-000"));
         assert!(constraint_leaf.is_some(), "Constraint Leaf for C-000 must still be present");
+    }
+
+    // ── skill_from_retry_events (failure path) ───────────────────────────────
+
+    #[test]
+    fn failure_path_with_verification_events_but_no_topology_retries_produces_reason_leaf_nodes() {
+        // Regression: TaskFailed with partial_verification_events (score < 0.5) but empty
+        // topology_retry_events. Old code: guard at n_valid==0 && n_retries==0 → vec![],
+        // then domain_failures empty → vec![]. Fix: bypass both guards when verification
+        // events carry failure signal, produce Reason-keyed Leaf nodes.
+        let task_id = TaskId::new();
+        let corpus = stub_corpus(&["billing"]);
+        let nodes = skill_from_retry_events(
+            vec![],
+            &[verification_event(task_id.clone(), 0.35, "billing quota constraint violated")],
+            &corpus,
+            &task_id,
+        );
+        assert!(!nodes.is_empty(), "partial_verification_events on TaskFailed path must produce skill nodes");
+        let reason_leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"));
+        assert!(reason_leaf.is_some(), "must emit at least one Reason-keyed Leaf from partial verification failures");
+        assert!(
+            reason_leaf.unwrap().failure_modes.iter().any(|f| f.contains("billing quota")),
+            "Reason-keyed Leaf failure_modes must contain the verifier reason text"
+        );
+    }
+
+    #[test]
+    fn failure_path_with_no_signals_returns_empty() {
+        let task_id = TaskId::new();
+        let corpus = stub_corpus(&["billing"]);
+        let nodes = skill_from_retry_events(vec![], &[], &corpus, &task_id);
+        assert!(nodes.is_empty(), "no retries and no verification events must produce no skill nodes");
+    }
+
+    #[test]
+    fn failure_path_high_scoring_events_do_not_produce_reason_leaves() {
+        // Verification events with score >= 0.5 are not failures → no Reason-keyed Leaf nodes.
+        let task_id = TaskId::new();
+        let corpus = stub_corpus(&["billing"]);
+        let nodes = skill_from_retry_events(
+            vec![],
+            &[
+                verification_event(task_id.clone(), 0.5, "barely passing"),
+                verification_event(task_id.clone(), 0.9, "well above threshold"),
+            ],
+            &corpus,
+            &task_id,
+        );
+        assert!(nodes.is_empty(), "events with score >= 0.5 must not produce skill nodes");
     }
 }

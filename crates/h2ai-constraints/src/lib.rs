@@ -1,3 +1,4 @@
+pub mod ambiguity;
 pub mod complexity;
 pub mod conflict;
 pub mod eval;

@@ -316,7 +316,7 @@ mockall::mock! {
 // ── Stage runner mocks ────────────────────────────────────────────────────────
 
 use h2ai_orchestrator::decomposition::DecompositionError;
-use h2ai_orchestrator::engine::{EngineError, EngineOutput};
+use h2ai_orchestrator::engine::{EngineError, EngineOutput, EngineRunContext};
 use h2ai_orchestrator::task_runner::{
     DecompositionArgs, Decomposer, EngineRunner, OwnedEngineInput, ThinkingLoopArgs,
     ThinkingLoopRunner,
@@ -347,7 +347,7 @@ mockall::mock! {
 
     #[async_trait::async_trait]
     impl EngineRunner for EngineRunner {
-        async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, EngineError>;
+        async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)>;
     }
 }
 

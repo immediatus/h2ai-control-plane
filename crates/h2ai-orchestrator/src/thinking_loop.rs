@@ -27,6 +27,8 @@ use h2ai_types::sizing::TauValue;
 use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ThinkingReport};
 use serde::Deserialize;
 use std::sync::Arc;
+
+use crate::llm_parse::{extract_first_json_array, strip_json_fences};
 // ─── Public input struct ──────────────────────────────────────────────────────
 
 pub struct ThinkingLoopInput<'a> {
@@ -307,8 +309,20 @@ async fn select_archetypes(
     };
 
     match input.adapter.execute(req).await {
-        Ok(resp) => parse_archetypes(&resp.output).unwrap_or_default(),
-        Err(_) => vec![],
+        Ok(resp) => parse_archetypes(&resp.output).unwrap_or_else(|| {
+            tracing::warn!(
+                target: "h2ai.thinking",
+                "select_archetypes: failed to parse archetype JSON from LLM output (iteration {iteration})"
+            );
+            vec![]
+        }),
+        Err(e) => {
+            tracing::warn!(
+                target: "h2ai.thinking",
+                "select_archetypes: adapter error at iteration {iteration}: {e}"
+            );
+            vec![]
+        }
     }
 }
 
@@ -496,7 +510,13 @@ async fn synthesize(
 
     match input.adapter.execute(req).await {
         Ok(resp) => parse_thinking_report(&resp.output),
-        Err(_) => ThinkingReport::default(),
+        Err(e) => {
+            tracing::warn!(
+                target: "h2ai.thinking",
+                "synthesize: adapter error — returning default ThinkingReport: {e}"
+            );
+            ThinkingReport::default()
+        }
     }
 }
 
@@ -540,12 +560,23 @@ fn compute_similarity(a: &str, b: &str, model: Option<&dyn EmbeddingModel>) -> f
 
 /// Parse a JSON array of `ArchetypeSpec` from LLM output.
 /// Returns `None` if the text is not a JSON array.
+///
+/// Handles two common LLM deviations from the "output only JSON" instruction:
+/// 1. Markdown code fences wrapping the array.
+/// 2. Preamble/postamble prose around the array (e.g. reasoning tokens, "Here are the
+///    archetypes:"). In that case we locate the outermost `[…]` by bracket-depth scanning.
 #[must_use]
 pub fn parse_archetypes(text: &str) -> Option<Vec<ArchetypeSpec>> {
-    // Strip markdown fences if present.
     let stripped = strip_json_fences(text);
-    let v: serde_json::Value = serde_json::from_str(stripped.trim()).ok()?;
-    let arr = v.as_array()?;
+    // Fast path: the stripped text IS the JSON array.
+    let json_value = serde_json::from_str::<serde_json::Value>(stripped.trim())
+        .ok()
+        // Fallback: extract the outermost JSON array from mixed-content text.
+        .or_else(|| {
+            extract_first_json_array(stripped)
+                .and_then(|s| serde_json::from_str(s).ok())
+        })?;
+    let arr = json_value.as_array()?;
     let specs: Vec<ArchetypeSpec> = arr
         .iter()
         .filter_map(|item| serde_json::from_value(item.clone()).ok())
@@ -601,14 +632,64 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Remove ```json ... ``` or ``` ... ``` fences from LLM output.
-fn strip_json_fences(s: &str) -> &str {
-    let s = s.trim();
-    if s.starts_with("```") {
-        let after_open = s.find('\n').map_or(s, |i| &s[i + 1..]);
-        if let Some(close) = after_open.rfind("```") {
-            return after_open[..close].trim();
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use h2ai_test_utils::failing_adapter;
+
+    fn single_iter_cfg() -> ThinkingLoopConfig {
+        ThinkingLoopConfig {
+            enabled: true,
+            max_iterations: 1,
+            ..Default::default()
         }
     }
-    s
+
+    #[test]
+    fn parse_archetypes_with_preamble_text() {
+        // Regression: Gemini (and other models) sometimes output reasoning prose before the JSON
+        // array even when instructed "Output ONLY the JSON array." extract_first_json_array must
+        // recover the array from within the mixed-content response.
+        let json_fragment = r#"[{"name":"security-engineer","persona":"You are a security engineer who focuses on auth boundaries.","scope":"auth","confidence":0.9,"tau":0.2,"model_tier":"capable","cot_style":"step_by_step"}]"#;
+        let with_preamble = format!("Here are the archetypes I selected:\n\n{json_fragment}");
+        let result = parse_archetypes(&with_preamble);
+        assert!(result.is_some(), "must parse array preceded by preamble text");
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_archetypes_clean_json_still_works() {
+        // Fast path must not regress.
+        let json = r#"[{"name":"x","persona":"You are a p who does q.","scope":"s","confidence":0.8,"tau":0.3,"model_tier":"fast","cot_style":"none"}]"#;
+        let result = parse_archetypes(json);
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn adapter_error_in_select_archetypes_produces_default_report() {
+        // Regression: select_archetypes silently returned vec![] on adapter error,
+        // causing the loop to break at iteration 0 → ThinkingReport::default().
+        // After this fix a tracing::warn! at h2ai.thinking is emitted; observable via RUST_LOG.
+        let adapter = failing_adapter();
+        let cfg = single_iter_cfg();
+        let input = ThinkingLoopInput {
+            task_description: "test task",
+            constraint_ids: &[],
+            constraint_tags: &[],
+            research_context: "stub context",
+            knowledge_provider: None,
+            n_archetypes: 2,
+            cfg: &cfg,
+            adapter: &adapter,
+            embedding_model: None,
+            nats_client: None,
+            task_id: "test-task-id",
+        };
+        let report = run(input).await;
+        assert_eq!(report.shared_understanding, "", "adapter failure must produce empty shared_understanding");
+        assert_eq!(report.coverage_score, 0.0, "adapter failure must produce zero coverage_score");
+    }
 }
+

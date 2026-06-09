@@ -2,7 +2,7 @@
 # Uses gemini-2.5-pro for explorers, gemini-2.0-flash for researcher/verifier/support
 # Run: python3 replay.py benchmark/complexity-routing --config h2ai-gemini.toml
 
-nats_url = "nats://localhost:4222"
+nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
 max_autonomic_retries = 4
 

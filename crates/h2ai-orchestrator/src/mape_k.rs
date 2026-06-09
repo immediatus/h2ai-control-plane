@@ -174,7 +174,7 @@ pub struct PipelineWaveResult {
 pub enum MapeKDecision {
     Return(Box<EngineOutput>),
     Retry,
-    Fail(EngineError),
+    Fail(EngineError, crate::engine::EngineRunContext),
     /// Constraint check text is ambiguous — SpecRepairAdvisor was triggered.
     /// The engine should reload constraints and restart the task from wave 0.
     SpecAmbiguous {
@@ -182,6 +182,8 @@ pub enum MapeKDecision {
         check_index: usize,
         instability_score: f64,
         divergent_reasons: Vec<String>,
+        ambiguity_evidence: Vec<String>,
+        ambiguity_score: f32,
     },
     /// Task complexity exceeds the LLM's computation budget — retries are futile.
     /// `graft_first = true` → route to H1 grafting on first failure.
@@ -272,6 +274,12 @@ pub struct MapeKController {
         std::collections::HashMap<h2ai_types::identity::ExplorerId, String>,
     pub(crate) pending_leader_elected_events: Vec<h2ai_types::events::LeaderElectedEvent>,
     pub(crate) pending_socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
+    pub(crate) ambiguity_scorecards: std::collections::HashMap<
+        (String, usize),
+        h2ai_constraints::ambiguity::AmbiguityScorecard,
+    >,
+    pub(crate) pending_ambiguity_events:
+        Vec<h2ai_types::events::ConstraintAmbiguityDetectedEvent>,
     pub(crate) last_wave_violated_constraint_ids: Vec<String>,
     /// `AssembledContexts` from the most recently completed wave.
     /// Passed as `prev_assembled_contexts` to the next wave's generation phase.
@@ -351,11 +359,14 @@ pub(crate) fn constraint_reasons_jaccard(reasons_a: &[String], reasons_b: &[Stri
     bag_a.intersection(&bag_b).count() as f64 / union as f64
 }
 
+#[derive(Debug)]
 struct InstabilitySignal {
     constraint_id: String,
     check_index: usize,
     score: f64,
     reasons: Vec<String>,
+    ambiguity_evidence: Vec<String>,
+    ambiguity_score: f32,
 }
 
 // ── GAP-H3: Cost Guard free functions ─────────────────────────────────────────
@@ -528,6 +539,11 @@ impl MapeKController {
             last_wave_proposal_texts: std::collections::HashMap::new(),
             pending_leader_elected_events: Vec::new(),
             pending_socratic_diagnosis_events: Vec::new(),
+            ambiguity_scorecards: h2ai_constraints::ambiguity::seed_scorecards(
+                &input.constraint_corpus,
+                &input.cfg.ambiguity_detection,
+            ),
+            pending_ambiguity_events: Vec::new(),
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
@@ -769,12 +785,14 @@ impl MapeKController {
     ) -> MapeKDecision {
         // Detect constraint spec instability across waves
         if self.cfg_ref.gap_k1.enabled {
-            if let Some(instability) = self.find_instability() {
+            if let Some(instability) = self.find_instability(retry_count) {
                 return MapeKDecision::SpecAmbiguous {
                     constraint_id: instability.constraint_id,
                     check_index: instability.check_index,
                     instability_score: instability.score,
                     divergent_reasons: instability.reasons,
+                    ambiguity_evidence: instability.ambiguity_evidence,
+                    ambiguity_score: instability.ambiguity_score,
                 };
             }
         }
@@ -874,7 +892,7 @@ impl MapeKController {
                 MapeKDecision::Return(Box::new(self.finalize(merge_out)))
             }
 
-            PipelineOutcome::Fatal(e) => MapeKDecision::Fail(e),
+            PipelineOutcome::Fatal(e) => MapeKDecision::Fail(e, crate::engine::EngineRunContext::default()),
 
             PipelineOutcome::EarlyExit(reason) => {
                 self.handle_exit_reason(reason, retry_count, filter_ratio)
@@ -1096,10 +1114,9 @@ impl MapeKController {
                 MapeKDecision::Retry
             }
 
-            ExitReason::OracleBlocked => MapeKDecision::Fail(EngineError::MaxRetriesExhausted {
-                partial_verification_events: self.all_verification_events.clone(),
-                best_partial_text: None,
-            }),
+            ExitReason::OracleBlocked => {
+                MapeKDecision::Fail(EngineError::MaxRetriesExhausted, self.take_run_context())
+            }
         }
     }
 
@@ -1213,10 +1230,7 @@ impl MapeKController {
                     reason = ?reason,
                     "retry policy decided Fail — giving up"
                 );
-                MapeKDecision::Fail(EngineError::MaxRetriesExhausted {
-                    partial_verification_events: self.all_verification_events.clone(),
-                    best_partial_text: None,
-                })
+                MapeKDecision::Fail(EngineError::MaxRetriesExhausted, self.take_run_context())
             }
         }
     }
@@ -1527,6 +1541,19 @@ impl MapeKController {
         self.all_verification_events.clone()
     }
 
+    /// Snapshot of accumulated run data for the failure path. Called once per failure.
+    #[must_use]
+    pub fn take_run_context(&self) -> crate::engine::EngineRunContext {
+        crate::engine::EngineRunContext {
+            verification_events: self.all_verification_events.clone(),
+            topology_retry_events: self.topology_retry_events.clone(),
+            best_partial_text: self
+                .global_best_proposal
+                .as_ref()
+                .map(|(_, text)| text.clone()),
+        }
+    }
+
     /// Read-only view of all pruned events accumulated across waves.
     /// Used by the synthesis wave to extract the global best partial for HITL fallback.
     #[must_use]
@@ -1613,13 +1640,42 @@ impl MapeKController {
             .take(self.cfg_ref.gap_i1.max_gap_records_per_wave)
             .collect::<Vec<_>>();
 
-        for gap in gaps_to_research {
+        if gaps_to_research.is_empty() {
+            return;
+        }
+        tracing::info!(
+            target: "h2ai.gap_i1",
+            n_gaps = gaps_to_research.len(),
+            "gap research triggered for cold checks"
+        );
+
+        for mut gap in gaps_to_research {
             let cache_key = (gap.constraint_id.clone(), gap.check_idx);
             if self.domain_synthesis_cache.contains_key(&cache_key) {
                 continue;
             }
             let check_text = self.constraint_check_text(&gap.constraint_id, gap.check_idx);
-            if let Some(synth) = crate::srani_grounding::run_gap_researcher(
+
+            // Extract the most representative failure reason for this (constraint, check) pair
+            // from verifier feedback on pruned proposals. This becomes `incorrect_concept`,
+            // which drives web-search query construction.
+            gap.incorrect_concept =
+                self.extract_incorrect_concept(&gap.constraint_id, gap.check_idx);
+            gap.gap_query = if gap.incorrect_concept.is_empty() {
+                check_text.clone()
+            } else {
+                format!("{} — {}", check_text, &gap.incorrect_concept)
+            };
+
+            tracing::info!(
+                target: "h2ai.gap_i1",
+                constraint_id = %gap.constraint_id,
+                check_idx = gap.check_idx,
+                incorrect_concept = %gap.incorrect_concept,
+                "dispatching gap researcher"
+            );
+
+            match crate::srani_grounding::run_gap_researcher(
                 &gap,
                 &check_text,
                 &adapter,
@@ -1629,9 +1685,56 @@ impl MapeKController {
             )
             .await
             {
-                self.domain_synthesis_cache.insert(cache_key, synth);
+                Some(synth) => {
+                    tracing::info!(
+                        target: "h2ai.gap_i1",
+                        constraint_id = %gap.constraint_id,
+                        check_idx = gap.check_idx,
+                        confidence = synth.confidence,
+                        "gap synthesis accepted"
+                    );
+                    self.domain_synthesis_cache.insert(cache_key, synth);
+                }
+                None => {
+                    tracing::warn!(
+                        target: "h2ai.gap_i1",
+                        constraint_id = %gap.constraint_id,
+                        check_idx = gap.check_idx,
+                        "gap synthesis rejected or timed out"
+                    );
+                }
             }
         }
+    }
+
+    /// Extract the most representative failure reason for a given (constraint_id, check_idx)
+    /// pair from all pruned proposals. Used to populate `incorrect_concept` for gap research.
+    fn extract_incorrect_concept(&self, constraint_id: &str, check_idx: usize) -> String {
+        // Collect all verifier reasons for this constraint where the specific check failed.
+        let reasons: Vec<&str> = self
+            .all_pruned
+            .iter()
+            .flat_map(|p| &p.violated_constraints)
+            .filter(|v| v.constraint_id == constraint_id)
+            .filter(|v| {
+                // Include if this check_idx is known to have failed, or verdicts are empty.
+                v.check_verdicts.is_empty()
+                    || v.check_verdicts.get(check_idx).copied() == Some(false)
+            })
+            .filter_map(|v| v.verifier_reason.as_deref())
+            .filter(|r| !r.is_empty())
+            .collect();
+        if reasons.is_empty() {
+            return String::new();
+        }
+        // Use the shortest reason as the most focused description of the failure.
+        reasons
+            .into_iter()
+            .min_by_key(|r| r.len())
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect()
     }
 
     // ── Cross-wave instability detection ──────────────────────────────
@@ -1639,7 +1742,7 @@ impl MapeKController {
     /// Scan `last_wave_pruned` and `prev_wave_pruned` for the same constraint
     /// appearing in both waves with hard violations whose rejection reasons have
     /// low Jaccard similarity (indicating the verifier is flipping).
-    fn find_instability(&self) -> Option<InstabilitySignal> {
+    fn find_instability(&mut self, wave: u32) -> Option<InstabilitySignal> {
         let mut last_reasons: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         let mut prev_reasons: std::collections::HashMap<String, Vec<String>> =
@@ -1675,25 +1778,154 @@ impl MapeKController {
             }
         }
 
+        let mut fired: Option<(String, f64, Vec<String>)> = None;
         for (cid, last_rs) in &last_reasons {
             if let Some(prev_rs) = prev_reasons.get(cid) {
                 let score = constraint_reasons_jaccard(last_rs, prev_rs);
                 if score < self.cfg_ref.gap_k1.instability_threshold {
-                    let check_index = 0; // Task 8 will refine this
                     let mut reasons = last_rs.clone();
                     reasons.extend(prev_rs.iter().cloned());
                     reasons.dedup();
                     reasons.truncate(5);
-                    return Some(InstabilitySignal {
-                        constraint_id: cid.clone(),
-                        check_index,
-                        score,
-                        reasons,
-                    });
+                    fired = Some((cid.clone(), score, reasons));
+                    break;
                 }
             }
         }
-        None
+        let (cid, score, reasons) = fired?;
+
+        if !self.cfg_ref.ambiguity_detection.enabled {
+            return Some(InstabilitySignal {
+                constraint_id: cid,
+                check_index: 0,
+                score,
+                reasons,
+                ambiguity_evidence: vec![],
+                ambiguity_score: 0.0,
+            });
+        }
+
+        self.accumulate_ambiguity(&cid, score, reasons, wave)
+    }
+
+    fn accumulate_ambiguity(
+        &mut self,
+        cid: &str,
+        instability_score: f64,
+        reasons: Vec<String>,
+        wave: u32,
+    ) -> Option<InstabilitySignal> {
+        use h2ai_constraints::ambiguity::{
+            most_divergent_pair, score_evidence, AmbiguityEvidence, AmbiguityScorecard,
+            PatchMode, DYNAMIC_ONLY_CHECK_IDX,
+        };
+        let acfg = self.cfg_ref.ambiguity_detection.clone();
+
+        let key = self
+            .ambiguity_scorecards
+            .iter()
+            .filter(|((c, idx), _)| c == cid && *idx != DYNAMIC_ONLY_CHECK_IDX)
+            .max_by(|a, b| {
+                a.1.score
+                    .partial_cmp(&b.1.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(k, _)| k.clone())
+            .unwrap_or_else(|| (cid.to_string(), DYNAMIC_ONLY_CHECK_IDX));
+
+        let current = self
+            .ambiguity_scorecards
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| AmbiguityScorecard::new(cid.to_string(), key.1));
+
+        if current.rewrite_applied {
+            return None;
+        }
+
+        let ev = AmbiguityEvidence::JaccardFreezeWave {
+            wave,
+            cross_wave_jaccard: instability_score as f32,
+        };
+        let updated = score_evidence(&current, ev, &acfg);
+
+        if updated.score < acfg.score_threshold {
+            if updated.score >= 0.3 {
+                tracing::error!(
+                    target: "h2ai.mape_k",
+                    constraint_id = %cid,
+                    score = updated.score,
+                    wave,
+                    "ambiguity evidence accumulating — constraint spec suspected ambiguous"
+                );
+            } else {
+                tracing::warn!(
+                    target: "h2ai.mape_k",
+                    constraint_id = %cid,
+                    score = updated.score,
+                    wave,
+                    "verifier divergence recorded in ambiguity scorecard"
+                );
+            }
+            self.ambiguity_scorecards.insert(key, updated);
+            return None;
+        }
+
+        let mut fired = updated;
+        fired.rewrite_applied = true;
+        let patch_mode = fired.patch_mode();
+        let evidence_lines: Vec<String> =
+            fired.evidence.iter().map(ToString::to_string).collect();
+        let final_score = fired.score;
+        self.ambiguity_scorecards.insert(key, fired);
+
+        let mut ordered = reasons.clone();
+        if let Some((a, b)) = most_divergent_pair(&reasons) {
+            let (a, b) = (a.to_string(), b.to_string());
+            ordered.retain(|r| r != &a && r != &b);
+            ordered.insert(0, b);
+            ordered.insert(0, a);
+        }
+
+        match patch_mode {
+            PatchMode::Precise { check_idx } => Some(InstabilitySignal {
+                constraint_id: cid.to_string(),
+                check_index: check_idx,
+                score: instability_score,
+                reasons: ordered,
+                ambiguity_evidence: evidence_lines,
+                ambiguity_score: final_score,
+            }),
+            PatchMode::DiagnosticOnly => {
+                tracing::error!(
+                    target: "h2ai.mape_k",
+                    constraint_id = %cid,
+                    final_score,
+                    wave,
+                    "constraint ambiguity threshold crossed (diagnostic-only — check index unknown)"
+                );
+                self.pending_ambiguity_events.push(
+                    h2ai_types::events::ConstraintAmbiguityDetectedEvent {
+                        task_id: self.task_id.clone(),
+                        constraint_id: cid.to_string(),
+                        check_idx: None,
+                        original_check_text: String::new(),
+                        suggested_rewrite: String::new(),
+                        evidence: evidence_lines,
+                        final_score,
+                        wave,
+                        timestamp: chrono::Utc::now(),
+                    },
+                );
+                None
+            }
+        }
+    }
+
+    pub fn take_pending_ambiguity_events(
+        &mut self,
+    ) -> Vec<h2ai_types::events::ConstraintAmbiguityDetectedEvent> {
+        std::mem::take(&mut self.pending_ambiguity_events)
     }
 
     // ── Test helpers ───────────────────────────────────────────────────────────
@@ -1779,6 +2011,8 @@ impl MapeKController {
             last_wave_proposal_texts: std::collections::HashMap::new(),
             pending_leader_elected_events: Vec::new(),
             pending_socratic_diagnosis_events: Vec::new(),
+            ambiguity_scorecards: std::collections::HashMap::new(),
+            pending_ambiguity_events: Vec::new(),
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
@@ -2364,5 +2598,196 @@ mod probe_routing_guard_tests {
             // Reset for next iteration (decide() may mutate state).
             ctrl.corpus_synthesis_viable = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod gap_f8_ambiguity_tests {
+    use super::*;
+    use h2ai_types::sizing::RoleErrorCost;
+
+    fn pruned_event_with_reason(
+        cid: &str,
+        reason: &str,
+    ) -> h2ai_types::events::BranchPrunedEvent {
+        h2ai_types::events::BranchPrunedEvent {
+            task_id: h2ai_types::identity::TaskId::new(),
+            explorer_id: h2ai_types::identity::ExplorerId::new(),
+            reason: reason.to_string(),
+            raw_output: String::new(),
+            constraint_error_cost: RoleErrorCost::new(0.0).unwrap(),
+            violated_constraints: vec![h2ai_types::events::ConstraintViolation {
+                constraint_id: cid.to_string(),
+                score: 0.0,
+                severity_label: "Hard".to_string(),
+                remediation_hint: None,
+                constraint_description: String::new(),
+                verifier_reason: Some(reason.to_string()),
+                check_verdicts: vec![],
+                criteria_pass: None,
+            }],
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    fn inject_divergence(ctrl: &mut MapeKController, cid: &str) {
+        ctrl.last_wave_pruned = vec![
+            pruned_event_with_reason(cid, "alpha bravo charlie delta echo"),
+            pruned_event_with_reason(cid, "alpha bravo charlie delta foxtrot"),
+        ];
+        ctrl.prev_wave_pruned = vec![
+            pruned_event_with_reason(cid, "zulu yankee xray whiskey victor"),
+            pruned_event_with_reason(cid, "zulu yankee xray whiskey uniform"),
+        ];
+    }
+
+    fn ambiguity_cfg() -> h2ai_config::H2AIConfig {
+        h2ai_config::H2AIConfig {
+            gap_k1: h2ai_config::GapK1Config {
+                enabled: true,
+                instability_threshold: 0.10,
+                ..h2ai_config::GapK1Config::default()
+            },
+            ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig {
+                enabled: true,
+                score_threshold: 0.6,
+                ..h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default()
+            },
+            ..h2ai_config::H2AIConfig::default()
+        }
+    }
+
+    /// Legacy path: ambiguity disabled → find_instability returns simple signal with check_index=0.
+    #[test]
+    fn find_instability_legacy_path_when_ambiguity_disabled() {
+        let cfg = h2ai_config::H2AIConfig {
+            gap_k1: h2ai_config::GapK1Config {
+                enabled: true,
+                instability_threshold: 0.10,
+                ..h2ai_config::GapK1Config::default()
+            },
+            ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig {
+                enabled: false,
+                ..h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default()
+            },
+            ..h2ai_config::H2AIConfig::default()
+        };
+        let mut ctrl = MapeKController::new_for_test(cfg);
+        inject_divergence(&mut ctrl, "C-001");
+
+        let sig = ctrl.find_instability(0).expect("instability should fire");
+        assert_eq!(sig.constraint_id, "C-001");
+        assert_eq!(sig.check_index, 0, "legacy path must set check_index=0");
+        assert!(sig.ambiguity_evidence.is_empty());
+        assert_eq!(sig.ambiguity_score, 0.0);
+    }
+
+    /// Accumulation path: score below threshold → returns None, scorecard is updated.
+    #[test]
+    fn find_instability_accumulates_below_threshold_returns_none() {
+        // weight_jaccard_freeze_wave=0.15, score_threshold=0.6 → one wave is not enough
+        let mut ctrl = MapeKController::new_for_test(ambiguity_cfg());
+        inject_divergence(&mut ctrl, "C-002");
+
+        let result = ctrl.find_instability(1);
+        assert!(
+            result.is_none(),
+            "below threshold, must return None; got {result:?}"
+        );
+        // Scorecard should now have the evidence recorded
+        let has_scorecard = ctrl
+            .ambiguity_scorecards
+            .values()
+            .any(|sc| sc.constraint_id == "C-002" && !sc.evidence.is_empty());
+        assert!(has_scorecard, "scorecard must be updated after accumulation");
+    }
+
+    /// Threshold crossed with Precise patch mode → returns real check_index.
+    #[test]
+    fn find_instability_threshold_crossed_precise_returns_real_check_idx() {
+        use h2ai_constraints::ambiguity::{AmbiguityEvidence, AmbiguityScorecard};
+        // Pre-seed a scorecard for C-003/check_idx=2 with static evidence near threshold.
+        // weight_fm_negation=0.30 → one static evidence puts score at 0.30.
+        // Then one JaccardFreezeWave (0.15) → total 0.45, still below 0.6.
+        // Add another fm_negation (0.30) → 0.75 >= 0.6 → fires.
+        // Simpler: pre-seed with score just below threshold so one more wave crosses it.
+        let mut cfg = ambiguity_cfg();
+        // Lower threshold so a single JaccardFreezeWave (0.15) crosses it after static seeding.
+        cfg.ambiguity_detection.score_threshold = 0.14;
+        // Also need static evidence on check_idx=2 so patch_mode returns Precise.
+        let mut ctrl = MapeKController::new_for_test(cfg.clone());
+
+        // Insert a scorecard with static evidence (FmTermNegation) at check_idx=2, score=0.0
+        // so the next JaccardFreezeWave (0.15 weight) will push it to 0.15 >= 0.14.
+        let mut base_card = AmbiguityScorecard::new("C-003".to_string(), 2);
+        base_card.evidence.push(AmbiguityEvidence::FmTermNegation {
+            term: "cockroachdb".to_string(),
+            negated_in: "avoid cockroachdb".to_string(),
+        });
+        // score stays 0.0 in the card (we manually inserted evidence without scoring)
+        // so score_evidence will add the JaccardFreezeWave weight on top.
+        ctrl.ambiguity_scorecards
+            .insert(("C-003".to_string(), 2), base_card);
+
+        inject_divergence(&mut ctrl, "C-003");
+        let sig = ctrl
+            .find_instability(2)
+            .expect("threshold crossed, must return Some");
+        assert_eq!(sig.constraint_id, "C-003");
+        assert_eq!(sig.check_index, 2, "Precise patch mode must set real check_index");
+        assert!(!sig.ambiguity_evidence.is_empty());
+        assert!(sig.ambiguity_score >= cfg.ambiguity_detection.score_threshold);
+    }
+
+    /// Threshold crossed with DiagnosticOnly → returns None, queues pending event.
+    #[test]
+    fn find_instability_threshold_crossed_diagnostic_queues_event_returns_none() {
+        // Dynamic-only scorecard (DYNAMIC_ONLY_CHECK_IDX) → DiagnosticOnly.
+        let mut cfg = ambiguity_cfg();
+        cfg.ambiguity_detection.score_threshold = 0.14; // crossed by one JaccardFreezeWave
+        let mut ctrl = MapeKController::new_for_test(cfg);
+
+        // No static evidence — key points to DYNAMIC_ONLY_CHECK_IDX.
+        // ambiguity_scorecards is empty from new_for_test, so accumulate_ambiguity
+        // will create a new DYNAMIC_ONLY card and add the JaccardFreezeWave.
+        inject_divergence(&mut ctrl, "C-004");
+        let result = ctrl.find_instability(3);
+        assert!(
+            result.is_none(),
+            "DiagnosticOnly must return None; got {result:?}"
+        );
+        let events = ctrl.take_pending_ambiguity_events();
+        assert_eq!(events.len(), 1, "one pending ambiguity event must be queued");
+        assert_eq!(events[0].constraint_id, "C-004");
+        assert!(events[0].check_idx.is_none());
+    }
+
+    /// No double-trigger: after rewrite_applied=true, find_instability returns None.
+    #[test]
+    fn find_instability_no_double_trigger_after_fired() {
+        let mut cfg = ambiguity_cfg();
+        cfg.ambiguity_detection.score_threshold = 0.14;
+        let mut ctrl = MapeKController::new_for_test(cfg);
+
+        inject_divergence(&mut ctrl, "C-005");
+        // First call fires (DiagnosticOnly) — queues one event
+        let _ = ctrl.find_instability(1);
+        // Drain the first event to isolate subsequent calls
+        let first_events = ctrl.take_pending_ambiguity_events();
+        assert_eq!(first_events.len(), 1, "first call must queue one event");
+
+        // Second call with same divergence — rewrite_applied=true → must return None
+        inject_divergence(&mut ctrl, "C-005");
+        let result2 = ctrl.find_instability(2);
+        assert!(
+            result2.is_none(),
+            "double-trigger must be prevented after rewrite_applied=true"
+        );
+        // No additional events queued on the second call
+        let events2 = ctrl.take_pending_ambiguity_events();
+        assert!(
+            events2.is_empty(),
+            "no second pending event after rewrite_applied"
+        );
     }
 }

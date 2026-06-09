@@ -6,8 +6,9 @@ authors.workspace     = true
 license.workspace     = true
 
 [dependencies]
-h2ai-types     = { path = "../h2ai-types" }
-h2ai-knowledge = { workspace = true }
+h2ai-types       = { path = "../h2ai-types" }
+h2ai-constraints = { path = "../h2ai-constraints" }
+h2ai-knowledge   = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }

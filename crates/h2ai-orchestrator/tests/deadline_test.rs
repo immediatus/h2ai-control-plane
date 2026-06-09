@@ -143,7 +143,7 @@ async fn engine_deadline_exceeded_on_zero_second_budget() {
 
     assert!(out.is_err(), "expected DeadlineExceeded error");
     assert!(
-        matches!(out.unwrap_err(), EngineError::DeadlineExceeded { .. }),
+        matches!(out.unwrap_err(), (EngineError::DeadlineExceeded { .. }, _)),
         "expected DeadlineExceeded variant"
     );
 }

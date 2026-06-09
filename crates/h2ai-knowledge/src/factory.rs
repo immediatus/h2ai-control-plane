@@ -113,7 +113,7 @@ impl KnowledgeProviderFactory {
                 crate::skill_provider::SkillProvider::new()
             }
             ProviderKind::Composite => {
-                crate::skill_provider::CompositeProvider::new(vec![])
+                crate::skill_provider::CompositeProvider::new(vec![], false)
             }
         }
     }

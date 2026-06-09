@@ -1,7 +1,7 @@
 # Compliance-Lite benchmark — Gemini adapters
 # Run: python3 replay.py benchmark/compliance-lite --config h2ai-gemini.toml
 
-nats_url = "nats://localhost:4222"
+nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
 max_autonomic_retries = 4
 

@@ -1,8 +1,9 @@
 use chrono::Utc;
+use h2ai_constraints::ambiguity::jaccard;
 use h2ai_types::config::TopologyKind;
 use h2ai_types::events::{BranchPrunedEvent, TaskFailedEvent, ZeroSurvivalEvent};
 use h2ai_types::sizing::MultiplicationConditionFailure;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub enum RetryAction {
     Retry(TopologyKind),
@@ -54,17 +55,6 @@ const HALLUCINATION_SIGNALS: &[&str] = &[
     "fictional",
     "false claim",
 ];
-
-/// Word-bag Jaccard similarity: |A ∩ B| / |A ∪ B|. Returns 1.0 when both bags are empty.
-fn jaccard(a: &str, b: &str) -> f64 {
-    let bag_a: HashSet<&str> = a.split_whitespace().collect();
-    let bag_b: HashSet<&str> = b.split_whitespace().collect();
-    let union = bag_a.union(&bag_b).count();
-    if union == 0 {
-        return 1.0;
-    }
-    bag_a.intersection(&bag_b).count() as f64 / union as f64
-}
 
 /// Min pairwise Jaccard across all reason pairs. Returns 1.0 when fewer than two reasons.
 fn min_pairwise_jaccard(reasons: &[String]) -> f64 {

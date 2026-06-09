@@ -101,11 +101,12 @@ pub fn parse_decomposition_response(
     let response = strip_thinking_tags(response);
     let response = response.as_ref();
     let start = response.find('[').ok_or(DecompositionError::NoJsonArray)?;
-    let end = response.rfind(']').ok_or(DecompositionError::NoJsonArray)?;
-    if end <= start {
-        return Err(DecompositionError::NoJsonArray);
-    }
-    let json_str = &response[start..=end];
+    let tail = &response[start..];
+    let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
+    let json_str = match stream.next() {
+        Some(Ok(_)) => &tail[..stream.byte_offset()],
+        _ => return Err(DecompositionError::NoJsonArray),
+    };
     let raw: Vec<RawSlot> = serde_json::from_str(json_str)
         .map_err(|e| DecompositionError::ParseError(e.to_string()))?;
 

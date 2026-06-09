@@ -119,27 +119,13 @@ fn strip_fence(text: &str) -> Option<&str> {
     Some(inner.trim())
 }
 
-/// Find the first balanced `{ ... }` JSON-object substring in `text`.
-/// Returns the slice from the first `{` through its matching `}`.
+/// Find the first `{…}` JSON object in `text`, delegating boundary detection to serde_json.
 fn find_json_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let tail = &text[start..];
-    let mut depth: usize = 0;
-    // Simple bracket counter — does not handle `}` inside string literals,
-    // but strategy 1 (direct parse) handles those cases first.
-    for (i, b) in tail.bytes().enumerate() {
-        match b {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&tail[..=i]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
+    stream.next()?.ok()?;
+    Some(&tail[..stream.byte_offset()])
 }
 
 /// Attempt to extract and deserialise a `ToolCallRequest` from LLM output.

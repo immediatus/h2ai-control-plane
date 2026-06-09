@@ -254,7 +254,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                     );
                 }
             }
-            Err(e) => {
+            Err((e, _run_ctx)) => {
                 tracing::error!(task_id = %task_id, "recovery: run_from_checkpoint failed: {e}");
                 state.store.mark_failed(&task_id);
                 if let Err(gc_err) = state

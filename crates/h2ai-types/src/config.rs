@@ -297,6 +297,10 @@ pub struct VerificationConfig {
     pub evaluator_system_prompt: String,
     pub evaluator_tau: TauValue,
     pub evaluator_max_tokens: u64,
+    /// Per-LlmJudge call timeout in seconds. Defaults to 600s (10 min).
+    /// Set from `oracle_timeout_secs` in the main config.
+    #[serde(default = "default_evaluator_timeout_secs")]
+    pub evaluator_timeout_secs: u64,
     /// When true, run both standard and adversarial verifiers and emit `VerifierComparisonEvent`.
     /// Does not affect pruning decisions. Off by default; enable only for measurement runs.
     #[serde(default)]
@@ -305,6 +309,10 @@ pub struct VerificationConfig {
     /// Set to `0.9^retry_count` on retry waves to relax thresholds by 10% per wave.
     #[serde(default = "default_constraint_threshold_scale")]
     pub constraint_threshold_scale: f64,
+}
+
+const fn default_evaluator_timeout_secs() -> u64 {
+    600
 }
 
 fn default_constraint_threshold_scale() -> f64 {
@@ -319,6 +327,7 @@ impl Default for VerificationConfig {
             evaluator_system_prompt: crate::prompts::EVALUATOR_SYSTEM_PROMPT.into(),
             evaluator_tau: TauValue::new(0.1).unwrap(),
             evaluator_max_tokens: 32768,
+            evaluator_timeout_secs: default_evaluator_timeout_secs(),
             record_adversarial_comparison: false,
             constraint_threshold_scale: 1.0,
         }

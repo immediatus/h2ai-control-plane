@@ -189,9 +189,10 @@ fn tombstone_contains_constraint_ids_not_proposal_text() {
         tombstone.contains("CONSTRAINT-004"),
         "must include second constraint ID"
     );
+    // GAP-F7: remediation_hint is now the "what_to_try" field — deliberately included.
     assert!(
-        !tombstone.contains("JWT"),
-        "must NOT leak remediation hint content"
+        tombstone.contains("JWT"),
+        "remediation hint must appear as what_to_try (GAP-F7)"
     );
     assert!(
         !tombstone.contains("PKCE"),

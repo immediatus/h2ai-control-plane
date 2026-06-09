@@ -386,7 +386,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "rejected auditor should fail task");
     assert!(
-        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted { .. }),
+        matches!(result.unwrap_err(), (EngineError::MaxRetriesExhausted, _)),
         "expected MaxRetriesExhausted"
     );
 }
@@ -482,7 +482,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err(), "non-JSON auditor should fail safe");
     assert!(
-        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted { .. }),
+        matches!(result.unwrap_err(), (EngineError::MaxRetriesExhausted, _)),
         "expected MaxRetriesExhausted"
     );
 }
@@ -695,7 +695,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err());
     assert!(
-        matches!(result.unwrap_err(), EngineError::InsufficientQuorum { .. }),
+        matches!(result.unwrap_err(), (EngineError::InsufficientQuorum { .. }, _)),
         "expected InsufficientQuorum when n=3 < 5 required for f=1"
     );
 }
@@ -1087,7 +1087,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         "collapsed pool must cause engine failure when retries=0"
     );
     assert!(
-        matches!(result.unwrap_err(), EngineError::MaxRetriesExhausted { .. }),
+        matches!(result.unwrap_err(), (EngineError::MaxRetriesExhausted, _)),
         "expected MaxRetriesExhausted from pool diversity guard"
     );
 }
@@ -1270,7 +1270,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         conformal_margin: 0.0,
     };
 
-    let err = ExecutionEngine::run_offline(input).await.unwrap_err();
+    let (err, _ctx) = ExecutionEngine::run_offline(input).await.unwrap_err();
     match err {
         EngineError::MultiplicationConditionFailed(msg) => {
             assert!(
@@ -1374,7 +1374,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
 
     // Should not return VerifierExplorerFamilyConflict — may succeed or fail for other reasons.
     let result = ExecutionEngine::run_offline(input).await;
-    if let Err(EngineError::MultiplicationConditionFailed(msg)) = &result {
+    if let Err((EngineError::MultiplicationConditionFailed(msg), _)) = &result {
         assert!(
             !msg.contains("monoculture"),
             "gate fired despite family_constraint=SingleFamilyOk: {msg}"
@@ -2389,7 +2389,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
-        matches!(result, Err(EngineError::MultiplicationConditionFailed(_))),
+        matches!(result, Err((EngineError::MultiplicationConditionFailed(_), _))),
         "require_bivariate_cg=true with low coverage should fail, got: {result:?}"
     );
 }
@@ -2783,10 +2783,10 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
             );
             assert_eq!(output.correlated_warnings[0].cv, 0.0);
         }
-        Err(EngineError::MaxRetriesExhausted { .. }) => {
+        Err((EngineError::MaxRetriesExhausted, _)) => {
             // Acceptable — retries exhausted after C1 fired
         }
-        Err(e) => panic!("unexpected error: {e}"),
+        Err((e, _)) => panic!("unexpected error: {e}"),
     }
 }
 
@@ -4491,13 +4491,13 @@ async fn run_from_checkpoint_merging_missing_output_returns_parse_error() {
     let result = ExecutionEngine::run_from_checkpoint(input, checkpoint).await;
     assert!(result.is_err(), "expected Err for missing resolved_output");
     match result.unwrap_err() {
-        EngineError::Parse(msg) => {
+        (EngineError::Parse(msg), _) => {
             assert!(
                 msg.contains("missing resolved_output"),
                 "error message should mention missing_resolved_output: {msg}"
             );
         }
-        other => panic!("expected EngineError::Parse, got: {other:?}"),
+        (other, _) => panic!("expected EngineError::Parse, got: {other:?}"),
     }
 }
 
@@ -4555,10 +4555,7 @@ async fn run_from_checkpoint_non_merging_delegates_to_run_offline() {
 
 #[test]
 fn engine_error_display_max_retries_exhausted() {
-    let e = EngineError::MaxRetriesExhausted {
-        partial_verification_events: vec![],
-        best_partial_text: None,
-    };
+    let e = EngineError::MaxRetriesExhausted;
     let s = e.to_string();
     assert!(
         s.contains("retries") || s.contains("exhausted"),
@@ -4568,10 +4565,7 @@ fn engine_error_display_max_retries_exhausted() {
 
 #[test]
 fn engine_error_display_max_retries_exhausted_with_text() {
-    let e = EngineError::MaxRetriesExhausted {
-        partial_verification_events: vec![],
-        best_partial_text: Some("partial answer".to_string()),
-    };
+    let e = EngineError::MaxRetriesExhausted;
     // Display impl uses Error attribute "max retries exhausted" only.
     let s = e.to_string();
     assert!(
@@ -4881,7 +4875,7 @@ async fn engine_zero_deadline_returns_deadline_exceeded() {
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
-        matches!(result, Err(EngineError::DeadlineExceeded { .. })),
+        matches!(result, Err((EngineError::DeadlineExceeded { .. }, _))),
         "expected DeadlineExceeded with zero-second deadline, got: {:?}",
         result.as_ref().err()
     );
@@ -4982,7 +4976,7 @@ async fn engine_failing_verifier_exhausts_retries() {
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
-        matches!(result, Err(EngineError::MaxRetriesExhausted { .. })),
+        matches!(result, Err((EngineError::MaxRetriesExhausted, _))),
         "low-scoring verifier should exhaust retries, got: {:?}",
         result.as_ref().err()
     );
