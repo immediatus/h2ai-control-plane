@@ -76,6 +76,8 @@ async fn compound_engine_decomposes_reviews_and_schedules() {
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
         executor: &stub_executor(),
+        decompose_max_tokens: 1024,
+        review_max_tokens: 256,
     };
 
     let output = CompoundTaskEngine::run(input).await.unwrap();
@@ -104,6 +106,8 @@ async fn compound_engine_returns_plan_rejected_error_when_review_fails() {
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
         executor: &stub_executor(),
+        decompose_max_tokens: 1024,
+        review_max_tokens: 256,
     };
 
     let err = CompoundTaskEngine::run(input).await.unwrap_err();
@@ -125,6 +129,8 @@ async fn compound_engine_returns_error_on_invalid_decomposer_json() {
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
         executor: &stub_executor(),
+        decompose_max_tokens: 1024,
+        review_max_tokens: 256,
     };
 
     let err = CompoundTaskEngine::run(input).await.unwrap_err();
@@ -145,6 +151,8 @@ async fn compound_engine_empty_subtasks_from_decomposer_results_in_plan_rejected
         review_adapter: &review_adapter as &dyn h2ai_types::adapter::IComputeAdapter,
         planning_tau: TauValue::new(0.1).unwrap(),
         executor: &stub_executor(),
+        decompose_max_tokens: 1024,
+        review_max_tokens: 256,
     };
 
     let err = CompoundTaskEngine::run(input).await.unwrap_err();

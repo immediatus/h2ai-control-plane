@@ -20,6 +20,19 @@ use std::time::Duration;
 
 use crate::judge_panel::{aggregate_votes, ConstraintVerdict, JudgePanel};
 
+/// Derive a deterministic compliance score from binary check verdicts.
+///
+/// Returns `present_checks / n_checks` when verdicts are non-empty and `n_checks > 0`.
+/// Falls back to `llm_float` for constraints with no binary checks (empty verdicts
+/// or n_checks == 0) — those constraints continue using the LLM's holistic score.
+pub fn score_from_verdicts(verdicts: &[bool], n_checks: usize, llm_float: f64) -> f64 {
+    if n_checks == 0 || verdicts.is_empty() {
+        return llm_float;
+    }
+    let present = verdicts.iter().filter(|&&v| v).count();
+    present as f64 / n_checks as f64
+}
+
 /// Per-task evaluation cache: maps `constraint_id` → Vec<(`proposal_text`, score)>.
 ///
 /// Shared across concurrent explorer evaluations via `DashMap` (no blocking mutex).
@@ -541,6 +554,16 @@ impl VerificationPhase {
                     _ => 1,
                 };
 
+                // For constraints with binary checks, use tau=0.0 (greedy/deterministic decoding)
+                // to reduce LLM stochasticity — the holistic score is overridden by
+                // score_from_verdicts anyway, but the reason text (check verdicts) benefits
+                // from deterministic output.
+                let effective_tau = if n_checks > 0 {
+                    h2ai_types::sizing::TauValue::new(0.0).unwrap_or(tau)
+                } else {
+                    tau
+                };
+
                 let (score, verifier_reason, hit) = if let Some(score) = cached_score {
                     tracing::debug!(
                         target: "h2ai.verification.cache",
@@ -555,7 +578,7 @@ impl VerificationPhase {
                         &output,
                         evaluator,
                         &sp,
-                        tau,
+                        effective_tau,
                         max_tokens,
                         effective_passes,
                         timeout_secs,
@@ -572,10 +595,11 @@ impl VerificationPhase {
                     .as_deref()
                     .map(|r| parse_check_verdicts(r, n_checks))
                     .unwrap_or_default();
+                let effective_score = score_from_verdicts(&check_verdicts, n_checks, score);
                 (
                     ComplianceResult {
                         constraint_id,
-                        score,
+                        score: effective_score,
                         severity,
                         remediation_hint,
                         constraint_description,
@@ -1072,7 +1096,26 @@ pub fn parse_check_verdicts(reason: &str, n_checks: usize) -> Vec<bool> {
 
 #[cfg(test)]
 mod check_verdicts_tests {
-    use super::parse_check_verdicts;
+    use super::{parse_check_verdicts, score_from_verdicts};
+
+    #[test]
+    fn score_from_verdicts_computes_fraction() {
+        assert_eq!(score_from_verdicts(&[true, false, true, true], 4, 0.5), 0.75);
+        assert_eq!(score_from_verdicts(&[false, false], 2, 0.9), 0.0);
+        assert_eq!(score_from_verdicts(&[true, true, true], 3, 0.1), 1.0);
+    }
+
+    #[test]
+    fn score_from_verdicts_falls_back_when_no_checks() {
+        assert_eq!(score_from_verdicts(&[], 0, 0.42), 0.42);
+        assert_eq!(score_from_verdicts(&[], 3, 0.7), 0.7);
+    }
+
+    #[test]
+    fn score_from_verdicts_falls_back_on_empty_verdicts_with_nonzero_n() {
+        // verdicts empty but n_checks > 0: fallback (parse yielded nothing)
+        assert_eq!(score_from_verdicts(&[], 4, 0.6), 0.6);
+    }
 
     #[test]
     fn format_a_present_missing() {

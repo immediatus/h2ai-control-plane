@@ -184,7 +184,7 @@ pub async fn run_opro_trigger<S: OproStore>(
             system_context: opro_system,
             task: opro_task,
             tau,
-            max_tokens: 2000,
+            max_tokens: cfg.opro.max_tokens,
         };
 
         let response = adapter.execute(request).await?;

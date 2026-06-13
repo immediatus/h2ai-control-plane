@@ -52,6 +52,13 @@ impl ConstraintConflictGraph {
             }
         }
 
+        // Seed coupling pairs from explicit `related_to` cross-references.
+        for doc in docs {
+            for related_id in &doc.related_to {
+                conflict_pairs.insert(canonical_pair(&doc.id, related_id));
+            }
+        }
+
         Self { conflict_pairs }
     }
 
@@ -89,6 +96,45 @@ fn canonical_pair(a: &str, b: &str) -> (String, String) {
         (a.to_owned(), b.to_owned())
     } else {
         (b.to_owned(), a.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ConstraintDoc;
+
+    #[test]
+    fn seeds_coupling_from_related_to() {
+        let make_doc = |id: &str, related: &[&str]| -> ConstraintDoc {
+            ConstraintDoc {
+                related_to: related.iter().map(|s| s.to_string()).collect(),
+                ..ConstraintDoc::new_llm_judge(id, "")
+            }
+        };
+        let docs = vec![
+            make_doc("C-005", &["C-TAU-2"]),
+            make_doc("C-TAU-2", &["C-005"]),
+        ];
+        let graph = ConstraintConflictGraph::build(&docs);
+        assert!(
+            graph.are_conflicting("C-005", "C-TAU-2"),
+            "related_to cross-reference must produce a coupling pair in the graph"
+        );
+        assert!(graph.conflicts_for("C-005").contains(&"C-TAU-2"));
+    }
+
+    #[test]
+    fn related_to_only_on_one_side_still_seeds() {
+        let docs = vec![
+            ConstraintDoc {
+                related_to: vec!["B".to_string()],
+                ..ConstraintDoc::new_llm_judge("A", "")
+            },
+            ConstraintDoc::new_llm_judge("B", ""),
+        ];
+        let graph = ConstraintConflictGraph::build(&docs);
+        assert!(graph.are_conflicting("A", "B"));
     }
 }
 

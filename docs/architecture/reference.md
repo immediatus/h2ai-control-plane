@@ -637,6 +637,7 @@ Krum requires ≥ `2f + 3` adapters to have any effect (`f = 1` → ≥5, `f = 2
 | `auto_baseline_eval` | `false` | Auto-promote to `Empirical` after `auto_baseline_eval_min_tasks`. |
 | `auto_baseline_eval_min_tasks` | `50` | Threshold for auto-promotion. |
 | `family_constraint` | `"single_family_ok"` | `"single_family_ok"` \| `"require_diverse"` \| `"disabled"`. Production profile sets `"require_diverse"`. |
+| `min_explorer_families` | `0` | BFT Lever 1 — minimum distinct model lineage families required in the explorer committee. `0` disables the check. When set to `2`, calibration emits `tracing::warn!` if fewer than 2 distinct `model_lineage_key()` values are present. `AdapterKind::model_lineage_key()` returns `cloud::{provider}::{endpoint}::{model}` for `CloudGeneric` adapters and `local::{model_path}` for `LocalLlamaCpp`. Enforcement is advisory-only (warn, never hard-fail) to allow monoculture dev environments. |
 
 ### Calibration probe (epistemic β₀)
 
@@ -1252,6 +1253,7 @@ enabled = false
 subject = "h2ai.oracle.gate"
 timeout_secs = 30
 on_timeout = "pass"         # pass | fail | skip
+on_fail    = "evict"        # evict | pass | fail  (post-selection gate)
 min_confidence = 0.7
 # clarification_templates = [{ pattern = "...", question_template = "..." }]
 ```
@@ -1262,6 +1264,7 @@ min_confidence = 0.7
 | `subject` | `"h2ai.oracle.gate"` | NATS subject for `request()` calls. The oracle service subscribes here. |
 | `timeout_secs` | `30` | How long to wait for an oracle reply before applying `on_timeout`. |
 | `on_timeout` | `"pass"` | `pass` — treat timeout as approved; `fail` — treat as rejected; `skip` — proceed with no `oracle_gate_passed` field. |
+| `on_fail` | `"evict"` | BFT Lever 2 — post-selection gate action when winner fails oracle check. `evict` — block winner, rotate adapter family, emit `CorrelatedEnsembleWarning`, retry; `pass` — ignore and proceed; `fail` — mark task failed. Implemented via `PostSelectionDecision` / `run_post_selection` in `phases/oracle.rs`. |
 | `min_confidence` | `0.7` | When oracle responds with `gate_passed=false` AND `confidence < min_confidence`, the engine attempts clarification via a matching `ClarificationTemplate`. |
 | `clarification_templates` | `[]` | Array of `{ pattern: regex, question_template: string }`. Template placeholders: `{test_name}`, `{expected}`, `{actual}`, `{failure_delta}`. First matching pattern wins. If no template matches, the engine proceeds with `on_timeout` behaviour. |
 

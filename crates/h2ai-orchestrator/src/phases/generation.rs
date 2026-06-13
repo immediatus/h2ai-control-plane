@@ -112,7 +112,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
                         engine_input.manifest.description
                     ),
                     tau: TauValue::new(0.2).unwrap(),
-                    max_tokens: 512,
+                    max_tokens: engine_input.cfg.generation_search_max_tokens,
                 };
                 if let Ok(resp) = researcher.execute(req).await {
                     researcher_grounding_events.push(ResearcherGroundingEvent {

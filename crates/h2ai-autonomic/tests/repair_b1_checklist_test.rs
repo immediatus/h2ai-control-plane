@@ -23,6 +23,7 @@ fn base_input<'a>(
         partial_passes,
         prior_best_score: None,
         domain_syntheses: &[],
+        coupled_constraint_hints: &[],
     }
 }
 

@@ -180,7 +180,7 @@ impl SpecRepairAdvisor {
             system_context: system.into(),
             task,
             tau,
-            max_tokens: 512,
+            max_tokens: self.cfg.repair_max_tokens,
         };
 
         let Ok(resp) = adapter.execute(req).await else {

@@ -203,7 +203,36 @@ pub async fn start_calibration(
         .collect();
     adapter_families.sort();
     let explorer_verification_family_match = false; // enforced via modulo IDs
-                                                    // ──────────────────────────────────────────────────────────────────────────
+
+    // ── Model-lineage diversity gate ──────────────────────────────────────────
+    let min_families = state.cfg.safety.min_explorer_families;
+    if min_families >= 2 {
+        let pool_keys: std::collections::HashSet<String> = state
+            .adapter_pool
+            .iter()
+            .map(|a| a.kind().model_lineage_key())
+            .collect();
+        let pool_family_count = pool_keys.len();
+        if pool_family_count >= min_families {
+            tracing::info!(
+                target: "h2ai.calibration",
+                min_families,
+                pool_family_count,
+                "family diversity gate: pool satisfies minimum family requirement"
+            );
+        } else {
+            tracing::warn!(
+                target: "h2ai.calibration",
+                min_families,
+                pool_family_count,
+                "correlated hallucination protection degraded: \
+                 pool has {pool_family_count} model-lineage family/families < \
+                 min_explorer_families={min_families}; \
+                 gate will activate automatically when a second family is configured"
+            );
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     tokio::spawn(run_calibration_core(
         state,

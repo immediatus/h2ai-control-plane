@@ -246,7 +246,7 @@ async fn system_web_search_chain_escalates_correctly_per_tier() {
         Box::new(SpecAnchorGrounder),
         Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
             r#"{"alternatives": ["x"], "statement": "should not appear at tier 1"}"#,
-        )))),
+        )), 512)),
         Box::new(WebSearchGrounder::new(
             Arc::new(mock_search(web_snippet.to_string())),
             3,
@@ -550,7 +550,7 @@ async fn llm_researcher_happy_path() {
     let adapter = Arc::new(mock_adapter(
         r#"{"alternatives": ["Redis TTL counters", "sliding window"], "statement": "Use Redis TTL + Lua for rate limiting"}"#,
     ));
-    let grounder = LlmResearcherGrounder::new(adapter);
+    let grounder = LlmResearcherGrounder::new(adapter, 512);
     let result = grounder.ground(&ctx).await.unwrap();
     assert!(!result.alternatives.is_empty());
     assert_eq!(result.source, GroundingSource::LlmResearcher);
@@ -563,7 +563,7 @@ async fn llm_researcher_invalid_json_returns_none() {
         task_description: "Build a rate-limiting service using Redis".into(),
     };
     let adapter = Arc::new(mock_adapter("not json at all !!!"));
-    let grounder = LlmResearcherGrounder::new(adapter);
+    let grounder = LlmResearcherGrounder::new(adapter, 512);
     let result = grounder.ground(&ctx).await;
     assert!(result.is_none());
 }
@@ -575,7 +575,7 @@ async fn llm_researcher_missing_alternatives_field_returns_none() {
         task_description: "Build a rate-limiting service using Redis".into(),
     };
     let adapter = Arc::new(mock_adapter(r#"{"statement": "use Redis"}"#));
-    let grounder = LlmResearcherGrounder::new(adapter);
+    let grounder = LlmResearcherGrounder::new(adapter, 512);
     let result = grounder.ground(&ctx).await;
     assert!(
         result.is_none(),
@@ -678,7 +678,7 @@ async fn chain_distillation_replaces_raw_web_text_with_distilled_output() {
         )),
     ];
     let distiller = Arc::new(mock_adapter(distilled_output));
-    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true);
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true, 256);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     assert_eq!(result.source, GroundingSource::WebSearch);
     assert!(
@@ -701,7 +701,7 @@ async fn chain_distill_disabled_preserves_raw_text_capped_at_hint_limit() {
         Box::new(WebSearchGrounder::new(Arc::new(mock_search(raw_text)), 3)),
     ];
     let distiller = Arc::new(mock_adapter("should not be called"));
-    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, false);
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, false, 256);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     // distill=false: raw text passes through unchanged (no truncation in this project)
     assert!(!result.grounding_statement.is_empty());
@@ -720,7 +720,7 @@ async fn chain_tier0_merges_spec_anchor_and_researcher() {
         Box::new(SpecAnchorGrounder),
         Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
             r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua"}"#,
-        )))),
+        )), 512)),
     ];
     let chain = SraniGroundingChain::new(providers);
     let result = chain.resolve(&ctx, 0).await.unwrap();
@@ -747,7 +747,7 @@ async fn chain_tier1_escalates_to_web_search_skips_researcher() {
         Box::new(SpecAnchorGrounder),
         Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
             "should not appear",
-        )))),
+        )), 512)),
         Box::new(WebSearchGrounder::new(
             Arc::new(mock_search("Web result: use Redis".to_string())),
             3,
@@ -773,7 +773,7 @@ async fn chain_tier_clamped_at_last_tier() {
         Box::new(SpecAnchorGrounder),
         Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
             r#"{"alternatives": ["x"], "statement": "y"}"#,
-        )))),
+        )), 512)),
     ];
     let chain = SraniGroundingChain::new(providers);
     let result = chain.resolve(&ctx, 99).await;
@@ -859,7 +859,8 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
     let chain = Arc::new(SraniGroundingChain::new(vec![
         Box::new(SpecAnchorGrounder),
         Box::new(LlmResearcherGrounder::new(
-            Arc::clone(&researcher) as Arc<dyn IComputeAdapter>
+            Arc::clone(&researcher) as Arc<dyn IComputeAdapter>,
+            512,
         )),
     ]));
 
@@ -1094,7 +1095,7 @@ async fn chain_none_anchor_some_tier_uses_tier_result() {
         Box::new(NoneProvider),
         Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
             r#"{"alternatives": ["Redis"], "statement": "Use Redis"}"#,
-        )))),
+        )), 512)),
     ];
     let chain = SraniGroundingChain::new(providers);
     let result = chain.resolve(&ctx, 0).await;
@@ -1134,7 +1135,7 @@ async fn chain_distillation_empty_output_falls_back_to_raw() {
         )),
     ];
     let distiller = Arc::new(mock_adapter(""));
-    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true);
+    let chain = SraniGroundingChain::new(providers).with_distiller(distiller, true, 256);
     let result = chain.resolve(&ctx, 1).await.unwrap();
     assert_eq!(result.source, GroundingSource::WebSearch);
     assert!(!result.grounding_statement.is_empty());

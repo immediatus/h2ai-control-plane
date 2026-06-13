@@ -30,6 +30,7 @@ fn test_b2_no_partials_no_block() {
         partial_passes: &[],
         prior_best_score: None,
         domain_syntheses: &[],
+        coupled_constraint_hints: &[],
     };
     let output = build_repair_context(input);
     assert!(!output.contains("PARTIAL EXAMPLE"));
@@ -58,6 +59,7 @@ fn test_b2_single_partial_example_rendered() {
         partial_passes: &partials,
         prior_best_score: None,
         domain_syntheses: &[],
+        coupled_constraint_hints: &[],
     };
     let output = build_repair_context(input);
     assert!(output.contains("PARTIAL EXAMPLE 1"), "block header missing");
@@ -90,6 +92,7 @@ fn test_b2_two_partials_rendered() {
         partial_passes: &partials,
         prior_best_score: None,
         domain_syntheses: &[],
+        coupled_constraint_hints: &[],
     };
     let output = build_repair_context(input);
     assert!(output.contains("PARTIAL EXAMPLE 1"));
@@ -113,6 +116,7 @@ fn test_b2_synthesis_instruction_present_when_partials() {
         partial_passes: &partials,
         prior_best_score: None,
         domain_syntheses: &[],
+        coupled_constraint_hints: &[],
     };
     let output = build_repair_context(input);
     assert!(
@@ -136,6 +140,7 @@ fn test_b2_synthesis_instruction_absent_when_no_partials() {
         partial_passes: &[],
         prior_best_score: None,
         domain_syntheses: &[],
+        coupled_constraint_hints: &[],
     };
     let output = build_repair_context(input);
     assert!(!output.contains("SYNTHESIS TASK"));

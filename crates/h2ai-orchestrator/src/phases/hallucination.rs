@@ -85,7 +85,7 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
                                    \"grounding_statement\": \"...\"}}",
                         ),
                         tau: TauValue::new(0.3).unwrap(),
-                        max_tokens: 1024,
+                        max_tokens: engine_input.cfg.hallucination_check_max_tokens,
                     };
                     match researcher.execute(research_req).await {
                         Ok(resp) => {

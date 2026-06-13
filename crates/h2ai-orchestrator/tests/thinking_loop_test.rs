@@ -443,7 +443,7 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
 }
 
 #[tokio::test]
-async fn run_breaks_early_on_empty_archetypes() {
+async fn run_uses_fallback_archetype_on_parse_failure() {
     use h2ai_config::ThinkingLoopConfig;
     use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
     use h2ai_test_utils::mock_adapter;
@@ -454,7 +454,7 @@ async fn run_breaks_early_on_empty_archetypes() {
         max_archetypes: 2,
         ..Default::default()
     };
-    // Adapter returns non-JSON → parse_archetypes returns None → archetypes empty → break
+    // Adapter returns non-JSON → parse_archetypes returns None → fallback archetype used
     let adapter = mock_adapter("not valid json archetypes");
 
     let input = ThinkingLoopInput {
@@ -472,9 +472,9 @@ async fn run_breaks_early_on_empty_archetypes() {
     };
 
     let report = run(input).await;
-    // Loop breaks immediately on empty archetypes in iteration 0
+    // Fallback archetype keeps the loop alive — all max_iterations complete.
     assert_eq!(
-        report.iteration, 0,
-        "no iteration completed when archetypes are empty"
+        report.iteration, 3,
+        "fallback archetype must allow all iterations to run"
     );
 }

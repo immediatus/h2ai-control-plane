@@ -244,6 +244,12 @@ pub struct RepairInput<'a> {
     /// block is prepended to the repair context before any REPAIR TARGET sections.
     /// When empty, behavior is identical to before this field was added.
     pub domain_syntheses: &'a [h2ai_types::gap_i1::DomainSynthesis],
+    /// Currently-passing constraints that are coupled to the failing targets via the
+    /// conflict graph. Each entry is `(constraint_id, hint_text)`. The hint is the
+    /// constraint's `pass_criteria` or `remediation_hint` from the corpus; `None` means
+    /// no additional guidance is available. These are injected as a guardrail block so
+    /// the LLM cannot silently break them while repairing the failing targets.
+    pub coupled_constraint_hints: &'a [(String, Option<String>)],
 }
 
 /// Build the CSPR-v2 repair context string.
@@ -267,6 +273,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
         partial_passes,
         prior_best_score,
         domain_syntheses,
+        coupled_constraint_hints,
     } = input;
 
     // Build semantic correction block, prepended before all other content.
@@ -432,6 +439,22 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
         }
     }
 
+    // Coupled constraint guardrail: passing constraints the LLM must not break.
+    if !coupled_constraint_hints.is_empty() {
+        out.push_str("\n\n[RELATED CONSTRAINTS THAT MUST NOT BE BROKEN WHILE REPAIRING THE TARGETS ABOVE:");
+        for (coupled_id, hint) in coupled_constraint_hints {
+            match hint {
+                Some(h) if !h.is_empty() => {
+                    write!(out, "\n  - {coupled_id}: {h}").unwrap();
+                }
+                _ => {
+                    write!(out, "\n  - {coupled_id}: (no additional guidance — ensure this constraint remains satisfied)").unwrap();
+                }
+            }
+        }
+        out.push_str("\nFix the REPAIR TARGET(s) above without violating these related constraints.]");
+    }
+
     // Zone-3 OSP audit text appended after all REPAIR TARGET blocks.
     if let Some(hints) = zone3_hints {
         if !hints.is_empty() {
@@ -488,6 +511,44 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
 
     out.push_str("\n\n--- END REPAIR INSTRUCTIONS ---");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use h2ai_constraints::conflict::ConstraintConflictGraph;
+
+    #[test]
+    fn repair_context_includes_coupled_constraint_hints() {
+        let graph = ConstraintConflictGraph::build(&[]);
+        let targets: Vec<RepairTarget> = vec![];
+        let domain_syntheses: Vec<h2ai_types::gap_i1::DomainSynthesis> = vec![];
+        let partial_passes: Vec<PartialPass> = vec![];
+
+        let input = RepairInput {
+            prior_proposal_text: "",
+            targets: &targets,
+            zone3_hints: None,
+            conflict_graph: &graph,
+            retry_count: 1,
+            attempts_remaining: 2,
+            system_context_with_rubric: "",
+            checks: &[],
+            partial_passes: &partial_passes,
+            prior_best_score: None,
+            domain_syntheses: &domain_syntheses,
+            coupled_constraint_hints: &[
+                ("CONSTRAINT-TAU-2".to_string(), Some("quota audit must use PostgreSQL INSERT-only".to_string())),
+            ],
+        };
+        let ctx = build_repair_context(input);
+        assert!(ctx.contains("CONSTRAINT-TAU-2"), "repair context must include coupled constraint id");
+        assert!(
+            ctx.contains("quota audit must use PostgreSQL INSERT-only"),
+            "repair context must include coupled constraint hint text"
+        );
+        assert!(ctx.contains("MUST NOT BE BROKEN"), "repair context must frame coupled hints as a non-break constraint");
+    }
 }
 
 /// Input for the terminal synthesis wave context builder.

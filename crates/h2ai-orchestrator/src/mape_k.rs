@@ -309,6 +309,8 @@ pub struct MapeKController {
     /// Grounding chain gap researcher: DDG search + LLM distiller.
     pub(crate) gap_grounding_chain:
         Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+    /// Maps constraint_id → (pass_criteria, remediation_hint) for corpus-grounded gap fallback.
+    pub(crate) constraint_pass_map: std::collections::HashMap<String, (Option<String>, Option<String>)>,
 
     // ── Complexity-Ceiling Routing ───────────────────────────────────
     /// Pre-dispatch complexity probe result. `None` when probe is disabled or not yet run.
@@ -565,6 +567,11 @@ impl MapeKController {
             domain_synthesis_cache: std::collections::HashMap::new(),
             gap_researcher_adapter: input.researcher_adapter.clone(),
             gap_grounding_chain: None, // wired by engine.rs after controller construction
+            constraint_pass_map: input
+                .constraint_corpus
+                .iter()
+                .map(|d| (d.id.clone(), (d.pass_criteria.clone(), d.remediation_hint.clone())))
+                .collect(),
             probe_result: None,
             corpus_synthesis_viable: input
                 .constraint_corpus
@@ -1113,6 +1120,26 @@ impl MapeKController {
                 MapeKDecision::Retry
             }
 
+            ExitReason::OraclePostSelectionBlocked { evicted_winner_summary } => {
+                tracing::warn!(
+                    target: "h2ai.oracle",
+                    task_id = %self.task_id,
+                    "oracle post-selection gate rejected winner — rotating adapter family and retrying"
+                );
+                let warning = h2ai_types::events::CorrelatedEnsembleWarning {
+                    task_id: self.task_id.clone(),
+                    cv: 1.0,
+                    mean_jaccard_distance: 0.0,
+                    retry_count,
+                };
+                self.all_correlated_warnings.push(warning);
+                self.adapter_rotation_offset =
+                    self.adapter_rotation_offset.wrapping_add(1);
+                self.retry_context = Some(evicted_winner_summary);
+                self.run_apply_optimizer(1.0);
+                MapeKDecision::Retry
+            }
+
             ExitReason::OracleBlocked => {
                 MapeKDecision::Fail(EngineError::MaxRetriesExhausted, self.take_run_context())
             }
@@ -1199,6 +1226,17 @@ impl MapeKController {
                                 .collect::<Vec<_>>()
                         })
                         .collect();
+                    let failing_ids: std::collections::HashSet<&str> =
+                        targets.iter().map(|t| t.constraint_id.as_str()).collect();
+                    let coupled_hints: Vec<(String, Option<String>)> = targets
+                        .iter()
+                        .flat_map(|t| self.conflict_graph.conflicts_for(&t.constraint_id))
+                        .filter(|id| !failing_ids.contains(*id))
+                        .map(|id| {
+                            let hint = self.corpus_pass_hint_for(id);
+                            (id.to_owned(), hint)
+                        })
+                        .collect();
                     self.retry_context = Some(h2ai_autonomic::repair::build_repair_context(
                         h2ai_autonomic::repair::RepairInput {
                             prior_proposal_text: prior_text,
@@ -1215,6 +1253,7 @@ impl MapeKController {
                                 .as_ref()
                                 .map(|(score, _)| *score),
                             domain_syntheses: &syntheses,
+                            coupled_constraint_hints: &coupled_hints,
                         },
                     ));
                 }
@@ -1599,6 +1638,19 @@ impl MapeKController {
             .collect()
     }
 
+    /// Return the best corpus-supplied positive hint for a constraint.
+    ///
+    /// Prefers `pass_criteria` (positive framing) over `remediation_hint` (negative/repair
+    /// framing), and returns `None` when neither is present or both are empty strings.
+    /// Used by `run_gap_i1_research` to supply a non-tautological `correct_pattern`
+    /// when web search is unavailable.
+    pub(crate) fn corpus_pass_hint_for(&self, constraint_id: &str) -> Option<String> {
+        self.constraint_pass_map.get(constraint_id).and_then(|(pass, hint)| {
+            pass.clone().filter(|s| !s.is_empty())
+                .or_else(|| hint.clone().filter(|s| !s.is_empty()))
+        })
+    }
+
     /// Look up the binary check text for a given (constraint_id, check_idx) pair
     /// using the flat `binary_checks` vec and the `constraint_check_offsets` index.
     fn constraint_check_text(&self, constraint_id: &str, check_idx: usize) -> String {
@@ -1674,6 +1726,7 @@ impl MapeKController {
                 "dispatching gap researcher"
             );
 
+            let corpus_hint = self.corpus_pass_hint_for(&gap.constraint_id);
             match crate::srani_grounding::run_gap_researcher(
                 &gap,
                 &check_text,
@@ -1681,6 +1734,8 @@ impl MapeKController {
                 gap_chain.as_deref(),
                 self.cfg_ref.gap_i1.synthesis_min_confidence,
                 self.cfg_ref.gap_i1.researcher_timeout_secs,
+                corpus_hint.as_deref(),
+                self.cfg_ref.srani.gap_synthesis_max_tokens,
             )
             .await
             {
@@ -2020,6 +2075,7 @@ impl MapeKController {
             domain_synthesis_cache: std::collections::HashMap::new(),
             gap_researcher_adapter: None,
             gap_grounding_chain: None,
+            constraint_pass_map: std::collections::HashMap::new(),
             probe_result: None,
             corpus_synthesis_viable: false,
             last_wave_n_eff: 1.0,

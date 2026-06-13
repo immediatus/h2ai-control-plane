@@ -52,7 +52,11 @@ Each row is an independently-observable failure mode in naive LLM orchestration,
 | O(n³)+ tasks cannot be solved by deeper retrying | Increase max_retries | Complexity Ceiling — `ComplexityProbe` rates task 1–5; tasks ≥ `decompose_threshold` route to H1 decomposition; intra-retry ceiling detector catches probe misclassifications; AgentDropout N-reduction; BEYOND_BUDGET verifier addendum; over-decomposition graft guards |
 | Orthogonal constraint-satisfaction — no single proposal satisfies all constraints | Retry with full generation | Sequential Constraint Grafting — iterative grafting loop with highest-scoring partial as base; `missing_constraint_ids()` identifies constraint clusters; Monotonicity Invariant; Sequential Edge arXiv 2503.12345 (+46.7% constraint satisfaction) |
 | LLM provider silently updates model weights — calibration goes stale | Re-run calibration on a schedule | Calibration Drift Detection — DDM O(1) fast-lane + BOCPD (Adams & MacKay 2007) + ORCA conformal margin widen during active drift |
-| Verifier rejects proposals on knowledge-intensive checks — missing domain facts | Retry with stronger hint | Knowledge Gap Detection — `detect_cold_checks()` + `build_gap_queries()` + `run_gap_researcher()` + `[DOMAIN KNOWLEDGE]` slot injection |
+| Verifier rejects proposals on knowledge-intensive checks — missing domain facts | Retry with stronger hint | Knowledge Gap Detection — `detect_cold_checks()` + `build_gap_queries()` + `run_gap_researcher()` + corpus `pass_hint` fallback (`gap_hint_or_query` in `srani_grounding.rs` prefers corpus `pass_criteria` text over web-derived `correct_pattern`) + `[DOMAIN KNOWLEDGE]` slot injection |
+| LLM holistic verifier score contradicts its own check verdicts — holistic float corrupts Krum input | Trust LLM float as authoritative | Binary-Verdict Scoring (GAP-B6 closed) — `score_from_verdicts` in `verification.rs` derives `present_checks / n_checks` deterministically from parsed `check_verdicts`; `tau` overridden to `0.0` for binary-check constraints; removes verbosity and holistic-judgment drift from the Krum input distribution |
+| Single-family model pool — Krum selects majority-hallucination winner with high confidence | Retry the same pool | BFT Lever 1 (family diversity gate) — `model_lineage_key()` on `AdapterKind` tags each adapter's model lineage; `min_explorer_families` in `SafetyConfig` warns when < 2 lineages present in the calibration pool. BFT Lever 2 (oracle post-selection hard-gate) — `run_post_selection` in `oracle.rs` blocks the Krum-selected winner after merge if the oracle rejects it; `OraclePostSelectionBlocked` routes to `handle_exit_reason` in `mape_k.rs`: emits `CorrelatedEnsembleWarning`, increments `adapter_rotation_offset`, sets `retry_context`, retries — a regime shift without waiting for the hallucination-detector path (GAP-C5 closed) |
+| Repair prompts for coupled constraints give no hint about the other constraint | Attempt repair with single-constraint context | Coupled Constraint Hints — `mape_k.rs` builds `coupled_hints` from `conflict_graph.conflicts_for()`, filtering to exclude the currently-failing constraints; `coupled_constraint_hints: &[(String, Option<String>)]` field on `RepairInput` injects passing-constraint context into `build_repair_context()` |
+| DDL / migration / Lua constraints produce no artifact scaffold guidance | Explorer guesses output format | Artifact Scaffold (GAP-F3 closed) — `artifact_scaffold(doc: &ConstraintDoc) -> Option<String>` in `compiler.rs` keyword-scans `binary_checks` for DDL/migration/Lua patterns and injects a `REQUIRED OUTPUT ARTIFACT` block into the system context, directing explorers to produce the mandatory structured output |
 | Ambiguous constraint text causes random LlmJudge verdicts | Accept that some constraints are untestable | Constraint Coherence — `CoherenceProbe` N=5 consistency check; `SpecRepairAdvisor` generates rewrite candidates; CAS-write via `NatsVersionedSource`; engine reload and restart |
 | Repair prompts lead with prohibition-forward language — LLMs absorb false training patterns | Retry with stronger negative warnings | Positive Assertion Framing (Mayne et al. arXiv 2605.13829) — Slot A emits `TARGET BEHAVIOR:\n<criteria.pass>`; remediation_hint rewritten to lead with positive outcomes |
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates |
@@ -105,7 +109,7 @@ The Auditor validates proposals as they arrive. Zero survivors → `ZeroSurvival
 
 **Layer 1 — Metadata consensus (CRDT semilattice, deterministic):** The control plane aggregates binary constraint-satisfaction fingerprints. BFT threshold applied to fingerprint agreement rate — not raw text similarity.
 
-**Layer 2 — Semantic reconciliation (synthesis LLM):** Before synthesis, the OSP regime classifies surviving proposals (`ClearLeader` selects directly; `TightCluster` runs two-pass critique+synthesis). The diversity gate rejects mono-culture ensembles. The **Merge Authority UI** presents the valid proposals panel, tombstone panel, MAPE-K intervention timeline, and live physics panel. One human decision closes the task.
+**Layer 2 — Semantic reconciliation (synthesis LLM):** Before synthesis, the OSP regime classifies surviving proposals (`ClearLeader` selects directly; `TightCluster` runs two-pass critique+synthesis). The diversity gate rejects mono-culture ensembles. One human decision closes the task via `POST /{tenant_id}/tasks/{id}/approve` when the HITL gate fires.
 
 ---
 
@@ -156,9 +160,9 @@ C4Container
 
     Person(client, "Client / Operator")
 
-    Container(api, "h2ai-api", "Rust / axum", "REST + SSE gateway.\nMerge Authority UI.\nHealth + Metrics endpoints.")
+    Container(api, "h2ai-api", "Rust / axum", "REST + SSE gateway.\nHITL approval gate.\nHealth + Metrics endpoints.")
     Container(orchestrator, "h2ai-orchestrator", "Rust / Tokio", "ExecutionEngine: 6-phase MAPE-K loop.\nMergeEngine. Verification. Synthesis.\nCompoundTaskEngine (DAG execution).")
-    Container(planner, "h2ai-planner", "Rust", "Pareto topology selection.\nτ-spread, role error costs.")
+    Container(planner, "h2ai-planner", "Rust", "LLM task decomposition (PlanningEngine).\nPlan structural review (PlanReviewer).")
     Container(autonomic, "h2ai-autonomic", "Rust", "Calibration harness.\nEpistemic diagnostics.\nBandit (Thompson Sampling).")
     Container(agent, "h2ai-agent", "Rust / Tokio", "Edge agent binary.\nTaoAgent loop.\nDispatchLoop + HeartbeatTask.")
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
@@ -622,7 +626,7 @@ sequenceDiagram
     participant C as Client
     participant API as h2ai-api
     participant Orch as ExecutionEngine
-    participant Planner as h2ai-planner
+    participant Autonomic as h2ai-autonomic
     participant Prov as KubernetesProvider
     participant NATS as NATS JetStream
     participant Agent as h2ai-agent (×N)
@@ -640,8 +644,8 @@ sequenceDiagram
     API-->>C: SSE stream open
 
     Note over Orch: Phase 2 — Topology Provisioning
-    Orch->>Planner: ParetoRouter::select(calibration, weights)
-    Planner-->>Orch: TopologyProvisionedEvent
+    Orch->>Autonomic: TopologyPlanner::provision(calibration, weights)
+    Autonomic-->>Orch: TopologyProvisionedEvent
     Orch->>NATS: publish TopologyProvisioned
     NATS-->>C: SSE: TopologyProvisioned
 
@@ -720,7 +724,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    EE[ExecutionEngine] --> PL["h2ai-planner: ParetoRouter::select"]
+    EE[ExecutionEngine] --> PL["h2ai-autonomic: TopologyPlanner::provision"]
     PL --> TPE["TopologyProvisionedEvent to h2ai.tasks.task_id"]
     EE --> MC["MultiplicationChecker::check (Phase 2.5)"]
     EE --> DG["diversity guard (Phase 2.6, if diversity_threshold > 0)"]
@@ -1150,7 +1154,7 @@ flowchart LR
     T -->|H2AIEvent stream| SSE[SSE /events]
     O --> G["Grafana Tempo or Jaeger"]
     P --> A["Alertmanager: yield_ratio, mode_collapse, constrained_exploration"]
-    SSE --> UI["Merge Authority UI (operator terminal)"]
+    SSE --> UI["SSE client / operator terminal"]
 ```
 
 Three observability layers run concurrently and independently of the control path:
@@ -1217,13 +1221,19 @@ h2ai-adapters       Adapter trait + per-provider implementations (Anthropic, Ope
                     LlamaCpp, CloudGeneric, A2a, Mock, SequencedMockAdapter for TAO loop testing).
                     Tokio-native via async-trait.
 
-h2ai-context        EmbeddingModel trait, fastembed wrapper, cosine_similarity utilities.
+h2ai-context        Dark Knowledge Compiler: compile(manifest, corpus, include_rubric) assembles an
+                    immutable system_context from constraint corpus + task manifest + knowledge nodes.
+                    ContextChunk (Ebbinghaus decay weight per memory tier), context compaction
+                    (head+tail window, keyword re-injection), Reciprocal Rank Fusion (rrf_fuse) +
+                    BM25 via Tantivy (bm25_search), ONNX embedding wrapper (EmbeddingModel trait,
+                    FastEmbedModel, cosine_similarity).
                     ContextPayload offload/resolve for blobs exceeding the NATS message ceiling.
 
 h2ai-constraints    Constraint corpus parser (markdown ADR format), predicate types
                     (VocabularyPresence, AllOf, AnyOf, ...), severity weights.
                     ConstraintSource trait — abstraction over corpus access.
-                    FsConstraintSource — wraps load_corpus for backward compat with flat directories.
+                    FsConstraintStore / FsConstraintIndex — type aliases for RuntimeConstraintStore /
+                    RuntimeConstraintIndex; filesystem-backed constraint loading at startup.
                     WikiCache — in-memory hot-path index (context_map, metas, revision).
                     ConstraintMeta / ConstraintPayload / PredicateKind for wiki delivery.
                     ambiguity — AmbiguityEvidence (6 variants + Display), AmbiguityScorecard,
@@ -1242,11 +1252,13 @@ h2ai-knowledge      Hierarchical BM25+/PPR knowledge retrieval layer (pure crate
                     fallback when [knowledge] not configured). ScoringConfig — 8 tunable parameters,
                     all serde-defaulted. Imported by h2ai-config and h2ai-api.
 
-h2ai-autonomic      Calibration harness, epistemic diagnostics (compute_n_eff_cosine,
-                    classify_failure_mode, synthesize_tombstone), ensemble calibration plumbing,
-                    Talagrand rank histogram, Thompson Sampling bandit over N.
+h2ai-autonomic      Calibration harness (CalibrationHarness), epistemic diagnostics
+                    (compute_n_eff_cosine, classify_failure_mode, ConstraintRepairPlan),
+                    drift detection (DriftMonitor: DDM + BOCPD), spec repair (SpecRepairAdvisor),
+                    coherence probe, complexity probe, MAPE-K planner (TopologyPlanner) and merger
+                    (MergeEngine), retry policy (RetryPolicy), audit channel, retry accumulator.
 
-h2ai-memory         InMemoryCache + NatsKvStore implementations of the SessionMemory trait.
+h2ai-memory         InMemoryCache + NatsKvStore implementations of the MemoryProvider trait.
 
 h2ai-nats           NATS JetStream client, stream/KV creation, event publish/subscribe.
                     NKey minting and scoped credential management per task_id.
@@ -1258,7 +1270,9 @@ h2ai-orchestrator   ExecutionEngine — the 6-phase MAPE-K loop. MergeEngine. Ve
                     parse_decomposition_response, prune_by_orthogonality, compute_role_diversity,
                     corpus_fallback (domain-tag → slot templates), run_decomposition_agent.
 
-h2ai-planner        Pareto-weighted topology selection, role assignment, τ spread, role error costs.
+h2ai-planner        LLM-driven task decomposition (PlanningEngine::decompose) and plan structural
+                    review (PlanReviewer::evaluate + detect_cycle). Used by CompoundTaskEngine for
+                    DAG task execution. Topology selection is in h2ai-autonomic (TopologyPlanner).
 
 h2ai-provisioner    Static / NATS / Kubernetes agent providers.
                     KubernetesProvider — dynamic Job creation, scoped NKey lifecycle, volume mapping.
@@ -1286,8 +1300,7 @@ h2ai-agent          Edge agent binary.
                     HeartbeatTask — liveness signalling to h2ai.agent.heartbeat.
 
 h2ai-api            Axum HTTP server: POST /:tenant_id/tasks, SSE event stream, calibration endpoints,
-                    health/ready/metrics, HITL approval gate (POST /:tenant_id/tasks/:id/approve, GET /approval),
-                    Merge Authority UI assets.
+                    health/ready/metrics, HITL approval gate (POST /:tenant_id/tasks/:id/approve, GET /approval).
                     NatsWikiConstraintSource — NATS-backed ConstraintSource (KV + Object Store).
                     AppState::constraint_source() — returns the active source based on config.
                     AppState::load_wiki_cache() — loads WikiCache from NATS KV at startup.
@@ -1299,7 +1312,7 @@ h2ai-api            Axum HTTP server: POST /:tenant_id/tasks, SSE event stream, 
 flowchart TD
     POST["POST /:tenant_id/tasks to h2ai-api"] --> EE["ExecutionEngine::run: one Tokio task per task_id"]
     EE --> P1["Phase 1: h2ai-constraints + h2ai-context compile system_context"]
-    P1 --> P2["Phase 2: h2ai-planner ParetoRouter::select"]
+    P1 --> P2["Phase 2: h2ai-autonomic TopologyPlanner::provision"]
     P2 --> P25["Phase 2.5/2.6: MultiplicationChecker + diversity guard"]
     P25 --> P3["Phase 3 per explorer: KubernetesProvider creates Job h2ai-agent-task_id-i"]
     P3 --> NK["h2ai-nats: mint scoped NKey, publish TaskPayload to h2ai.tasks.ephemeral.task_id"]

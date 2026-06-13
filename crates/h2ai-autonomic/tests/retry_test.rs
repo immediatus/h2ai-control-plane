@@ -281,7 +281,7 @@ mod verifier_reason_aggregation {
 
     #[test]
     fn multiple_proposals_returns_top_k_by_score() {
-        // Two events violate the same constraint. tried_topologies=[] → k=1.
+        // Two events violate the same constraint. retry_count=0 → k=1.
         // Only the highest-scoring reason is returned on the first retry wave.
         let e1 = pruned_with_violations(vec![hard_violation_with_reason(
             "GDPR-001",
@@ -299,7 +299,7 @@ mod verifier_reason_aggregation {
                 .iter()
                 .find(|t| t.constraint_id == "GDPR-001")
                 .unwrap();
-            // k=1 (tried_topologies empty) → single highest-scoring reason
+            // k=1 (retry_count=0) → single highest-scoring reason
             assert_eq!(target.verifier_reasons.len(), 1);
             assert_eq!(
                 target.verifier_reasons[0].1,
@@ -387,7 +387,7 @@ mod verifier_reason_aggregation {
 
     #[test]
     fn second_retry_wave_returns_two_unique_reasons() {
-        // tried_topologies has 1 entry → k=2. Two distinct reasons should both appear.
+        // retry_count=1 → k=2. Two distinct reasons should both appear.
         let e1 = pruned_with_violations(vec![hard_violation_with_reason(
             "BFT-001",
             0.3,
@@ -399,7 +399,11 @@ mod verifier_reason_aggregation {
             "view-change mechanism does not terminate in O(f) rounds",
         )]);
         let tried = vec![TopologyKind::Ensemble];
-        let action = RetryPolicy::decide(&zero_event(), &tried, vec![e1, e2], vec![], None);
+        let wave2_event = ZeroSurvivalEvent {
+            retry_count: 1,
+            ..zero_event()
+        };
+        let action = RetryPolicy::decide(&wave2_event, &tried, vec![e1, e2], vec![], None);
         if let RetryAction::RetryWithTargets { targets, .. } = action {
             let target = targets
                 .iter()

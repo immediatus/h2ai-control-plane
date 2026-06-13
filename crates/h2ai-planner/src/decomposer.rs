@@ -46,6 +46,7 @@ impl PlanningEngine {
         manifest: &TaskManifest,
         adapter: &dyn IComputeAdapter,
         tau: TauValue,
+        max_tokens: u64,
     ) -> Result<SubtaskPlan, PlannerError> {
         let constraints_csv = manifest.constraints.join(", ");
         let constraints_str = if constraints_csv.is_empty() {
@@ -62,7 +63,7 @@ impl PlanningEngine {
             system_context: h2ai_config::prompts::DECOMPOSER_SYSTEM.as_str().into(),
             task: prompt,
             tau,
-            max_tokens: 1024,
+            max_tokens,
         };
 
         let response = adapter

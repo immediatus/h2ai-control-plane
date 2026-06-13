@@ -104,7 +104,13 @@ pub fn weiszfeld_select(embeddings: &[Vec<f32>], max_iter: usize) -> usize {
         median = new_median;
     }
 
-    // Return index of embedding with minimum cosine distance to final median
+    // Return index of embedding with minimum cosine distance to final median.
+    // Metric mismatch note: the Weiszfeld loop minimises Euclidean distance while
+    // the final selection uses cosine distance. Rankings are identical iff all
+    // embedding vectors are L2-normalised (‖x‖=1), which is true for the ONNX
+    // model in h2ai-context. If the embedding strategy ever changes to produce
+    // unnormalised vectors, this selection must switch to Euclidean nearest-neighbour
+    // to preserve the Pillutla et al. (2019) breakdown-point guarantee.
     let median_norm: f64 = median
         .iter()
         .map(|v| v.powi(2))

@@ -67,11 +67,12 @@ impl GroundingProvider for SpecAnchorGrounder {
 
 pub struct LlmResearcherGrounder {
     adapter: Arc<dyn IComputeAdapter>,
+    max_tokens: u64,
 }
 
 impl LlmResearcherGrounder {
-    pub fn new(adapter: Arc<dyn IComputeAdapter>) -> Self {
-        Self { adapter }
+    pub fn new(adapter: Arc<dyn IComputeAdapter>, max_tokens: u64) -> Self {
+        Self { adapter, max_tokens }
     }
 }
 
@@ -86,7 +87,7 @@ impl GroundingProvider for LlmResearcherGrounder {
                 ("task_description", &ctx.task_description),
             ]),
             tau: TauValue::new(0.3).unwrap(),
-            max_tokens: 512,
+            max_tokens: self.max_tokens,
         };
         let response = self.adapter.execute(research_req).await.ok()?.output;
         let v: serde_json::Value = crate::verification::extract_json_object(&response)?;
@@ -229,6 +230,8 @@ pub struct SraniGroundingChain {
     distill_enabled: bool,
     /// Minimum character count to trigger distillation. Compact results skip it.
     compress_threshold: usize,
+    /// Max tokens for the distillation LLM call.
+    distill_max_tokens: u64,
 }
 
 impl SraniGroundingChain {
@@ -239,6 +242,7 @@ impl SraniGroundingChain {
             distiller: None,
             distill_enabled: true,
             compress_threshold: 800,
+            distill_max_tokens: 32_768,
         }
     }
 
@@ -247,9 +251,11 @@ impl SraniGroundingChain {
         mut self,
         distiller: Arc<dyn IComputeAdapter>,
         distill_enabled: bool,
+        distill_max_tokens: u64,
     ) -> Self {
         self.distiller = Some(distiller);
         self.distill_enabled = distill_enabled;
+        self.distill_max_tokens = distill_max_tokens;
         self
     }
 
@@ -301,7 +307,7 @@ impl SraniGroundingChain {
         {
             if let Some(ref adapter) = self.distiller {
                 if let Some(distilled) =
-                    distill_with_llm(adapter, &merged.grounding_statement, ctx).await
+                    distill_with_llm(adapter, &merged.grounding_statement, ctx, self.distill_max_tokens).await
                 {
                     merged.grounding_statement = distilled;
                 }
@@ -317,6 +323,7 @@ async fn distill_with_llm(
     adapter: &Arc<dyn IComputeAdapter>,
     raw: &str,
     ctx: &GroundingContext,
+    max_tokens: u64,
 ) -> Option<String> {
     let req = ComputeRequest {
         system_context: SRANI_DISTILL_SYSTEM.as_str().into(),
@@ -325,7 +332,7 @@ async fn distill_with_llm(
             ("raw_results", raw),
         ]),
         tau: TauValue::new(0.2).unwrap(),
-        max_tokens: 256,
+        max_tokens,
     };
     let result = adapter.execute(req).await.ok()?;
     let text = result.output.trim().to_string();
@@ -405,6 +412,20 @@ pub fn synthesis_meets_threshold(synth: &DomainSynthesis, min_confidence: f64) -
     synth.confidence >= min_confidence
 }
 
+/// Prefer `corpus_pass_hint` over `gap_query` when no web grounding is available.
+///
+/// When DDG is unreachable, the offline path previously echoed `gap_query` back as
+/// `correct_pattern`, which is tautological and carries no repair signal.  This
+/// function replaces that echo with the constraint's `pass_criteria` or
+/// `remediation_hint` (whichever is non-empty), falling back to `gap_query` only
+/// when neither is present.
+pub fn gap_hint_or_query<'a>(corpus_pass_hint: Option<&'a str>, gap_query: &'a str) -> &'a str {
+    match corpus_pass_hint {
+        Some(h) if !h.is_empty() => h,
+        _ => gap_query,
+    }
+}
+
 /// Research a constraint knowledge gap using web search + LLM synthesis validation.
 ///
 /// Builds a `GroundingContext` from the gap record, runs the full `SraniGroundingChain`
@@ -418,6 +439,8 @@ pub async fn run_gap_researcher(
     chain: Option<&SraniGroundingChain>,
     min_confidence: f64,
     timeout_secs: u64,
+    corpus_pass_hint: Option<&str>,
+    synthesis_max_tokens: u64,
 ) -> Option<DomainSynthesis> {
     let queries = gap_queries_from_record(record, check_text);
 
@@ -466,7 +489,7 @@ pub async fn run_gap_researcher(
         let synth = DomainSynthesis {
             check_id: (record.constraint_id.clone(), record.check_idx),
             incorrect_pattern: record.incorrect_concept.clone(),
-            correct_pattern,
+            correct_pattern: gap_hint_or_query(corpus_pass_hint, &correct_pattern).to_string(),
             mechanistic_reason: check_text.to_string(),
             source: None,
             confidence: min_confidence,
@@ -492,7 +515,7 @@ pub async fn run_gap_researcher(
             .into(),
         task: validation_task,
         tau: TauValue::new(0.2).unwrap(),
-        max_tokens: 256,
+        max_tokens: synthesis_max_tokens,
     };
 
     // Use the configured researcher timeout for synthesis — local models can be slow.
@@ -702,5 +725,25 @@ mod gap_i1_tests {
         // is expressible in user code.
         let chain: Option<&SraniGroundingChain> = None;
         assert!(chain.is_none());
+    }
+
+    #[test]
+    fn corpus_hint_replaces_tautological_echo_when_no_web_grounding() {
+        let hint = Some("Use Redis Lua EVAL for atomic debit-then-publish.");
+        let gap_query = "correct approach for idempotency key";
+        let result = gap_hint_or_query(hint, gap_query);
+        assert_eq!(result, "Use Redis Lua EVAL for atomic debit-then-publish.");
+    }
+
+    #[test]
+    fn falls_back_to_gap_query_when_hint_is_none() {
+        let result = gap_hint_or_query(None, "correct approach for idempotency key");
+        assert_eq!(result, "correct approach for idempotency key");
+    }
+
+    #[test]
+    fn falls_back_to_gap_query_when_hint_is_empty() {
+        let result = gap_hint_or_query(Some(""), "fallback query");
+        assert_eq!(result, "fallback query");
     }
 }

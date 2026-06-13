@@ -189,8 +189,8 @@ impl RetryPolicy {
 
                 // Progressive signal escalation: k grows with retry_count so repair prompts
                 // receive more diverse failure context as single-reason repair keeps failing.
-                // k = tried_topologies.len() + 1: wave 1 → 1 reason, wave 2 → 2, wave 3+ → 3+
-                let k = tried_topologies.len() + 1;
+                // k = retry_count + 1: wave 0 → 1 reason, wave 1 → 2, wave 2 → 3, …
+                let k = event.retry_count as usize + 1;
                 crate::repair::RepairTarget {
                     constraint_id,
                     constraint_description: entry.constraint_description,

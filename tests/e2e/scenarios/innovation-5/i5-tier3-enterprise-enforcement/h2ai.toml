@@ -5,7 +5,7 @@
 
 nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
-max_autonomic_retries = 4
+max_autonomic_retries = 2
 
 calibration_adapter_count = 1
 calibration_max_tokens    = 256
@@ -60,9 +60,12 @@ model       = "local"
 [hitl]
 enabled = false
 
+[cspr]
+enabled = true
+
 [thinking_loop]
 enabled            = true
-max_iterations     = 5
+max_iterations     = 2
 coverage_threshold = 0.80
 
 debug_log_path = "/tmp/h2ai-debug-i5-tier3-h2ai.ndjson"
@@ -81,6 +84,7 @@ complexity_probe_timeout_secs  = 30
 decompose_threshold            = 4
 hitl_threshold                 = 5
 verifier_decomposition_enabled = false
+min_retries_before_graft       = 4
 
 [complexity_routing.intra_retry]
 enabled                       = true

@@ -193,6 +193,18 @@ leader_stagnation_waves = 1
 # Max tokens for the leader's diagnosis re-prompt (Socratic question only).
 leader_diagnosis_max_tokens = 128
 
+# Max tokens for hallucination detection researcher call.
+hallucination_check_max_tokens = 32768
+
+# Max tokens for per-slot generation search grounding call.
+generation_search_max_tokens = 32768
+
+# Max tokens for planner decomposition LLM call.
+planner_decompose_max_tokens = 32768
+
+# Max tokens for planner semantic review LLM call.
+planner_review_max_tokens = 32768
+
 # Temperature for leader diagnosis re-prompt.
 leader_diagnosis_tau = 0.3
 
@@ -581,6 +593,9 @@ grounding_distill        = true
 # Minimum character count in a grounding statement to trigger LLM distillation.
 # Compact results (below this threshold) skip compression. Default 800.
 grounding_compress_threshold = 800
+researcher_max_tokens    = 32768
+distill_max_tokens       = 32768
+gap_synthesis_max_tokens = 32768
 
 # ── Precision-mode slot budget ────────────────────────────────────────────────
 # Maximum explorer slots for Precision-quadrant tasks (Self-MoA).
@@ -668,6 +683,9 @@ tau_min                   = 0.20
 expansion_quality_floor   = 0.30
 oracle_timeout_secs       = 20
 oracle_confidence_bonus   = 0.1
+archetype_select_max_tokens = 32768
+brainstorm_max_tokens       = 32768
+quality_gate_max_tokens     = 64
 
 [thinking_loop.model_tiers]
 fast     = ""
@@ -684,6 +702,7 @@ suppress_n_tasks           = 5
 graduation_tasks           = 20
 promotion_margin           = 0.05
 ema_window                 = 10
+max_tokens                 = 32768
 
 # ── Persistent Reasoning Memory ─────────────────────────────────────────────
 # Disabled by default; enable once NATS is confirmed available.
@@ -789,6 +808,7 @@ repair_acceptance_threshold = 0.90
 probe_runs                  = 5
 repair_candidates           = 3
 probe_cache_ttl_secs        = 86400
+repair_max_tokens           = 32768
 
 # ── CSPR-v2: Conflict-Aware Constraint-Scoped Prior Repair ───────────────────
 [cspr]

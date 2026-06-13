@@ -829,6 +829,32 @@ impl<'a> ExecutionPipeline<'a> {
                         bandit.apply_optimizer_hint(n_used, suggested.n_agents);
                     }
                 }
+                if self.input.cfg.oracle_gate.enabled {
+                    let decision = phases::oracle::run_post_selection(
+                        phases::oracle::PostSelectionInput {
+                            task_id: self.input.task_id.to_string(),
+                            winner_text: &merge_out.resolved_output,
+                            oracle_config: &self.input.cfg.oracle_gate,
+                            nats: self.input.nats_raw.as_deref(),
+                        },
+                    )
+                    .await;
+                    if decision == phases::oracle::PostSelectionDecision::Evict {
+                        let summary = format!(
+                            "Oracle hard-gate rejected winner for task {}. \
+                             Winner text was evicted — do not reproduce the same approach.",
+                            self.input.task_id
+                        );
+                        return PipelineWaveResult {
+                            outcome: PipelineOutcome::EarlyExit(
+                                crate::phases::ExitReason::OraclePostSelectionBlocked {
+                                    evicted_winner_summary: summary,
+                                },
+                            ),
+                            events,
+                        };
+                    }
+                }
                 PipelineWaveResult {
                     outcome: PipelineOutcome::Resolved(Box::new(merge_out)),
                     events,

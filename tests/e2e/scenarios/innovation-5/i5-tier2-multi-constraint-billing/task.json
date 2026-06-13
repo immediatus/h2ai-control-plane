@@ -25,8 +25,8 @@
       {
         "role_frame": "You are an audit compliance engineer who has failed SOC 2 audits because audit logs were mutable (UPDATE on audit rows) or incomplete (idempotent retries not logged). You know the difference between an audit trail and an event log.",
         "cot_style": "backward_chaining",
-        "focus_mandate": "The audit log must use INSERT-only PostgreSQL writes. Each record must contain: tenant_id (from JWT), actor_id (from JWT sub claim), request_id (idempotency key), old_quota, new_quota, change_type ('applied' or 'deduplicated'), timestamp_ms. Idempotent retries must still emit an audit record with change_type='deduplicated'. No UPDATE or DELETE on audit rows ever. Audit write must be durable (not async fire-and-forget that can be lost).",
-        "rejection_criteria": "Reject designs where idempotent retries skip audit logging. Reject mutable audit storage. Reject actor_id from request body. Reject async audit writes without durability guarantees.",
+        "focus_mandate": "Every quota change must publish a billing event to the Kafka financial-events topic AFTER the Redis Lua debit succeeds. Use a local in-memory WAL-backed retry queue on the critical path (not fsync — queue append takes <0.1ms): try kafka.produce(event, timeout_ms=50), on failure append to in-memory retry queue; a background thread drains the queue to Kafka with at-least-once delivery. Billing events flow Kafka → ClickHouse which provides the immutable audit trail (ClickHouse tables are append-only by design — no UPDATE or DELETE). CockroachDB is updated asynchronously by a Kafka consumer to maintain the operational reconciliation ledger — never on the critical charge path. Each audit record must contain: tenant_id (from JWT), actor_id (from JWT sub claim), request_id (idempotency key), old_quota, new_quota, change_type ('applied' or 'deduplicated'), timestamp_ms. Idempotent retries must still emit an audit record with change_type='deduplicated'. The idempotency key TTL must be ≤30s (matching the retry window).",
+        "rejection_criteria": "Reject designs where idempotent retries skip audit logging. Reject mutable audit storage. Reject actor_id from request body. Reject synchronous Kafka publish with acks=all on the critical charge path (violates ≤0.5ms P99). Reject synchronous fsync or disk write on the critical charge path. Reject idempotency key TTL > 30s.",
         "constraint_domains": ["audit", "compliance", "immutability"]
       },
       {
@@ -39,7 +39,7 @@
     ]
   },
   "constraints": ["CONSTRAINT-004", "CONSTRAINT-005", "CONSTRAINT-008", "CONSTRAINT-TAU-1"],
-  "context": "Infrastructure: Redis 7.2 (quota counters, idempotency keys with 60s TTL), PostgreSQL (immutable audit log). Current broken design: quota decrement uses Redis GET + DECR sequence (TOCTOU race under retries), no idempotency key storage, no audit log, tenant_id accepted from X-Tenant-ID request header. Under load testing, concurrent retries caused quota to reach negative values — effectively unlimited usage — for three enterprise tenants.",
+  "context": "Infrastructure: Redis 7.2 (quota counters, idempotency keys — target TTL ≤30s), Kafka (financial-events topic, billing pipeline), ClickHouse (immutable financial audit — append-only, 7-year retention, no UPDATE/DELETE), CockroachDB (operational reconciliation ledger — updated asynchronously by Kafka consumer, never on the critical charge path). Current broken design: quota decrement uses Redis GET + DECR sequence (TOCTOU race under retries), no idempotency key storage, no audit log, tenant_id accepted from X-Tenant-ID request header. Under load testing, concurrent retries caused quota to reach negative values — effectively unlimited usage — for three enterprise tenants.",
   "_expected": {
     "terminal": "MergeResolved",
     "valid_proposals_min": 1,

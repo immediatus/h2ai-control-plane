@@ -44,7 +44,7 @@ async fn decomposer_parses_llm_json_into_subtask_plan() {
     }"#,
     );
 
-    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024)
         .await
         .unwrap();
 
@@ -71,7 +71,7 @@ async fn decomposer_handles_markdown_fenced_json() {
 ```"#,
     );
 
-    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.3).unwrap())
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.3).unwrap(), 1024)
         .await
         .unwrap();
 
@@ -82,7 +82,7 @@ async fn decomposer_handles_markdown_fenced_json() {
 async fn decomposer_returns_error_on_invalid_json() {
     let adapter = mock_adapter("I cannot decompose this task.");
     let result =
-        PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap()).await;
+        PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024).await;
     assert!(
         matches!(result, Err(PlannerError::ParseError(_))),
         "expected ParseError"
@@ -101,7 +101,7 @@ async fn decomposer_assigns_stable_subtask_ids() {
     }"#,
     );
 
-    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024)
         .await
         .unwrap();
 
@@ -124,7 +124,7 @@ async fn decomposer_returns_error_on_out_of_range_dependency_index() {
         }"#,
     );
     let result =
-        PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap()).await;
+        PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024).await;
     assert!(
         matches!(result, Err(PlannerError::InvalidDependencyIndex { .. })),
         "expected InvalidDependencyIndex error, got: {result:?}"
@@ -135,7 +135,7 @@ async fn decomposer_returns_error_on_out_of_range_dependency_index() {
 async fn decomposer_empty_subtasks_array_produces_empty_plan() {
     // LLM returns an empty subtasks array — structurally valid JSON; reviewer will reject it.
     let adapter = mock_adapter(r#"{"subtasks": []}"#);
-    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024)
         .await
         .unwrap();
     assert!(
@@ -154,7 +154,7 @@ async fn decomposer_unrecognised_role_hint_yields_none() {
           ]
         }"#,
     );
-    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024)
         .await
         .unwrap();
     assert!(
@@ -179,7 +179,7 @@ async fn decomposer_recognises_synthesizer_and_coordinator_role_hints() {
           ]
         }"#,
     );
-    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap())
+    let plan = PlanningEngine::decompose(&manifest(), &adapter, TauValue::new(0.4).unwrap(), 1024)
         .await
         .unwrap();
     assert_eq!(
@@ -202,7 +202,7 @@ async fn decomposer_recognises_synthesizer_and_coordinator_role_hints() {
 #[tokio::test]
 async fn decomposer_propagates_adapter_error() {
     let result =
-        PlanningEngine::decompose(&manifest(), &failing_adapter(), TauValue::new(0.4).unwrap())
+        PlanningEngine::decompose(&manifest(), &failing_adapter(), TauValue::new(0.4).unwrap(), 1024)
             .await;
     assert!(
         matches!(result, Err(PlannerError::Adapter(_))),
@@ -218,7 +218,7 @@ async fn decomposer_handles_manifest_with_no_constraints() {
     let adapter = mock_adapter(
         r#"{"subtasks": [{"description": "Only step", "depends_on": [], "role_hint": null}]}"#,
     );
-    let plan = PlanningEngine::decompose(&m, &adapter, TauValue::new(0.4).unwrap())
+    let plan = PlanningEngine::decompose(&m, &adapter, TauValue::new(0.4).unwrap(), 1024)
         .await
         .unwrap();
     assert_eq!(plan.subtasks.len(), 1);

@@ -3079,6 +3079,9 @@ async fn srani_adaptive_fires_and_updates_ema() {
             gate_threshold: 0.50,
             warn_threshold: 0.30,
             inject_threshold: 0.60,
+            researcher_max_tokens: 32_768,
+            distill_max_tokens: 32_768,
+            gap_synthesis_max_tokens: 32_768,
         },
         ..H2AIConfig::default()
     };
@@ -3218,6 +3221,9 @@ async fn srani_cold_start_uses_config_midpoint() {
             gate_threshold: 0.50,
             warn_threshold: 0.30,
             inject_threshold: 0.60,
+            researcher_max_tokens: 32_768,
+            distill_max_tokens: 32_768,
+            gap_synthesis_max_tokens: 32_768,
         },
         ..H2AIConfig::default()
     };
@@ -3446,6 +3452,9 @@ async fn srani_ema_formula_verified_numerically() {
             gate_threshold: 0.50,
             warn_threshold: 0.30,
             inject_threshold: 0.60,
+            researcher_max_tokens: 32_768,
+            distill_max_tokens: 32_768,
+            gap_synthesis_max_tokens: 32_768,
         },
         ..H2AIConfig::default()
     };
@@ -3746,7 +3755,7 @@ async fn srani_llm_chain_records_llm_researcher_source() {
     ));
     let chain = Arc::new(SraniGroundingChain::new(vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(researcher_mock)),
+        Box::new(LlmResearcherGrounder::new(researcher_mock, 512)),
     ]));
 
     let input = EngineInput {
@@ -3814,7 +3823,7 @@ async fn srani_researcher_failure_falls_back_gracefully() {
     let bad_researcher = Arc::new(mock_adapter("THIS IS NOT JSON"));
     let chain = Arc::new(SraniGroundingChain::new(vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(bad_researcher)),
+        Box::new(LlmResearcherGrounder::new(bad_researcher, 512)),
     ]));
 
     let input = EngineInput {
@@ -3873,7 +3882,7 @@ async fn srani_web_search_chain_resolves_at_tier1() {
         Box::new(SpecAnchorGrounder),
         Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
             "should not appear",
-        )))),
+        )), 512)),
         Box::new(WebSearchGrounder::new(
             Arc::new(mock_search(web_snippet.to_string())),
             3,

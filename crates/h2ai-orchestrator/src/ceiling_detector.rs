@@ -50,12 +50,17 @@ pub fn failure_signature_entropy(last_wave_pruned: &[BranchPrunedEvent]) -> f64 
 ///
 /// slope = (score[n-1] - score[n-2]) / score[n-2]
 ///
-/// Returns `0.0` when fewer than 2 scores are available or when the previous
-/// score is zero (to avoid division by zero).
+/// Returns `f64::INFINITY` when fewer than 2 scores are available — this means
+/// "no stall detected" because there is no evidence of convergence failure yet.
+/// `quality_history` only gains entries when a wave produces a winning proposal;
+/// all-ZeroSurvival waves leave the history empty, which must not be mistaken
+/// for a stalled slope.
+///
+/// Returns `0.0` when the previous score is zero (to avoid division by zero).
 pub fn retry_slope(score_history: &[f64]) -> f64 {
     let n = score_history.len();
     if n < 2 {
-        return 0.0;
+        return f64::INFINITY;
     }
     let prev = score_history[n - 2];
     if prev == 0.0 {

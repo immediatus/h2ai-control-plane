@@ -60,6 +60,9 @@ model       = "local"
 [hitl]
 enabled = false
 
+[cspr]
+enabled = true
+
 [thinking_loop]
 enabled            = true
 max_iterations     = 3

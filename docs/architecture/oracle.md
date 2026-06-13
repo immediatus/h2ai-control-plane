@@ -186,6 +186,48 @@ Emits `OracleCalibrationPatchedEvent` on the NATS task stream.
 
 ---
 
+## Oracle Post-Selection Gate
+
+After `MergeEngine` selects a winner but **before** `PipelineOutcome::Resolved` is emitted, an additional post-selection blocking check can re-verify the winner against the oracle. This is BFT Lever 2: a hard gate that blocks a correlated-hallucination winner from escaping the pipeline even when it passed the pre-merge oracle gate.
+
+### Configuration
+
+```toml
+[oracle_gate]
+enabled   = false
+on_fail   = "evict"   # "evict" | "pass" | "fail"
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `on_fail` | `"evict"` | What to do when the post-selection check returns `gate_passed = false`. `evict` → block winner, rotate adapter family, retry; `pass` → ignore gate failure; `fail` → mark task failed immediately. |
+
+### Decision Types
+
+```rust
+enum PostSelectionDecision {
+    Accept,   // gate passed or on_fail = "pass"
+    Evict,    // gate failed and on_fail = "evict" — rotate family, retry
+    Clarify,  // gate failed with low confidence — suspend for operator answer
+}
+```
+
+`apply_on_fail_policy(gate_passed: Option<bool>, on_fail: &str) -> PostSelectionDecision` maps the `(gate_passed, on_fail)` pair to the decision. `run_post_selection(input: PostSelectionInput<'_>) -> PostSelectionDecision` calls the oracle via NATS (when available) and then applies the policy.
+
+### Pipeline Integration
+
+When `run_post_selection` returns `Evict`:
+1. `pipeline.rs` returns `PipelineWaveResult { outcome: PipelineOutcome::EarlyExit(ExitReason::OraclePostSelectionBlocked { evicted_winner_summary }), events }` instead of `Resolved`.
+2. `mape_k.rs::handle_exit_reason` handles `OraclePostSelectionBlocked`:
+   - Emits `CorrelatedEnsembleWarning { task_id, cv: 1.0, mean_jaccard_distance: 0.0, retry_count }` — treated as a correlated-failure signal.
+   - Increments `adapter_rotation_offset` to shift the pool on the next wave.
+   - Sets `retry_context` to the evicted winner summary for repair context injection.
+   - Calls `run_apply_optimizer(1.0)` and returns `MapeKDecision::Retry`.
+
+5 unit tests in `crates/h2ai-orchestrator/src/phases/oracle.rs` cover: `accept_when_gate_passes`, `evict_when_gate_fails_on_fail_evict`, `pass_when_gate_fails_on_fail_pass`, `fail_when_gate_fails_on_fail_fail`, `accept_when_gate_passes_regardless_of_on_fail`.
+
+---
+
 ## Configuration
 
 All oracle config lives in `h2ai.toml` under `[oracle]` (or in `reference.toml`):

@@ -120,6 +120,32 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             return;
         };
 
+        // --- Guard: skip tasks that already have a terminal event in NATS ---
+        // If a previous run published TaskFailed/MergeResolved but crashed before
+        // deleting the checkpoint, we must not re-run the task — it would compete
+        // for adapter pool slots and corrupt the NATS event stream.
+        let nats_ref = state.nats.as_ref().expect("NATS required for task recovery");
+        {
+            use futures::StreamExt;
+            if let Ok(mut stream) = nats_ref.tail_task_events_boxed(&task_id, 0).await {
+                while let Some(item) = stream.next().await {
+                    if let Ok((_, event)) = item {
+                        if matches!(
+                            event,
+                            H2AIEvent::TaskFailed(_) | H2AIEvent::MergeResolved(_)
+                        ) {
+                            tracing::info!(
+                                task_id = %checkpoint.task_id,
+                                "recovery: task already terminal, deleting stale checkpoint"
+                            );
+                            nats_ref.delete_task_checkpoint(&checkpoint.task_id).await.ok();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         // --- Re-register in store so status queries work immediately ---
         state.store.insert(
             task_id.clone(),

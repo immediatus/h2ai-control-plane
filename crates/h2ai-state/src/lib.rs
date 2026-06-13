@@ -6,11 +6,19 @@
 //!
 //! ## Modules
 //!
+//! - [`backend`] — all store/publisher traits: `NatsBackend` (supertrait),
+//!   `StateBackend`, `EventPublisher`, `SnapshotStore`, `CalibrationStore`,
+//!   `SignalPublisher`, `SignalSubscriber`, `OproStore`, `EstimatorStore`,
+//!   `ReasoningStore`, `ConflictStore`, `ShadowDomainStore`, `TaskCheckpointStore`,
+//!   `TaskDispatchBackend`.
+//! - [`in_memory`] — `InMemoryStateBackend`: in-process `NatsBackend` impl for
+//!   tests; `CapturedEvent` records events for assertion.
 //! - [`semilattice`] — CRDT join over proposals, `ProposalSet`, `SemilatticeResult`
 //! - [`bft`] — Condorcet/ConsensusMedian path (activated when `max(c_i) > bft_threshold`).
 //!   NOTE: not Byzantine-resistant. See [`krum`] for provably BFT selection.
 //! - [`krum`] — Krum and Multi-Krum Byzantine-fault-tolerant selection (n ≥ 2f+3 required).
-//! - [`journal`] — append-only `EventJournal` + `InMemoryBackend` for tests
+//! - [`journal`] — append-only `EventJournal` generic over `JournalBackend`;
+//!   `InMemoryBackend` implementation for test use.
 //! - [`nats`] — `NatsClient` connection + stream bootstrap
 //! - [`weiszfeld`] — Weiszfeld geometric median BFT selection (breakdown point 50%)
 

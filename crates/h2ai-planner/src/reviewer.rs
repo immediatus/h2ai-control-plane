@@ -30,6 +30,7 @@ impl PlanReviewer {
         original_description: &str,
         adapter: &dyn IComputeAdapter,
         tau: TauValue,
+        max_tokens: u64,
     ) -> Result<ReviewOutcome, PlannerError> {
         if plan.subtasks.is_empty() {
             return Ok(ReviewOutcome::Rejected {
@@ -74,7 +75,7 @@ impl PlanReviewer {
                 system_context: h2ai_config::prompts::PLAN_REVIEWER_SYSTEM.as_str().into(),
                 task: prompt,
                 tau,
-                max_tokens: 256,
+                max_tokens,
             })
             .await
             .map_err(|e| PlannerError::Adapter(e.to_string()))?;

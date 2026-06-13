@@ -132,8 +132,8 @@ curl -X POST http://localhost:8080/v1/default/tasks/{task_id}/clarify \
   -H "Content-Type: application/json" \
   -d '{"answer": "your clarification here"}'
 
-# Open the Merge Authority UI
-open http://localhost:8080
+# Check task status via SSE stream
+curl -N http://localhost:8080/v1/default/tasks/{task_id}/events
 ```
 
 ### Enterprise (Kubernetes + Helm)
@@ -206,7 +206,7 @@ Six phases run in sequence, all event-sourced to NATS JetStream:
 3. **Provisioning** — the MAPE-K controller selects topology (Ensemble / Hierarchical Tree / Team-Swarm Hybrid) from physics, then enforces the Multiplication Condition Gate before spawning any inference token.
 4. **Generation** — N Explorers run in parallel (`tokio::task::JoinSet`). No Explorer reads another's output. Each is a stateless edge agent with a scoped NKey that expires when the task closes. `TaoAgent` runs Thought→Action→Observation up to `agent_max_tool_iterations` turns inside each.
 5. **MAPE-K gate** — the Auditor validates proposals as they arrive. Zero survivors triggers the three-layer retry engine: 12 per-wave phase modules, typed `MapeKDecision`, Epistemic Leader cross-wave diagnostics.
-6. **Merge** — Layer 1: CRDT semilattice on constraint fingerprints (deterministic, never touches LLM text). Layer 2: OSP regime classification → two-pass critique+synthesis LLM. The Merge Authority UI presents tombstones, physics panel, and MAPE-K timeline. One human decision closes the task.
+6. **Merge** — Layer 1: CRDT semilattice on constraint fingerprints (deterministic, never touches LLM text). Layer 2: OSP regime classification → two-pass critique+synthesis LLM. When the HITL gate fires, `POST /{tenant_id}/tasks/{id}/approve` parks the output for human review; one decision closes the task.
 
 → **Full How It Works** (topology trade-offs, TAO loop internals, security invariants, USL quantities by tool set): [`docs/architecture/architecture.md § How It Works`](docs/architecture/architecture.md#how-it-works)
 

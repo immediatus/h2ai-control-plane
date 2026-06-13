@@ -509,6 +509,55 @@ def _load_constraint_context(scenario_dir: pathlib.Path, task: dict) -> str:
     )
 
 
+def _wait_for_llm_ready(scenario_name: str, timeout_s: int = 300) -> None:
+    """Poll the LLM /models endpoint until it responds without 503, then warm it up.
+
+    A 122B model reloads after being evicted between long runs. Without this wait,
+    the second arm in --compare sees 503 on every call and produces zero proposals.
+    """
+    base_url = _llm_base_url_for_scenario(scenario_name)
+    models_url = f"{base_url}/models"
+    deadline = time.time() + timeout_s
+    poll = 5
+    print(f"  [llm-ready] polling {models_url} (timeout {timeout_s}s) …", flush=True)
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(models_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    print(f"  [llm-ready] LLM ready", flush=True)
+                    return
+        except urllib.error.HTTPError as exc:
+            if exc.code == 503:
+                body = exc.read()[:120].decode(errors="replace")
+                print(f"  [llm-ready] 503 ({body}) — waiting {poll}s …", flush=True)
+            else:
+                print(f"  [llm-ready] HTTP {exc.code} — waiting {poll}s …", flush=True)
+        except Exception as exc:
+            print(f"  [llm-ready] {exc} — waiting {poll}s …", flush=True)
+        time.sleep(poll)
+    print(f"  [llm-ready] WARNING: LLM did not become ready within {timeout_s}s; proceeding anyway")
+
+
+def _llm_base_url_for_scenario(scenario_name: str, config_name: str = "h2ai.toml") -> str:
+    """Return the base URL (without path) of the first adapter profile."""
+    toml_path = SCENARIOS_DIR / scenario_name.split("/")[-1] / config_name
+    if not toml_path.exists():
+        toml_path = SCENARIOS_DIR / scenario_name / config_name
+    if not toml_path.exists():
+        toml_path = SCENARIOS_DIR / scenario_name.split("/")[-1] / "h2ai.toml"
+    if not toml_path.exists():
+        toml_path = SCENARIOS_DIR / scenario_name / "h2ai.toml"
+    if toml_path.exists():
+        cfg = tomllib.loads(toml_path.read_text())
+        for profile in cfg.get("adapter_profiles", []):
+            kind = profile.get("kind", {})
+            for adapter_cfg in kind.values():
+                if isinstance(adapter_cfg, dict) and "endpoint" in adapter_cfg:
+                    return adapter_cfg["endpoint"].rstrip("/")
+    return "http://host.docker.internal:8080/v1"
+
+
 # ── Baseline mode (direct LLM, no H2AI) ──────────────────────────────────────
 
 def _llm_endpoint_for_scenario(scenario_name: str, config_name: str = "h2ai.toml") -> tuple[str, str, int, str]:
@@ -847,8 +896,10 @@ def main() -> None:
             print(f"{'='*60}")
             try:
                 print(f"\n[h2ai.toml — framework]")
+                _wait_for_llm_ready(scenario_name)
                 h2ai_m = _run_h2ai_trials(scenario_name, scenario_dir, task, "h2ai.toml", args.trials)
                 print(f"\n[baseline.toml — feature OFF]")
+                _wait_for_llm_ready(scenario_name)
                 base_m = _run_h2ai_trials(scenario_name, scenario_dir, task, "baseline.toml", args.trials)
                 _print_delta_table(h2ai_m, base_m)
                 compare_semantics = task.get("_compare_semantics", "strict")

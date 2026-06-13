@@ -28,6 +28,10 @@ pub struct CompoundTaskInput<'a, E: SubtaskExecutor> {
     pub planning_tau: TauValue,
     /// Executes individual subtasks (use `EngineExecutor` in production, mock in tests).
     pub executor: &'a E,
+    /// Max tokens for the decomposition LLM call.
+    pub decompose_max_tokens: u64,
+    /// Max tokens for the semantic review LLM call.
+    pub review_max_tokens: u64,
 }
 
 #[derive(Debug)]
@@ -50,7 +54,7 @@ impl CompoundTaskEngine {
     ) -> Result<CompoundTaskOutput, CompoundError> {
         // Step 1: Decompose.
         let mut plan =
-            PlanningEngine::decompose(&input.manifest, input.planning_adapter, input.planning_tau)
+            PlanningEngine::decompose(&input.manifest, input.planning_adapter, input.planning_tau, input.decompose_max_tokens)
                 .await?;
         plan.parent_task_id = input.task_id.clone();
 
@@ -60,6 +64,7 @@ impl CompoundTaskEngine {
             &input.manifest.description,
             input.review_adapter,
             input.planning_tau,
+            input.review_max_tokens,
         )
         .await?;
 

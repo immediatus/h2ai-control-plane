@@ -134,9 +134,33 @@ fn retry_slope_near_zero_when_score_stagnates() {
 }
 
 #[test]
-fn retry_slope_zero_when_fewer_than_2_scores() {
-    assert_eq!(retry_slope(&[]), 0.0);
-    assert_eq!(retry_slope(&[0.5]), 0.0);
+fn retry_slope_infinity_when_fewer_than_2_scores() {
+    // Insufficient history must not be misread as a stall (INFINITY > any threshold).
+    assert_eq!(retry_slope(&[]), f64::INFINITY);
+    assert_eq!(retry_slope(&[0.5]), f64::INFINITY);
+}
+
+#[test]
+fn count_signals_slope_does_not_fire_on_empty_history() {
+    // All-ZeroSurvival waves leave quality_history empty.  Signal 2 must stay silent
+    // so the intra-retry ceiling does not prematurely abort the retry loop.
+    let events = vec![
+        make_pruned(&["c1"]),
+        make_pruned(&["c1"]),
+        make_pruned(&["c1"]),
+    ];
+    let cfg = IntraRetryDetectorConfig {
+        enabled: true,
+        entropy_threshold: 0.6,
+        retry_slope_threshold: 0.05,
+        n_eff_cg_product_threshold: 0.3,
+        min_retry_count_for_detection: 2,
+    };
+    // Empty score_history — slope signal must be silent.
+    let count = count_ceiling_signals(&events, &[], 1.0, 0.7, &cfg);
+    // Signal 1 fires (entropy=0 from single constraint) but signal 2 must NOT.
+    // n_eff×cg_mean = 0.7 > 0.3 → signal 3 silent. Total ≤ 1.
+    assert!(count < 2, "ceiling must not fire on empty quality history; got {count} signals");
 }
 
 // ── count_ceiling_signals ─────────────────────────────────────────────────

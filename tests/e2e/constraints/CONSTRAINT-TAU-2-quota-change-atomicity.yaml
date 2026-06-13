@@ -7,6 +7,7 @@ domains:
   - consistency
 related_to:
   - CONSTRAINT-TAU-1
+  - CONSTRAINT-005  # quota audit (PostgreSQL INSERT-only) must not interfere with billing audit (Kafka→ClickHouse)
 remediation_hint: "Quota changes must be atomic: either the new quota limit becomes visible to all rate-check paths simultaneously, or the old limit remains until the update is fully committed. Partial updates — where some API nodes observe the new quota and others the old — create inconsistent enforcement and revenue risk. Use Redis Lua EVAL or a CAS operation as a single atomic step."
 criteria:
   pass: |

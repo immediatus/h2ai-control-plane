@@ -24,7 +24,8 @@ use h2ai_types::config::AgentRole;
 use h2ai_types::events::OracleGateResultEvent;
 use h2ai_types::knowledge::{profile_for_role, RetrievalMode as TypesRetrievalMode};
 use h2ai_types::sizing::TauValue;
-use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ThinkingReport};
+use h2ai_types::manifest::CotStyle;
+use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ModelTier, ThinkingReport};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -153,9 +154,11 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
 
         let archetypes =
             select_archetypes(&input, research_context, &report, iteration, n_this_iter).await;
-        if archetypes.is_empty() {
-            break;
-        }
+        let archetypes = if archetypes.is_empty() {
+            fallback_archetypes()
+        } else {
+            archetypes
+        };
 
         let iteration_tau = scheduled_tau(
             iteration,
@@ -261,6 +264,40 @@ async fn fetch_iteration_knowledge(
 
 // ─── Archetype selection ──────────────────────────────────────────────────────
 
+/// Single pragmatic archetype used when LLM archetype selection fails to parse.
+/// Keeps the thinking loop alive for at least one brainstorm iteration.
+fn fallback_archetypes() -> Vec<ArchetypeSpec> {
+    vec![
+        ArchetypeSpec {
+            name: "Constraint Satisfier".to_string(),
+            persona: "A systems engineer who reads each constraint literally and builds the minimal design that satisfies all of them simultaneously. Prefers proven patterns; checks each constraint explicitly before finalising.".to_string(),
+            scope: "Complete solution satisfying all stated constraints — no constraint is optional.".to_string(),
+            confidence: 0.8,
+            tau: 0.3,
+            model_tier: ModelTier::Standard,
+            cot_style: CotStyle::StepByStep,
+        },
+        ArchetypeSpec {
+            name: "Failure Mode Analyst".to_string(),
+            persona: "An adversarial reviewer who stress-tests each proposed design against concurrent retries, partial failures, and schema migrations. Identifies which constraint appears satisfied but breaks under an edge case.".to_string(),
+            scope: "Critique of the design from the perspective of the most likely failure mode for each constraint.".to_string(),
+            confidence: 0.7,
+            tau: 0.5,
+            model_tier: ModelTier::Standard,
+            cot_style: CotStyle::DevilsAdvocate,
+        },
+        ArchetypeSpec {
+            name: "Migration Safety Specialist".to_string(),
+            persona: "A database reliability engineer who has managed live schema migrations on 100M-row tables. Specifies every DDL step explicitly, provides rollback scripts, and identifies which operations are destructive versus additive.".to_string(),
+            scope: "Concrete migration plan with explicit additive-only DDL for the schema migration constraint, plus rollback procedures.".to_string(),
+            confidence: 0.7,
+            tau: 0.4,
+            model_tier: ModelTier::Standard,
+            cot_style: CotStyle::BackwardChaining,
+        },
+    ]
+}
+
 async fn select_archetypes(
     input: &ThinkingLoopInput<'_>,
     research_context: &str,
@@ -308,7 +345,7 @@ async fn select_archetypes(
         system_context: THINKING_ARCHETYPE_SYSTEM.into(),
         task,
         tau: TauValue::new(0.2).unwrap(),
-        max_tokens: 1024,
+        max_tokens: input.cfg.archetype_select_max_tokens,
     };
 
     match input.adapter.execute(req).await {
@@ -373,7 +410,7 @@ async fn brainstorm_one(
         system_context: archetype.persona.clone(),
         task,
         tau,
-        max_tokens: 1024,
+        max_tokens: input.cfg.brainstorm_max_tokens,
     };
 
     let (llm_response_text, problem_analysis, solution_sketch, confidence) = match input
@@ -508,7 +545,7 @@ async fn synthesize(
         system_context: THINKING_SYNTHESIS_SYSTEM.into(),
         task,
         tau: TauValue::new(0.3).unwrap(),
-        max_tokens: 512,
+        max_tokens: input.cfg.brainstorm_max_tokens,
     };
 
     match input.adapter.execute(req).await {
@@ -539,7 +576,7 @@ async fn llm_gate(input: &ThinkingLoopInput<'_>, report: &ThinkingReport) -> boo
         system_context: THINKING_QUALITY_GATE_SYSTEM.into(),
         task,
         tau: TauValue::new(0.1).unwrap(),
-        max_tokens: 64,
+        max_tokens: input.cfg.quality_gate_max_tokens,
     };
 
     match input.adapter.execute(req).await {
@@ -670,6 +707,34 @@ mod tests {
         let json = r#"[{"name":"x","persona":"You are a p who does q.","scope":"s","confidence":0.8,"tau":0.3,"model_tier":"fast","cot_style":"none"}]"#;
         let result = parse_archetypes(json);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn fallback_archetypes_has_three_distinct_items() {
+        let archetypes = fallback_archetypes();
+        assert_eq!(archetypes.len(), 3, "must have exactly three fallback archetypes");
+        let names: Vec<&str> = archetypes.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names.len(),
+            names.iter().collect::<std::collections::HashSet<_>>().len(),
+            "all archetype names must be distinct"
+        );
+    }
+
+    #[test]
+    fn fallback_archetypes_cover_distinct_cot_styles() {
+        let archetypes = fallback_archetypes();
+        // Count distinct CotStyle values without requiring Hash.
+        let mut distinct_styles: Vec<&CotStyle> = Vec::new();
+        for a in &archetypes {
+            if !distinct_styles.iter().any(|s| **s == a.cot_style) {
+                distinct_styles.push(&a.cot_style);
+            }
+        }
+        assert!(
+            distinct_styles.len() >= 2,
+            "fallback archetypes must use at least two distinct CotStyles"
+        );
     }
 
     #[tokio::test]

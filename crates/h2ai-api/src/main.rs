@@ -247,13 +247,13 @@ async fn main() {
         let mut tiers: Vec<Box<dyn h2ai_orchestrator::srani_grounding::GroundingProvider>> =
             vec![Box::new(SpecAnchorGrounder)];
         if let Some(ref r) = app_state.researcher_adapter {
-            tiers.push(Box::new(LlmResearcherGrounder::new(r.clone())));
+            tiers.push(Box::new(LlmResearcherGrounder::new(r.clone(), srani_cfg.researcher_max_tokens)));
         }
         let chain = SraniGroundingChain::new(tiers)
             .with_compress_threshold(srani_cfg.grounding_compress_threshold);
         // Wire distiller from the researcher adapter if distillation is enabled.
         let chain = if let Some(ref r) = app_state.researcher_adapter {
-            chain.with_distiller(r.clone(), srani_cfg.grounding_distill)
+            chain.with_distiller(r.clone(), srani_cfg.grounding_distill, srani_cfg.distill_max_tokens)
         } else {
             chain
         };
@@ -277,7 +277,7 @@ async fn main() {
         let chain = SraniGroundingChain::new(providers)
             .with_compress_threshold(srani_cfg.grounding_compress_threshold);
         let chain = if let Some(ref r) = app_state.researcher_adapter {
-            chain.with_distiller(r.clone(), srani_cfg.grounding_distill)
+            chain.with_distiller(r.clone(), srani_cfg.grounding_distill, srani_cfg.distill_max_tokens)
         } else {
             chain
         };

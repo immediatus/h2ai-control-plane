@@ -7,6 +7,7 @@ domains:
 related_to:
   - CONSTRAINT-004  # budget deductions are the events that must reach the audit log
   - CONSTRAINT-007  # billing event timestamps must use HLC (linearizable), not wall clock
+  - CONSTRAINT-TAU-2  # billing path (Kafka→ClickHouse) and quota audit path (PostgreSQL) must coexist
 remediation_hint: "The required operation order is: (1) debit the budget atomically first via Redis Lua EVAL, (2) then publish the billing event to Kafka financial-events topic. The debit MUST happen before the Kafka publish — not after. Use a local WAL-backed retry queue so Kafka downtime never blocks the debit or creates audit gaps. Project Kafka events into ClickHouse for analytics. Financial event records are append-only: once written, records must remain unmodified."
 semantic:
   exclusions:

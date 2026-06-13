@@ -1,3 +1,28 @@
+//! Test helpers and `mockall`-generated mocks for the H2AI workspace.
+//!
+//! This crate is `cfg(test)` / dev-dependency only — it is never linked into
+//! production binaries. It provides:
+//!
+//! - **`MockIComputeAdapter`** — deterministic LLM stub; use [`mock_adapter`]
+//!   for the common case of a single fixed response.
+//! - **`MockNatsBackend`** — in-memory mock of all `NatsBackend` supertrait
+//!   methods; supports expectation-based assertions via `mockall`.
+//! - **`MockTaskDispatchBackend`** — mock for task dispatch over NATS; use
+//!   [`stub_topology_retry_event`] to inject a pre-built retry event.
+//! - Tool mocks: `MockWebSearch`, `MockWasmRunner`, `MockMcpClient` — stubs for
+//!   the three external-tool backends used by edge agents.
+//! - **`mock_adapter`** / **`sequenced_adapter`** — convenience constructors for
+//!   `MockIComputeAdapter` with one fixed response or a sequence of responses.
+//!
+//! ## Usage pattern
+//!
+//! ```rust,ignore
+//! use h2ai_test_utils::{mock_adapter, MockNatsBackend};
+//! let adapter = Arc::new(mock_adapter("my fixed output"));
+//! let mut nats = MockNatsBackend::new();
+//! nats.expect_publish_event().returning(|_, _| Ok(()));
+//! ```
+
 use async_trait::async_trait;
 use h2ai_tools::error::ToolError;
 use h2ai_tools::mcp::McpBackend;

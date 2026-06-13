@@ -1,3 +1,20 @@
+//! Runtime configuration — `H2AIConfig` and all tunable parameters.
+//!
+//! Deserialised from a TOML file at startup (see `reference.toml` for the full
+//! field reference with defaults and comments). The config is immutable after
+//! startup; all hot-reloadable state (calibration, bandit weights) lives in
+//! `h2ai-state` and `h2ai-api` respectively.
+//!
+//! ## Design rules
+//!
+//! - Every field has a `#[serde(default = …)]` so partial TOML files are valid.
+//!   Missing fields fall back to the reference defaults, not panics.
+//! - Config structs are `Clone + Send + Sync` and wrapped in `Arc<H2AIConfig>`
+//!   at the call site so they can be shared across Tokio tasks without copying.
+//! - Physics thresholds (USL coefficients, ensemble size, coverage targets) live
+//!   alongside operational knobs (timeouts, retry counts) in the same struct so
+//!   the relationship between physics and policy is visible in one place.
+
 pub mod prompts;
 
 use h2ai_knowledge::factory::KnowledgeConfig;
@@ -37,6 +54,9 @@ pub struct OracleGateConfig {
     /// Timeout behavior: "pass", "fail", or "clarify". Default: "pass".
     #[serde(default = "default_oracle_gate_on_timeout")]
     pub on_timeout: String,
+    /// Failure behavior: "evict", "pass", or "clarify". Default: "evict".
+    #[serde(default = "default_oracle_gate_on_fail")]
+    pub on_fail: String,
     /// Gate passes if oracle confidence >= this. Default: 0.7.
     #[serde(default = "default_oracle_gate_min_confidence")]
     pub min_confidence: f64,
@@ -57,6 +77,9 @@ const fn default_oracle_gate_timeout_secs() -> u64 {
 fn default_oracle_gate_on_timeout() -> String {
     "pass".to_string()
 }
+fn default_oracle_gate_on_fail() -> String {
+    "evict".to_string()
+}
 const fn default_oracle_gate_min_confidence() -> f64 {
     0.7f64
 }
@@ -68,6 +91,7 @@ impl Default for OracleGateConfig {
             subject: default_oracle_gate_subject(),
             timeout_secs: default_oracle_gate_timeout_secs(),
             on_timeout: default_oracle_gate_on_timeout(),
+            on_fail: default_oracle_gate_on_fail(),
             min_confidence: default_oracle_gate_min_confidence(),
             clarification_templates: Vec::new(),
         }
@@ -257,6 +281,11 @@ pub struct SafetyConfig {
     pub family_constraint: FamilyConstraint,
     pub require_bivariate_cg: bool,
     pub shadow_auditor: ShadowAuditorConfig,
+    /// Minimum number of distinct model-lineage families required in the explorer pool.
+    /// When >= 2, a warning is emitted at calibration if the pool falls short.
+    /// The gate auto-activates when a second family is configured; never hard-fails.
+    #[serde(default)]
+    pub min_explorer_families: usize,
 }
 
 impl Default for SafetyConfig {
@@ -269,6 +298,7 @@ impl Default for SafetyConfig {
             family_constraint: FamilyConstraint::SingleFamilyOk,
             require_bivariate_cg: false,
             shadow_auditor: ShadowAuditorConfig::default(),
+            min_explorer_families: 0,
         }
     }
 }
@@ -311,6 +341,15 @@ pub struct SraniConfig {
     /// Default 800.
     #[serde(default = "srani_default_grounding_compress_threshold")]
     pub grounding_compress_threshold: usize,
+    /// Max tokens for the SRANI researcher LLM call. Default: 32768.
+    #[serde(default = "default_srani_researcher_max_tokens")]
+    pub researcher_max_tokens: u64,
+    /// Max tokens for the distillation LLM call. Default: 32768.
+    #[serde(default = "default_srani_distill_max_tokens")]
+    pub distill_max_tokens: u64,
+    /// Max tokens for the gap synthesis validation LLM call. Default: 32768.
+    #[serde(default = "default_srani_gap_synthesis_max_tokens")]
+    pub gap_synthesis_max_tokens: u64,
 }
 
 const fn srani_default_enabled() -> bool {
@@ -340,6 +379,15 @@ const fn srani_default_grounding_distill() -> bool {
 const fn srani_default_grounding_compress_threshold() -> usize {
     800
 }
+const fn default_srani_researcher_max_tokens() -> u64 {
+    32_768
+}
+const fn default_srani_distill_max_tokens() -> u64 {
+    32_768
+}
+const fn default_srani_gap_synthesis_max_tokens() -> u64 {
+    32_768
+}
 
 /// Configuration for OPRO (Optimization by Prompt Retrieval).
 /// Controls trigger thresholds and promotion criteria for prompt variant optimization.
@@ -366,6 +414,9 @@ pub struct OproConfig {
     /// EMA window size for `j_eff` smoothing. Default: 10.
     #[serde(default = "default_opro_ema_window")]
     pub ema_window: u32,
+    /// Max tokens for OPRO candidate generation LLM call. Default: 32768.
+    #[serde(default = "default_opro_max_tokens")]
+    pub max_tokens: u64,
 }
 
 const fn default_opro_enabled() -> bool {
@@ -389,6 +440,9 @@ const fn default_opro_promotion_margin() -> f64 {
 const fn default_opro_ema_window() -> u32 {
     10u32
 }
+const fn default_opro_max_tokens() -> u64 {
+    32_768
+}
 
 impl Default for OproConfig {
     fn default() -> Self {
@@ -400,6 +454,7 @@ impl Default for OproConfig {
             graduation_tasks: default_opro_graduation_tasks(),
             promotion_margin: default_opro_promotion_margin(),
             ema_window: default_opro_ema_window(),
+            max_tokens: default_opro_max_tokens(),
         }
     }
 }
@@ -522,6 +577,9 @@ impl Default for SraniConfig {
             inject_threshold: srani_default_inject_threshold(),
             grounding_distill: srani_default_grounding_distill(),
             grounding_compress_threshold: srani_default_grounding_compress_threshold(),
+            researcher_max_tokens: default_srani_researcher_max_tokens(),
+            distill_max_tokens: default_srani_distill_max_tokens(),
+            gap_synthesis_max_tokens: default_srani_gap_synthesis_max_tokens(),
         }
     }
 }
@@ -727,6 +785,15 @@ pub struct ThinkingLoopConfig {
     /// `j_eff` boost when oracle passes. Default: 0.1
     #[serde(default = "default_oracle_confidence_bonus")]
     pub oracle_confidence_bonus: f64,
+    /// Max tokens for the archetype selection LLM call (both ITER1 and ITERN). Default: 32768.
+    #[serde(default = "default_tl_archetype_select_max_tokens")]
+    pub archetype_select_max_tokens: u64,
+    /// Max tokens for the iteration synthesis LLM call. Default: 32768.
+    #[serde(default = "default_tl_brainstorm_max_tokens")]
+    pub brainstorm_max_tokens: u64,
+    /// Max tokens for the LLM quality gate (YES/NO response). Fixed small budget. Default: 64.
+    #[serde(default = "default_tl_quality_gate_max_tokens")]
+    pub quality_gate_max_tokens: u64,
 }
 
 const fn default_oracle_timeout_secs() -> u64 {
@@ -756,6 +823,15 @@ const fn default_tl_tau_min() -> f64 {
 const fn default_expansion_quality_floor() -> f64 {
     0.30
 }
+const fn default_tl_archetype_select_max_tokens() -> u64 {
+    32_768
+}
+const fn default_tl_brainstorm_max_tokens() -> u64 {
+    32_768
+}
+const fn default_tl_quality_gate_max_tokens() -> u64 {
+    64
+}
 
 impl Default for ThinkingLoopConfig {
     fn default() -> Self {
@@ -771,6 +847,9 @@ impl Default for ThinkingLoopConfig {
             model_tiers: ThinkingModelTiers::default(),
             oracle_timeout_secs: default_oracle_timeout_secs(),
             oracle_confidence_bonus: default_oracle_confidence_bonus(),
+            archetype_select_max_tokens: default_tl_archetype_select_max_tokens(),
+            brainstorm_max_tokens: default_tl_brainstorm_max_tokens(),
+            quality_gate_max_tokens: default_tl_quality_gate_max_tokens(),
         }
     }
 }
@@ -828,6 +907,13 @@ pub struct GapK1Config {
     pub repair_candidates: usize,
     /// TTL in seconds for coherence probe cache entries. Default: 86400 (24 h).
     pub probe_cache_ttl_secs: u64,
+    /// Max tokens for spec repair candidate generation LLM call. Default: 32768.
+    #[serde(default = "default_gap_k1_repair_max_tokens")]
+    pub repair_max_tokens: u64,
+}
+
+const fn default_gap_k1_repair_max_tokens() -> u64 {
+    32_768
 }
 
 impl Default for GapK1Config {
@@ -841,6 +927,7 @@ impl Default for GapK1Config {
             probe_runs: 5,
             repair_candidates: 3,
             probe_cache_ttl_secs: 86400,
+            repair_max_tokens: default_gap_k1_repair_max_tokens(),
         }
     }
 }
@@ -1410,6 +1497,14 @@ pub struct H2AIConfig {
     pub leader_stagnation_waves: u32,
     /// Max tokens for the leader's diagnosis re-prompt.
     pub leader_diagnosis_max_tokens: u64,
+    /// Max tokens for hallucination detection researcher call. Default: 32768.
+    pub hallucination_check_max_tokens: u64,
+    /// Max tokens for per-slot generation search grounding call. Default: 32768.
+    pub generation_search_max_tokens: u64,
+    /// Max tokens for planner decomposition LLM call. Default: 32768.
+    pub planner_decompose_max_tokens: u64,
+    /// Max tokens for planner semantic review LLM call. Default: 32768.
+    pub planner_review_max_tokens: u64,
     /// Temperature for leader diagnosis re-prompt. Range [0,1].
     pub leader_diagnosis_tau: f64,
     /// Number of EIG candidate questions generated per diagnosis round.
@@ -1969,6 +2064,10 @@ impl H2AIConfig {
             &mut self.decomposition_json_max_tokens,
             &mut self.synthesis_critique_max_tokens,
             &mut self.synthesis_max_tokens,
+            &mut self.hallucination_check_max_tokens,
+            &mut self.generation_search_max_tokens,
+            &mut self.planner_decompose_max_tokens,
+            &mut self.planner_review_max_tokens,
         ] {
             if *field == REF {
                 *field = d;
@@ -1976,6 +2075,31 @@ impl H2AIConfig {
         }
         if self.task_complexity.probe_max_tokens == REF {
             self.task_complexity.probe_max_tokens = d;
+        }
+        // ThinkingLoopConfig — archetype select and brainstorm scale; quality gate is fixed at 64
+        if self.thinking_loop.archetype_select_max_tokens == REF {
+            self.thinking_loop.archetype_select_max_tokens = d;
+        }
+        if self.thinking_loop.brainstorm_max_tokens == REF {
+            self.thinking_loop.brainstorm_max_tokens = d;
+        }
+        // SraniConfig
+        if self.srani.researcher_max_tokens == REF {
+            self.srani.researcher_max_tokens = d;
+        }
+        if self.srani.distill_max_tokens == REF {
+            self.srani.distill_max_tokens = d;
+        }
+        if self.srani.gap_synthesis_max_tokens == REF {
+            self.srani.gap_synthesis_max_tokens = d;
+        }
+        // GapK1Config
+        if self.gap_k1.repair_max_tokens == REF {
+            self.gap_k1.repair_max_tokens = d;
+        }
+        // OproConfig
+        if self.opro.max_tokens == REF {
+            self.opro.max_tokens = d;
         }
     }
 

@@ -29,6 +29,9 @@ pub enum ExitReason {
         tau_values: Vec<f64>,
     },
     OracleBlocked,
+    OraclePostSelectionBlocked {
+        evicted_winner_summary: String,
+    },
     /// correlated hallucination detected — clustered ensemble; retry with grounding.
     HallucinationDetected {
         /// Formatted `retry_context` hint to set before `continue`.
