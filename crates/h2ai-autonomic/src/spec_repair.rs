@@ -214,4 +214,3 @@ fn mean_jaccard(reasons: &[String]) -> f64 {
         sum / count as f64
     }
 }
-

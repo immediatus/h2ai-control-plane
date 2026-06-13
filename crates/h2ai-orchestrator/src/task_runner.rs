@@ -14,10 +14,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::bandit::BanditState;
-use crate::context_assembler::AssembledContext;
 use crate::context_assembler::stable_cache::StableContextCache;
+use crate::context_assembler::AssembledContext;
 use crate::decomposition::DecompositionError;
-use crate::engine::{EngineError, EngineOutput, EngineRunContext, NatsDispatchConfig, ShadowAuditCtx};
+use crate::engine::{
+    EngineError, EngineOutput, EngineRunContext, NatsDispatchConfig, ShadowAuditCtx,
+};
 use crate::induction_store::InductionStore;
 use crate::srani_grounding::SraniGroundingChain;
 use crate::tao_loop::TaoMultiplierEstimator;
@@ -105,12 +107,18 @@ pub trait ThinkingLoopRunner: Send + Sync {
 
 #[async_trait]
 pub trait Decomposer: Send + Sync {
-    async fn decompose(&self, args: DecompositionArgs) -> Result<Vec<ExplorerSlotConfig>, DecompositionError>;
+    async fn decompose(
+        &self,
+        args: DecompositionArgs,
+    ) -> Result<Vec<ExplorerSlotConfig>, DecompositionError>;
 }
 
 #[async_trait]
 pub trait EngineRunner: Send + Sync {
-    async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)>;
+    async fn run(
+        &self,
+        input: OwnedEngineInput,
+    ) -> Result<EngineOutput, (EngineError, EngineRunContext)>;
 }
 
 // ── Real (zero-field) implementations ────────────────────────────────────────
@@ -148,7 +156,10 @@ pub struct DefaultDecomposer;
 
 #[async_trait]
 impl Decomposer for DefaultDecomposer {
-    async fn decompose(&self, args: DecompositionArgs) -> Result<Vec<ExplorerSlotConfig>, DecompositionError> {
+    async fn decompose(
+        &self,
+        args: DecompositionArgs,
+    ) -> Result<Vec<ExplorerSlotConfig>, DecompositionError> {
         use crate::decomposition::{prune_by_orthogonality, run_decomposition_agent};
         let mut slots = run_decomposition_agent(
             &args.description,
@@ -179,7 +190,10 @@ pub struct DefaultEngineRunner;
 
 #[async_trait]
 impl EngineRunner for DefaultEngineRunner {
-    async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)> {
+    async fn run(
+        &self,
+        input: OwnedEngineInput,
+    ) -> Result<EngineOutput, (EngineError, EngineRunContext)> {
         use crate::engine::{EngineInput, ExecutionEngine};
         // Destructure to own all fields before borrowing any.
         let OwnedEngineInput {
@@ -317,8 +331,13 @@ mod awareness_hints_tests {
 
     #[tokio::test]
     async fn awareness_hints_field_is_stored_in_args() {
-        let runner = CapturingRunner { captured: std::sync::Mutex::new(None) };
-        let args = make_args("original task", Some("## Constraint contradiction check\nbullet".to_string()));
+        let runner = CapturingRunner {
+            captured: std::sync::Mutex::new(None),
+        };
+        let args = make_args(
+            "original task",
+            Some("## Constraint contradiction check\nbullet".to_string()),
+        );
         // The CapturingRunner stores task_description as-is from args (no mutation).
         // This test validates that ThinkingLoopArgs accepts the awareness_hints field.
         let report = runner.run(args).await;
@@ -329,7 +348,9 @@ mod awareness_hints_tests {
 
     #[tokio::test]
     async fn no_awareness_hints_field_defaults_to_none() {
-        let runner = CapturingRunner { captured: std::sync::Mutex::new(None) };
+        let runner = CapturingRunner {
+            captured: std::sync::Mutex::new(None),
+        };
         let args = make_args("original task", None);
         let report = runner.run(args).await;
         let _ = report;

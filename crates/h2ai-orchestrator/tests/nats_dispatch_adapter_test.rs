@@ -475,9 +475,7 @@ async fn dispatch_adapter_execute_uses_mock_nats() {
             required_tools: vec![],
         },
         task_timeout: Duration::from_secs(5),
-        payload_store: Arc::new(
-            h2ai_orchestrator::payload_store::MemoryPayloadStore::new(),
-        ),
+        payload_store: Arc::new(h2ai_orchestrator::payload_store::MemoryPayloadStore::new()),
         offload_threshold_bytes: 524_288,
     });
 

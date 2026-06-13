@@ -695,7 +695,10 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
     let result = ExecutionEngine::run_offline(input).await;
     assert!(result.is_err());
     assert!(
-        matches!(result.unwrap_err(), (EngineError::InsufficientQuorum { .. }, _)),
+        matches!(
+            result.unwrap_err(),
+            (EngineError::InsufficientQuorum { .. }, _)
+        ),
         "expected InsufficientQuorum when n=3 < 5 required for f=1"
     );
 }
@@ -2389,7 +2392,10 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
     };
     let result = ExecutionEngine::run_offline(input).await;
     assert!(
-        matches!(result, Err((EngineError::MultiplicationConditionFailed(_), _))),
+        matches!(
+            result,
+            Err((EngineError::MultiplicationConditionFailed(_), _))
+        ),
         "require_bivariate_cg=true with low coverage should fail, got: {result:?}"
     );
 }

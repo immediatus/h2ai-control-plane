@@ -5,8 +5,10 @@ nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
 max_autonomic_retries = 4
 
-calibration_adapter_count = 1
-calibration_max_tokens    = 256
+calibration_adapter_count   = 1
+model_max_tokens            = 8192
+evaluator_timeout_secs      = 1800
+adapter_enable_thinking     = false
 
 [safety]
 profile = "development"
@@ -21,6 +23,7 @@ name = "local-1"
 endpoint    = "http://host.docker.internal:8080/v1"
 api_key_env = "NONE"
 model       = "local"
+provider    = "llama_cpp"
 
 [[adapter_profiles]]
 name = "local-2"
@@ -28,6 +31,7 @@ name = "local-2"
 endpoint    = "http://host.docker.internal:8080/v1"
 api_key_env = "NONE"
 model       = "local"
+provider    = "llama_cpp"
 
 [[adapter_profiles]]
 name = "local-3"
@@ -35,6 +39,7 @@ name = "local-3"
 endpoint    = "http://host.docker.internal:8080/v1"
 api_key_env = "NONE"
 model       = "local"
+provider    = "llama_cpp"
 
 [[adapter_profiles]]
 name = "researcher"
@@ -42,6 +47,7 @@ name = "researcher"
 endpoint    = "http://host.docker.internal:8080/v1"
 api_key_env = "NONE"
 model       = "local"
+provider    = "llama_cpp"
 
 [[adapter_profiles]]
 name = "shadow_auditor"
@@ -49,6 +55,7 @@ name = "shadow_auditor"
 endpoint    = "http://host.docker.internal:8080/v1"
 api_key_env = "NONE"
 model       = "local"
+provider    = "llama_cpp"
 
 [hitl]
 enabled = false

@@ -12,7 +12,10 @@ fn test_synthesis_wave_disabled_by_config_skips() {
     // All waves fail → Err((MaxRetriesExhausted, ctx)) with ctx.best_partial_text == None.
     // Full integration requires live adapters — verify the unit variant and ctx shape here.
     let err = EngineError::MaxRetriesExhausted;
-    let ctx = EngineRunContext { best_partial_text: None, ..Default::default() };
+    let ctx = EngineRunContext {
+        best_partial_text: None,
+        ..Default::default()
+    };
     assert!(matches!(err, EngineError::MaxRetriesExhausted));
     assert!(ctx.best_partial_text.is_none());
 }
@@ -60,7 +63,10 @@ fn test_synthesis_wave_skipped_when_no_partials() {
     // All BranchPrunedEvents have violated_count == checks_count (zero coverage).
     // Expect: Err((MaxRetriesExhausted, ctx)) with ctx.best_partial_text == None.
     let err = EngineError::MaxRetriesExhausted;
-    let ctx = EngineRunContext { best_partial_text: None, ..Default::default() };
+    let ctx = EngineRunContext {
+        best_partial_text: None,
+        ..Default::default()
+    };
     assert!(matches!(err, EngineError::MaxRetriesExhausted));
     assert!(ctx.best_partial_text.is_none());
 }

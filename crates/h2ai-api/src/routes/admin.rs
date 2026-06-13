@@ -23,8 +23,7 @@ pub async fn reset_experiment_state(
     let cfg = &state.cfg;
 
     let tau_spread = cfg.calibration_tau_spread;
-    *ts.tau_spread_estimator.write().await =
-        TauSpreadEstimator::new(tau_spread[0], tau_spread[1]);
+    *ts.tau_spread_estimator.write().await = TauSpreadEstimator::new(tau_spread[0], tau_spread[1]);
 
     *ts.bandit_state.write().await = BanditState::new(
         cfg.bandit_n_max_initial,

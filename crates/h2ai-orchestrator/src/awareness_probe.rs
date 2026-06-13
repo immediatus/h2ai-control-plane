@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::llm_parse::{extract_first_json_array, strip_json_fences};
 use h2ai_constraints::ambiguity::{
-    score_evidence, scan_constraint, AmbiguityDetectionConfig, AmbiguityScorecard,
+    scan_constraint, score_evidence, AmbiguityDetectionConfig, AmbiguityScorecard,
 };
 use h2ai_constraints::types::{ConstraintDoc, ConstraintSeverity};
 
@@ -64,9 +64,7 @@ impl ProbeResult {
     pub fn blocking(&self) -> Vec<&ProbeOutcome> {
         self.outcomes
             .iter()
-            .filter(|o| {
-                o.verdict == ProbeVerdict::Contradicted && o.is_hard && !o.gated
-            })
+            .filter(|o| o.verdict == ProbeVerdict::Contradicted && o.is_hard && !o.gated)
             .collect()
     }
 
@@ -119,7 +117,9 @@ pub fn is_ambiguity_gated(doc: &ConstraintDoc, cfg: &AmbiguityDetectionConfig) -
         let updated = score_evidence(card, evidence, cfg);
         *card = updated;
     }
-    by_check.values().any(|card| card.score >= cfg.score_threshold)
+    by_check
+        .values()
+        .any(|card| card.score >= cfg.score_threshold)
 }
 
 // ── Probe item builder ─────────────────────────────────────────────────────────
@@ -136,12 +136,11 @@ pub fn build_probe_items(
         .iter()
         .filter(|doc| !matches!(doc.severity, ConstraintSeverity::Advisory))
         .map(|doc| {
-            let severity_label =
-                if matches!(doc.severity, ConstraintSeverity::Hard { .. }) {
-                    "Hard"
-                } else {
-                    "Soft"
-                };
+            let severity_label = if matches!(doc.severity, ConstraintSeverity::Hard { .. }) {
+                "Hard"
+            } else {
+                "Soft"
+            };
             let criteria = doc.pass_criteria.as_deref().unwrap_or(&doc.description);
             let text = format!(
                 "[{}] ({})\n{}\nPASS CRITERIA: {}",
@@ -201,7 +200,10 @@ impl LlmAwarenessJudge {
         adapter: std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>,
         max_tokens: u64,
     ) -> Self {
-        Self { adapter, max_tokens }
+        Self {
+            adapter,
+            max_tokens,
+        }
     }
 }
 
@@ -293,8 +295,12 @@ pub async fn run_awareness_probe(
     let mut judged = vec![false; items.len()];
 
     for v in &verdicts {
-        let Some(item) = items.get(v.idx) else { continue }; // out-of-range idx dropped
-        if judged[v.idx] { continue } // drop duplicate idx silently
+        let Some(item) = items.get(v.idx) else {
+            continue;
+        }; // out-of-range idx dropped
+        if judged[v.idx] {
+            continue;
+        } // drop duplicate idx silently
         judged[v.idx] = true;
         outcomes.push(ProbeOutcome {
             constraint_id: item.constraint_id.clone(),
@@ -413,15 +419,27 @@ mod tests {
         let docs = vec![hard_doc("C-1", "p"), soft_doc("C-2", "q")];
         let cfg = AmbiguityDetectionConfig::default();
         let items = build_probe_items(&docs, &cfg);
-        assert!(items.iter().find(|i| i.constraint_id == "C-1").unwrap().is_hard);
-        assert!(!items.iter().find(|i| i.constraint_id == "C-2").unwrap().is_hard);
+        assert!(
+            items
+                .iter()
+                .find(|i| i.constraint_id == "C-1")
+                .unwrap()
+                .is_hard
+        );
+        assert!(
+            !items
+                .iter()
+                .find(|i| i.constraint_id == "C-2")
+                .unwrap()
+                .is_hard
+        );
     }
 
     #[test]
     fn build_items_falls_back_to_description_when_no_pass_criteria() {
         let doc = no_pass_criteria_doc("C-1");
         let cfg = AmbiguityDetectionConfig::default();
-        let items = build_probe_items(&[doc.clone()], &cfg);
+        let items = build_probe_items(std::slice::from_ref(&doc), &cfg);
         assert_eq!(items.len(), 1);
         // text must contain the description (used as fallback)
         assert!(items[0].text.contains(&doc.description));
@@ -526,8 +544,10 @@ mod tests {
     fn is_ambiguity_gated_disabled_config_never_gates() {
         // When ambiguity detection is disabled, no constraint should be gated
         // regardless of its binary_checks content.
-        let mut cfg = AmbiguityDetectionConfig::default();
-        cfg.enabled = false;
+        let cfg = AmbiguityDetectionConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let doc = hard_doc("C-1", "use atomic lua");
         // Even a doc with many binary_checks should not be gated when disabled.
         assert!(!is_ambiguity_gated(&doc, &cfg));
@@ -538,13 +558,23 @@ mod tests {
         // Finding #4: CONSTRAINT-005-shaped constraint (MultiStorageConflict +
         // FmTermNegation + RemediationConflict on check 0) must surface as gated: true
         // so it can never trigger re-iteration even in active mode.
-        let docs = vec![hard_doc("C-1", "use atomic lua"), ambiguous_hard_doc("C-AMB")];
+        let docs = vec![
+            hard_doc("C-1", "use atomic lua"),
+            ambiguous_hard_doc("C-AMB"),
+        ];
         let cfg = enabled_ambiguity_cfg();
         let items = build_probe_items(&docs, &cfg);
-        assert_eq!(items.len(), 2, "advisory exclusion must not affect non-advisory docs");
+        assert_eq!(
+            items.len(),
+            2,
+            "advisory exclusion must not affect non-advisory docs"
+        );
         let plain = items.iter().find(|i| i.constraint_id == "C-1").unwrap();
         let gated = items.iter().find(|i| i.constraint_id == "C-AMB").unwrap();
-        assert!(!plain.gated, "non-ambiguous hard constraint must not be gated");
+        assert!(
+            !plain.gated,
+            "non-ambiguous hard constraint must not be gated"
+        );
         assert!(
             gated.gated,
             "CONSTRAINT-005-shaped constraint must be gated (finding #4 safety invariant)"
@@ -586,7 +616,9 @@ mod tests {
 
     #[tokio::test]
     async fn probe_empty_items_returns_clean_result() {
-        let judge = MockAwarenessJudge { verdicts: Some(vec![]) };
+        let judge = MockAwarenessJudge {
+            verdicts: Some(vec![]),
+        };
         let result = run_awareness_probe("understanding", &[], &judge).await;
         assert_eq!(result.n_items, 0);
         assert_eq!(result.n_unjudged, 0);
@@ -731,7 +763,9 @@ mod tests {
 
     #[tokio::test]
     async fn probe_empty_verdicts_for_non_empty_items_degrades() {
-        let judge = MockAwarenessJudge { verdicts: Some(vec![]) };
+        let judge = MockAwarenessJudge {
+            verdicts: Some(vec![]),
+        };
         let result = run_awareness_probe("understanding", &make_items(3), &judge).await;
         assert!(result.degraded);
         assert_eq!(result.n_unjudged, 3);
@@ -750,10 +784,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl h2ai_types::adapter::IComputeAdapter for FakeAdapter {
-            async fn execute(
-                &self,
-                _req: ComputeRequest,
-            ) -> Result<ComputeResponse, AdapterError> {
+            async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
                 Ok(ComputeResponse {
                     output: self.response.clone(),
                     token_cost: 0,
@@ -767,7 +798,8 @@ mod tests {
             }
         }
 
-        let response_text = r#"[{"idx":0,"rationale":"plan mentions Lua atomicity","verdict":"ACKNOWLEDGED"}]"#;
+        let response_text =
+            r#"[{"idx":0,"rationale":"plan mentions Lua atomicity","verdict":"ACKNOWLEDGED"}]"#;
         let adapter = std::sync::Arc::new(FakeAdapter {
             response: response_text.to_string(),
             kind: AdapterKind::CloudGeneric {
@@ -801,10 +833,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl h2ai_types::adapter::IComputeAdapter for FailAdapter {
-            async fn execute(
-                &self,
-                _req: ComputeRequest,
-            ) -> Result<ComputeResponse, AdapterError> {
+            async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
                 Err(AdapterError::Timeout)
             }
             fn kind(&self) -> &AdapterKind {
@@ -848,10 +877,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl h2ai_types::adapter::IComputeAdapter for CapturingAdapter {
-            async fn execute(
-                &self,
-                req: ComputeRequest,
-            ) -> Result<ComputeResponse, AdapterError> {
+            async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
                 *self.captured.lock().unwrap() = Some(req);
                 Ok(ComputeResponse {
                     output: "[]".to_string(),
@@ -886,11 +912,28 @@ mod tests {
         }];
         let _ = judge.judge("the plan text", &items).await;
 
-        let req = capturing.captured.lock().unwrap().take().expect("adapter must be called");
-        assert!(req.task.contains("PLAN:\nthe plan text"), "task must start with PLAN:");
-        assert!(req.task.contains("CONSTRAINTS:\n"), "task must contain CONSTRAINTS:");
-        assert!(req.task.contains("use atomic Lua"), "task must contain constraint text");
-        assert_eq!(req.max_tokens, 2048, "max_tokens must match constructor arg");
+        let req = capturing
+            .captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("adapter must be called");
+        assert!(
+            req.task.contains("PLAN:\nthe plan text"),
+            "task must start with PLAN:"
+        );
+        assert!(
+            req.task.contains("CONSTRAINTS:\n"),
+            "task must contain CONSTRAINTS:"
+        );
+        assert!(
+            req.task.contains("use atomic Lua"),
+            "task must contain constraint text"
+        );
+        assert_eq!(
+            req.max_tokens, 2048,
+            "max_tokens must match constructor arg"
+        );
         // tau = 0.1 (deterministic classification)
         assert!((req.tau.value() - 0.1_f64).abs() < 1e-9, "tau must be 0.1");
     }

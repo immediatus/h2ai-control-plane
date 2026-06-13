@@ -358,10 +358,7 @@ impl SkillStore for InMemoryStateBackend {
         Ok(())
     }
 
-    async fn get_skill_nodes(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<u8>, NatsError> {
+    async fn get_skill_nodes(&self, tenant_id: &TenantId) -> Result<Vec<u8>, NatsError> {
         Ok(self
             .skill_nodes
             .read()
@@ -490,14 +487,20 @@ impl SignalSubscriber for InMemoryStateBackend {
         _task_id: &TaskId,
         _tenant_id: &TenantId,
     ) -> Result<
-        futures::stream::BoxStream<'static, Result<h2ai_types::signal::ResumeSignal, crate::nats::NatsError>>,
+        futures::stream::BoxStream<
+            'static,
+            Result<h2ai_types::signal::ResumeSignal, crate::nats::NatsError>,
+        >,
         crate::nats::NatsError,
     > {
         use futures::stream;
         Ok(Box::pin(stream::empty()))
     }
 
-    async fn delete_signal_consumer(&self, _task_id: &TaskId) -> Result<(), crate::nats::NatsError> {
+    async fn delete_signal_consumer(
+        &self,
+        _task_id: &TaskId,
+    ) -> Result<(), crate::nats::NatsError> {
         Ok(())
     }
 }
@@ -520,7 +523,12 @@ impl ShadowDomainStore for InMemoryStateBackend {
 #[async_trait]
 impl TaskCheckpointStore for InMemoryStateBackend {
     async fn list_task_checkpoints(&self) -> Vec<TaskCheckpoint> {
-        self.task_checkpoints.read().await.values().cloned().collect()
+        self.task_checkpoints
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
     }
 
     async fn put_task_checkpoint(
@@ -560,7 +568,10 @@ mod tests {
         let tenant = TenantId::default_tenant();
         let bytes = b"[\"skill-node-json\"]".to_vec();
 
-        backend.put_skill_nodes(&tenant, bytes.clone()).await.unwrap();
+        backend
+            .put_skill_nodes(&tenant, bytes.clone())
+            .await
+            .unwrap();
         let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
         assert_eq!(loaded, bytes);
     }

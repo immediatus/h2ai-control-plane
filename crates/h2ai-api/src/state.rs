@@ -8,7 +8,7 @@ use h2ai_knowledge::skill_provider::{CompositeProvider, SkillProvider};
 use h2ai_orchestrator::payload_store::{MemoryPayloadStore, PayloadStore};
 use h2ai_orchestrator::session_journal::SessionJournal;
 use h2ai_orchestrator::task_runner::{
-    DefaultDecomposer, DefaultEngineRunner, DefaultThinkingLoopRunner, Decomposer, EngineRunner,
+    Decomposer, DefaultDecomposer, DefaultEngineRunner, DefaultThinkingLoopRunner, EngineRunner,
     ThinkingLoopRunner,
 };
 use h2ai_orchestrator::task_store::TaskStore;
@@ -141,8 +141,9 @@ impl AppState {
         let raw_client = nats.client.clone();
         let nats_arc = Arc::new(nats);
         let snapshot_interval = cfg.snapshot_interval_events;
-        let journal =
-            Arc::new(SessionJournal::new(nats_arc.clone()).with_snapshot_interval(snapshot_interval));
+        let journal = Arc::new(
+            SessionJournal::new(nats_arc.clone()).with_snapshot_interval(snapshot_interval),
+        );
         let task_dispatch: Arc<dyn TaskDispatchBackend> = nats_arc.clone();
         let nats_concrete = nats_arc.clone();
         let nats: Arc<dyn NatsBackend> = nats_arc;
@@ -178,12 +179,16 @@ impl AppState {
         let skill_provider = SkillProvider::new();
         let knowledge_provider = {
             use h2ai_knowledge::provider::PassthroughProvider;
-            let base: Arc<dyn KnowledgeProvider> =
-                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(".")));
-            CompositeProvider::new(vec![
-                base,
-                Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
-            ], cfg.knowledge_domain_scoping)
+            let base: Arc<dyn KnowledgeProvider> = Arc::new(PassthroughProvider::new_from_path(
+                std::path::Path::new("."),
+            ));
+            CompositeProvider::new(
+                vec![
+                    base,
+                    Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
+                ],
+                cfg.knowledge_domain_scoping,
+            )
         };
         Self {
             nats: Some(nats),
@@ -244,12 +249,16 @@ impl AppState {
         ));
         let skill_provider = SkillProvider::new();
         let knowledge_provider = {
-            let base: Arc<dyn KnowledgeProvider> =
-                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(".")));
-            CompositeProvider::new(vec![
-                base,
-                Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
-            ], cfg.knowledge_domain_scoping)
+            let base: Arc<dyn KnowledgeProvider> = Arc::new(PassthroughProvider::new_from_path(
+                std::path::Path::new("."),
+            ));
+            CompositeProvider::new(
+                vec![
+                    base,
+                    Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
+                ],
+                cfg.knowledge_domain_scoping,
+            )
         };
         Self {
             nats: None,

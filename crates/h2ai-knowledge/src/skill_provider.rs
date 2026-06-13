@@ -33,22 +33,34 @@ impl SkillProvider {
     }
 
     pub fn push_all(&self, new_nodes: Vec<KnowledgeNode>) {
-        self.nodes.write().expect("SkillProvider nodes lock poisoned").extend(new_nodes);
+        self.nodes
+            .write()
+            .expect("SkillProvider nodes lock poisoned")
+            .extend(new_nodes);
     }
 
     pub fn len(&self) -> usize {
-        self.nodes.read().expect("SkillProvider nodes lock poisoned").len()
+        self.nodes
+            .read()
+            .expect("SkillProvider nodes lock poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.nodes.read().expect("SkillProvider nodes lock poisoned").is_empty()
+        self.nodes
+            .read()
+            .expect("SkillProvider nodes lock poisoned")
+            .is_empty()
     }
 }
 
 #[async_trait]
 impl KnowledgeProvider for SkillProvider {
     async fn query(&self, query: &KnowledgeQuery<'_>) -> KnowledgeResult {
-        let nodes = self.nodes.read().expect("SkillProvider nodes lock poisoned");
+        let nodes = self
+            .nodes
+            .read()
+            .expect("SkillProvider nodes lock poisoned");
         let mut results: Vec<(KnowledgeNode, f32)> = nodes
             .iter()
             .filter(|n| query.depths.contains(&n.depth))
@@ -96,13 +108,11 @@ pub(crate) fn scope_by_domains(
     if tags.is_empty() {
         return nodes;
     }
-    let tag_set: std::collections::HashSet<&str> =
-        tags.iter().map(String::as_str).collect();
+    let tag_set: std::collections::HashSet<&str> = tags.iter().map(String::as_str).collect();
     let filtered: Vec<_> = nodes
         .iter()
         .filter(|(n, _)| {
-            n.domains.is_empty()
-                || n.domains.iter().any(|d| tag_set.contains(d.as_str()))
+            n.domains.is_empty() || n.domains.iter().any(|d| tag_set.contains(d.as_str()))
         })
         .cloned()
         .collect();
@@ -138,8 +148,14 @@ impl CompositeProvider {
     /// Skips Synthetic nodes — they document failures, not guidance.
     /// Delta is accumulated and capped at 0.9 per node.
     pub fn record_violations(&self, node_ids: &[String], delta: f32) {
-        let cache = self.source_cache.read().expect("source_cache lock poisoned");
-        let mut map = self.violation_map.write().expect("violation_map lock poisoned");
+        let cache = self
+            .source_cache
+            .read()
+            .expect("source_cache lock poisoned");
+        let mut map = self
+            .violation_map
+            .write()
+            .expect("violation_map lock poisoned");
         for id in node_ids {
             if cache.get(id.as_str()).copied().unwrap_or(false) {
                 continue; // Synthetic node — exempt
@@ -161,7 +177,8 @@ impl CompositeProvider {
     }
 
     fn penalised_score(&self, node_id: &str, score: f32) -> f32 {
-        let penalty = self.violation_map
+        let penalty = self
+            .violation_map
             .read()
             .expect("violation_map lock poisoned")
             .get(node_id)
@@ -211,9 +228,13 @@ impl KnowledgeProvider for CompositeProvider {
         nodes.truncate(query.top_k);
 
         {
-            let mut cache = self.source_cache.write().expect("source_cache lock poisoned");
+            let mut cache = self
+                .source_cache
+                .write()
+                .expect("source_cache lock poisoned");
             for (node, _) in &nodes {
-                cache.entry(node.id.clone())
+                cache
+                    .entry(node.id.clone())
                     .or_insert(matches!(node.source, NodeSource::Synthetic));
             }
         }
@@ -283,7 +304,11 @@ mod tests {
     #[tokio::test]
     async fn domain_tag_match_returns_node_with_nonzero_score() {
         let provider = SkillProvider::new();
-        provider.push_all(vec![skill_node("s1", &["auth"], "auth token validation failed")]);
+        provider.push_all(vec![skill_node(
+            "s1",
+            &["auth"],
+            "auth token validation failed",
+        )]);
         let tags: Vec<String> = vec!["auth".into()];
         let result = provider.query(&make_query("auth", &tags)).await;
         assert_eq!(result.nodes.len(), 1);
@@ -470,7 +495,11 @@ mod tests {
             expand_hops: 0,
         };
         let result = provider.query(&query).await;
-        assert_eq!(result.nodes.len(), 1, "Topic node must be returned when depths includes Topic");
+        assert_eq!(
+            result.nodes.len(),
+            1,
+            "Topic node must be returned when depths includes Topic"
+        );
     }
 
     #[tokio::test]
@@ -493,7 +522,10 @@ mod tests {
         provider.push_all(vec![node]);
         let tags: Vec<String> = vec!["auth".into()];
         let result = provider.query(&make_query("auth", &tags)).await; // make_query uses LEAF depths
-        assert!(result.nodes.is_empty(), "Topic node must NOT be returned when depths is [Leaf]");
+        assert!(
+            result.nodes.is_empty(),
+            "Topic node must NOT be returned when depths is [Leaf]"
+        );
     }
 
     #[tokio::test]
@@ -501,7 +533,9 @@ mod tests {
         let wiki_node = KnowledgeNode {
             id: "wiki-1".to_string(),
             depth: NodeDepth::Leaf,
-            source: NodeSource::WikiYaml { path: "auth.yaml".to_string() },
+            source: NodeSource::WikiYaml {
+                path: "auth.yaml".to_string(),
+            },
             domains: vec!["auth".to_string()],
             synthesis: "auth wiki guidance".to_string(),
             failure_modes: vec![],
@@ -517,15 +551,25 @@ mod tests {
 
         // First query — populates source_cache
         let tags: Vec<String> = vec!["auth".into()];
-        let s0 = composite.query(&make_query("auth guidance", &tags)).await
-            .nodes.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let s0 = composite
+            .query(&make_query("auth guidance", &tags))
+            .await
+            .nodes
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
 
         // Apply one violation delta
         composite.record_violations(&["wiki-1".to_string()], 0.1);
 
         // Second query — score should be reduced by factor (1 - 0.1) = 0.9
-        let s1 = composite.query(&make_query("auth guidance", &tags)).await
-            .nodes.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let s1 = composite
+            .query(&make_query("auth guidance", &tags))
+            .await
+            .nodes
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
 
         assert!(s1 < s0, "penalised score must be lower: s0={s0} s1={s1}");
         let expected = s0 * 0.9;
@@ -556,14 +600,24 @@ mod tests {
 
         let tags: Vec<String> = vec!["auth".into()];
         // Populate source_cache via query
-        let s0 = composite.query(&make_query("auth", &tags)).await
-            .nodes.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let s0 = composite
+            .query(&make_query("auth", &tags))
+            .await
+            .nodes
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
 
         // Attempt to penalise the synthetic node — must be no-op
         composite.record_violations(&["skill-1".to_string()], 0.1);
 
-        let s1 = composite.query(&make_query("auth", &tags)).await
-            .nodes.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let s1 = composite
+            .query(&make_query("auth", &tags))
+            .await
+            .nodes
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
 
         assert!(
             (s1 - s0).abs() < 1e-5,
@@ -621,7 +675,9 @@ mod tests {
         let wiki_node = KnowledgeNode {
             id: "wiki-cap".to_string(),
             depth: NodeDepth::Leaf,
-            source: NodeSource::WikiYaml { path: "x.yaml".to_string() },
+            source: NodeSource::WikiYaml {
+                path: "x.yaml".to_string(),
+            },
             domains: vec!["auth".to_string()],
             synthesis: "auth".to_string(),
             failure_modes: vec![],
@@ -636,16 +692,26 @@ mod tests {
         let composite = CompositeProvider::new(vec![p], false);
 
         let tags: Vec<String> = vec!["auth".into()];
-        let s0 = composite.query(&make_query("auth", &tags)).await
-            .nodes.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let s0 = composite
+            .query(&make_query("auth", &tags))
+            .await
+            .nodes
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
 
         // Apply 20 violations — penalty must cap at 0.9
         for _ in 0..20 {
             composite.record_violations(&["wiki-cap".to_string()], 0.1);
         }
 
-        let s_final = composite.query(&make_query("auth", &tags)).await
-            .nodes.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let s_final = composite
+            .query(&make_query("auth", &tags))
+            .await
+            .nodes
+            .first()
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
 
         let min_allowed = s0 * 0.1;
         assert!(
@@ -664,20 +730,23 @@ mod scope_by_domains_tests {
     use super::*;
 
     fn node(id: &str, domains: &[&str]) -> (KnowledgeNode, f32) {
-        (KnowledgeNode {
-            id: id.to_string(),
-            depth: crate::types::NodeDepth::Leaf,
-            synthesis: id.to_string(),
-            invariants: vec![],
-            failure_modes: vec![],
-            domains: domains.iter().map(|s| s.to_string()).collect(),
-            entry_points: vec![],
-            tensions: vec![],
-            cross_references: vec![],
-            related: vec![],
-            source: crate::types::NodeSource::Synthetic,
-            importance: 0.5,
-        }, 0.8)
+        (
+            KnowledgeNode {
+                id: id.to_string(),
+                depth: crate::types::NodeDepth::Leaf,
+                synthesis: id.to_string(),
+                invariants: vec![],
+                failure_modes: vec![],
+                domains: domains.iter().map(|s| s.to_string()).collect(),
+                entry_points: vec![],
+                tensions: vec![],
+                cross_references: vec![],
+                related: vec![],
+                source: crate::types::NodeSource::Synthetic,
+                importance: 0.5,
+            },
+            0.8,
+        )
     }
 
     #[test]
@@ -689,7 +758,10 @@ mod scope_by_domains_tests {
 
     #[test]
     fn filters_off_domain_node() {
-        let nodes = vec![node("auth-node", &["auth"]), node("billing-node", &["billing"])];
+        let nodes = vec![
+            node("auth-node", &["auth"]),
+            node("billing-node", &["billing"]),
+        ];
         let result = scope_by_domains(nodes, &["billing".to_string()]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0.id, "billing-node");
@@ -724,11 +796,18 @@ mod scope_by_domains_tests {
     fn scoping_disabled_no_change() {
         // When domain_scoping flag is false, CompositeProvider must return identical
         // node sets regardless of query.tags — this is the no-regression guarantee.
-        let nodes = vec![node("auth-node", &["auth"]), node("billing-node", &["billing"])];
+        let nodes = vec![
+            node("auth-node", &["auth"]),
+            node("billing-node", &["billing"]),
+        ];
         // scope_by_domains is the pure function; flag=false means it is never called.
         // Verify the pure function itself passes through when tags is empty (the guard path).
         let result = scope_by_domains(nodes.clone(), &[]);
-        assert_eq!(result.len(), 2, "empty tags → no filtering → both nodes returned");
+        assert_eq!(
+            result.len(),
+            2,
+            "empty tags → no filtering → both nodes returned"
+        );
     }
 
     #[test]
@@ -738,10 +817,16 @@ mod scope_by_domains_tests {
         let mut skill_node = node("skill:t1:billing:topic", &["billing"]);
         skill_node.0.source = crate::types::NodeSource::Synthetic;
         let mut wiki_node = node("wiki:auth", &["auth"]);
-        wiki_node.0.source = crate::types::NodeSource::WikiYaml { path: "auth.yaml".into() };
+        wiki_node.0.source = crate::types::NodeSource::WikiYaml {
+            path: "auth.yaml".into(),
+        };
         let nodes = vec![skill_node, wiki_node];
         let result = scope_by_domains(nodes, &["billing".to_string()]);
-        assert_eq!(result.len(), 1, "only billing-domain skill node must survive");
+        assert_eq!(
+            result.len(),
+            1,
+            "only billing-domain skill node must survive"
+        );
         assert_eq!(result[0].0.id, "skill:t1:billing:topic");
     }
 }

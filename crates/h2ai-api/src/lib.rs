@@ -36,7 +36,6 @@
 pub mod bootstrap;
 pub mod debug_record;
 pub mod error;
-pub mod task_pipeline;
 pub mod metrics;
 pub mod opro;
 pub mod oracle;
@@ -46,4 +45,5 @@ pub mod rho_ema;
 pub mod routes;
 pub mod shadow_auditor;
 pub mod state;
+pub mod task_pipeline;
 pub mod tenant_registry;

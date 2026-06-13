@@ -109,12 +109,8 @@ impl KnowledgeProviderFactory {
             ProviderKind::Passthrough => match &cfg.source {
                 SourceKind::YamlDir { path } => Arc::new(PassthroughProvider::new_from_path(path)),
             },
-            ProviderKind::Skill => {
-                crate::skill_provider::SkillProvider::new()
-            }
-            ProviderKind::Composite => {
-                crate::skill_provider::CompositeProvider::new(vec![], false)
-            }
+            ProviderKind::Skill => crate::skill_provider::SkillProvider::new(),
+            ProviderKind::Composite => crate::skill_provider::CompositeProvider::new(vec![], false),
         }
     }
 

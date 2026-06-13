@@ -732,10 +732,7 @@ impl NatsClient {
         Ok(())
     }
 
-    pub async fn get_skill_nodes(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<u8>, NatsError> {
+    pub async fn get_skill_nodes(&self, tenant_id: &TenantId) -> Result<Vec<u8>, NatsError> {
         let kv = self
             .jetstream
             .get_key_value(&self.state_cfg.skills_bucket)
@@ -2117,7 +2114,8 @@ impl crate::backend::ConflictStore for NatsClient {
         tenant_id: &TenantId,
         bucket_prefix: &str,
     ) -> Result<(), NatsError> {
-        self.ensure_tenant_conflict_bucket(tenant_id, bucket_prefix).await
+        self.ensure_tenant_conflict_bucket(tenant_id, bucket_prefix)
+            .await
     }
 
     async fn get_conflict_accumulator(
@@ -2210,10 +2208,7 @@ impl crate::backend::SkillStore for NatsClient {
         NatsClient::put_skill_nodes(self, tenant_id, json_bytes).await
     }
 
-    async fn get_skill_nodes(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<u8>, NatsError> {
+    async fn get_skill_nodes(&self, tenant_id: &TenantId) -> Result<Vec<u8>, NatsError> {
         NatsClient::get_skill_nodes(self, tenant_id).await
     }
 }

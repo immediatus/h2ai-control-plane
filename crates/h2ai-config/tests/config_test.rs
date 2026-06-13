@@ -176,6 +176,63 @@ fn load_layered_override_changes_only_specified_field() {
     );
 }
 
+#[test]
+fn model_max_tokens_cascades_to_peer_fields() {
+    let mut tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+    writeln!(tmp, "model_max_tokens = 8192").unwrap();
+    let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();
+    assert_eq!(cfg.model_max_tokens, 8192);
+    assert_eq!(
+        cfg.explorer_max_tokens, 8192,
+        "explorer_max_tokens should cascade"
+    );
+    assert_eq!(
+        cfg.evaluator_max_tokens, 8192,
+        "evaluator_max_tokens should cascade"
+    );
+    assert_eq!(
+        cfg.calibration_max_tokens, 8192,
+        "calibration_max_tokens should cascade"
+    );
+    assert_eq!(
+        cfg.decomposition_step_max_tokens, 8192,
+        "decomposition_step_max_tokens should cascade"
+    );
+    assert_eq!(
+        cfg.decomposition_json_max_tokens, 8192,
+        "decomposition_json_max_tokens should cascade"
+    );
+    assert_eq!(
+        cfg.synthesis_critique_max_tokens, 8192,
+        "synthesis_critique_max_tokens should cascade"
+    );
+    assert_eq!(
+        cfg.synthesis_max_tokens, 8192,
+        "synthesis_max_tokens should cascade"
+    );
+    // Intentional exceptions must NOT cascade
+    assert_eq!(
+        cfg.leader_diagnosis_max_tokens, 128,
+        "leader_diagnosis_max_tokens must not cascade"
+    );
+}
+
+#[test]
+fn model_max_tokens_cascade_does_not_override_explicit_field() {
+    let mut tmp = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+    writeln!(
+        tmp,
+        "model_max_tokens = 8192\ncalibration_max_tokens = 2048"
+    )
+    .unwrap();
+    let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();
+    assert_eq!(
+        cfg.calibration_max_tokens, 2048,
+        "explicit field override must not be clobbered"
+    );
+    assert_eq!(cfg.explorer_max_tokens, 8192, "unset peer must cascade");
+}
+
 /// RAII guard: sets an env var on construction, removes it on drop (even on panic).
 struct EnvGuard(&'static str);
 impl EnvGuard {

@@ -1373,6 +1373,8 @@ pub struct H2AIConfig {
     pub model_max_tokens: u64,
     /// Maximum tokens per explorer generation call.
     pub explorer_max_tokens: u64,
+    /// Maximum tokens per evaluator (verifier LLM judge) call.
+    pub evaluator_max_tokens: u64,
     /// Maximum tokens per calibration probe call.
     pub calibration_max_tokens: u64,
     /// Maximum tokens for decomposition steps 1 and 2 (analysis + role design).
@@ -1389,6 +1391,11 @@ pub struct H2AIConfig {
     pub calibration_tau: f64,
     /// Initial verification pass threshold applied to each proposal's aggregate compliance score. Range [0, 1].
     pub verify_threshold: f64,
+    /// Per-LlmJudge call timeout in seconds. Applies to each parallel verifier LLM call.
+    /// For local single-slot LLMs, set this to `n_explorers × (model_max_tokens / tok_per_sec)`
+    /// so queued calls don't expire while waiting for earlier calls to finish. Default: 600.
+    #[serde(default = "default_evaluator_timeout_secs")]
+    pub evaluator_timeout_secs: u64,
     /// Step size for `verify_threshold` reduction suggestions from the self-optimizer. Range (0, 1).
     pub optimizer_threshold_step: f64,
     /// Floor for `verify_threshold` reductions; the threshold never drops below this value.
@@ -1818,6 +1825,10 @@ const fn default_oracle_ece_alert_threshold() -> f64 {
 const fn default_oracle_pass_rate_floor() -> f64 {
     0.30
 }
+const fn default_evaluator_timeout_secs() -> u64 {
+    600
+}
+
 const fn default_verifier_consensus_passes() -> u8 {
     1
 }
@@ -1937,6 +1948,37 @@ impl Default for H2AIConfig {
 }
 
 impl H2AIConfig {
+    /// Propagate `model_max_tokens` to all peer generation-budget fields that still
+    /// hold the reference default (32 768).  Call once after `try_deserialize()`.
+    ///
+    /// Intentional non-cascade fields:
+    /// - `leader_diagnosis_max_tokens` (128 — single Socratic question)
+    /// - `calibration_probe.max_tokens` (512 — short structure probe)
+    /// - `awareness_probe.judge_max_tokens` (1 024 — batched constraint judge)
+    fn apply_model_max_tokens(&mut self) {
+        const REF: u64 = 32_768;
+        if self.model_max_tokens == REF {
+            return;
+        }
+        let d = self.model_max_tokens;
+        for field in [
+            &mut self.explorer_max_tokens,
+            &mut self.evaluator_max_tokens,
+            &mut self.calibration_max_tokens,
+            &mut self.decomposition_step_max_tokens,
+            &mut self.decomposition_json_max_tokens,
+            &mut self.synthesis_critique_max_tokens,
+            &mut self.synthesis_max_tokens,
+        ] {
+            if *field == REF {
+                *field = d;
+            }
+        }
+        if self.task_complexity.probe_max_tokens == REF {
+            self.task_complexity.probe_max_tokens = d;
+        }
+    }
+
     /// Emits `tracing::warn`! for every command in `shell_hardened_allowlist` that is
     /// absent from `shell_allowlist` (when `shell_allowlist` is non-empty).
     /// Does NOT abort — the process boots with the contradiction in place.
@@ -1989,6 +2031,7 @@ impl H2AIConfig {
 
         let mut cfg: Self = builder.build()?.try_deserialize()?;
         apply_safety_profile(&mut cfg);
+        cfg.apply_model_max_tokens();
         cfg.validate_shell_allowlist_subset();
         Ok(cfg)
     }

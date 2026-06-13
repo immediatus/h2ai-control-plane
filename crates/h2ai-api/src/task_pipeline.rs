@@ -9,7 +9,7 @@ use h2ai_orchestrator::engine::{EngineError, NatsDispatchConfig, ShadowAuditCtx}
 use h2ai_orchestrator::session_journal::SessionJournal;
 use h2ai_orchestrator::skill_extractor::{skill_from_output, skill_from_retry_events};
 use h2ai_orchestrator::task_runner::{
-    DecompositionArgs, Decomposer, EngineRunner, OwnedEngineInput, ThinkingLoopArgs,
+    Decomposer, DecompositionArgs, EngineRunner, OwnedEngineInput, ThinkingLoopArgs,
     ThinkingLoopRunner,
 };
 use h2ai_orchestrator::task_store::TaskStore;
@@ -107,7 +107,8 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
     let probe_task_description = input.manifest.description.clone();
     let probe_constraint_ids: Vec<String> = input.corpus.iter().map(|c| c.id.clone()).collect();
     let probe_constraint_tags = thinking_constraint_tags.clone();
-    let probe_knowledge_provider = Some(Arc::clone(&input.knowledge_provider) as Arc<dyn KnowledgeProvider>);
+    let probe_knowledge_provider =
+        Some(Arc::clone(&input.knowledge_provider) as Arc<dyn KnowledgeProvider>);
     let probe_n_archetypes = input.cfg.thinking_loop.max_archetypes;
     let probe_cfg = input.cfg.thinking_loop.clone();
     let probe_adapter = input.adapter_pool[0].clone();
@@ -138,8 +139,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         && !input.corpus.is_empty()
         && !thinking_report.shared_understanding.is_empty()
     {
-        let probe_items =
-            build_probe_items(&input.corpus, &input.cfg.ambiguity_detection);
+        let probe_items = build_probe_items(&input.corpus, &input.cfg.ambiguity_detection);
 
         let (probe_result, re_iterated) = if probe_items.is_empty() {
             // Advisory-only corpus: no judge call, empty result.
@@ -187,7 +187,11 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         };
 
         // Warn on CONTRADICTED verdicts (both shadow and active modes).
-        for outcome in probe_result.outcomes.iter().filter(|o| o.verdict == ProbeVerdict::Contradicted) {
+        for outcome in probe_result
+            .outcomes
+            .iter()
+            .filter(|o| o.verdict == ProbeVerdict::Contradicted)
+        {
             tracing::warn!(
                 task_id = %task_id,
                 constraint_id = %outcome.constraint_id,
@@ -315,7 +319,9 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
     };
 
     // ── Stage 3: Build OwnedEngineInput ──────────────────────────────────────
-    let use_adversarial = slot_configs.iter().any(|s| !s.rejection_criteria.is_empty());
+    let use_adversarial = slot_configs
+        .iter()
+        .any(|s| !s.rejection_criteria.is_empty());
     let calibration_source_for_attr = calibration_clone.calibration_source;
     let conformal_margin = input.drift_monitor.lock().await.active_conformal_margin();
 
@@ -360,6 +366,8 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         verification_config: if use_adversarial {
             VerificationConfig {
                 threshold: input.cfg.verify_threshold,
+                evaluator_max_tokens: input.cfg.evaluator_max_tokens,
+                evaluator_timeout_secs: input.cfg.evaluator_timeout_secs,
                 evaluator_system_prompt: ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT.into(),
                 record_adversarial_comparison: input.manifest.measure_verifier_ab,
                 ..VerificationConfig::default()
@@ -367,6 +375,8 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         } else {
             VerificationConfig {
                 threshold: input.cfg.verify_threshold,
+                evaluator_max_tokens: input.cfg.evaluator_max_tokens,
+                evaluator_timeout_secs: input.cfg.evaluator_timeout_secs,
                 record_adversarial_comparison: input.manifest.measure_verifier_ab,
                 ..VerificationConfig::default()
             }
@@ -393,7 +403,9 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         prev_assembled_contexts: Vec::new(),
         compression_adapter: None,
         stable_cache: None,
-        knowledge_provider: Some(Arc::clone(&input.knowledge_provider) as Arc<dyn KnowledgeProvider + Send + Sync>),
+        knowledge_provider: Some(
+            Arc::clone(&input.knowledge_provider) as Arc<dyn KnowledgeProvider + Send + Sync>
+        ),
         induction_store: None,
         conformal_margin,
     };
@@ -435,8 +447,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
 
             if matches!(e, EngineError::MaxRetriesExhausted) {
                 for event in &run_ctx.verification_events {
-                    let h2ai_ev =
-                        h2ai_types::events::H2AIEvent::VerificationScored(event.clone());
+                    let h2ai_ev = h2ai_types::events::H2AIEvent::VerificationScored(event.clone());
                     if let Some(ref nats) = input.nats {
                         if let Err(pe) = nats.publish_event(&task_id, &h2ai_ev).await {
                             tracing::warn!(
@@ -457,9 +468,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                     if let Some(ref nats) = input.nats {
                         match serde_json::to_vec(&skill_nodes) {
                             Ok(bytes) => {
-                                if let Err(se) =
-                                    nats.put_skill_nodes(&tenant_id, bytes).await
-                                {
+                                if let Err(se) = nats.put_skill_nodes(&tenant_id, bytes).await {
                                     tracing::warn!(
                                         target: "h2ai.skills",
                                         task_id = %task_id,
@@ -478,16 +487,15 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                 }
             }
 
-            let failed_ev = h2ai_types::events::H2AIEvent::TaskFailed(
-                h2ai_types::events::TaskFailedEvent {
+            let failed_ev =
+                h2ai_types::events::H2AIEvent::TaskFailed(h2ai_types::events::TaskFailedEvent {
                     task_id: task_id.clone(),
                     pruned_events: vec![],
                     topologies_tried: vec![],
                     tau_values_tried: vec![],
                     multiplication_condition_failure: None,
                     timestamp: chrono::Utc::now(),
-                },
-            );
+                });
             if let Some(ref nats) = input.nats {
                 if let Err(pe) = nats.publish_event(&task_id, &failed_ev).await {
                     tracing::warn!("failed to publish TaskFailedEvent: {pe}");
@@ -504,7 +512,10 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
     // Persist estimator state to NATS — fire-and-forget.
     if let Some((ema, count)) = ts.tao_multiplier_estimator.read().await.persist_state() {
         if let Some(ref nats) = input.nats {
-            if let Err(e) = nats.put_tao_estimator_state(&input.tenant_id, ema, count).await {
+            if let Err(e) = nats
+                .put_tao_estimator_state(&input.tenant_id, ema, count)
+                .await
+            {
                 tracing::warn!("failed to persist tao_estimator: {e}");
             }
         }
@@ -526,6 +537,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn post_run(
     output: h2ai_orchestrator::engine::EngineOutput,
     thinking_report: &h2ai_types::thinking::ThinkingReport,
@@ -573,8 +585,7 @@ pub(crate) async fn post_run(
         use h2ai_types::checkpoint::{ConstraintSnapshot, TaskCheckpoint};
         let node_id = format!(
             "{}:{}",
-            hostname::get()
-                .map_or_else(|_| "unknown".into(), |h| h.to_string_lossy().to_string()),
+            hostname::get().map_or_else(|_| "unknown".into(), |h| h.to_string_lossy().to_string()),
             std::process::id()
         );
         let now_ms = std::time::SystemTime::now()
@@ -691,8 +702,7 @@ pub(crate) async fn post_run(
                 for j in (i + 1)..scores.len() {
                     let (id_a, s_a) = &scores[i];
                     let (id_b, s_b) = &scores[j];
-                    let product =
-                        ((s_a - p_mean) * (s_b - p_mean) / variance).clamp(-1.0, 1.0);
+                    let product = ((s_a - p_mean) * (s_b - p_mean) / variance).clamp(-1.0, 1.0);
                     pairs.push((id_a.clone(), id_b.clone(), product));
                 }
             }
@@ -845,8 +855,7 @@ pub(crate) async fn post_run(
         {
             tracing::warn!("failed to persist srani state: {e}");
         }
-        *ts.srani_state.write().await =
-            (output.srani_ema_cfi_updated, output.srani_count_updated);
+        *ts.srani_state.write().await = (output.srani_ema_cfi_updated, output.srani_count_updated);
     }
 
     for grounding in &output.researcher_grounding_events {
@@ -969,9 +978,7 @@ pub(crate) async fn post_run(
     ctx.store.mark_resolved(task_id);
 
     // Violation feedback: down-weight nodes co-occurring with retried failures (GAP-F5 Step 2).
-    if !output.topology_retry_events.is_empty()
-        && !thinking_report.retrieved_node_ids.is_empty()
-    {
+    if !output.topology_retry_events.is_empty() && !thinking_report.retrieved_node_ids.is_empty() {
         ctx.knowledge_provider
             .record_violations(&thinking_report.retrieved_node_ids, 0.1);
     }
@@ -1076,7 +1083,10 @@ mod tests {
         TaskManifest {
             description: "pipeline test".into(),
             pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-            topology: TopologyRequest { kind: "ensemble".into(), branching_factor: None },
+            topology: TopologyRequest {
+                kind: "ensemble".into(),
+                branching_factor: None,
+            },
             explorers: ExplorerRequest {
                 count: 2,
                 tau_min: Some(0.3),
@@ -1109,10 +1119,11 @@ mod tests {
         use h2ai_knowledge::skill_provider::CompositeProvider;
 
         let cfg = Arc::new(H2AIConfig::default());
-        let adapter = Arc::new(mock_adapter("stub")) as Arc<dyn h2ai_types::adapter::IComputeAdapter>;
+        let adapter =
+            Arc::new(mock_adapter("stub")) as Arc<dyn h2ai_types::adapter::IComputeAdapter>;
         let tenant_id = TenantId::default_tenant();
-        let tenant_state = crate::tenant_registry::TenantRegistry::new()
-            .get_or_create(&tenant_id, &cfg);
+        let tenant_state =
+            crate::tenant_registry::TenantRegistry::new().get_or_create(&tenant_id, &cfg);
 
         TaskPipelineInput {
             task_id,
@@ -1131,7 +1142,9 @@ mod tests {
             store,
             journal: Arc::new(SessionJournal::new_noop()),
             cfg: Arc::clone(&cfg),
-            metrics: Arc::new(tokio::sync::RwLock::new(crate::metrics::MetricsState::default())),
+            metrics: Arc::new(tokio::sync::RwLock::new(
+                crate::metrics::MetricsState::default(),
+            )),
             drift_monitor: Arc::new(tokio::sync::Mutex::new(
                 h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
             )),
@@ -1140,10 +1153,14 @@ mod tests {
             auditor_adapter: adapter.clone(),
             embedding_model: None,
             researcher_adapter: None,
-            knowledge_provider: CompositeProvider::new(vec![
-                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(".")))
-                    as Arc<dyn KnowledgeProvider>,
-            ], false),
+            knowledge_provider: CompositeProvider::new(
+                vec![
+                    Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
+                        ".",
+                    ))) as Arc<dyn KnowledgeProvider>,
+                ],
+                false,
+            ),
             tenant_state,
             nats_dispatch: None,
             srani_ema_cfi: 0.0,
@@ -1162,7 +1179,10 @@ mod tests {
     #[tokio::test]
     async fn pipeline_marks_failed_when_decomposer_errors() {
         let mut thinking = MockThinkingLoopRunner::new();
-        thinking.expect_run().once().returning(|_| stub_thinking_report());
+        thinking
+            .expect_run()
+            .once()
+            .returning(|_| stub_thinking_report());
 
         let mut decomposer = MockDecomposer::new();
         decomposer
@@ -1172,7 +1192,10 @@ mod tests {
 
         let store = TaskStore::new();
         let task_id = TaskId::new();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let engine = MockEngineRunner::new();
 
@@ -1192,18 +1215,30 @@ mod tests {
     #[tokio::test]
     async fn pipeline_marks_resolved_when_engine_succeeds_and_nats_none() {
         let mut thinking = MockThinkingLoopRunner::new();
-        thinking.expect_run().once().returning(|_| stub_thinking_report());
+        thinking
+            .expect_run()
+            .once()
+            .returning(|_| stub_thinking_report());
 
         let mut decomposer = MockDecomposer::new();
-        decomposer.expect_decompose().once().returning(|_| Ok(vec![]));
+        decomposer
+            .expect_decompose()
+            .once()
+            .returning(|_| Ok(vec![]));
 
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
-        engine.expect_run().once().returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
+        engine
+            .expect_run()
+            .once()
+            .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
 
         run_task_pipeline(build_input(
             task_id.clone(),
@@ -1229,16 +1264,27 @@ mod tests {
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
-        engine.expect_run().returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
+        engine
+            .expect_run()
+            .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
 
         let mut mock_nats = MockNatsBackend::new();
         mock_nats.expect_publish_event().returning(|_, _| Ok(()));
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
 
         let mut input = build_input(
@@ -1258,9 +1304,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_extracts_skills_when_engine_returns_output_with_retry() {
-        use h2ai_constraints::types::{
-            ConstraintPredicate, ConstraintSeverity,
-        };
+        use h2ai_constraints::types::{ConstraintPredicate, ConstraintSeverity};
         use h2ai_test_utils::stub_topology_retry_event;
         use h2ai_types::identity::ExplorerId;
 
@@ -1273,13 +1317,19 @@ mod tests {
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
         engine.expect_run().returning(move |_| {
             let mut out = stub_engine_output(task_id_out.clone());
-            out.topology_retry_events =
-                vec![stub_topology_retry_event(task_id_out.clone(), 1, Some("violated C-001".into()))];
+            out.topology_retry_events = vec![stub_topology_retry_event(
+                task_id_out.clone(),
+                1,
+                Some("violated C-001".into()),
+            )];
             out.selection_resolved.valid_proposals = vec![ExplorerId::new()];
             Ok(out)
         });
@@ -1298,7 +1348,9 @@ mod tests {
             source_file: "C-001.yaml".into(),
             description: "auth constraint".into(),
             severity: ConstraintSeverity::Advisory,
-            predicate: ConstraintPredicate::LlmJudge { rubric: "test".into() },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "test".into(),
+            },
             remediation_hint: None,
             domains: vec!["auth".into()],
             mandatory_for_tags: vec![],
@@ -1313,7 +1365,11 @@ mod tests {
 
         assert_eq!(store.get(&task_id).unwrap().status, "resolved");
         // tombstone "violated C-001" → 1 Topic node (auth domain) + 1 Constraint-keyed Leaf (C-001)
-        assert_eq!((*skill_provider).len(), 2, "one Topic node per domain + one Leaf per constraint ID");
+        assert_eq!(
+            (*skill_provider).len(),
+            2,
+            "one Topic node per domain + one Leaf per constraint ID"
+        );
     }
 
     #[tokio::test]
@@ -1331,24 +1387,39 @@ mod tests {
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
         engine.expect_run().returning(move |_| {
             let mut out = stub_engine_output(task_id_out.clone());
-            out.topology_retry_events =
-                vec![stub_topology_retry_event(task_id_out.clone(), 1, Some("violated C-001".into()))];
+            out.topology_retry_events = vec![stub_topology_retry_event(
+                task_id_out.clone(),
+                1,
+                Some("violated C-001".into()),
+            )];
             out.selection_resolved.valid_proposals = vec![ExplorerId::new()];
             Ok(out)
         });
 
         let mut mock_nats = MockNatsBackend::new();
         mock_nats.expect_publish_event().returning(|_, _| Ok(()));
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
-        mock_nats.expect_put_skill_nodes().once().returning(|_, _| Ok(()));
+        mock_nats
+            .expect_put_skill_nodes()
+            .once()
+            .returning(|_, _| Ok(()));
 
         let skill_provider = SkillProvider::new();
         let mut input = build_input(
@@ -1364,7 +1435,9 @@ mod tests {
             source_file: "C-001.yaml".into(),
             description: "auth constraint".into(),
             severity: ConstraintSeverity::Advisory,
-            predicate: ConstraintPredicate::LlmJudge { rubric: "test".into() },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "test".into(),
+            },
             remediation_hint: None,
             domains: vec!["auth".into()],
             mandatory_for_tags: vec![],
@@ -1380,7 +1453,11 @@ mod tests {
 
         assert_eq!(store.get(&task_id).unwrap().status, "resolved");
         // tombstone "violated C-001" → 1 Topic node (auth domain) + 1 Constraint-keyed Leaf (C-001)
-        assert_eq!((*skill_provider).len(), 2, "one Topic node per domain + one Leaf per constraint ID");
+        assert_eq!(
+            (*skill_provider).len(),
+            2,
+            "one Topic node per domain + one Leaf per constraint ID"
+        );
     }
 
     #[tokio::test]
@@ -1398,7 +1475,9 @@ mod tests {
             source_file: format!("{domain}.yaml"),
             description: format!("{domain} constraint"),
             severity: ConstraintSeverity::Advisory,
-            predicate: ConstraintPredicate::LlmJudge { rubric: "test".into() },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "test".into(),
+            },
             remediation_hint: None,
             domains: vec![domain.into()],
             mandatory_for_tags: vec![],
@@ -1414,9 +1493,10 @@ mod tests {
         let skill_provider = SkillProvider::new();
 
         // Step 3: Create a CompositeProvider wrapping just the skill provider.
-        let composite_provider = CompositeProvider::new(vec![
-            Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>,
-        ], false);
+        let composite_provider = CompositeProvider::new(
+            vec![Arc::clone(&skill_provider) as Arc<dyn KnowledgeProvider>],
+            false,
+        );
 
         // Step 4: Build an engine output with 1 topology retry (tombstone = failure signal)
         //         and 1 valid proposal so that skill_from_output produces nodes.
@@ -1479,9 +1559,10 @@ mod tests {
         );
 
         // Step 12: Assert no billing-domain-only node is returned (domain filtering works).
-        let has_billing_only = result.nodes.iter().any(|(node, _)| {
-            node.domains == vec!["billing".to_string()]
-        });
+        let has_billing_only = result
+            .nodes
+            .iter()
+            .any(|(node, _)| node.domains == vec!["billing".to_string()]);
         assert!(
             !has_billing_only,
             "billing-only nodes must not appear in an auth-scoped query"
@@ -1502,29 +1583,43 @@ mod tests {
         });
 
         let mut decomposer = MockDecomposer::new();
-        decomposer.expect_decompose().once().returning(|_| Ok(vec![]));
+        decomposer
+            .expect_decompose()
+            .once()
+            .returning(|_| Ok(vec![]));
 
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
-        engine.expect_run().returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
+        engine
+            .expect_run()
+            .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
 
         // Capture the TaskAttributionEvent's skill_nodes_injected field.
         let captured: Arc<std::sync::Mutex<u32>> = Arc::new(std::sync::Mutex::new(0));
         let cap = Arc::clone(&captured);
         let mut mock_nats = MockNatsBackend::new();
         mock_nats.expect_publish_event().returning(|_, _| Ok(()));
-        mock_nats.expect_publish_event_seq().returning(move |_, ev| {
-            if let H2AIEvent::TaskAttribution(a) = ev {
-                *cap.lock().unwrap() = a.skill_nodes_injected;
-            }
-            Ok(1u64)
-        });
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(move |_, ev| {
+                if let H2AIEvent::TaskAttribution(a) = ev {
+                    *cap.lock().unwrap() = a.skill_nodes_injected;
+                }
+                Ok(1u64)
+            });
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
 
         let mut input = build_input(
@@ -1557,10 +1652,15 @@ mod tests {
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
-        engine.expect_run().returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
+        engine
+            .expect_run()
+            .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
 
         let skill_provider = SkillProvider::new();
         run_task_pipeline(build_input(
@@ -1574,7 +1674,11 @@ mod tests {
         .await;
 
         assert_eq!(store.get(&task_id).unwrap().status, "resolved");
-        assert_eq!((*skill_provider).len(), 0, "clean run must produce no skills");
+        assert_eq!(
+            (*skill_provider).len(),
+            0,
+            "clean run must produce no skills"
+        );
     }
 
     #[tokio::test]
@@ -1596,15 +1700,20 @@ mod tests {
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
         engine.expect_run().returning(move |_| {
             let mut out = stub_engine_output(task_id_out.clone());
             // Task had retries → should trigger record_violations
-            out.topology_retry_events = vec![
-                stub_topology_retry_event(task_id_out.clone(), 1, Some("violated C-001".into())),
-            ];
+            out.topology_retry_events = vec![stub_topology_retry_event(
+                task_id_out.clone(),
+                1,
+                Some("violated C-001".into()),
+            )];
             out.selection_resolved.valid_proposals = vec![ExplorerId::new()];
             Ok(out)
         });
@@ -1644,10 +1753,15 @@ mod tests {
         let store = TaskStore::new();
         let task_id = TaskId::new();
         let task_id_out = task_id.clone();
-        store.insert(task_id.clone(), TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            TaskState::new(task_id.clone(), TenantId::default_tenant()),
+        );
 
         let mut engine = MockEngineRunner::new();
-        engine.expect_run().returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
+        engine
+            .expect_run()
+            .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
         // No topology_retry_events → no violations
 
         let skill_provider = SkillProvider::new();
@@ -1696,8 +1810,7 @@ mod tests {
             &self,
             _args: h2ai_orchestrator::task_runner::ThinkingLoopArgs,
         ) -> h2ai_types::thinking::ThinkingReport {
-            self.count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut r = stub_thinking_report();
             r.shared_understanding = self.understanding.clone();
             r
@@ -1712,7 +1825,9 @@ mod tests {
             source_file: "test.yaml".into(),
             description: format!("{id} description"),
             severity: ConstraintSeverity::Hard { threshold: 0.7 },
-            predicate: ConstraintPredicate::LlmJudge { rubric: "test".into() },
+            predicate: ConstraintPredicate::LlmJudge {
+                rubric: "test".into(),
+            },
             remediation_hint: None,
             domains: vec!["test".into()],
             mandatory_for_tags: vec![],
@@ -1723,7 +1838,6 @@ mod tests {
             pass_criteria: Some("must pass".into()),
         }
     }
-
 
     /// Build a TaskPipelineInput with awareness_probe enabled at the given mode,
     /// replacing the thinking_loop_runner and injecting a corpus.
@@ -1738,24 +1852,32 @@ mod tests {
         use h2ai_knowledge::provider::{KnowledgeProvider, PassthroughProvider};
         use h2ai_knowledge::skill_provider::CompositeProvider;
 
-        let mut cfg = H2AIConfig::default();
-        cfg.awareness_probe = AwarenessProbeConfig {
-            enabled: true,
-            mode,
-            judge_max_tokens: 256,
-        };
-        let cfg = Arc::new(cfg);
+        let cfg = Arc::new(H2AIConfig {
+            awareness_probe: AwarenessProbeConfig {
+                enabled: true,
+                mode,
+                judge_max_tokens: 256,
+            },
+            ..Default::default()
+        });
 
-        let adapter = Arc::new(mock_adapter("stub")) as Arc<dyn h2ai_types::adapter::IComputeAdapter>;
+        let adapter =
+            Arc::new(mock_adapter("stub")) as Arc<dyn h2ai_types::adapter::IComputeAdapter>;
         let tenant_id = TenantId::default_tenant();
-        let tenant_state = crate::tenant_registry::TenantRegistry::new()
-            .get_or_create(&tenant_id, &cfg);
+        let tenant_state =
+            crate::tenant_registry::TenantRegistry::new().get_or_create(&tenant_id, &cfg);
 
         let mut mock_nats = MockNatsBackend::new();
         mock_nats.expect_publish_event().returning(|_, _| Ok(()));
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
         let nats_arc = Arc::new(mock_nats);
 
@@ -1771,8 +1893,11 @@ mod tests {
             .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
 
         let knowledge_provider = CompositeProvider::new(
-            vec![Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(".")))
-                as Arc<dyn KnowledgeProvider>],
+            vec![
+                Arc::new(PassthroughProvider::new_from_path(std::path::Path::new(
+                    ".",
+                ))) as Arc<dyn KnowledgeProvider>,
+            ],
             false,
         );
 
@@ -1793,7 +1918,9 @@ mod tests {
             store,
             journal: Arc::new(h2ai_orchestrator::session_journal::SessionJournal::new_noop()),
             cfg: Arc::clone(&cfg),
-            metrics: Arc::new(tokio::sync::RwLock::new(crate::metrics::MetricsState::default())),
+            metrics: Arc::new(tokio::sync::RwLock::new(
+                crate::metrics::MetricsState::default(),
+            )),
             drift_monitor: Arc::new(tokio::sync::Mutex::new(
                 h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
             )),
@@ -1844,20 +1971,34 @@ mod tests {
             }
             Ok(())
         });
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
 
         let store = TaskStore::new();
         let task_id = TaskId::new();
-        store.insert(task_id.clone(), h2ai_orchestrator::task_store::TaskState::new(task_id.clone(), TenantId::default_tenant()));
+        store.insert(
+            task_id.clone(),
+            h2ai_orchestrator::task_store::TaskState::new(
+                task_id.clone(),
+                TenantId::default_tenant(),
+            ),
+        );
 
         let mut decomposer = MockDecomposer::new();
         decomposer.expect_decompose().returning(|_| Ok(vec![]));
         let task_id_out = task_id.clone();
         let mut engine = MockEngineRunner::new();
-        engine.expect_run().returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
+        engine
+            .expect_run()
+            .returning(move |_| Ok(stub_engine_output(task_id_out.clone())));
 
         let mut input = build_input(
             task_id.clone(),
@@ -1897,7 +2038,10 @@ mod tests {
         let task_id = TaskId::new();
         store.insert(
             task_id.clone(),
-            h2ai_orchestrator::task_store::TaskState::new(task_id.clone(), TenantId::default_tenant()),
+            h2ai_orchestrator::task_store::TaskState::new(
+                task_id.clone(),
+                TenantId::default_tenant(),
+            ),
         );
 
         let probe_published = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1922,9 +2066,15 @@ mod tests {
             }
             Ok(())
         });
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
         input.nats = Some(Arc::new(mock_nats));
 
@@ -1975,8 +2125,7 @@ mod tests {
         let corpus = vec![make_hard_constraint("C-ACTIVE")];
 
         // An adapter that always returns a CONTRADICTED verdict for idx 0.
-        let verdict_json =
-            r#"[{"idx":0,"rationale":"plan uses non-atomic writes which violates the constraint","verdict":"CONTRADICTED"}]"#;
+        let verdict_json = r#"[{"idx":0,"rationale":"plan uses non-atomic writes which violates the constraint","verdict":"CONTRADICTED"}]"#;
 
         #[derive(Debug)]
         struct ContradictedAdapter {
@@ -1986,10 +2135,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl h2ai_types::adapter::IComputeAdapter for ContradictedAdapter {
-            async fn execute(
-                &self,
-                _req: ComputeRequest,
-            ) -> Result<ComputeResponse, AdapterError> {
+            async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
                 Ok(ComputeResponse {
                     output: self.response.clone(),
                     token_cost: 0,
@@ -2017,7 +2163,10 @@ mod tests {
         let task_id = TaskId::new();
         store.insert(
             task_id.clone(),
-            h2ai_orchestrator::task_store::TaskState::new(task_id.clone(), TenantId::default_tenant()),
+            h2ai_orchestrator::task_store::TaskState::new(
+                task_id.clone(),
+                TenantId::default_tenant(),
+            ),
         );
 
         let probe_re_iterated = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2045,9 +2194,15 @@ mod tests {
             }
             Ok(())
         });
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
         input.nats = Some(Arc::new(mock_nats));
 
@@ -2108,7 +2263,8 @@ mod tests {
         };
 
         // Adapter returns CONTRADICTED for the gated constraint.
-        let verdict_json = r#"[{"idx":0,"rationale":"gated contradiction","verdict":"CONTRADICTED"}]"#;
+        let verdict_json =
+            r#"[{"idx":0,"rationale":"gated contradiction","verdict":"CONTRADICTED"}]"#;
 
         #[derive(Debug)]
         struct AlwaysContradictedAdapter {
@@ -2126,7 +2282,9 @@ mod tests {
                     reasoning_trace: None,
                 })
             }
-            fn kind(&self) -> &AdapterKind { &self.kind }
+            fn kind(&self) -> &AdapterKind {
+                &self.kind
+            }
         }
 
         let adapter = Arc::new(AlwaysContradictedAdapter {
@@ -2143,12 +2301,18 @@ mod tests {
         let task_id = TaskId::new();
         store.insert(
             task_id.clone(),
-            h2ai_orchestrator::task_store::TaskState::new(task_id.clone(), TenantId::default_tenant()),
+            h2ai_orchestrator::task_store::TaskState::new(
+                task_id.clone(),
+                TenantId::default_tenant(),
+            ),
         );
 
         let (mut input, _) = build_probe_input(
-            task_id.clone(), store.clone(), counting_runner,
-            vec![gated_constraint], AwarenessProbeMode::Active,
+            task_id.clone(),
+            store.clone(),
+            counting_runner,
+            vec![gated_constraint],
+            AwarenessProbeMode::Active,
         );
         // Override config to enable ambiguity detection.
         let mut cfg = (*input.cfg).clone();
@@ -2160,9 +2324,15 @@ mod tests {
 
         let mut mock_nats = MockNatsBackend::new();
         mock_nats.expect_publish_event().returning(|_, _| Ok(()));
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
         input.nats = Some(Arc::new(mock_nats));
 
@@ -2191,7 +2361,9 @@ mod tests {
 
         // Adapter returns invalid JSON → parse fails → degraded result.
         #[derive(Debug)]
-        struct BrokenAdapter { kind: AdapterKind }
+        struct BrokenAdapter {
+            kind: AdapterKind,
+        }
         #[async_trait::async_trait]
         impl h2ai_types::adapter::IComputeAdapter for BrokenAdapter {
             async fn execute(&self, _req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
@@ -2203,7 +2375,9 @@ mod tests {
                     reasoning_trace: None,
                 })
             }
-            fn kind(&self) -> &AdapterKind { &self.kind }
+            fn kind(&self) -> &AdapterKind {
+                &self.kind
+            }
         }
 
         let broken_adapter = Arc::new(BrokenAdapter {
@@ -2219,12 +2393,19 @@ mod tests {
         let task_id = TaskId::new();
         store.insert(
             task_id.clone(),
-            h2ai_orchestrator::task_store::TaskState::new(task_id.clone(), TenantId::default_tenant()),
+            h2ai_orchestrator::task_store::TaskState::new(
+                task_id.clone(),
+                TenantId::default_tenant(),
+            ),
         );
 
         let corpus = vec![make_hard_constraint("C-DEGRADE")];
         let (mut input, _) = build_probe_input(
-            task_id.clone(), store.clone(), counting_runner, corpus, AwarenessProbeMode::Active,
+            task_id.clone(),
+            store.clone(),
+            counting_runner,
+            corpus,
+            AwarenessProbeMode::Active,
         );
         input.adapter_pool = vec![broken_adapter.clone()];
         input.auditor_adapter = broken_adapter.clone();
@@ -2232,9 +2413,15 @@ mod tests {
 
         let mut mock_nats = MockNatsBackend::new();
         mock_nats.expect_publish_event().returning(|_, _| Ok(()));
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
         input.nats = Some(Arc::new(mock_nats));
 
@@ -2264,12 +2451,19 @@ mod tests {
         let task_id = TaskId::new();
         store.insert(
             task_id.clone(),
-            h2ai_orchestrator::task_store::TaskState::new(task_id.clone(), TenantId::default_tenant()),
+            h2ai_orchestrator::task_store::TaskState::new(
+                task_id.clone(),
+                TenantId::default_tenant(),
+            ),
         );
 
         // No corpus → probe skips → ThinkingLoopCompleted should still publish once.
         let (input, nats_arc) = build_probe_input(
-            task_id.clone(), store.clone(), counting_runner, vec![], AwarenessProbeMode::Shadow,
+            task_id.clone(),
+            store.clone(),
+            counting_runner,
+            vec![],
+            AwarenessProbeMode::Shadow,
         );
 
         let tl_completed_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2282,9 +2476,15 @@ mod tests {
             }
             Ok(())
         });
-        mock_nats.expect_publish_event_seq().returning(|_, _| Ok(1u64));
-        mock_nats.expect_put_task_checkpoint().returning(|_, _| Ok(0u64));
-        mock_nats.expect_delete_task_checkpoint().returning(|_| Ok(()));
+        mock_nats
+            .expect_publish_event_seq()
+            .returning(|_, _| Ok(1u64));
+        mock_nats
+            .expect_put_task_checkpoint()
+            .returning(|_, _| Ok(0u64));
+        mock_nats
+            .expect_delete_task_checkpoint()
+            .returning(|_| Ok(()));
         mock_nats.expect_put_bandit_state().returning(|_, _| Ok(()));
         let _ = nats_arc;
         let mut input = input;
@@ -2311,13 +2511,13 @@ mod tests {
     /// false positive: it already domain-filters internally, making scope_by_domains a no-op.
     #[tokio::test]
     async fn knowledge_domain_scoping_excludes_off_domain_wiki_nodes() {
+        use h2ai_knowledge::factory::ProviderKind;
         use h2ai_knowledge::provider::KnowledgeProvider;
         use h2ai_knowledge::skill_provider::CompositeProvider;
         use h2ai_knowledge::types::{
             KnowledgeNode, KnowledgeQuery, KnowledgeResult, NodeDepth, NodeSource, RetrievalMode,
             SearchScope,
         };
-        use h2ai_knowledge::factory::ProviderKind;
 
         // A provider that returns all pre-loaded nodes unconditionally (no domain filtering).
         // This is essential: SkillProvider already filters by domain, making scope_by_domains
@@ -2333,26 +2533,35 @@ mod tests {
                     ppr_expanded: false,
                 }
             }
-            async fn global_summary(&self) -> Option<KnowledgeNode> { None }
-            fn is_ready(&self) -> bool { true }
-            fn kind(&self) -> &ProviderKind { &ProviderKind::Skill }
+            async fn global_summary(&self) -> Option<KnowledgeNode> {
+                None
+            }
+            fn is_ready(&self) -> bool {
+                true
+            }
+            fn kind(&self) -> &ProviderKind {
+                &ProviderKind::Skill
+            }
         }
 
         let make_node = |id: &str, domain: &str| -> (KnowledgeNode, f32) {
-            (KnowledgeNode {
-                id: id.to_string(),
-                depth: NodeDepth::Leaf,
-                source: NodeSource::Synthetic,
-                domains: vec![domain.to_string()],
-                synthesis: format!("{domain} node"),
-                failure_modes: vec![],
-                invariants: vec![],
-                importance: 0.8,
-                entry_points: vec![],
-                tensions: vec![],
-                cross_references: vec![],
-                related: vec![],
-            }, 0.8)
+            (
+                KnowledgeNode {
+                    id: id.to_string(),
+                    depth: NodeDepth::Leaf,
+                    source: NodeSource::Synthetic,
+                    domains: vec![domain.to_string()],
+                    synthesis: format!("{domain} node"),
+                    failure_modes: vec![],
+                    invariants: vec![],
+                    importance: 0.8,
+                    entry_points: vec![],
+                    tensions: vec![],
+                    cross_references: vec![],
+                    related: vec![],
+                },
+                0.8,
+            )
         };
 
         let all_nodes = vec![
@@ -2387,9 +2596,10 @@ mod tests {
             !result.nodes.is_empty(),
             "auth-domain nodes must be returned"
         );
-        let has_wiki = result.nodes.iter().any(|(n, _)| {
-            n.domains.iter().any(|d| d == "wiki")
-        });
+        let has_wiki = result
+            .nodes
+            .iter()
+            .any(|(n, _)| n.domains.iter().any(|d| d == "wiki"));
         assert!(
             !has_wiki,
             "CompositeProvider.scope_by_domains must exclude wiki-domain nodes from auth-tagged query"
@@ -2415,7 +2625,11 @@ mod tests {
             result_unscoped.nodes.len(),
             4,
             "domain_scoping=false must return all 4 nodes; got {:?}",
-            result_unscoped.nodes.iter().map(|(n, _)| &n.id).collect::<Vec<_>>()
+            result_unscoped
+                .nodes
+                .iter()
+                .map(|(n, _)| &n.id)
+                .collect::<Vec<_>>()
         );
     }
 }

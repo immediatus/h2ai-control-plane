@@ -1228,7 +1228,7 @@ h2ai-constraints    Constraint corpus parser (markdown ADR format), predicate ty
                     ConstraintMeta / ConstraintPayload / PredicateKind for wiki delivery.
                     ambiguity — AmbiguityEvidence (6 variants + Display), AmbiguityScorecard,
                     PatchMode, AmbiguityDetectionConfig; pure functions scan_constraint(),
-                    score_evidence(), most_divergent_pair(), jaccard(); seed_scorecards() (GAP-F8).
+                    score_evidence(), most_divergent_pair(), jaccard(); seed_scorecards() — static seeding of per-constraint ambiguity scorecards at corpus load time.
 
 h2ai-knowledge      Hierarchical BM25+/PPR knowledge retrieval layer (pure crate, no I/O deps beyond
                     serde_yaml at startup). KnowledgeSource trait (all_items, wiki_nodes, global_node).

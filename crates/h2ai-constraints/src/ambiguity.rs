@@ -599,11 +599,7 @@ mod tests {
         rubric_extra: &str,
         hint: Option<&str>,
     ) -> crate::types::ConstraintDoc {
-        let rubric = format!(
-            "{}\n{}",
-            checks.join("\n"),
-            rubric_extra
-        );
+        let rubric = format!("{}\n{}", checks.join("\n"), rubric_extra);
         crate::types::ConstraintDoc {
             id: "C-TEST".into(),
             source_file: "test.md".into(),
@@ -758,7 +754,9 @@ mod tests {
             None,
         );
         let cards = seed_scorecards(&[d], &cfg());
-        let card = cards.get(&("C-TEST".to_string(), 0)).expect("card for check 0");
+        let card = cards
+            .get(&("C-TEST".to_string(), 0))
+            .expect("card for check 0");
         assert!(card.evidence.len() >= 2);
         assert!(card.score > 0.0);
         assert_eq!(card.patch_mode(), PatchMode::Precise { check_idx: 0 });

@@ -21,6 +21,10 @@ use h2ai_types::reasoning_checkpoint::{
 use h2ai_types::sizing::TaskQuadrant;
 use thiserror::Error;
 
+/// Signal carried out of the `'wave` loop when MAPE-K detects SpecAmbiguous.
+/// Fields: (constraint_id, check_index, divergent_reasons, ambiguity_evidence, ambiguity_score, wave)
+type SpecAmbiguousSignal = (String, usize, Vec<String>, Vec<String>, f32, u32);
+
 /// Appended to the verifier system prompt when `verifier_decomposition_enabled = true` and
 /// the complexity probe rated the task at or above `decompose_threshold`.
 /// Instructs the judge to decompose verification into sub-claims and tag uncomputable ones as
@@ -432,9 +436,10 @@ impl ExecutionEngine {
         let bootstrap_out = crate::phases::bootstrap::run(&input)
             .await
             .map_err(|e| (e, EngineRunContext::default()))?;
-        let mut complexity_out = crate::phases::complexity::run(&input, &bootstrap_out.system_context)
-            .await
-            .map_err(|e| (e, EngineRunContext::default()))?;
+        let mut complexity_out =
+            crate::phases::complexity::run(&input, &bootstrap_out.system_context)
+                .await
+                .map_err(|e| (e, EngineRunContext::default()))?;
         // Override n_max_ceiling with conflict-rate-based beta when accumulator has sufficient data.
         if let Some(acc) = &conflict_acc {
             let mut cc = input.calibration.coefficients.clone();
@@ -585,7 +590,7 @@ impl ExecutionEngine {
                 let mut osp_accumulator = RetryAccumulator::new();
 
                 // Carry SpecAmbiguous info out of the inner block (pipeline-drop boundary).
-                let mut spec_ambiguous_signal: Option<(String, usize, Vec<String>, Vec<String>, f32, u32)> = None;
+                let mut spec_ambiguous_signal: Option<SpecAmbiguousSignal> = None;
                 // Signal the post-loop synthesis wave to run on ComplexityOverflow
                 // with `graft_first = true`.  Decoupled from `synthesis_wave_enabled` so a
                 // ceiling-detected task can run grafting even when the feature flag is off.
@@ -595,9 +600,12 @@ impl ExecutionEngine {
                     if let Some(dl) = controller.deadline() {
                         if std::time::Instant::now() >= dl {
                             input.store.mark_failed(&task_id);
-                            return Err((EngineError::DeadlineExceeded {
-                                budget_secs: input.cfg.task_deadline_secs.unwrap_or(0),
-                            }, EngineRunContext::default()));
+                            return Err((
+                                EngineError::DeadlineExceeded {
+                                    budget_secs: input.cfg.task_deadline_secs.unwrap_or(0),
+                                },
+                                EngineRunContext::default(),
+                            ));
                         }
                     }
 
@@ -1074,10 +1082,13 @@ impl ExecutionEngine {
                                             );
                                         }
                                     }
-                                    return Err((EngineError::HitlRejected {
-                                        operator_id: signal_operator_id,
-                                        reviewer_note: signal_reviewer_note,
-                                    }, EngineRunContext::default()));
+                                    return Err((
+                                        EngineError::HitlRejected {
+                                            operator_id: signal_operator_id,
+                                            reviewer_note: signal_reviewer_note,
+                                        },
+                                        EngineRunContext::default(),
+                                    ));
                                 }
                                 // Approved: fall through to normal resolve path below.
                             }
@@ -1349,7 +1360,10 @@ impl ExecutionEngine {
                                 .await;
                         }
                     }
-                    return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
+                    return Err((
+                        EngineError::MaxRetriesExhausted,
+                        controller.take_run_context(),
+                    ));
                 }
 
                 // Select repair adapter: prefer researcher, fall back to first explorer.
@@ -1386,7 +1400,10 @@ impl ExecutionEngine {
                                 .await;
                         }
                     }
-                    return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
+                    return Err((
+                        EngineError::MaxRetriesExhausted,
+                        controller.take_run_context(),
+                    ));
                 };
 
                 // Find the affected ConstraintDoc to extract check text and current version.
@@ -1403,7 +1420,10 @@ impl ExecutionEngine {
                         constraint_id = %constraint_id,
                         "SpecAmbiguous: constraint not found in corpus; failing task"
                     );
-                    return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
+                    return Err((
+                        EngineError::MaxRetriesExhausted,
+                        controller.take_run_context(),
+                    ));
                 };
 
                 let original_check_text = doc
@@ -1587,7 +1607,10 @@ impl ExecutionEngine {
                                     .await;
                             }
                         }
-                        return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
+                        return Err((
+                            EngineError::MaxRetriesExhausted,
+                            controller.take_run_context(),
+                        ));
                     }
                 }
             }
@@ -1994,7 +2017,10 @@ impl ExecutionEngine {
                 }
             }
 
-            return Err((EngineError::MaxRetriesExhausted, controller.take_run_context()));
+            return Err((
+                EngineError::MaxRetriesExhausted,
+                controller.take_run_context(),
+            ));
         } // end 'restart: loop
     }
 
@@ -2034,7 +2060,9 @@ impl ExecutionEngine {
         if phase == Some(crate::task_store::TaskPhase::Merging) {
             let resolved = checkpoint
                 .resolved_output
-                .ok_or_else(|| EngineError::Parse("Merging checkpoint missing resolved_output".into()))
+                .ok_or_else(|| {
+                    EngineError::Parse("Merging checkpoint missing resolved_output".into())
+                })
                 .map_err(|e| (e, EngineRunContext::default()))?;
 
             let task_id = input.task_id.clone();

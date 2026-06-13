@@ -201,8 +201,7 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
             .iter()
             .filter(|(_, src)| matches!(src, NodeSource::Synthetic))
             .count() as u32;
-        report.retrieved_node_ids =
-            deduplicated.into_iter().map(|(id, _)| id).collect();
+        report.retrieved_node_ids = deduplicated.into_iter().map(|(id, _)| id).collect();
     }
 
     report
@@ -252,7 +251,11 @@ async fn fetch_iteration_knowledge(
         .iter()
         .map(|(n, _)| (n.id.clone(), n.source.clone()))
         .collect();
-    let synthesis: Vec<&str> = result.nodes.iter().map(|(n, _)| n.synthesis.as_str()).collect();
+    let synthesis: Vec<&str> = result
+        .nodes
+        .iter()
+        .map(|(n, _)| n.synthesis.as_str())
+        .collect();
     (synthesis.join("\n\n"), retrieved)
 }
 
@@ -573,8 +576,7 @@ pub fn parse_archetypes(text: &str) -> Option<Vec<ArchetypeSpec>> {
         .ok()
         // Fallback: extract the outermost JSON array from mixed-content text.
         .or_else(|| {
-            extract_first_json_array(stripped)
-                .and_then(|s| serde_json::from_str(s).ok())
+            extract_first_json_array(stripped).and_then(|s| serde_json::from_str(s).ok())
         })?;
     let arr = json_value.as_array()?;
     let specs: Vec<ArchetypeSpec> = arr
@@ -655,7 +657,10 @@ mod tests {
         let json_fragment = r#"[{"name":"security-engineer","persona":"You are a security engineer who focuses on auth boundaries.","scope":"auth","confidence":0.9,"tau":0.2,"model_tier":"capable","cot_style":"step_by_step"}]"#;
         let with_preamble = format!("Here are the archetypes I selected:\n\n{json_fragment}");
         let result = parse_archetypes(&with_preamble);
-        assert!(result.is_some(), "must parse array preceded by preamble text");
+        assert!(
+            result.is_some(),
+            "must parse array preceded by preamble text"
+        );
         assert_eq!(result.unwrap().len(), 1);
     }
 
@@ -688,8 +693,13 @@ mod tests {
             task_id: "test-task-id",
         };
         let report = run(input).await;
-        assert_eq!(report.shared_understanding, "", "adapter failure must produce empty shared_understanding");
-        assert_eq!(report.coverage_score, 0.0, "adapter failure must produce zero coverage_score");
+        assert_eq!(
+            report.shared_understanding, "",
+            "adapter failure must produce empty shared_understanding"
+        );
+        assert_eq!(
+            report.coverage_score, 0.0,
+            "adapter failure must produce zero coverage_score"
+        );
     }
 }
-

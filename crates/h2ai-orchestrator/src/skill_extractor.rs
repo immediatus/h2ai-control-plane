@@ -145,9 +145,10 @@ fn extract_skill_nodes(
 
     for ev in topology_retry_events {
         if ev.retry_count > 0 {
-            let msg = ev.constraint_tombstone.clone().unwrap_or_else(|| {
-                format!("topology retry #{}", ev.retry_count)
-            });
+            let msg = ev
+                .constraint_tombstone
+                .clone()
+                .unwrap_or_else(|| format!("topology retry #{}", ev.retry_count));
             for domain in domain_constraints.keys() {
                 domain_failures.entry(domain).or_default().push(msg.clone());
             }
@@ -530,7 +531,14 @@ mod tests {
     #[test]
     fn clean_run_produces_no_skills() {
         let task_id = TaskId::new();
-        let output = make_output(task_id.clone(), 2, vec![], closed_coherence(), vec![], vec![]);
+        let output = make_output(
+            task_id.clone(),
+            2,
+            vec![],
+            closed_coherence(),
+            vec![],
+            vec![],
+        );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         assert!(nodes.is_empty(), "clean run must produce no skills");
@@ -543,14 +551,21 @@ mod tests {
         let output = make_output(
             task_id.clone(),
             0,
-            vec![retry_event(task_id.clone(), 2, Some("violated C-001".into()))],
+            vec![retry_event(
+                task_id.clone(),
+                2,
+                Some("violated C-001".into()),
+            )],
             closed_coherence(),
             vec![],
             vec![],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
-        assert!(!nodes.is_empty(), "failed task with retries must produce skill nodes");
+        assert!(
+            !nodes.is_empty(),
+            "failed task with retries must produce skill nodes"
+        );
     }
 
     #[test]
@@ -567,7 +582,10 @@ mod tests {
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
-        assert!(nodes.is_empty(), "no retries and no valid proposals → no skills");
+        assert!(
+            nodes.is_empty(),
+            "no retries and no valid proposals → no skills"
+        );
     }
 
     #[test]
@@ -576,7 +594,11 @@ mod tests {
         let output = make_output(
             task_id.clone(),
             1,
-            vec![retry_event(task_id.clone(), 1, Some("violated auth constraint".into()))],
+            vec![retry_event(
+                task_id.clone(),
+                1,
+                Some("violated auth constraint".into()),
+            )],
             closed_coherence(),
             vec![],
             vec![],
@@ -584,15 +606,26 @@ mod tests {
         let corpus = stub_corpus(&["auth", "billing"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         // 2 Topic nodes (one per corpus domain) — no Leaf nodes from this tombstone
-        let topic_nodes: Vec<_> = nodes.iter().filter(|n| n.depth == NodeDepth::Topic).collect();
+        let topic_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == NodeDepth::Topic)
+            .collect();
         assert_eq!(topic_nodes.len(), 2, "one Topic node per corpus domain");
         for node in &topic_nodes {
             assert!(
-                node.failure_modes.iter().any(|f| f.contains("violated auth constraint")),
+                node.failure_modes
+                    .iter()
+                    .any(|f| f.contains("violated auth constraint")),
                 "tombstone text must appear in failure_modes"
             );
-            assert!(!node.invariants.is_empty(), "invariants must contain repair summary");
-            assert!(node.importance > 0.5, "retried task must have importance > 0.5");
+            assert!(
+                !node.invariants.is_empty(),
+                "invariants must contain repair summary"
+            );
+            assert!(
+                node.importance > 0.5,
+                "retried task must have importance > 0.5"
+            );
         }
     }
 
@@ -630,8 +663,14 @@ mod tests {
             hint_injected: true,
             timestamp: chrono::Utc::now(),
         };
-        let output =
-            make_output(task_id.clone(), 1, vec![], closed_coherence(), vec![srani_ev], vec![]);
+        let output = make_output(
+            task_id.clone(),
+            1,
+            vec![],
+            closed_coherence(),
+            vec![srani_ev],
+            vec![],
+        );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         assert_eq!(nodes.len(), 1);
@@ -660,7 +699,11 @@ mod tests {
         let output_high = make_output(
             task_id.clone(),
             1,
-            vec![retry_event(task_id.clone(), 5, Some("heavy failure".into()))],
+            vec![retry_event(
+                task_id.clone(),
+                5,
+                Some("heavy failure".into()),
+            )],
             closed_coherence(),
             vec![],
             vec![],
@@ -708,7 +751,10 @@ mod tests {
             Some("C-007".to_string())
         );
         assert_eq!(parse_constraint_id("no constraint here"), None);
-        assert_eq!(parse_constraint_id("AUTH-123 failed"), Some("AUTH-123".to_string()));
+        assert_eq!(
+            parse_constraint_id("AUTH-123 failed"),
+            Some("AUTH-123".to_string())
+        );
     }
 
     #[test]
@@ -741,20 +787,38 @@ mod tests {
         // Tombstone "violated C-000 auth quota" → regex matches "C-000"
         // C-000 maps to "auth" domain (stub_corpus index 0)
         let output = make_output(
-            task_id.clone(), 1,
-            vec![retry_event(task_id.clone(), 1, Some("violated C-000 auth quota".into()))],
-            closed_coherence(), vec![], vec![],
+            task_id.clone(),
+            1,
+            vec![retry_event(
+                task_id.clone(),
+                1,
+                Some("violated C-000 auth quota".into()),
+            )],
+            closed_coherence(),
+            vec![],
+            vec![],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         let leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf);
-        assert!(leaf.is_some(), "must emit a Constraint-keyed Leaf for parseable constraint ID");
+        assert!(
+            leaf.is_some(),
+            "must emit a Constraint-keyed Leaf for parseable constraint ID"
+        );
         let leaf = leaf.unwrap();
-        assert_eq!(leaf.id, format!("skill:{task_id}:C-000"),
-            "Constraint-keyed Leaf id must be skill:{{task_id}}:{{constraint_id}}");
-        assert!(leaf.synthesis.contains("C-000"), "synthesis must contain the constraint ID");
-        assert!(leaf.synthesis.contains("violated C-000 auth quota"),
-            "synthesis must contain the tombstone text");
+        assert_eq!(
+            leaf.id,
+            format!("skill:{task_id}:C-000"),
+            "Constraint-keyed Leaf id must be skill:{{task_id}}:{{constraint_id}}"
+        );
+        assert!(
+            leaf.synthesis.contains("C-000"),
+            "synthesis must contain the constraint ID"
+        );
+        assert!(
+            leaf.synthesis.contains("violated C-000 auth quota"),
+            "synthesis must contain the tombstone text"
+        );
     }
 
     #[test]
@@ -762,16 +826,21 @@ mod tests {
         let task_id = TaskId::new();
         // Same tombstone in two retry events → count = 2 → importance = 1.0
         let output = make_output(
-            task_id.clone(), 1,
+            task_id.clone(),
+            1,
             vec![
                 retry_event(task_id.clone(), 1, Some("violated C-000 quota".into())),
                 retry_event(task_id.clone(), 2, Some("violated C-000 quota".into())),
             ],
-            closed_coherence(), vec![], vec![],
+            closed_coherence(),
+            vec![],
+            vec![],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
-        let leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf && n.id.contains("C-000"));
+        let leaf = nodes
+            .iter()
+            .find(|n| n.depth == NodeDepth::Leaf && n.id.contains("C-000"));
         assert!(leaf.is_some());
         assert!(
             (leaf.unwrap().importance - 1.0).abs() < 1e-5,
@@ -785,17 +854,35 @@ mod tests {
         // Tombstone without [A-Z]+-\d+ pattern → no Constraint-keyed Leaf
         // Verification event with score < 0.5 → Reason-keyed Leaf
         let output = make_output(
-            task_id.clone(), 1,
-            vec![retry_event(task_id.clone(), 1, Some("auth quota exceeded".into()))],
-            closed_coherence(), vec![],
-            vec![verification_event(task_id.clone(), 0.3, "auth token was missing from header")],
+            task_id.clone(),
+            1,
+            vec![retry_event(
+                task_id.clone(),
+                1,
+                Some("auth quota exceeded".into()),
+            )],
+            closed_coherence(),
+            vec![],
+            vec![verification_event(
+                task_id.clone(),
+                0.3,
+                "auth token was missing from header",
+            )],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
-        let reason_leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"));
-        assert!(reason_leaf.is_some(), "must emit Reason-keyed Leaf when tombstone has no constraint ID");
+        let reason_leaf = nodes
+            .iter()
+            .find(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"));
         assert!(
-            reason_leaf.unwrap().synthesis.contains("auth token was missing from header"),
+            reason_leaf.is_some(),
+            "must emit Reason-keyed Leaf when tombstone has no constraint ID"
+        );
+        assert!(
+            reason_leaf
+                .unwrap()
+                .synthesis
+                .contains("auth token was missing from header"),
             "Reason-keyed Leaf synthesis must contain the verifier reason"
         );
     }
@@ -805,30 +892,55 @@ mod tests {
         let task_id = TaskId::new();
         // Two near-identical verifier reasons (high Jaccard) → only one Reason-keyed Leaf
         let output = make_output(
-            task_id.clone(), 1,
-            vec![retry_event(task_id.clone(), 1, Some("generic failure".into()))],
-            closed_coherence(), vec![],
+            task_id.clone(),
+            1,
+            vec![retry_event(
+                task_id.clone(),
+                1,
+                Some("generic failure".into()),
+            )],
+            closed_coherence(),
+            vec![],
             vec![
-                verification_event(task_id.clone(), 0.2, "auth token header missing from request"),
-                verification_event(task_id.clone(), 0.3, "auth token header missing from request field"), // Jaccard = 6/7 ≈ 0.857
+                verification_event(
+                    task_id.clone(),
+                    0.2,
+                    "auth token header missing from request",
+                ),
+                verification_event(
+                    task_id.clone(),
+                    0.3,
+                    "auth token header missing from request field",
+                ), // Jaccard = 6/7 ≈ 0.857
             ],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
-        let reason_leaves: Vec<_> = nodes.iter()
+        let reason_leaves: Vec<_> = nodes
+            .iter()
             .filter(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"))
             .collect();
-        assert_eq!(reason_leaves.len(), 1,
-            "near-duplicate reasons (Jaccard ≥ 0.85) must collapse to one Reason-keyed Leaf");
+        assert_eq!(
+            reason_leaves.len(),
+            1,
+            "near-duplicate reasons (Jaccard ≥ 0.85) must collapse to one Reason-keyed Leaf"
+        );
     }
 
     #[test]
     fn topic_node_id_has_topic_suffix() {
         let task_id = TaskId::new();
         let output = make_output(
-            task_id.clone(), 1,
-            vec![retry_event(task_id.clone(), 1, Some("violated C-001 constraint".into()))],
-            closed_coherence(), vec![], vec![],
+            task_id.clone(),
+            1,
+            vec![retry_event(
+                task_id.clone(),
+                1,
+                Some("violated C-001 constraint".into()),
+            )],
+            closed_coherence(),
+            vec![],
+            vec![],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -846,21 +958,22 @@ mod tests {
         use h2ai_types::events::SocraticDiagnosisEvent;
         let task_id = TaskId::new();
         let mut output = make_output(
-            task_id.clone(), 1,
+            task_id.clone(),
+            1,
             vec![retry_event(task_id.clone(), 1, Some("tombstone".into()))],
-            closed_coherence(), vec![], vec![],
+            closed_coherence(),
+            vec![],
+            vec![],
         );
-        output.socratic_diagnosis_events = vec![
-            SocraticDiagnosisEvent {
-                task_id: task_id.clone(),
-                term: 0,
-                question: "Why did auth quota fail?".to_string(),
-                violated_constraints: vec![],
-                eig_rank: 1,
-                dedup_candidates_tried: 0,
-                timestamp: chrono::Utc::now(),
-            },
-        ];
+        output.socratic_diagnosis_events = vec![SocraticDiagnosisEvent {
+            task_id: task_id.clone(),
+            term: 0,
+            question: "Why did auth quota fail?".to_string(),
+            violated_constraints: vec![],
+            eig_rank: 1,
+            dedup_candidates_tried: 0,
+            timestamp: chrono::Utc::now(),
+        }];
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         let topic = nodes.iter().find(|n| n.depth == NodeDepth::Topic).unwrap();
@@ -876,15 +989,21 @@ mod tests {
     fn topic_node_entry_points_contain_resolution_excerpt() {
         let task_id = TaskId::new();
         let mut output = make_output(
-            task_id.clone(), 1,
+            task_id.clone(),
+            1,
             vec![retry_event(task_id.clone(), 1, Some("tombstone".into()))],
-            closed_coherence(), vec![], vec![],
+            closed_coherence(),
+            vec![],
+            vec![],
         );
         output.resolved_output = "word ".repeat(100); // 500 chars
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         let topic = nodes.iter().find(|n| n.depth == NodeDepth::Topic).unwrap();
-        assert!(!topic.entry_points.is_empty(), "Topic node must have entry_points");
+        assert!(
+            !topic.entry_points.is_empty(),
+            "Topic node must have entry_points"
+        );
         assert!(
             topic.entry_points[0].starts_with("Resolution pattern: "),
             "entry_points[0] must start with 'Resolution pattern: '"
@@ -903,7 +1022,7 @@ mod tests {
     #[test]
     fn trim_at_word_boundary_cuts_at_last_space() {
         let s = "hello world foo"; // 15 chars
-        // limit=12 → s[..12] = "hello world " → rfind(' ') at 11 → s[..11] = "hello world"
+                                   // limit=12 → s[..12] = "hello world " → rfind(' ') at 11 → s[..11] = "hello world"
         assert_eq!(trim_at_word_boundary(s, 12), "hello world");
     }
 
@@ -926,16 +1045,27 @@ mod tests {
         // Tombstone with parseable C-000 → emits Constraint-keyed Leaf for C-000
         // Verification event reason also mentions C-000 → must NOT emit Reason-keyed Leaf for it
         let output = make_output(
-            task_id.clone(), 1,
-            vec![retry_event(task_id.clone(), 1, Some("violated C-000 auth quota".into()))],
-            closed_coherence(), vec![],
-            vec![verification_event(task_id.clone(), 0.3, "C-000 constraint auth quota exceeded")],
+            task_id.clone(),
+            1,
+            vec![retry_event(
+                task_id.clone(),
+                1,
+                Some("violated C-000 auth quota".into()),
+            )],
+            closed_coherence(),
+            vec![],
+            vec![verification_event(
+                task_id.clone(),
+                0.3,
+                "C-000 constraint auth quota exceeded",
+            )],
         );
         let corpus = stub_corpus(&["auth"]);
         let nodes = skill_from_output(&output, &corpus, &task_id);
         // Should have: 1 Topic node + 1 Constraint-keyed Leaf (C-000)
         // Should NOT have: a Reason-keyed Leaf (reason mentions C-000 which is already covered)
-        let reason_leaves: Vec<_> = nodes.iter()
+        let reason_leaves: Vec<_> = nodes
+            .iter()
             .filter(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"))
             .collect();
         assert!(
@@ -943,8 +1073,13 @@ mod tests {
             "must not emit Reason-keyed Leaf when the reason's constraint ID is already covered by a Constraint Leaf"
         );
         // Also confirm the Constraint Leaf IS present
-        let constraint_leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf && n.id.contains("C-000"));
-        assert!(constraint_leaf.is_some(), "Constraint Leaf for C-000 must still be present");
+        let constraint_leaf = nodes
+            .iter()
+            .find(|n| n.depth == NodeDepth::Leaf && n.id.contains("C-000"));
+        assert!(
+            constraint_leaf.is_some(),
+            "Constraint Leaf for C-000 must still be present"
+        );
     }
 
     // ── skill_from_retry_events (failure path) ───────────────────────────────
@@ -959,15 +1094,31 @@ mod tests {
         let corpus = stub_corpus(&["billing"]);
         let nodes = skill_from_retry_events(
             vec![],
-            &[verification_event(task_id.clone(), 0.35, "billing quota constraint violated")],
+            &[verification_event(
+                task_id.clone(),
+                0.35,
+                "billing quota constraint violated",
+            )],
             &corpus,
             &task_id,
         );
-        assert!(!nodes.is_empty(), "partial_verification_events on TaskFailed path must produce skill nodes");
-        let reason_leaf = nodes.iter().find(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"));
-        assert!(reason_leaf.is_some(), "must emit at least one Reason-keyed Leaf from partial verification failures");
         assert!(
-            reason_leaf.unwrap().failure_modes.iter().any(|f| f.contains("billing quota")),
+            !nodes.is_empty(),
+            "partial_verification_events on TaskFailed path must produce skill nodes"
+        );
+        let reason_leaf = nodes
+            .iter()
+            .find(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"));
+        assert!(
+            reason_leaf.is_some(),
+            "must emit at least one Reason-keyed Leaf from partial verification failures"
+        );
+        assert!(
+            reason_leaf
+                .unwrap()
+                .failure_modes
+                .iter()
+                .any(|f| f.contains("billing quota")),
             "Reason-keyed Leaf failure_modes must contain the verifier reason text"
         );
     }
@@ -977,7 +1128,10 @@ mod tests {
         let task_id = TaskId::new();
         let corpus = stub_corpus(&["billing"]);
         let nodes = skill_from_retry_events(vec![], &[], &corpus, &task_id);
-        assert!(nodes.is_empty(), "no retries and no verification events must produce no skill nodes");
+        assert!(
+            nodes.is_empty(),
+            "no retries and no verification events must produce no skill nodes"
+        );
     }
 
     #[test]
@@ -994,6 +1148,9 @@ mod tests {
             &corpus,
             &task_id,
         );
-        assert!(nodes.is_empty(), "events with score >= 0.5 must not produce skill nodes");
+        assert!(
+            nodes.is_empty(),
+            "events with score >= 0.5 must not produce skill nodes"
+        );
     }
 }

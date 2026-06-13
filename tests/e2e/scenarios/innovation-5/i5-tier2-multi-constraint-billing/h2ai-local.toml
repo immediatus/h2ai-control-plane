@@ -10,7 +10,8 @@ adapter_enable_thinking = false
 knowledge_domain_scoping = true
 
 calibration_adapter_count = 1
-calibration_max_tokens    = 256
+model_max_tokens          = 8192
+evaluator_timeout_secs    = 1800
 
 [safety]
 profile = "development"

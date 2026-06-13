@@ -625,7 +625,9 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
             );
             eprintln!(
                 "  best_partial_text: {:?}",
-                ctx.best_partial_text.as_deref().map(|s| &s[..s.len().min(80)])
+                ctx.best_partial_text
+                    .as_deref()
+                    .map(|s| &s[..s.len().min(80)])
             );
             panic!(
                 "synthesis wave must produce Ok(EngineOutput) when partial constraint \

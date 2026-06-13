@@ -77,9 +77,11 @@ mod tests {
 
     #[test]
     fn thinking_report_roundtrip_preserves_new_fields() {
-        let mut report = ThinkingReport::default();
-        report.retrieved_node_ids = vec!["node-1".to_string(), "node-2".to_string()];
-        report.skill_nodes_used = 2;
+        let report = ThinkingReport {
+            retrieved_node_ids: vec!["node-1".to_string(), "node-2".to_string()],
+            skill_nodes_used: 2,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&report).unwrap();
         let restored: ThinkingReport = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.retrieved_node_ids, vec!["node-1", "node-2"]);

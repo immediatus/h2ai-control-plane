@@ -173,6 +173,9 @@ pub fn mock_mcp(files: HashMap<String, String>) -> MockMcpClient {
 
 // ── MockNatsBackend ──────────────────────────────────────────────────────────
 
+use futures::stream::BoxStream;
+
+type TaskEventStream = BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>;
 use h2ai_state::backend::{
     CalibrationStore, ConflictStore, EstimatorStore, EventPublisher, OproStore, ReasoningStore,
     ShadowDomainStore, SignalPublisher, SignalSubscriber, SkillStore, SnapshotStore, TailEvents,
@@ -188,7 +191,6 @@ use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
 use h2ai_types::reasoning_checkpoint::{TaskMetaState, TaskReasoningCheckpoint};
 use h2ai_types::signal::ResumeSignal;
-use futures::stream::BoxStream;
 use std::collections::HashSet;
 
 mockall::mock! {
@@ -221,7 +223,7 @@ mockall::mock! {
             &self,
             task_id: &TaskId,
             from_seq: u64,
-        ) -> Result<BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError>;
+        ) -> Result<TaskEventStream, NatsError>;
     }
 
     #[async_trait::async_trait]
@@ -318,7 +320,7 @@ mockall::mock! {
 use h2ai_orchestrator::decomposition::DecompositionError;
 use h2ai_orchestrator::engine::{EngineError, EngineOutput, EngineRunContext};
 use h2ai_orchestrator::task_runner::{
-    DecompositionArgs, Decomposer, EngineRunner, OwnedEngineInput, ThinkingLoopArgs,
+    Decomposer, DecompositionArgs, EngineRunner, OwnedEngineInput, ThinkingLoopArgs,
     ThinkingLoopRunner,
 };
 use h2ai_types::manifest::ExplorerSlotConfig;
@@ -484,8 +486,8 @@ pub fn stub_engine_output(task_id: h2ai_types::identity::TaskId) -> EngineOutput
 #[cfg(test)]
 mod nats_mock_tests {
     use super::*;
-    use std::sync::Arc;
     use h2ai_state::backend::NatsBackend;
+    use std::sync::Arc;
 
     #[test]
     fn mock_nats_backend_satisfies_nats_backend_trait() {

@@ -1,5 +1,5 @@
-use crate::{error::ApiError, state::AppState};
 use crate::task_pipeline::{run_task_pipeline, TaskPipelineInput};
+use crate::{error::ApiError, state::AppState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -97,25 +97,28 @@ pub async fn submit_task(
     let oracle_spec = manifest.oracle.clone();
     let (srani_ema_cfi, srani_count) = *ts.srani_state.read().await;
 
-    let nats_dispatch = state.agent_provider.as_ref().map(|provider| NatsDispatchConfig {
-        nats: state
-            .task_dispatch_nats
-            .clone()
-            .expect("NATS required for agent dispatch"),
-        provider: Arc::clone(provider),
-        agent_descriptor: AgentDescriptor {
-            model: state.cfg.nats_agent_model.clone(),
-            tools: vec![AgentTool::Shell, AgentTool::FileSystem],
-            cost_tier: CostTier::Mid,
-        },
-        task_requirements: TaskRequirements {
-            max_cost_tier: CostTier::High,
-            required_tools: vec![AgentTool::Shell, AgentTool::FileSystem],
-        },
-        task_timeout: Duration::from_secs(state.cfg.nats_agent_timeout_secs),
-        payload_store: state.payload_store.clone(),
-        offload_threshold_bytes: 8 * 1024,
-    });
+    let nats_dispatch = state
+        .agent_provider
+        .as_ref()
+        .map(|provider| NatsDispatchConfig {
+            nats: state
+                .task_dispatch_nats
+                .clone()
+                .expect("NATS required for agent dispatch"),
+            provider: Arc::clone(provider),
+            agent_descriptor: AgentDescriptor {
+                model: state.cfg.nats_agent_model.clone(),
+                tools: vec![AgentTool::Shell, AgentTool::FileSystem],
+                cost_tier: CostTier::Mid,
+            },
+            task_requirements: TaskRequirements {
+                max_cost_tier: CostTier::High,
+                required_tools: vec![AgentTool::Shell, AgentTool::FileSystem],
+            },
+            task_timeout: Duration::from_secs(state.cfg.nats_agent_timeout_secs),
+            payload_store: state.payload_store.clone(),
+            offload_threshold_bytes: 8 * 1024,
+        });
 
     let shadow_audit_ctx = if let Some(ref adapter) = state.shadow_auditor_adapter {
         let promoted_snap = state.promoted_audit_domains.read().await.clone();
@@ -489,7 +492,10 @@ mod tests {
         TaskManifest {
             description: "test task".into(),
             pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-            topology: TopologyRequest { kind: "ensemble".into(), branching_factor: None },
+            topology: TopologyRequest {
+                kind: "ensemble".into(),
+                branching_factor: None,
+            },
             explorers: ExplorerRequest {
                 count: explorer_count,
                 tau_min: Some(0.3),
@@ -519,11 +525,17 @@ mod tests {
     }
 
     fn get_req(uri: &str) -> Request<Body> {
-        Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -551,7 +563,7 @@ mod tests {
         let result = compute_j_eff_raw(0, 5, 0.7, 0.0);
         assert!(result.is_some());
         let v = result.unwrap();
-        assert!(v >= 0.0 && v <= 1.0, "out of [0,1]: {v}");
+        assert!((0.0..=1.0).contains(&v), "out of [0,1]: {v}");
         assert_eq!(v, 0.0);
     }
 
@@ -584,7 +596,10 @@ mod tests {
     async fn task_status_returns_400_for_invalid_uuid() {
         let state = test_state();
         let app = task_app(state);
-        let resp = app.oneshot(get_req("/default/tasks/not-a-uuid")).await.unwrap();
+        let resp = app
+            .oneshot(get_req("/default/tasks/not-a-uuid"))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -645,7 +660,10 @@ mod tests {
         let state = test_state();
         let app = task_app(state);
         let resp = app
-            .oneshot(post_json("/default/tasks/bad-uuid/clarify", json!({"answer": "yes"})))
+            .oneshot(post_json(
+                "/default/tasks/bad-uuid/clarify",
+                json!({"answer": "yes"}),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -740,7 +758,10 @@ mod tests {
         let state = test_state();
         let app = task_app(state);
         let manifest = serde_json::to_value(valid_manifest(2)).unwrap();
-        let resp = app.oneshot(post_json("/default/tasks", manifest)).await.unwrap();
+        let resp = app
+            .oneshot(post_json("/default/tasks", manifest))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let v = body_json(resp).await;
         assert_eq!(v["error"], "CalibrationRequiredError");
@@ -752,7 +773,10 @@ mod tests {
         seed_calibration(&state).await; // n_max ≈ 13
         let app = task_app(state);
         let manifest = serde_json::to_value(valid_manifest(20)).unwrap();
-        let resp = app.oneshot(post_json("/default/tasks", manifest)).await.unwrap();
+        let resp = app
+            .oneshot(post_json("/default/tasks", manifest))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let v = body_json(resp).await;
         assert_eq!(v["error"], "ExplorerBudgetExceeded");
@@ -767,7 +791,10 @@ mod tests {
         state.task_semaphore = Arc::new(Semaphore::new(0));
         let app = task_app(state);
         let manifest = serde_json::to_value(valid_manifest(2)).unwrap();
-        let resp = app.oneshot(post_json("/default/tasks", manifest)).await.unwrap();
+        let resp = app
+            .oneshot(post_json("/default/tasks", manifest))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let v = body_json(resp).await;
         assert_eq!(v["error"], "ServiceUnavailable");
@@ -779,7 +806,10 @@ mod tests {
         seed_calibration(&state).await;
         let app = task_app(state);
         let manifest = serde_json::to_value(valid_manifest(2)).unwrap();
-        let resp = app.oneshot(post_json("/default/tasks", manifest)).await.unwrap();
+        let resp = app
+            .oneshot(post_json("/default/tasks", manifest))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let v = body_json(resp).await;
         assert!(v["task_id"].is_string(), "task_id missing");

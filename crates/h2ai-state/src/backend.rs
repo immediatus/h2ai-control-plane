@@ -190,10 +190,7 @@ pub trait SkillStore: Send + Sync {
 
     /// Load the tenant's skill node list as raw JSON bytes.
     /// Returns an empty `Vec` (not an error) when no entry exists.
-    async fn get_skill_nodes(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<u8>, NatsError>;
+    async fn get_skill_nodes(&self, tenant_id: &TenantId) -> Result<Vec<u8>, NatsError>;
 }
 
 #[async_trait]
@@ -205,10 +202,7 @@ impl<T: SkillStore + Send + Sync + ?Sized> SkillStore for Arc<T> {
     ) -> Result<(), NatsError> {
         (**self).put_skill_nodes(tenant_id, json_bytes).await
     }
-    async fn get_skill_nodes(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<u8>, NatsError> {
+    async fn get_skill_nodes(&self, tenant_id: &TenantId) -> Result<Vec<u8>, NatsError> {
         (**self).get_skill_nodes(tenant_id).await
     }
 }
@@ -308,14 +302,18 @@ impl<T: ConflictStore + Send + Sync + ?Sized> ConflictStore for Arc<T> {
         tenant_id: &TenantId,
         bucket_prefix: &str,
     ) -> Result<(), NatsError> {
-        (**self).ensure_conflict_bucket(tenant_id, bucket_prefix).await
+        (**self)
+            .ensure_conflict_bucket(tenant_id, bucket_prefix)
+            .await
     }
     async fn get_conflict_accumulator(
         &self,
         tenant_id: &TenantId,
         bucket_prefix: &str,
     ) -> Result<Option<ConflictRateAccumulator>, NatsError> {
-        (**self).get_conflict_accumulator(tenant_id, bucket_prefix).await
+        (**self)
+            .get_conflict_accumulator(tenant_id, bucket_prefix)
+            .await
     }
     async fn put_conflict_accumulator(
         &self,
@@ -366,10 +364,8 @@ impl<T: SignalSubscriber + Send + Sync + ?Sized> SignalSubscriber for Arc<T> {
 /// `get_shadow_promoted_domains` returns an empty set if nothing has been written.
 #[async_trait]
 pub trait ShadowDomainStore: Send + Sync {
-    async fn put_shadow_promoted_domains(
-        &self,
-        domains: &HashSet<String>,
-    ) -> Result<(), NatsError>;
+    async fn put_shadow_promoted_domains(&self, domains: &HashSet<String>)
+        -> Result<(), NatsError>;
 
     async fn get_shadow_promoted_domains(&self) -> Result<HashSet<String>, NatsError>;
 }
@@ -406,10 +402,8 @@ pub trait TaskCheckpointStore: Send + Sync {
         expected_revision: Option<u64>,
     ) -> Result<u64, NatsError>;
 
-    async fn get_task_checkpoint(
-        &self,
-        task_id: &str,
-    ) -> Result<Option<TaskCheckpoint>, NatsError>;
+    async fn get_task_checkpoint(&self, task_id: &str)
+        -> Result<Option<TaskCheckpoint>, NatsError>;
 
     async fn delete_task_checkpoint(&self, task_id: &str) -> Result<(), NatsError>;
 }
@@ -463,8 +457,7 @@ pub trait NatsBackend:
 {
 }
 
-impl<T> NatsBackend for T
-where
+impl<T> NatsBackend for T where
     T: EventPublisher
         + SnapshotStore
         + CalibrationStore

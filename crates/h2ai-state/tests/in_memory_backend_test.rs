@@ -411,15 +411,27 @@ async fn conflict_store_roundtrip() {
     let tenant = TenantId::from("test-tenant");
     let prefix = "h2ai-conflict";
 
-    backend.ensure_conflict_bucket(&tenant, prefix).await.unwrap();
+    backend
+        .ensure_conflict_bucket(&tenant, prefix)
+        .await
+        .unwrap();
 
-    let initial = backend.get_conflict_accumulator(&tenant, prefix).await.unwrap();
+    let initial = backend
+        .get_conflict_accumulator(&tenant, prefix)
+        .await
+        .unwrap();
     assert!(initial.is_none(), "no accumulator before first write");
 
     let acc = ConflictRateAccumulator::new(tenant.clone(), 0.5);
-    backend.put_conflict_accumulator(&acc, prefix).await.unwrap();
+    backend
+        .put_conflict_accumulator(&acc, prefix)
+        .await
+        .unwrap();
 
-    let loaded = backend.get_conflict_accumulator(&tenant, prefix).await.unwrap();
+    let loaded = backend
+        .get_conflict_accumulator(&tenant, prefix)
+        .await
+        .unwrap();
     assert!(loaded.is_some(), "accumulator readable after write");
 }
 
@@ -438,11 +450,7 @@ async fn signal_subscriber_empty_stream_and_delete_noop() {
         .await
         .unwrap();
 
-    let item = tokio::time::timeout(
-        std::time::Duration::from_millis(10),
-        stream.next(),
-    )
-    .await;
+    let item = tokio::time::timeout(std::time::Duration::from_millis(10), stream.next()).await;
     // An empty stream resolves immediately with None; a timeout fires with Err.
     // Either way, no ResumeSignal is delivered.
     assert!(

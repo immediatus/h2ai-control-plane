@@ -274,12 +274,9 @@ pub struct MapeKController {
         std::collections::HashMap<h2ai_types::identity::ExplorerId, String>,
     pub(crate) pending_leader_elected_events: Vec<h2ai_types::events::LeaderElectedEvent>,
     pub(crate) pending_socratic_diagnosis_events: Vec<h2ai_types::events::SocraticDiagnosisEvent>,
-    pub(crate) ambiguity_scorecards: std::collections::HashMap<
-        (String, usize),
-        h2ai_constraints::ambiguity::AmbiguityScorecard,
-    >,
-    pub(crate) pending_ambiguity_events:
-        Vec<h2ai_types::events::ConstraintAmbiguityDetectedEvent>,
+    pub(crate) ambiguity_scorecards:
+        std::collections::HashMap<(String, usize), h2ai_constraints::ambiguity::AmbiguityScorecard>,
+    pub(crate) pending_ambiguity_events: Vec<h2ai_types::events::ConstraintAmbiguityDetectedEvent>,
     pub(crate) last_wave_violated_constraint_ids: Vec<String>,
     /// `AssembledContexts` from the most recently completed wave.
     /// Passed as `prev_assembled_contexts` to the next wave's generation phase.
@@ -892,7 +889,9 @@ impl MapeKController {
                 MapeKDecision::Return(Box::new(self.finalize(merge_out)))
             }
 
-            PipelineOutcome::Fatal(e) => MapeKDecision::Fail(e, crate::engine::EngineRunContext::default()),
+            PipelineOutcome::Fatal(e) => {
+                MapeKDecision::Fail(e, crate::engine::EngineRunContext::default())
+            }
 
             PipelineOutcome::EarlyExit(reason) => {
                 self.handle_exit_reason(reason, retry_count, filter_ratio)
@@ -1816,8 +1815,8 @@ impl MapeKController {
         wave: u32,
     ) -> Option<InstabilitySignal> {
         use h2ai_constraints::ambiguity::{
-            most_divergent_pair, score_evidence, AmbiguityEvidence, AmbiguityScorecard,
-            PatchMode, DYNAMIC_ONLY_CHECK_IDX,
+            most_divergent_pair, score_evidence, AmbiguityEvidence, AmbiguityScorecard, PatchMode,
+            DYNAMIC_ONLY_CHECK_IDX,
         };
         let acfg = self.cfg_ref.ambiguity_detection.clone();
 
@@ -1874,8 +1873,7 @@ impl MapeKController {
         let mut fired = updated;
         fired.rewrite_applied = true;
         let patch_mode = fired.patch_mode();
-        let evidence_lines: Vec<String> =
-            fired.evidence.iter().map(ToString::to_string).collect();
+        let evidence_lines: Vec<String> = fired.evidence.iter().map(ToString::to_string).collect();
         let final_score = fired.score;
         self.ambiguity_scorecards.insert(key, fired);
 
@@ -2606,10 +2604,7 @@ mod gap_f8_ambiguity_tests {
     use super::*;
     use h2ai_types::sizing::RoleErrorCost;
 
-    fn pruned_event_with_reason(
-        cid: &str,
-        reason: &str,
-    ) -> h2ai_types::events::BranchPrunedEvent {
+    fn pruned_event_with_reason(cid: &str, reason: &str) -> h2ai_types::events::BranchPrunedEvent {
         h2ai_types::events::BranchPrunedEvent {
             task_id: h2ai_types::identity::TaskId::new(),
             explorer_id: h2ai_types::identity::ExplorerId::new(),
@@ -2699,7 +2694,10 @@ mod gap_f8_ambiguity_tests {
             .ambiguity_scorecards
             .values()
             .any(|sc| sc.constraint_id == "C-002" && !sc.evidence.is_empty());
-        assert!(has_scorecard, "scorecard must be updated after accumulation");
+        assert!(
+            has_scorecard,
+            "scorecard must be updated after accumulation"
+        );
     }
 
     /// Threshold crossed with Precise patch mode → returns real check_index.
@@ -2734,7 +2732,10 @@ mod gap_f8_ambiguity_tests {
             .find_instability(2)
             .expect("threshold crossed, must return Some");
         assert_eq!(sig.constraint_id, "C-003");
-        assert_eq!(sig.check_index, 2, "Precise patch mode must set real check_index");
+        assert_eq!(
+            sig.check_index, 2,
+            "Precise patch mode must set real check_index"
+        );
         assert!(!sig.ambiguity_evidence.is_empty());
         assert!(sig.ambiguity_score >= cfg.ambiguity_detection.score_threshold);
     }
@@ -2757,7 +2758,11 @@ mod gap_f8_ambiguity_tests {
             "DiagnosticOnly must return None; got {result:?}"
         );
         let events = ctrl.take_pending_ambiguity_events();
-        assert_eq!(events.len(), 1, "one pending ambiguity event must be queued");
+        assert_eq!(
+            events.len(),
+            1,
+            "one pending ambiguity event must be queued"
+        );
         assert_eq!(events[0].constraint_id, "C-004");
         assert!(events[0].check_idx.is_none());
     }

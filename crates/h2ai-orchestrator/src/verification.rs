@@ -601,6 +601,7 @@ impl VerificationPhase {
     /// returns 0.0 (hard failure — e.g. `NegativeKeyword` found a prohibited term), heavy
     /// children (`LlmJudge`, Oracle) are skipped entirely. This avoids spurious LLM calls
     /// when a proposal already fails on fast deterministic checks.
+    #[allow(clippy::too_many_arguments)]
     fn eval_predicate_async<'a>(
         pred: &'a ConstraintPredicate,
         output: &'a str,

@@ -104,9 +104,9 @@ impl ConstraintRepairPlan {
     /// Render as a structured prompt section.
     /// Raw proposal text is never included — only constraint-derived information.
     pub fn render(&self) -> String {
-        let mut parts =
-            vec!["Your previous attempt violated these constraints. Revise your approach:\n"
-                .to_string()];
+        let mut parts = vec![
+            "Your previous attempt violated these constraints. Revise your approach:\n".to_string(),
+        ];
         for e in &self.entries {
             parts.push(format!(
                 "### [{id}] score={score:.2} [{sev}]\n\
@@ -139,12 +139,10 @@ pub fn synthesize_repair_plan(violations: &[ConstraintViolation]) -> Option<Cons
                 .criteria_pass
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .or_else(|| {
-                    if v.constraint_description.is_empty() {
-                        None
-                    } else {
-                        Some(v.constraint_description.as_str())
-                    }
+                .or(if v.constraint_description.is_empty() {
+                    None
+                } else {
+                    Some(v.constraint_description.as_str())
                 })
                 .unwrap_or("see constraint definition")
                 .to_string();
@@ -152,10 +150,7 @@ pub fn synthesize_repair_plan(violations: &[ConstraintViolation]) -> Option<Cons
             let mut what_failed = v
                 .verifier_reason
                 .as_deref()
-                .unwrap_or(&format!(
-                    "constraint not satisfied (score={:.2})",
-                    v.score
-                ))
+                .unwrap_or(&format!("constraint not satisfied (score={:.2})", v.score))
                 .to_string();
             // Append failed check indices when available.
             let failed_checks: Vec<usize> = v

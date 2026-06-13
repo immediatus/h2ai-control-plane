@@ -38,7 +38,6 @@ mod debug_record;
 mod error;
 mod metrics;
 mod opro;
-mod task_pipeline;
 mod oracle;
 mod oracle_worker;
 mod recovery;
@@ -46,6 +45,7 @@ mod rho_ema;
 mod routes;
 mod shadow_auditor;
 mod state;
+mod task_pipeline;
 mod tenant_registry;
 
 use axum::Router;
@@ -334,10 +334,13 @@ async fn main() {
         };
         // Compose base wiki provider with the live skill_provider so extracted skills reach
         // the thinking loop on every knowledge query.
-        CompositeProvider::new(vec![
-            base,
-            Arc::clone(&app_state.skill_provider) as Arc<dyn KnowledgeProvider>,
-        ], app_state.cfg.knowledge_domain_scoping)
+        CompositeProvider::new(
+            vec![
+                base,
+                Arc::clone(&app_state.skill_provider) as Arc<dyn KnowledgeProvider>,
+            ],
+            app_state.cfg.knowledge_domain_scoping,
+        )
     };
 
     app_state
@@ -452,8 +455,14 @@ async fn main() {
         let default_oracle_ts =
             app_state.tenant_state(&h2ai_types::identity::TenantId::default_tenant());
         let accumulator = crate::oracle::OracleAccumulator {
-            nats_raw: app_state.nats_raw_client.clone().expect("NATS required in production"),
-            nats_state: app_state.nats_concrete.clone().expect("NATS required in production"),
+            nats_raw: app_state
+                .nats_raw_client
+                .clone()
+                .expect("NATS required in production"),
+            nats_state: app_state
+                .nats_concrete
+                .clone()
+                .expect("NATS required in production"),
             bandit: default_oracle_ts.bandit_state.clone(),
             metrics: app_state.metrics.clone(),
             oracle_window_size: app_state.cfg.oracle_window_size,

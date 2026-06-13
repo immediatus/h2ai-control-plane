@@ -1436,21 +1436,18 @@ mod gap_f6_event_tests {
             degraded: false,
             n_items: 2,
             n_unjudged: 0,
-            verdicts: vec![
-                ProbeVerdictEntry {
-                    constraint_id: "C-1".into(),
-                    verdict: "ACKNOWLEDGED".into(),
-                    is_hard: true,
-                    gated: false,
-                    rationale: "plan mentions Lua".into(),
-                },
-            ],
+            verdicts: vec![ProbeVerdictEntry {
+                constraint_id: "C-1".into(),
+                verdict: "ACKNOWLEDGED".into(),
+                is_hard: true,
+                gated: false,
+                rationale: "plan mentions Lua".into(),
+            }],
             re_iterated: false,
             timestamp: chrono::Utc::now(),
         };
         let json = serde_json::to_string(&e).expect("serialize");
-        let back: AwarenessProbeCompletedEvent =
-            serde_json::from_str(&json).expect("deserialize");
+        let back: AwarenessProbeCompletedEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.n_items, 2);
         assert_eq!(back.verdicts[0].constraint_id, "C-1");
         assert_eq!(back.mode, "shadow");
@@ -1744,7 +1741,9 @@ mod cost_propagation_tests {
             "calibration_source": "Measured"
         }"#;
         let ev: TaskAttributionEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(ev.skill_nodes_injected, 0,
-            "skill_nodes_injected must default to 0 for old events");
+        assert_eq!(
+            ev.skill_nodes_injected, 0,
+            "skill_nodes_injected must default to 0 for old events"
+        );
     }
 }
