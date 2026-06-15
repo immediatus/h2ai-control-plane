@@ -32,6 +32,11 @@ criteria:
     - "Does the proposal keep PostgreSQL advisory locks (pg_advisory_lock, pg_advisory_xact_lock, pg_try_advisory_lock) off all paths that read or write quota state?"
     - "Does the proposal use a Redis-native atomicity mechanism, keeping ZooKeeper/etcd/Consul distributed locks off all quota state mutation paths?"
     - "Does the proposal use Redis Lua EVAL as the primary atomicity mechanism for quota state mutations? If WATCH/MULTI/EXEC is present, is it strictly bounded (MAX_RETRIES ≤ 3) with a non-blocking error response (e.g., HTTP 429) on exhaustion — and NOT an unbounded retry loop?"
+  check_repair_hints:
+    - "Replace SETNX-based Redlock or any blocking spin-lock with a single redis.eval(script, [key], [amount]) call. Redis serializes Lua script execution — no external lock is needed. Lock-free quota mutation pattern: check balance + debit in one EVAL."
+    - "Remove all pg_advisory_lock, pg_advisory_xact_lock, and pg_try_advisory_lock calls from the charge path. Quota state lives exclusively in Redis; CockroachDB is updated asynchronously."
+    - "Remove ZooKeeper, etcd, and Consul distributed lock acquisitions from the quota mutation path. Redis Lua EVAL provides equivalent serialization without the extra round-trip."
+    - "Use Redis Lua EVAL as the primary mechanism. If WATCH/MULTI/EXEC is present, cap retries at MAX_RETRIES=3 and return HTTP 429 on exhaustion — never an unbounded retry loop. SETNX is only acceptable as a one-shot idempotency guard (not a blocking lock): the caller must NOT wait if the SETNX loses."
 
 failure_modes:
   - id: FM-008-1

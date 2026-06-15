@@ -303,7 +303,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
 
     let mut out = String::with_capacity(2048);
     if !correction_block.is_empty() {
-        write!(out, "{correction_block}\n").unwrap();
+        writeln!(out, "{correction_block}").unwrap();
     }
     write!(out, "{system_context_with_rubric}").unwrap();
 
@@ -351,10 +351,10 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
             for (pin_id, hint) in pins {
                 match hint {
                     Some(h) if !h.is_empty() => {
-                        write!(out, "  \u{2713} {pin_id}: {h}\n").unwrap();
+                        writeln!(out, "  \u{2713} {pin_id}: {h}").unwrap();
                     }
                     _ => {
-                        write!(out, "  \u{2713} {pin_id}\n").unwrap();
+                        writeln!(out, "  \u{2713} {pin_id}").unwrap();
                     }
                 }
             }
@@ -450,7 +450,11 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
 
     // Coupled constraint guardrail: passing constraints the LLM must not break.
     if !coupled_constraint_hints.is_empty() {
-        write!(out, "\n\n[RELATED CONSTRAINTS THAT MUST NOT BE BROKEN WHILE REPAIRING THE TARGETS ABOVE:").unwrap();
+        write!(
+            out,
+            "\n\n[RELATED CONSTRAINTS THAT MUST NOT BE BROKEN WHILE REPAIRING THE TARGETS ABOVE:"
+        )
+        .unwrap();
         for (coupled_id, hint) in coupled_constraint_hints {
             match hint {
                 Some(h) if !h.is_empty() => {
@@ -461,7 +465,11 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
                 }
             }
         }
-        write!(out, "\nFix the REPAIR TARGET(s) above without violating these related constraints.]").unwrap();
+        write!(
+            out,
+            "\nFix the REPAIR TARGET(s) above without violating these related constraints.]"
+        )
+        .unwrap();
     }
 
     // Zone-3 OSP audit text appended after all REPAIR TARGET blocks.
@@ -520,45 +528,6 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
 
     write!(out, "\n\n--- END REPAIR INSTRUCTIONS ---").unwrap();
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_constraints::conflict::ConstraintConflictGraph;
-
-    #[test]
-    fn repair_context_includes_coupled_constraint_hints() {
-        let graph = ConstraintConflictGraph::build(&[]);
-        let targets: Vec<RepairTarget> = vec![];
-        let domain_syntheses: Vec<h2ai_types::gap_i1::DomainSynthesis> = vec![];
-        let partial_passes: Vec<PartialPass> = vec![];
-
-        let input = RepairInput {
-            prior_proposal_text: "",
-            targets: &targets,
-            zone3_hints: None,
-            conflict_graph: &graph,
-            retry_count: 1,
-            attempts_remaining: 2,
-            system_context_with_rubric: "",
-            checks: &[],
-            partial_passes: &partial_passes,
-            prior_best_score: None,
-            domain_syntheses: &domain_syntheses,
-            coupled_constraint_hints: &[
-                ("CONSTRAINT-TAU-2".to_string(), Some("quota audit must use PostgreSQL INSERT-only".to_string())),
-            ],
-            passing_constraint_pins: &[],
-        };
-        let ctx = build_repair_context(input);
-        assert!(ctx.contains("CONSTRAINT-TAU-2"), "repair context must include coupled constraint id");
-        assert!(
-            ctx.contains("quota audit must use PostgreSQL INSERT-only"),
-            "repair context must include coupled constraint hint text"
-        );
-        assert!(ctx.contains("MUST NOT BE BROKEN"), "repair context must frame coupled hints as a non-break constraint");
-    }
 }
 
 /// Input for the terminal synthesis wave context builder.
@@ -741,4 +710,301 @@ pub fn missing_constraint_ids(
             }
         })
         .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DPPM-MetaRefine support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Output from one per-cluster parallel solver in the DPPM wave.
+#[derive(Debug, Clone)]
+pub struct SolverOutput {
+    /// Constraint IDs belonging to this cluster.
+    pub cluster_ids: Vec<String>,
+    /// The proposal text produced by the cluster solver LLM call.
+    pub proposal_text: String,
+    /// Check indices the seed partial satisfied — prior-wave evidence.
+    pub seed_passed_checks: Vec<usize>,
+}
+
+/// Detects oscillating MUS pairs from cross-wave pruned events.
+/// Returns `(constraint_a, constraint_b)` pairs where A was fixed at wave N+1
+/// (disappeared from pruned) but re-appeared at wave N+2, and B was broken
+/// at wave N+1 (appeared for the first time). Deduplicates pairs.
+pub fn find_oscillation_pairs(
+    pruned: &[h2ai_types::events::BranchPrunedEvent],
+    _all_check_ids: &[String],
+) -> Vec<(String, String)> {
+    use std::collections::{BTreeSet, HashSet};
+
+    let all_waves: BTreeSet<u32> = pruned.iter().map(|e| e.retry_count).collect();
+    let waves: Vec<u32> = all_waves.into_iter().collect();
+
+    if waves.len() < 3 {
+        return vec![];
+    }
+
+    let violations_at = |wave: u32| -> HashSet<String> {
+        pruned
+            .iter()
+            .filter(|e| e.retry_count == wave)
+            .flat_map(|e| {
+                e.violated_constraints
+                    .iter()
+                    .map(|v| v.constraint_id.clone())
+            })
+            .collect()
+    };
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+
+    for i in 0..waves.len().saturating_sub(2) {
+        let w0 = waves[i];
+        let w1 = waves[i + 1];
+        let w2 = waves[i + 2];
+
+        let v0 = violations_at(w0);
+        let v1 = violations_at(w1);
+        let v2 = violations_at(w2);
+
+        // C1: violated at w0, NOT at w1, violated again at w2 → oscillates
+        let fixed_then_broke: HashSet<String> = v0
+            .intersection(&v2)
+            .filter(|c| !v1.contains(*c))
+            .cloned()
+            .collect();
+
+        // C2: appeared at w1 for the first time (not at w0) → the other side of MUS
+        let new_at_w1: HashSet<String> = v1.difference(&v0).cloned().collect();
+
+        for c1 in &fixed_then_broke {
+            for c2 in &new_at_w1 {
+                let pair = if c1 <= c2 {
+                    (c1.clone(), c2.clone())
+                } else {
+                    (c2.clone(), c1.clone())
+                };
+                if seen.insert(pair.clone()) {
+                    pairs.push(pair);
+                }
+            }
+        }
+    }
+
+    pairs
+}
+
+/// Returns the `PartialPass` (from `partials`) with the maximum number of
+/// passing check indices that overlap with `cluster_check_indices`.
+/// Returns `None` if no partial has any overlap.
+pub fn seed_for_cluster(
+    cluster_check_indices: &[usize],
+    partials: &[PartialPass],
+) -> Option<PartialPass> {
+    use std::collections::HashSet;
+    let cluster_set: HashSet<usize> = cluster_check_indices.iter().copied().collect();
+    partials
+        .iter()
+        .filter_map(|p| {
+            let passed = p.passed_check_indices();
+            let overlap = passed.intersection(&cluster_set).count();
+            if overlap > 0 {
+                Some((overlap, p))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(overlap, _)| *overlap)
+        .map(|(_, p)| p.clone())
+}
+
+// ── Pipeline Resilience: Gap Quality Assessment ───────────────────────────────
+
+/// Verdict from assess_gap_quality. Callers evict with:
+/// `matches!(verdict, GapQualityVerdict::Ineffective)`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GapQualityVerdict {
+    /// Not enough post-injection waves yet to judge.
+    Pending,
+    /// Pass rate improved by at least min_improvement_to_retain.
+    Effective,
+    /// Pass rate did not improve sufficiently after min_post_injection_waves.
+    Ineffective,
+}
+
+/// Pure function: classify gap synthesis effectiveness.
+///
+/// Returns `Pending` when injected_at_wave is None or fewer than
+/// cfg.min_post_injection_waves entries in post_injection_pass_rates.
+/// Returns `Effective` when latest post-injection pass rate - pre_injection_pass_rate >= cfg.min_improvement_to_retain.
+/// Returns `Ineffective` otherwise.
+#[must_use]
+pub fn assess_gap_quality(
+    synthesis: &h2ai_types::gap_i1::DomainSynthesis,
+    cfg: &h2ai_config::GapQualityConfig,
+) -> GapQualityVerdict {
+    if synthesis.injected_at_wave.is_none() {
+        return GapQualityVerdict::Pending;
+    }
+    let post = &synthesis.post_injection_pass_rates;
+    if post.len() < cfg.min_post_injection_waves as usize {
+        return GapQualityVerdict::Pending;
+    }
+    let pre = synthesis.pre_injection_pass_rate.unwrap_or(0.0);
+    let latest = post.last().copied().unwrap_or(0.0);
+    if latest - pre >= cfg.min_improvement_to_retain {
+        GapQualityVerdict::Effective
+    } else {
+        GapQualityVerdict::Ineffective
+    }
+}
+
+// ── Pipeline Resilience: OOM Guard ───────────────────────────────────────────
+
+/// Error reading /proc/self/status for VmRSS.
+#[derive(Debug, thiserror::Error)]
+pub enum OomReadError {
+    #[error("I/O error reading /proc/self/status: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Failed to parse VmRSS value from /proc/self/status: {0}")]
+    Parse(String),
+}
+
+/// Signal emitted when RSS exceeds the configured limit.
+#[derive(Debug, Clone)]
+pub struct OomSignal {
+    pub rss_mb: u64,
+    pub limit_mb: u64,
+}
+
+/// Read VmRSS from /proc/self/status. Returns megabytes.
+///
+/// On non-Linux platforms always returns `Ok(0)`.
+pub fn read_rss_mb() -> Result<u64, OomReadError> {
+    #[cfg(target_os = "linux")]
+    {
+        let contents = std::fs::read_to_string("/proc/self/status")?;
+        for line in contents.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                let kb_str = rest.split_whitespace().next().unwrap_or("0");
+                let kb: u64 = kb_str
+                    .parse()
+                    .map_err(|_| OomReadError::Parse(kb_str.to_string()))?;
+                return Ok(kb / 1024);
+            }
+        }
+        Err(OomReadError::Parse("VmRSS line not found".to_string()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(0)
+    }
+}
+
+/// Pure function: determine if current RSS exceeds the abort threshold.
+///
+/// Returns `None` when guard is disabled or RSS is below threshold.
+/// Returns `Some(OomSignal)` when RSS >= cfg.rss_abort_mb.
+#[must_use]
+pub fn oom_signal(rss_mb: u64, cfg: &h2ai_config::OomGuardConfig) -> Option<OomSignal> {
+    if !cfg.enabled {
+        return None;
+    }
+    if rss_mb >= cfg.rss_abort_mb {
+        Some(OomSignal {
+            rss_mb,
+            limit_mb: cfg.rss_abort_mb,
+        })
+    } else {
+        None
+    }
+}
+
+/// Builds the full merge-step LLM context by prepending `system_context_with_rubric`
+/// (and an optional `balancing_instruction`) to the `INTEGRATION_WAVE_PROMPT` body,
+/// with `{constraint_count}` and `{partial_list}` substituted.
+///
+/// `constraint_checks` maps constraint IDs to their binary check texts.  When
+/// non-empty, the exact check wording is embedded inside each cluster section so
+/// the integration LLM cannot regress on atomicity primitives or missing Lua steps.
+pub fn build_integration_wave_context(
+    system_context_with_rubric: &str,
+    balancing_instruction: &str,
+    solver_outputs: &[SolverOutput],
+    constraint_count: usize,
+    constraint_checks: &[(String, Vec<String>)],
+) -> String {
+    let partial_list: String = solver_outputs
+        .iter()
+        .enumerate()
+        .map(|(n, output)| {
+            let seed_checks: String = if output.seed_passed_checks.is_empty() {
+                "none".to_owned()
+            } else {
+                output
+                    .seed_passed_checks
+                    .iter()
+                    .map(|i| (i + 1).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+
+            // Collect the binary check texts for every constraint in this cluster.
+            let checks_block: String = output
+                .cluster_ids
+                .iter()
+                .filter_map(|cid| {
+                    constraint_checks
+                        .iter()
+                        .find(|(id, _)| id == cid)
+                        .filter(|(_, checks)| !checks.is_empty())
+                        .map(|(id, checks)| {
+                            let lines: String = checks
+                                .iter()
+                                .enumerate()
+                                .map(|(i, text)| format!("    [{}] {}", i + 1, text))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            format!("  {}:\n{}", id, lines)
+                        })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if checks_block.is_empty() {
+                format!(
+                    "### Cluster {}: {}\nPrior evidence (seed solution checks): {}\n---\n{}\n---",
+                    n + 1,
+                    output.cluster_ids.join(", "),
+                    seed_checks,
+                    output.proposal_text
+                )
+            } else {
+                format!(
+                    "### Cluster {}: {}\nRequired binary checks (ALL must pass in unified proposal):\n{}\nPrior evidence (seed solution checks): {}\n---\n{}\n---",
+                    n + 1,
+                    output.cluster_ids.join(", "),
+                    checks_block,
+                    seed_checks,
+                    output.proposal_text
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let body = h2ai_types::prompts::INTEGRATION_WAVE_PROMPT
+        .replace("{constraint_count}", &constraint_count.to_string())
+        .replace("{partial_list}", &partial_list);
+
+    let mut out = String::with_capacity(4096);
+    out.push_str(system_context_with_rubric);
+    if !balancing_instruction.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(balancing_instruction);
+    }
+    out.push_str("\n\n");
+    out.push_str(&body);
+    out
 }

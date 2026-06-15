@@ -11,6 +11,7 @@ fn constraint_violation_serde_round_trip() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     };
     let json = serde_json::to_string(&v).unwrap();
     let back: ConstraintViolation = serde_json::from_str(&json).unwrap();
@@ -44,8 +45,11 @@ fn branch_pruned_event_carries_violations() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: None,
         }],
         timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     };
     assert_eq!(e.violated_constraints.len(), 1);
     assert_eq!(e.violated_constraints[0].constraint_id, "GDPR-001");

@@ -12,6 +12,7 @@ fn v(constraint_id: &str, hint: Option<&str>) -> ConstraintViolation {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 

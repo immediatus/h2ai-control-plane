@@ -150,6 +150,11 @@ impl VerificationPhase {
                         verifier_reason: r.verifier_reason.clone(),
                         check_verdicts: r.check_verdicts.clone(),
                         criteria_pass: r.criteria_pass.clone(),
+                        check_reasons: if r.check_reasons.is_empty() {
+                            None
+                        } else {
+                            Some(r.check_reasons.clone())
+                        },
                     })
                     .collect();
                 failed.push((proposal, results, violations, any_cache_hit));
@@ -391,6 +396,7 @@ impl VerificationPhase {
                     verifier_reason: ref_result.verifier_reason.clone(),
                     check_verdicts: ref_result.check_verdicts.clone(),
                     criteria_pass: ref_result.criteria_pass.clone(),
+                    check_reasons: ref_result.check_reasons.clone(),
                 });
             }
 
@@ -419,6 +425,11 @@ impl VerificationPhase {
                         verifier_reason: r.verifier_reason.clone(),
                         check_verdicts: r.check_verdicts.clone(),
                         criteria_pass: r.criteria_pass.clone(),
+                        check_reasons: if r.check_reasons.is_empty() {
+                            None
+                        } else {
+                            Some(r.check_reasons.clone())
+                        },
                     })
                     .collect();
                 failed.push((proposal, final_results, violations, false));
@@ -520,6 +531,7 @@ impl VerificationPhase {
                     },
                     check_verdicts: vec![],
                     criteria_pass: None,
+                    check_reasons: vec![],
                 }],
                 false,
             );
@@ -564,6 +576,17 @@ impl VerificationPhase {
                     tau
                 };
 
+                // When binary checks are present, append the evidence format instruction so
+                // the judge emits structured per-check reasoning for `parse_check_reasons`.
+                let effective_sp = if n_checks > 0 {
+                    format!(
+                        "{sp}\n\n{}",
+                        h2ai_config::prompts::CHECK_EVIDENCE_FORMAT_INSTRUCTION
+                    )
+                } else {
+                    sp.clone()
+                };
+
                 let (score, verifier_reason, hit) = if let Some(score) = cached_score {
                     tracing::debug!(
                         target: "h2ai.verification.cache",
@@ -577,7 +600,7 @@ impl VerificationPhase {
                         &predicate,
                         &output,
                         evaluator,
-                        &sp,
+                        &effective_sp,
                         effective_tau,
                         max_tokens,
                         effective_passes,
@@ -595,6 +618,10 @@ impl VerificationPhase {
                     .as_deref()
                     .map(|r| parse_check_verdicts(r, n_checks))
                     .unwrap_or_default();
+                let check_reasons = verifier_reason
+                    .as_deref()
+                    .map(|r| parse_check_reasons(r, n_checks))
+                    .unwrap_or_default();
                 let effective_score = score_from_verdicts(&check_verdicts, n_checks, score);
                 (
                     ComplianceResult {
@@ -605,6 +632,7 @@ impl VerificationPhase {
                         constraint_description,
                         verifier_reason,
                         check_verdicts,
+                        check_reasons,
                         criteria_pass,
                     },
                     hit,
@@ -1094,66 +1122,33 @@ pub fn parse_check_verdicts(reason: &str, n_checks: usize) -> Vec<bool> {
     verdicts
 }
 
-#[cfg(test)]
-mod check_verdicts_tests {
-    use super::{parse_check_verdicts, score_from_verdicts};
-
-    #[test]
-    fn score_from_verdicts_computes_fraction() {
-        assert_eq!(score_from_verdicts(&[true, false, true, true], 4, 0.5), 0.75);
-        assert_eq!(score_from_verdicts(&[false, false], 2, 0.9), 0.0);
-        assert_eq!(score_from_verdicts(&[true, true, true], 3, 0.1), 1.0);
+/// Extract the full text of each per-check segment from a LlmJudge CoT reason string.
+///
+/// Parallel to `parse_check_verdicts`: index i contains the full segment text for CHECK i+1.
+/// Empty string for checks whose segment was not found in the reason.
+/// Returns empty Vec when n_checks == 0.
+#[must_use]
+pub fn parse_check_reasons(reason: &str, n_checks: usize) -> Vec<String> {
+    if n_checks == 0 {
+        return vec![];
     }
-
-    #[test]
-    fn score_from_verdicts_falls_back_when_no_checks() {
-        assert_eq!(score_from_verdicts(&[], 0, 0.42), 0.42);
-        assert_eq!(score_from_verdicts(&[], 3, 0.7), 0.7);
+    let mut out: Vec<String> = vec![String::new(); n_checks];
+    for segment in reason.split("CHECK ").skip(1) {
+        let segment = segment.trim();
+        let colon_pos = match segment.find(':') {
+            Some(p) => p,
+            None => continue,
+        };
+        let num_str = segment[..colon_pos].trim();
+        let check_num: usize = match num_str.parse() {
+            Ok(n) if n >= 1 => n,
+            _ => continue,
+        };
+        let idx = check_num - 1;
+        if idx >= n_checks {
+            continue;
+        }
+        out[idx] = format!("CHECK {}", segment);
     }
-
-    #[test]
-    fn score_from_verdicts_falls_back_on_empty_verdicts_with_nonzero_n() {
-        // verdicts empty but n_checks > 0: fallback (parse yielded nothing)
-        assert_eq!(score_from_verdicts(&[], 4, 0.6), 0.6);
-    }
-
-    #[test]
-    fn format_a_present_missing() {
-        // Format A: "CHECK N: PRESENT (reason)" / "CHECK N: MISSING (reason)"
-        let reason = "CHECK 1: PRESENT (Lua script found)\nCHECK 2: MISSING (no audit log)\nCHECK 3: PRESENT (JWT used)";
-        let v = parse_check_verdicts(reason, 3);
-        assert_eq!(v, vec![true, false, true]);
-    }
-
-    #[test]
-    fn format_b_arrow() {
-        // Format B: "CHECK N: explanation → PRESENT" / "CHECK N: explanation → MISSING"
-        let reason = "CHECK 1: some reason → PRESENT\nCHECK 2: another → MISSING";
-        let v = parse_check_verdicts(reason, 2);
-        assert_eq!(v, vec![true, false]);
-    }
-
-    #[test]
-    fn zero_checks_returns_empty() {
-        assert!(parse_check_verdicts("CHECK 1: PRESENT", 0).is_empty());
-    }
-
-    #[test]
-    fn out_of_range_check_number_ignored() {
-        let v = parse_check_verdicts("CHECK 5: PRESENT", 3);
-        assert_eq!(v, vec![false, false, false]);
-    }
-
-    #[test]
-    fn missing_defaults_to_false() {
-        let v = parse_check_verdicts("CHECK 1: MISSING (not implemented)", 2);
-        assert_eq!(v, vec![false, false]);
-    }
-
-    #[test]
-    fn mixed_formats_same_reason() {
-        let reason = "CHECK 1: PRESENT (ok), CHECK 2: description → PRESENT";
-        let v = parse_check_verdicts(reason, 2);
-        assert_eq!(v, vec![true, true]);
-    }
+    out
 }

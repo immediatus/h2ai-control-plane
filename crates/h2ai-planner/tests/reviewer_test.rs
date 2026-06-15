@@ -72,9 +72,15 @@ async fn reviewer_rejects_empty_plan_without_llm_call() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let outcome = PlanReviewer::evaluate(&empty, "anything", &adapter, TauValue::new(0.2).unwrap(), 256)
-        .await
-        .unwrap();
+    let outcome = PlanReviewer::evaluate(
+        &empty,
+        "anything",
+        &adapter,
+        TauValue::new(0.2).unwrap(),
+        256,
+    )
+    .await
+    .unwrap();
     assert!(matches!(outcome, ReviewOutcome::Rejected { .. }));
 }
 
@@ -104,10 +110,15 @@ async fn reviewer_rejects_cyclic_plan_without_llm_call() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let outcome =
-        PlanReviewer::evaluate(&cyclic, "anything", &adapter, TauValue::new(0.2).unwrap(), 256)
-            .await
-            .unwrap();
+    let outcome = PlanReviewer::evaluate(
+        &cyclic,
+        "anything",
+        &adapter,
+        TauValue::new(0.2).unwrap(),
+        256,
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(outcome, ReviewOutcome::Rejected { reason } if reason.contains("cycle") || reason.contains("Cyclic"))
     );
@@ -130,9 +141,15 @@ async fn reviewer_rejects_self_referential_cycle() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let outcome = PlanReviewer::evaluate(&plan, "anything", &adapter, TauValue::new(0.2).unwrap(), 256)
-        .await
-        .unwrap();
+    let outcome = PlanReviewer::evaluate(
+        &plan,
+        "anything",
+        &adapter,
+        TauValue::new(0.2).unwrap(),
+        256,
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(outcome, ReviewOutcome::Rejected { .. }),
         "self-referential dependency must be rejected"
@@ -172,9 +189,15 @@ async fn reviewer_rejects_three_node_cycle() {
         status: PlanStatus::PendingReview,
         created_at: Utc::now(),
     };
-    let outcome = PlanReviewer::evaluate(&plan, "anything", &adapter, TauValue::new(0.2).unwrap(), 256)
-        .await
-        .unwrap();
+    let outcome = PlanReviewer::evaluate(
+        &plan,
+        "anything",
+        &adapter,
+        TauValue::new(0.2).unwrap(),
+        256,
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(outcome, ReviewOutcome::Rejected { .. }),
         "3-node cycle must be rejected"
@@ -241,9 +264,15 @@ async fn reviewer_formats_unknown_dependency_id_in_summary() {
     };
     let adapter =
         mock_adapter(r#"{"approved": true, "reason": "Looks good despite unknown dep."}"#);
-    let outcome = PlanReviewer::evaluate(&plan, "some task", &adapter, TauValue::new(0.2).unwrap(), 256)
-        .await
-        .unwrap();
+    let outcome = PlanReviewer::evaluate(
+        &plan,
+        "some task",
+        &adapter,
+        TauValue::new(0.2).unwrap(),
+        256,
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(outcome, ReviewOutcome::Approved),
         "plan with phantom dep ID should still be reviewable"

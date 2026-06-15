@@ -21,10 +21,10 @@
 //!   structured plan JSON, and returns a `Vec<SubTask>`.
 //! - [`reviewer`] — `PlanReviewer::evaluate`; applies structural checks and
 //!   returns a [`ReviewOutcome`] with a pass/fail verdict and diagnostics.
-//! - `parsing` (private) — shared JSON extraction helpers used by both modules.
+//! - [`parsing`] — shared JSON extraction helpers used by both modules.
 
 pub mod decomposer;
-mod parsing;
+pub mod parsing;
 pub mod reviewer;
 
 pub use decomposer::{PlannerError, PlanningEngine};

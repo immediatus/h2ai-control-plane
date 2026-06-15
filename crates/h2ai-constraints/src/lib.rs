@@ -37,6 +37,7 @@
 //!   constraint complexity scoring used by the MAPE-K controller.
 
 pub mod ambiguity;
+pub mod clustering;
 pub mod complexity;
 pub mod conflict;
 pub mod eval;

@@ -278,3 +278,14 @@ fn task_profile_debug() {
     assert!(format!("{:?}", TaskProfile::Structural).contains("Structural"));
     assert!(format!("{:?}", TaskProfile::Reasoning).contains("Reasoning"));
 }
+
+// ── AdapterRegistry::get_by_name / with_named ────────────────────────────────
+
+#[test]
+fn registry_get_by_name_returns_named_adapter() {
+    let named = label("named");
+    let reg = h2ai_types::adapter::AdapterRegistry::new(label("reasoning"))
+        .with_named("my-adapter", named);
+    assert!(reg.get_by_name("my-adapter").is_some());
+    assert!(reg.get_by_name("nonexistent").is_none());
+}

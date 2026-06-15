@@ -158,6 +158,11 @@ pub fn run(input: Input<'_>) -> StepResult<Output> {
     // Fallback proxies when calibration is absent (Heuristic basis):
     //   p = 0.5 + CG_mean / 2  (accuracy proxy from output similarity)
     //   ρ = 1 - CG_mean        (correlation proxy from output similarity)
+    //
+    // GAP-B5 operational convention: ρ = 1 − CG_mean assumes low constraint-agreement (diverse
+    // profiles) implies lower error correlation. This assumes error patterns track constraint
+    // specialisation — an unvalidated assumption. The proxy is replaced by the empirical ρ_EMA
+    // estimator once ≥ 30 pairwise task observations have accumulated.
     let (p_mean, rho_mean, attribution_basis) = match &engine_input.calibration.ensemble {
         Some(ec) => (ec.p_mean, ec.rho_mean, ec.prediction_basis),
         None => (

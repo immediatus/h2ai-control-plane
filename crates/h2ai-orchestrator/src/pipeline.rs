@@ -21,6 +21,7 @@ use h2ai_types::agent::{
 use h2ai_types::identity::{AgentId, TaskId};
 use h2ai_types::sizing::OspConfig;
 use h2ai_types::sizing::TauValue;
+use std::collections::HashSet;
 use std::time::Duration;
 
 pub struct OrchestratorPipeline<M, P, A> {
@@ -493,6 +494,7 @@ impl<'a> ExecutionPipeline<'a> {
                     task_eval_cache: std::sync::Arc::clone(&self.task_eval_cache),
                     turn1_map: turn1_map.clone(),
                     tau_values: tau_values.clone(),
+                    bypassed_constraint_ids: params.bypassed_constraint_ids.clone(),
                 },
             )
             .await,
@@ -535,6 +537,16 @@ impl<'a> ExecutionPipeline<'a> {
         });
         events.frontier_event = frontier_event.clone();
 
+        // ── Phase 4.6: LlmJudge Coverage (enrichment) ───────────────────────────
+        let llm_covered: HashSet<String> = phases::llm_coverage::run(phases::llm_coverage::Input {
+            corpus: &self.input.constraint_corpus,
+            survivor_count: synthesis_candidates.len(),
+            bypassed_ids: &params.bypassed_constraint_ids,
+        })
+        .covered_domains
+        .into_iter()
+        .collect();
+
         // Per-explorer correctness for H1 ρ_actual.
         let adapter_correctness: Vec<(h2ai_types::identity::ExplorerId, bool)> =
             iteration_verification_events
@@ -559,9 +571,15 @@ impl<'a> ExecutionPipeline<'a> {
             let base = crate::coherence::CoherenceState::from_pruned(
                 &self.input.constraint_corpus,
                 &pruned,
-            );
+            )
+            .subtract_covered_domains(&llm_covered);
             if let Some(ref fe) = frontier_event {
-                base.with_contradictions(
+                base.filter_covered_by_survivors(
+                    &self.input.constraint_corpus,
+                    &fe.satisfaction_matrix,
+                    &fe.constraint_ids,
+                )
+                .with_contradictions(
                     &self.input.constraint_corpus,
                     &fe.explorer_ids,
                     &fe.satisfaction_matrix,
@@ -796,6 +814,7 @@ impl<'a> ExecutionPipeline<'a> {
                 wave_violations,
                 retry_accumulator: osp_accumulator,
                 osp_config,
+                current_tau_spread_factor: params.tau_spread_factor,
             },
         )
         .await;
@@ -830,15 +849,14 @@ impl<'a> ExecutionPipeline<'a> {
                     }
                 }
                 if self.input.cfg.oracle_gate.enabled {
-                    let decision = phases::oracle::run_post_selection(
-                        phases::oracle::PostSelectionInput {
+                    let decision =
+                        phases::oracle::run_post_selection(phases::oracle::PostSelectionInput {
                             task_id: self.input.task_id.to_string(),
                             winner_text: &merge_out.resolved_output,
                             oracle_config: &self.input.cfg.oracle_gate,
                             nats: self.input.nats_raw.as_deref(),
-                        },
-                    )
-                    .await;
+                        })
+                        .await;
                     if decision == phases::oracle::PostSelectionDecision::Evict {
                         let summary = format!(
                             "Oracle hard-gate rejected winner for task {}. \

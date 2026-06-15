@@ -17,57 +17,13 @@ pub struct DomainSynthesis {
     pub mechanistic_reason: String,
     pub source: Option<String>,
     pub confidence: f64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn knowledge_gap_record_fields_accessible() {
-        let rec = KnowledgeGapRecord {
-            constraint_id: "CONSTRAINT-008".to_string(),
-            check_idx: 1,
-            incorrect_concept: "SETNX as standalone idempotency primitive".to_string(),
-            gap_query: "Redis atomic CAS quota update Lua EVAL without distributed locks"
-                .to_string(),
-            pass_rate_across_waves: 0.0,
-        };
-        assert_eq!(rec.constraint_id, "CONSTRAINT-008");
-        assert_eq!(rec.check_idx, 1);
-        assert_eq!(rec.pass_rate_across_waves, 0.0);
-    }
-
-    #[test]
-    fn domain_synthesis_fields_accessible() {
-        let synth = DomainSynthesis {
-            check_id: ("CONSTRAINT-008".to_string(), 1),
-            incorrect_pattern: "SETNX as standalone idempotency primitive".to_string(),
-            correct_pattern: "SET key val NX EX ttl inside Lua EVAL".to_string(),
-            mechanistic_reason: "Lua EVAL is atomic; SETNX alone does not protect against concurrent updates outside the script".to_string(),
-            source: Some("https://redis.io/docs/manual/programmability/lua-api/".to_string()),
-            confidence: 0.85,
-        };
-        assert_eq!(synth.check_id.0, "CONSTRAINT-008");
-        assert!(synth.confidence > 0.7);
-        assert!(synth.source.is_some());
-    }
-
-    #[test]
-    fn domain_synthesis_low_confidence_detectable() {
-        let synth = DomainSynthesis {
-            check_id: ("CONSTRAINT-TAU-2".to_string(), 0),
-            incorrect_pattern: "async cache invalidation is sufficient".to_string(),
-            correct_pattern: "push-based invalidation via Redis Stream with bounded TTL"
-                .to_string(),
-            mechanistic_reason: "Stream ensures ≤TTL convergence; async pub/sub can be lost"
-                .to_string(),
-            source: None,
-            confidence: 0.5,
-        };
-        assert!(
-            synth.confidence < 0.7,
-            "low confidence should be filterable"
-        );
-    }
+    /// Wave index at which this synthesis was first injected into proposal generation context.
+    #[serde(default)]
+    pub injected_at_wave: Option<u32>,
+    /// Mean per-check pass rate immediately before this synthesis was injected.
+    #[serde(default)]
+    pub pre_injection_pass_rate: Option<f64>,
+    /// Mean per-check pass rate for each wave after injection.
+    #[serde(default)]
+    pub post_injection_pass_rates: Vec<f64>,
 }

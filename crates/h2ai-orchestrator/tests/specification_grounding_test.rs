@@ -160,3 +160,106 @@ fn proposal_count_matches_input_length() {
     let result = check_specification_grounding(spec, &[p1, p2, p3]).unwrap();
     assert_eq!(result.proposal_count, 3);
 }
+
+// ── Constraint corpus grounding (SRANI anti-alignment fix) ────────────────────
+
+#[test]
+fn constraint_mandated_entity_not_flagged_when_spec_includes_constraint_text() {
+    // Reproduces the SRANI anti-alignment: task description says nothing about Redis or
+    // ClickHouse, but the constraint docs mandate them. When the call site in srani.rs
+    // concatenates constraint text into the effective spec, these entities must not appear
+    // in shared_ungrounded and CFI must remain 0.
+    let task_description = "Build a billing system with idempotency guarantees";
+    let constraint_text = "MUST use Redis atomic Lua EVAL for the idempotency key check. \
+                           MUST use ClickHouse for the immutable audit log.";
+    let effective_spec = format!("{task_description}\n{constraint_text}");
+
+    let p1 = "Use Redis atomic Lua EVAL and ClickHouse for the audit log to satisfy constraints";
+    let p2 = "Use Redis EVAL for idempotency and ClickHouse for audit trail as required";
+
+    let result = check_specification_grounding(&effective_spec, &[p1, p2]).unwrap();
+    assert_eq!(
+        result.cfi, 0.0,
+        "constraint-mandated entities must not be ungrounded when constraint text is in spec; \
+         got CFI={}, ungrounded={:?}",
+        result.cfi, result.shared_ungrounded
+    );
+    assert!(
+        result.shared_ungrounded.is_empty(),
+        "shared_ungrounded must be empty; got {:?}",
+        result.shared_ungrounded
+    );
+}
+
+#[test]
+fn constraint_entities_flagged_without_constraint_text_in_spec() {
+    // Confirms the pre-fix behaviour: without constraint text, constraint-mandated entities
+    // ARE treated as ungrounded and CFI > 0. This test documents the defect that the
+    // srani.rs effective_spec fix resolves.
+    let task_description = "Build a billing system with idempotency guarantees";
+    let p1 = "Use Redis atomic Lua EVAL and ClickHouse for the audit log to satisfy constraints";
+    let p2 = "Use Redis EVAL for idempotency and ClickHouse for audit trail as required";
+
+    let result = check_specification_grounding(task_description, &[p1, p2]).unwrap();
+    assert!(
+        result.cfi > 0.0,
+        "without constraint text in spec, shared constraint-mandated entities must be flagged; \
+         got CFI={}",
+        result.cfi
+    );
+}
+
+// ── manifest.context grounding (SRANI spec-boundary fix) ─────────────────────
+
+#[test]
+fn manifest_context_entities_not_flagged_when_context_in_spec() {
+    // Reproduces the SRANI spec-boundary bug: manifest.description did not mention Redis/Kafka,
+    // but manifest.context listed them as required infrastructure. When srani.rs now includes
+    // manifest.context in the effective_spec, these entities must not be ungrounded.
+    let task_description = "Design a billing quota enforcement mechanism";
+    let manifest_context = "Infrastructure: Redis 7.2 (quota counters), Kafka (billing events), \
+                            ClickHouse (audit log), CockroachDB (operational state)";
+    let effective_spec = format!("{task_description}\n{manifest_context}");
+
+    let p1 = "Use Redis Lua EVAL for atomicity, Kafka for billing events, ClickHouse for audit, CockroachDB for state";
+    let p2 = "Use Redis atomic operations, Kafka pipeline, ClickHouse and CockroachDB for storage";
+
+    let result = check_specification_grounding(&effective_spec, &[p1, p2]).unwrap();
+    assert_eq!(
+        result.cfi, 0.0,
+        "manifest.context entities must not be ungrounded when context is in spec; \
+         CFI={}, shared_ungrounded={:?}",
+        result.cfi, result.shared_ungrounded
+    );
+    assert!(
+        result.shared_ungrounded.is_empty(),
+        "shared_ungrounded must be empty when all entities are in context; got {:?}",
+        result.shared_ungrounded
+    );
+}
+
+#[test]
+fn manifest_context_entities_flagged_without_context_in_spec() {
+    // Documents the pre-fix SRANI false-positive: manifest.context was excluded from
+    // effective_spec, causing infrastructure entities to be treated as fabrications.
+    let task_description = "Design a billing quota enforcement mechanism";
+    let p1 = "Use Redis Lua EVAL for atomicity, Kafka for billing events, ClickHouse for audit, CockroachDB for state";
+    let p2 = "Use Redis atomic operations, Kafka pipeline, ClickHouse and CockroachDB for storage";
+
+    let result = check_specification_grounding(task_description, &[p1, p2]).unwrap();
+    assert!(
+        result.cfi > 0.0,
+        "without manifest.context in spec, shared infrastructure entities must be ungrounded; \
+         CFI={}",
+        result.cfi
+    );
+    let has_infra_entity = result
+        .shared_ungrounded
+        .iter()
+        .any(|e| matches!(e.as_str(), "Kafka" | "CockroachDB" | "Redis" | "ClickHouse"));
+    assert!(
+        has_infra_entity,
+        "expected Redis/Kafka/ClickHouse/CockroachDB in shared_ungrounded; got {:?}",
+        result.shared_ungrounded
+    );
+}

@@ -60,6 +60,8 @@ fn pruned(task_id: &TaskId, explorer_id: &ExplorerId) -> BranchPrunedEvent {
         constraint_error_cost: RoleErrorCost::new(0.9).unwrap(),
         violated_constraints: vec![],
         timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     }
 }
 

@@ -58,7 +58,7 @@ Submits a task manifest. Returns immediately with `task_id`. Progress is observe
 
 `pareto_weights.{diversity, containment, throughput}` must sum to 1.0. `topology.kind` is `"auto"`, `"ensemble"`, or `"hierarchical_tree"`. When `explorers.roles[]` is non-empty the system always selects `TeamSwarmHybrid`. `explorers.count` is requested — the system reduces to `N_max` if the request exceeds the calibrated ceiling.
 
-`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5). `tenant_id` is taken from the URL path and is always required. It scopes all estimators, approval records, and NATS KV keys to an isolated per-tenant namespace. The request body `tenant_id` field, if present, is overridden by the path value.
+`constraint_tags` routes the task to a domain-specific subset of the constraint corpus via the wiki index (see §7). `constraints` provides explicit constraint IDs that are always included regardless of tags. `require_approval` forces a HITL review gate after merge even when `q_confidence` is high (see §9.5). `tenant_id` is taken from the URL path and is always required. It scopes all estimators, HITL signals, and NATS KV keys to an isolated per-tenant namespace. The request body `tenant_id` field, if present, is overridden by the path value.
 
 **Response:** `202 Accepted` with `{"task_id": "...", "events_url": "/{tenant_id}/tasks/.../events"}`.
 
@@ -844,6 +844,91 @@ budget_floor_fraction         = 0.30
 
 **NATS KV state:** SRANI EMA state (`srani_ema_cfi`, `srani_count`) is persisted at key `"srani_adaptive_state"` in `H2AI_ESTIMATOR`. Cold start: μ = 0.45 (midpoint of default thresholds) until count ≥ 5.
 
+**Spec boundary construction:** The `effective_spec` passed to `check_specification_grounding` is built from `manifest.description` concatenated with all constraint corpus text: `ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, and `ConstraintDoc.pass_criteria` when present. This prevents constraint-mandated technologies (e.g., Redis, ClickHouse, Kafka named in rubric checks) from being classified as ungrounded and subsequently targeted for removal by the grounding chain.
+
+### Pipeline Resilience
+
+Four config structs (`crates/h2ai-config/src/lib.rs`) govern the pipeline resilience features. All must have two tests each: one via `H2AIConfig::default()` and one via `H2AIConfig::load_layered(None)` (verifying `reference.toml` is authoritative).
+
+#### Verifier Freeze Detection
+
+```toml
+[verifier_freeze]
+enabled                          = true
+min_waves_to_detect              = 3
+score_variance_threshold         = 0.05
+reason_jaccard_threshold         = 0.7
+reason_window_size               = 10
+other_constraint_success_threshold = 0.5
+bypass_hard_gate_on_freeze       = true
+emit_event_only                  = false
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `verifier_freeze.enabled` | `true` | Enable frozen verifier detection in `decide()`. |
+| `verifier_freeze.min_waves_to_detect` | `3` | Minimum waves of history required before the signal can fire. |
+| `verifier_freeze.score_variance_threshold` | `0.05` | Variance of per-wave scores below which "score not moving" holds. |
+| `verifier_freeze.reason_jaccard_threshold` | `0.7` | Mean pairwise Jaccard of verifier reasons above which "reasons repeating" holds. |
+| `verifier_freeze.reason_window_size` | `10` | Rolling window size for reason history per constraint; oldest entries evicted on overflow. |
+| `verifier_freeze.other_constraint_success_threshold` | `0.5` | Minimum mean score required on at least one other constraint to confirm model capability (guards against model-ceiling false positives). |
+| `verifier_freeze.bypass_hard_gate_on_freeze` | `true` | When `true`, frozen constraints enter `bypassed_verifier_constraints`; proposals failing only bypassed constraints pass pruning. |
+| `verifier_freeze.emit_event_only` | `false` | When `true`, emit `VerifierFrozenEvent` but do not bypass. Useful for observability-only deployments. |
+
+#### Generation Phase Timeout
+
+```toml
+[generation_phase]
+timeout_secs = 300
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `generation_phase.timeout_secs` | `300` | Wall-clock cap on the entire `join_all` across all explorers. On timeout: timed-out explorers emit `FailedReason::Timeout`; `generation_outcome` classifies the result; `AllTimedOut` routes to `ZeroSurvival`. |
+
+#### OOM Circuit Breaker
+
+```toml
+[oom_guard]
+enabled              = true
+rss_abort_mb         = 4096
+check_interval_waves = 1
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `oom_guard.enabled` | `true` | Enable wave-boundary RSS polling. |
+| `oom_guard.rss_abort_mb` | `4096` | RSS threshold in MB above which `oom_signal` fires → `BudgetExhausted` exit → clean checkpoint-and-exit. |
+| `oom_guard.check_interval_waves` | `1` | Check RSS every N waves. |
+
+#### Gap Feedback Quality
+
+```toml
+[gap_quality]
+min_improvement_to_retain  = 0.1
+min_post_injection_waves   = 2
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `gap_quality.min_improvement_to_retain` | `0.1` | Minimum improvement in post-injection pass rate over `pre_injection_pass_rate` for a `DomainSynthesis` to be retained. Below this threshold after `min_post_injection_waves`, the entry is evicted as `Ineffective`. |
+| `gap_quality.min_post_injection_waves` | `2` | Minimum post-injection observation waves before a verdict is issued (`Pending` until this many waves have elapsed). |
+
+### Audit Gate
+
+Controls Phase 4 auditor behaviour when the LLM returns a non-JSON response.
+
+```toml
+[audit_gate]
+fail_open_on_parse_error = true   # true = pass through; false = reject (legacy behaviour)
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `audit_gate.fail_open_on_parse_error` | `true` | When `true`, a non-JSON auditor response is treated as approved with an empty reason and a warning is logged (fail-open). When `false`, non-JSON is treated as rejection (legacy fail-safe). |
+
+**Design invariant:** Proposals reaching Phase 4 have already passed the verifier gate. A non-JSON auditor response is an LLM formatting issue, not a constraint judgment. The default (`true`) prevents verified proposals from being silently dropped due to transient LLM response variance. Set to `false` only in environments where auditor reliability is independently verified and every non-JSON response should be treated as a safety rejection.
+
 ### Optimal Synthesis Policy (OSP)
 
 OSP is disabled when the `[osp]` section is absent from `h2ai.toml`. When absent, `MergeEngine::resolve` uses legacy strategy dispatch unchanged.
@@ -950,11 +1035,11 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | Field | Default | Purpose |
 |---|---|---|
 | `[awareness_probe]` | absent | Section absent = probe disabled. |
-| `awareness_probe.enabled` | `false` | Enable the Plan-Awareness Probe (GAP-F6). Requires `thinking_loop.enabled = true`. |
+| `awareness_probe.enabled` | `false` | Enable the Plan-Awareness Probe. Requires `thinking_loop.enabled = true`. |
 | `awareness_probe.mode` | `"shadow"` | `"shadow"` — emit `AwarenessProbeCompletedEvent` only; `"active"` — re-iterate thinking loop on Hard non-gated `CONTRADICTED` verdicts. |
 | `awareness_probe.judge_max_tokens` | `1024` | Token budget for the batched constraint judge (~100 tokens/constraint). |
 
-`knowledge_domain_scoping = false` (top-level `H2AIConfig` field, GAP-F4 Phase 1b). When `true`, `CompositeProvider` pre-filters knowledge candidates to nodes whose `domains` intersect the task's domain tags before the BM25 query. Separate from the awareness probe.
+`knowledge_domain_scoping = false` (top-level `H2AIConfig` field). When `true`, `CompositeProvider` pre-filters knowledge candidates to nodes whose `domains` intersect the task's domain tags before the BM25 query. Separate from the awareness probe.
 
 ### Token budgets and concurrency
 
@@ -982,7 +1067,7 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `H2AI_AGENT_MEMORY` | KV | `{session_id}` | — | Agent session memory (prior outputs). |
 | `H2AI_TASK_CHECKPOINTS` | KV | `{task_id}` | 24 h | zstd-compressed `TaskCheckpoint` (phase outputs for crash recovery). |
 | `H2AI_CHECKPOINT_PAYLOADS` | Object Store | SHA-256 hash | 24 h | Checkpoint payloads exceeding 800 KB (referenced by `TaskCheckpoint.object_store_ref`). |
-| `H2AI_APPROVALS` | KV | `{task_id}` | 1 h | `ApprovalRecord` for tasks parked at the HITL gate. |
+| `H2AI_APPROVALS` | KV | `{task_id}` | 1 h | Legacy; still provisioned for backward compatibility but not actively written. Superseded by `H2AI_SIGNALS` JetStream stream for HITL signal delivery. |
 | `H2AI_CONSTRAINT_WIKI` | KV | `wiki_cache` | — | Serialised `WikiCache` (context_map + metas). Loaded at startup; `constraint_wiki.enabled = true` required. History=5. |
 | `H2AI_CONSTRAINT_PAYLOADS` | Object Store | `{id}@{version}` | — | Full predicate payloads for non-Static constraints (LlmJudge, Oracle). Fetched lazily at Phase 4. |
 | `H2AI_CHECKPOINT_{tenant_id}` | KV store | `task_id` string | 7 days | `TaskReasoningCheckpoint` (zstd-compressed). Per-tenant; bucket created on first task for each tenant. |
@@ -1048,9 +1133,11 @@ tenant_memory_bucket_prefix        = "H2AI_MEMORY"       # TenantMemoryStore (Ph
 conflict_beta_bucket_prefix        = "H2AI_CONFLICT"     # ConflictRateAccumulator
 
 # JetStream stream names
-tasks_stream     = "H2AI_TASKS"
-telemetry_stream = "H2AI_TELEMETRY"
-results_stream   = "H2AI_RESULTS"
+tasks_stream             = "H2AI_TASKS"
+telemetry_stream         = "H2AI_TELEMETRY"
+results_stream           = "H2AI_RESULTS"
+signals_stream           = "H2AI_SIGNALS"      # HITL signal delivery
+signals_subject_prefix   = "h2ai.signals"      # subject prefix: {prefix}.{tenant_bucket_safe}.{task_id}
 
 [state.delta]
 enabled           = true
@@ -1337,7 +1424,7 @@ prior_weight = 5            # virtual task count for bootstrap Bayesian prior
 
 ### HITL
 
-Signal delivery uses JetStream durable push consumers (live since 2026-05-19). The old `H2AI_APPROVALS` KV bucket and `approval_reaper` background task are removed.
+Signal delivery uses JetStream durable push consumers (live since 2026-05-19). The `H2AI_APPROVALS` KV bucket is still provisioned for backward compatibility but no longer written to; the `approval_reaper` background task has been removed.
 
 | Field | Default | Purpose |
 |---|---|---|

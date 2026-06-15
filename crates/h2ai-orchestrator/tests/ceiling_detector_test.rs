@@ -77,9 +77,12 @@ fn make_pruned(constraint_ids: &[&str]) -> BranchPrunedEvent {
                 verifier_reason: None,
                 check_verdicts: vec![],
                 criteria_pass: None,
+                check_reasons: None,
             })
             .collect(),
         timestamp: chrono::Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     }
 }
 
@@ -160,7 +163,10 @@ fn count_signals_slope_does_not_fire_on_empty_history() {
     let count = count_ceiling_signals(&events, &[], 1.0, 0.7, &cfg);
     // Signal 1 fires (entropy=0 from single constraint) but signal 2 must NOT.
     // n_eff×cg_mean = 0.7 > 0.3 → signal 3 silent. Total ≤ 1.
-    assert!(count < 2, "ceiling must not fire on empty quality history; got {count} signals");
+    assert!(
+        count < 2,
+        "ceiling must not fire on empty quality history; got {count} signals"
+    );
 }
 
 // ── count_ceiling_signals ─────────────────────────────────────────────────

@@ -1,12 +1,12 @@
 //! Verify that thinking loop LLM calls use max_tokens from ThinkingLoopConfig,
 //! not hardcoded literals.
 
-use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use h2ai_config::ThinkingLoopConfig;
+use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::{AdapterKind, CloudProvider};
-use h2ai_orchestrator::thinking_loop::{run, ThinkingLoopInput};
+use std::sync::{Arc, Mutex};
 
 fn cloud_kind() -> AdapterKind {
     AdapterKind::CloudGeneric {
@@ -34,10 +34,14 @@ impl IComputeAdapter for CapturingAdapter {
         self.requests.lock().unwrap().push(req.max_tokens);
 
         // Return appropriate JSON based on the context
-        let output = if req.system_context.contains("archetype") || req.system_context.contains("Archetype") {
+        let output = if req.system_context.contains("archetype")
+            || req.system_context.contains("Archetype")
+        {
             // For archetype selection, return a JSON array of archetypes
             r#"[{"name":"test","persona":"test persona","scope":"test scope","confidence":0.8,"tau":0.3,"model_tier":"standard","cot_style":"step_by_step"}]"#.to_string()
-        } else if req.system_context.contains("synthesis") || req.system_context.contains("Synthesis") {
+        } else if req.system_context.contains("synthesis")
+            || req.system_context.contains("Synthesis")
+        {
             // For synthesis (tournament_merge), return markdown that parse_synthesis_from_markdown can parse.
             "## Shared Understanding\ntest understanding\n## Unresolved Tensions\n## Coverage Assessment\n**Score:** 0.9".to_string()
         } else {

@@ -1,7 +1,7 @@
 use h2ai_constraints::types::{
     CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
 };
-use h2ai_context::compiler::compile;
+use h2ai_context::compiler::{artifact_scaffold, compile};
 
 // ── SemanticPresence child in Composite ──────────────────────────────────────
 
@@ -399,4 +399,56 @@ fn semantic_ordering_constraint_injects_ordering_requirement_and_hint() {
         result.system_context.contains("C-005"),
         "constraint ID must appear"
     );
+}
+
+// ── artifact_scaffold ─────────────────────────────────────────────────────────
+
+fn doc_with_checks(id: &str, checks: &[&str]) -> ConstraintDoc {
+    ConstraintDoc {
+        binary_checks: checks.iter().map(|s| s.to_string()).collect(),
+        ..ConstraintDoc::new_llm_judge(id, "test rubric")
+    }
+}
+
+#[test]
+fn artifact_scaffold_triggers_on_ddl_keyword() {
+    let doc = doc_with_checks(
+        "BFT-1",
+        &["Does the migration use additive DDL only (ALTER TABLE ADD COLUMN, no DROP)?"],
+    );
+    let scaffold = artifact_scaffold(&doc);
+    assert!(
+        scaffold.is_some(),
+        "must produce scaffold when binary_check mentions DDL"
+    );
+    let text = scaffold.unwrap();
+    assert!(
+        text.contains("REQUIRED OUTPUT ARTIFACT"),
+        "scaffold must include the REQUIRED OUTPUT ARTIFACT header"
+    );
+    assert!(
+        text.contains("BFT-1"),
+        "scaffold must reference the constraint id"
+    );
+}
+
+#[test]
+fn artifact_scaffold_triggers_on_migration_keyword() {
+    let doc = doc_with_checks("C1", &["Is a migration plan present?"]);
+    assert!(artifact_scaffold(&doc).is_some());
+}
+
+#[test]
+fn artifact_scaffold_silent_for_non_artifact_constraint() {
+    let doc = doc_with_checks("C2", &["Does the response use JSON output format?"]);
+    assert!(
+        artifact_scaffold(&doc).is_none(),
+        "no scaffold for constraints without artifact keywords"
+    );
+}
+
+#[test]
+fn artifact_scaffold_silent_when_no_binary_checks() {
+    let doc = doc_with_checks("C3", &[]);
+    assert!(artifact_scaffold(&doc).is_none());
 }

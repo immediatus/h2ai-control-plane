@@ -35,6 +35,7 @@ pub mod drift;
 pub mod epistemic;
 pub mod knowledge_gap;
 pub mod merger;
+pub mod meta_observer;
 pub mod planner;
 pub mod repair;
 pub mod retry;

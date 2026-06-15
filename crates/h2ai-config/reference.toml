@@ -230,6 +230,13 @@ max_concurrent_tasks = 8
 # 2.0 = τ spread can at most double from its manifest value.
 tau_spread_max_factor = 2.0
 
+# Learning rate η for the Talagrand KL τ-spread update rule (GAP-E2).
+# Controls how aggressively τ adapts per wave. 0.1 = 10% of (U_score - Λ_score).
+talagrand_eta = 0.1
+
+# Minimum τ-spread factor; KL contraction cannot shrink τ below this floor.
+talagrand_tau_min = 0.5
+
 # ── Thompson Sampling bandit ──────────────────────────────────────────────────
 
 # Tasks completed before activating the bandit (Phase 0 — pure exploration).
@@ -876,3 +883,47 @@ supermajority_fraction_n4plus = 0.80
 score_floor                 = 0.80
 min_wave                    = 1
 budget_floor_fraction       = 0.30
+
+# ── Generation Phase ──────────────────────────────────────────────────────────
+# Wall-clock budget for one full explorer wave (join_all over all slots).
+# Must exceed n_slots × per-adapter latency:
+#   cloud APIs  → 300 s  (default, adequate for sub-1 min calls)
+#   local LLMs  → 3600 s (3 slots × ~20 min each via llama.cpp)
+[generation_phase]
+timeout_secs = 300
+
+# ── Verifier Freeze Detector ─────────────────────────────────────────────────
+# Detects when all verifiers are stuck returning identical low-variance scores
+# (frozen verifier syndrome). On freeze, the engine bypasses the hard gate and
+# falls through to merge with the best available proposal.
+[verifier_freeze]
+enabled                              = true
+min_waves_to_detect                  = 3      # need this many waves of evidence
+score_variance_threshold             = 0.05   # variance below this → frozen
+reason_jaccard_threshold             = 0.7    # reason similarity above this → frozen
+reason_window_size                   = 10     # rolling window of verifier reasons
+other_constraint_success_threshold   = 0.5    # bypass only if other constraints succeed
+bypass_hard_gate_on_freeze           = true   # skip hard gate when frozen
+emit_event_only                      = false  # true = log only, no bypass
+
+# ── OOM Guard ────────────────────────────────────────────────────────────────
+# Aborts a task if RSS memory exceeds rss_abort_mb between waves.
+# Prevents runaway memory growth on large context accumulation.
+[oom_guard]
+enabled               = true
+rss_abort_mb          = 4096   # abort threshold in MiB
+check_interval_waves  = 1      # check every N waves
+
+# ── Gap Quality Gate ─────────────────────────────────────────────────────────
+# Controls whether a GAP-I1 researcher injection is retained for future waves.
+# Injections that fail to improve the average score are discarded.
+[gap_quality]
+min_improvement_to_retain  = 0.1   # minimum Δscore to keep an injection
+min_post_injection_waves   = 2     # observe for this many waves before deciding
+
+# ── Audit Gate ────────────────────────────────────────────────────────────────
+# Controls auditor Phase 4 behaviour on LLM response failures.
+# Proposals reaching this gate have already passed the verifier — a parse failure
+# is an LLM response issue, not a constraint judgment.
+[audit_gate]
+fail_open_on_parse_error = true   # true = pass through; false = reject (legacy behaviour)

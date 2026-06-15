@@ -308,3 +308,94 @@ fn adapter_family_from_kind_a2a_is_cloud() {
     };
     assert_eq!(AdapterFamily::from_kind(&kind), AdapterFamily::Cloud);
 }
+
+// ── AdapterKind::model_lineage_key ────────────────────────────────────────────
+
+fn cloud(endpoint: &str, model: &str) -> AdapterKind {
+    use h2ai_types::config::CloudProvider;
+    AdapterKind::CloudGeneric {
+        endpoint: endpoint.to_string(),
+        api_key_env: "KEY".to_string(),
+        model: Some(model.to_string()),
+        provider: CloudProvider::Generic,
+    }
+}
+
+#[test]
+fn same_cloud_model_same_key() {
+    let a = cloud("https://api.openai.com", "gpt-4o");
+    let b = cloud("https://api.openai.com", "gpt-4o");
+    assert_eq!(a.model_lineage_key(), b.model_lineage_key());
+}
+
+#[test]
+fn different_cloud_models_different_keys() {
+    let a = cloud("https://api.openai.com", "gpt-4o");
+    let b = cloud("https://api.openai.com", "gpt-4o-mini");
+    assert_ne!(a.model_lineage_key(), b.model_lineage_key());
+}
+
+#[test]
+fn different_endpoints_different_keys() {
+    let a = cloud("https://api.openai.com", "gpt-4o");
+    let b = cloud("https://api.anthropic.com", "gpt-4o");
+    assert_ne!(a.model_lineage_key(), b.model_lineage_key());
+}
+
+#[test]
+fn local_models_with_different_paths_different_keys() {
+    let a = AdapterKind::LocalLlamaCpp {
+        model_path: PathBuf::from("/models/llama-70b"),
+        n_threads: 8,
+    };
+    let b = AdapterKind::LocalLlamaCpp {
+        model_path: PathBuf::from("/models/qwen-72b"),
+        n_threads: 8,
+    };
+    assert_ne!(a.model_lineage_key(), b.model_lineage_key());
+}
+
+#[test]
+fn same_local_model_same_key() {
+    let a = AdapterKind::LocalLlamaCpp {
+        model_path: PathBuf::from("/models/llama-70b"),
+        n_threads: 4,
+    };
+    let b = AdapterKind::LocalLlamaCpp {
+        model_path: PathBuf::from("/models/llama-70b"),
+        n_threads: 8,
+    };
+    // n_threads is NOT part of the lineage key — same model regardless of thread count
+    assert_eq!(a.model_lineage_key(), b.model_lineage_key());
+}
+
+#[test]
+fn monoculture_pool_has_one_distinct_lineage_key() {
+    let adapters = vec![
+        cloud("http://host.docker.internal:8080/v1", "local"),
+        cloud("http://host.docker.internal:8080/v1", "local"),
+        cloud("http://host.docker.internal:8080/v1", "local"),
+    ];
+    let keys: std::collections::HashSet<String> =
+        adapters.iter().map(|a| a.model_lineage_key()).collect();
+    assert_eq!(
+        keys.len(),
+        1,
+        "monoculture pool must have exactly 1 lineage key"
+    );
+}
+
+#[test]
+fn diverse_pool_has_multiple_lineage_keys() {
+    let adapters = vec![
+        cloud("https://api.openai.com/v1", "gpt-4o"),
+        cloud("https://api.anthropic.com/v1", "claude-sonnet-4-6"),
+    ];
+    let keys: std::collections::HashSet<String> =
+        adapters.iter().map(|a| a.model_lineage_key()).collect();
+    assert_eq!(
+        keys.len(),
+        2,
+        "diverse pool must have 2 distinct lineage keys"
+    );
+}

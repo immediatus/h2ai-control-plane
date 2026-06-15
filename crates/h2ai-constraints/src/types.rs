@@ -307,6 +307,9 @@ pub struct ComplianceResult {
     pub check_verdicts: Vec<bool>,
     /// Pass-criteria text from `criteria.pass` in the constraint YAML.
     pub criteria_pass: Option<String>,
+    /// Per-check evidence text from the LlmJudge CoT. Parallel to check_verdicts.
+    /// Empty Vec when the constraint has no binary checks or CoT was not parsed.
+    pub check_reasons: Vec<String>,
 }
 
 impl ComplianceResult {

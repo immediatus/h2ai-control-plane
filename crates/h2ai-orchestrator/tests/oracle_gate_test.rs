@@ -153,3 +153,50 @@ fn effective_concurrency_zero_passed() {
     use h2ai_orchestrator::oracle_gate::effective_concurrency;
     assert!((effective_concurrency(0, 5) - 0.0).abs() < 1e-9);
 }
+
+// ── apply_on_fail_policy ──────────────────────────────────────────────────────
+
+#[test]
+fn evict_policy_on_failed_gate() {
+    use h2ai_orchestrator::phases::oracle::{apply_on_fail_policy, PostSelectionDecision};
+    assert_eq!(
+        apply_on_fail_policy(Some(false), "evict"),
+        PostSelectionDecision::Evict
+    );
+}
+
+#[test]
+fn pass_policy_ignores_failure() {
+    use h2ai_orchestrator::phases::oracle::{apply_on_fail_policy, PostSelectionDecision};
+    assert_eq!(
+        apply_on_fail_policy(Some(false), "pass"),
+        PostSelectionDecision::Accept
+    );
+}
+
+#[test]
+fn accept_when_gate_passed() {
+    use h2ai_orchestrator::phases::oracle::{apply_on_fail_policy, PostSelectionDecision};
+    assert_eq!(
+        apply_on_fail_policy(Some(true), "evict"),
+        PostSelectionDecision::Accept
+    );
+}
+
+#[test]
+fn accept_when_gate_not_run() {
+    use h2ai_orchestrator::phases::oracle::{apply_on_fail_policy, PostSelectionDecision};
+    assert_eq!(
+        apply_on_fail_policy(None, "evict"),
+        PostSelectionDecision::Accept
+    );
+}
+
+#[test]
+fn clarify_policy_on_failure() {
+    use h2ai_orchestrator::phases::oracle::{apply_on_fail_policy, PostSelectionDecision};
+    assert_eq!(
+        apply_on_fail_policy(Some(false), "clarify"),
+        PostSelectionDecision::Clarify
+    );
+}

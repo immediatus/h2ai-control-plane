@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use h2ai_tools::error::ToolError;
 use h2ai_tools::web_search::{
-    DuckDuckGoSearchBackend, GeminiSearchBackend, GoogleSearchBackend, StackOverflowSearchBackend,
+    base64_decoder, extract_text_from_html, parse_github_repo, DuckDuckGoSearchBackend,
+    GeminiSearchBackend, GoogleSearchBackend, StackOverflowSearchBackend, WebGroundingBackend,
     WebSearchBackend, WebSearchExecutor, WikipediaSearchBackend,
 };
 use h2ai_tools::ToolExecutor;
@@ -150,7 +151,7 @@ async fn duckduckgo_search_non_200_returns_network_error() {
 }
 
 #[tokio::test]
-async fn duckduckgo_search_no_snippets_returns_no_results() {
+async fn duckduckgo_search_no_snippets_returns_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(
@@ -159,8 +160,12 @@ async fn duckduckgo_search_no_snippets_returns_no_results() {
         .mount(&server)
         .await;
     let backend = DuckDuckGoSearchBackend::new().with_base_url(server.uri());
-    let result = backend.search("rust", 3).await.unwrap();
-    assert_eq!(result, "No results found.");
+    // Empty snippets now return Err so grounding chain can treat it as no-signal.
+    let err = backend.search("rust", 3).await.unwrap_err().to_string();
+    assert!(
+        err.contains("DuckDuckGo") || err.contains("no results"),
+        "got: {err}"
+    );
 }
 
 // ── StackOverflow wiremock tests ──────────────────────────────────────────────
@@ -168,8 +173,9 @@ async fn duckduckgo_search_no_snippets_returns_no_results() {
 #[tokio::test]
 async fn stackoverflow_search_returns_answers() {
     let server = MockServer::start().await;
+    // Backend now uses /search?intitle=<keywords> (not /search/advanced?q=)
     Mock::given(method("GET"))
-        .and(path("/search/advanced"))
+        .and(path("/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "items": [{"question_id": 42, "title": "Async in Rust", "score": 10}]
         })))
@@ -342,6 +348,240 @@ async fn live_wikipedia_search_returns_real_text() {
             );
         }
     }
+}
+
+// ── DuckDuckGoSearchBackend::strip_tags ───────────────────────────────────
+
+#[test]
+fn strip_tags_removes_html_tags() {
+    let result = DuckDuckGoSearchBackend::strip_tags("<b>hello</b> world");
+    assert_eq!(result, "hello world");
+}
+
+#[test]
+fn strip_tags_decodes_html_entities() {
+    let result =
+        DuckDuckGoSearchBackend::strip_tags("a &amp; b &lt;c&gt; &quot;d&quot; e&#x27;f &nbsp;g");
+    assert_eq!(result, "a & b <c> \"d\" e'f  g");
+}
+
+#[test]
+fn strip_tags_handles_empty_input() {
+    assert_eq!(DuckDuckGoSearchBackend::strip_tags(""), "");
+}
+
+#[test]
+fn strip_tags_handles_plain_text() {
+    assert_eq!(
+        DuckDuckGoSearchBackend::strip_tags("no tags here"),
+        "no tags here"
+    );
+}
+
+// ── DuckDuckGoSearchBackend::parse_html_snippets ──────────────────────────
+
+#[test]
+fn parse_html_snippets_extracts_result_snippets() {
+    let html = r#"<table><td class="result-snippet"><b>Redis</b> rate limiting</td><td class="result-snippet">sliding window algorithm</td></table>"#;
+    let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 5);
+    assert_eq!(snippets.len(), 2);
+    assert!(snippets[0].contains("Redis rate limiting") || snippets[0].contains("rate limiting"));
+    assert!(snippets[1].contains("sliding window"));
+}
+
+#[test]
+fn parse_html_snippets_respects_max_results() {
+    let html = r#"<td class="result-snippet">one</td><td class="result-snippet">two</td><td class="result-snippet">three</td>"#;
+    let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 2);
+    assert_eq!(snippets.len(), 2);
+}
+
+#[test]
+fn parse_html_snippets_returns_empty_for_no_matches() {
+    let html = "<html><body>no results here</body></html>";
+    let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 5);
+    assert!(snippets.is_empty());
+}
+
+#[test]
+fn parse_html_snippets_skips_empty_snippets() {
+    // snippet with only whitespace should not be included
+    let html = r#"<td class="result-snippet">   </td><td class="result-snippet">real content</td>"#;
+    let snippets = DuckDuckGoSearchBackend::parse_html_snippets(html, 5);
+    assert_eq!(snippets.len(), 1);
+    assert!(snippets[0].contains("real content"));
+}
+
+// ── extract_text_from_html ────────────────────────────────────────────────
+
+#[test]
+fn extract_text_strips_script_and_style_blocks() {
+    let html =
+        "<p>visible</p><script>var x = 1;</script><style>.a{color:red}</style><p>also visible</p>";
+    let text = extract_text_from_html(html);
+    assert!(text.contains("visible"));
+    assert!(
+        !text.contains("var x = 1"),
+        "script contents must be stripped"
+    );
+    assert!(
+        !text.contains("color:red"),
+        "style contents must be stripped"
+    );
+}
+
+#[test]
+fn extract_text_strips_nav_header_footer() {
+    let html = "<nav>menu items</nav><main><p>article content</p></main><footer>copyright</footer>";
+    let text = extract_text_from_html(html);
+    assert!(!text.contains("menu items"), "nav must be stripped");
+    assert!(!text.contains("copyright"), "footer must be stripped");
+    assert!(text.contains("article content"));
+}
+
+#[test]
+fn extract_text_decodes_entities() {
+    let html = "<p>a &amp; b &lt;c&gt; &nbsp;d &quot;e&quot;</p>";
+    let text = extract_text_from_html(html);
+    assert!(text.contains("a & b"), "amp must decode");
+    assert!(text.contains("<c>"), "lt/gt must decode");
+}
+
+#[test]
+fn extract_text_collapses_whitespace() {
+    let html = "<p>hello     world</p>";
+    let text = extract_text_from_html(html);
+    // Multiple spaces should collapse to single space
+    assert!(!text.contains("     "), "whitespace must collapse");
+    assert!(text.contains("hello") && text.contains("world"));
+}
+
+#[test]
+fn extract_text_handles_empty_input() {
+    assert_eq!(extract_text_from_html(""), "");
+}
+
+#[test]
+fn extract_text_handles_nested_skip_tags() {
+    let html = "<script><script>inner</script></script><p>after</p>";
+    let text = extract_text_from_html(html);
+    assert!(
+        !text.contains("inner"),
+        "nested skip content must be hidden"
+    );
+    assert!(text.contains("after"));
+}
+
+// ── parse_github_repo ─────────────────────────────────────────────────────
+
+#[test]
+fn parse_github_repo_extracts_owner_and_repo() {
+    let result = parse_github_repo("https://github.com/owner/repo");
+    assert_eq!(result, Some(("owner".into(), "repo".into())));
+}
+
+#[test]
+fn parse_github_repo_ignores_extra_path_segments() {
+    let result = parse_github_repo("https://github.com/owner/repo/tree/main");
+    assert_eq!(result, Some(("owner".into(), "repo".into())));
+}
+
+#[test]
+fn parse_github_repo_returns_none_for_wrong_host() {
+    assert_eq!(parse_github_repo("https://gitlab.com/owner/repo"), None);
+}
+
+#[test]
+fn parse_github_repo_returns_none_for_single_segment() {
+    assert_eq!(parse_github_repo("https://github.com/onlyowner"), None);
+}
+
+// ── base64_decoder ────────────────────────────────────────────────────────
+
+#[test]
+fn base64_decoder_decodes_unpadded_string() {
+    use std::io::Read;
+    // "Man" → 3 bytes, encodes to "TWFu" with no padding — decoder handles this correctly.
+    let encoded = b"TWFu";
+    let mut dec = base64_decoder(encoded);
+    let mut buf = Vec::new();
+    dec.read_to_end(&mut buf).unwrap();
+    assert_eq!(buf, b"Man");
+}
+
+#[test]
+fn base64_decoder_decodes_multiple_groups() {
+    use std::io::Read;
+    // "Hello W" is 7 bytes, but "Hello Wo" is 8 bytes = not multiple of 3
+    // Use 9-byte "Hello Wor" → "SGVsbG8gV29y" (no padding)
+    let encoded = b"SGVsbG8gV29y";
+    let mut dec = base64_decoder(encoded);
+    let mut buf = Vec::new();
+    dec.read_to_end(&mut buf).unwrap();
+    assert_eq!(buf, b"Hello Wor");
+}
+
+#[test]
+fn base64_decoder_handles_empty_input() {
+    use std::io::Read;
+    let mut dec = base64_decoder(b"");
+    let mut buf = Vec::new();
+    dec.read_to_end(&mut buf).unwrap();
+    assert!(buf.is_empty());
+}
+
+#[test]
+fn base64_decoder_skips_invalid_chars() {
+    use std::io::Read;
+    // Invalid base64 chunk (non-base64 chars map to 0x40 = invalid, skipped)
+    // "TWFu" = "Man", prefix with invalid chunk to verify skip behavior
+    let encoded = b"!!!!TWFu";
+    let mut dec = base64_decoder(encoded);
+    let mut buf = Vec::new();
+    dec.read_to_end(&mut buf).unwrap();
+    // Invalid "!!!!" chunk is skipped, "Man" is decoded
+    assert_eq!(buf, b"Man");
+}
+
+// ── Backend constructors ──────────────────────────────────────────────────
+
+#[test]
+fn google_search_backend_constructs() {
+    let _b = GoogleSearchBackend::new("api-key", "cx-id");
+}
+
+#[test]
+fn stack_overflow_backend_with_site_builder() {
+    let _b = StackOverflowSearchBackend::with_site("softwareengineering");
+}
+
+#[test]
+fn stack_overflow_backend_default() {
+    let _b = StackOverflowSearchBackend::default();
+}
+
+#[test]
+fn wikipedia_backend_new_and_default() {
+    let _a = WikipediaSearchBackend::new();
+    let _b = WikipediaSearchBackend::default();
+}
+
+#[test]
+fn gemini_backend_with_model_builder() {
+    let b = GeminiSearchBackend::new("api-key").with_model("gemini-1.5-pro");
+    // Just verify the builder chain doesn't panic
+    drop(b);
+}
+
+#[test]
+fn web_grounding_backend_with_page_chars_builder() {
+    let b = WebGroundingBackend::new().with_page_chars(500);
+    drop(b);
+}
+
+#[test]
+fn web_grounding_backend_default() {
+    let _b = WebGroundingBackend::default();
 }
 
 /// Live: Gemini backend with Google Search grounding.

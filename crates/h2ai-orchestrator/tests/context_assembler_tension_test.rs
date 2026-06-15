@@ -73,6 +73,7 @@ fn base_input<'a>(active: &'a str) -> ContextAssemblerInput<'a> {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     }
 }
 

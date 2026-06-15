@@ -170,6 +170,8 @@ fn branch_pruned_event_includes_error_cost() {
         constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
         violated_constraints: vec![],
         timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: BranchPrunedEvent = serde_json::from_str(&json).unwrap();
@@ -360,6 +362,8 @@ fn h2ai_event_enum_wraps_all_17_events() {
             constraint_error_cost: RoleErrorCost::new(0.85).unwrap(),
             violated_constraints: vec![],
             timestamp: Utc::now(),
+            retry_count: 0,
+            bypass_reason: None,
         }),
         H2AIEvent::ZeroSurvival(ZeroSurvivalEvent {
             task_id: task_id(),
@@ -608,6 +612,7 @@ fn coherence_incomplete_event_carries_active_contradictions() {
         )],
         retries: 2,
         timestamp: Utc::now(),
+        bypassed_verifier_constraint_ids: vec![],
     };
     assert_eq!(ev.active_contradictions.len(), 1);
     assert_eq!(ev.active_contradictions[0].2, "security");
@@ -872,4 +877,40 @@ mod shadow_auditor_event_tests {
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("AuditDomainDemoted"));
     }
+}
+
+#[test]
+fn branch_pruned_event_retry_count_defaults_to_zero_on_deserialise() {
+    let json = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "explorer_id": "00000000-0000-0000-0000-000000000002",
+        "reason": "test",
+        "raw_output": "",
+        "constraint_error_cost": 0.0,
+        "violated_constraints": [],
+        "timestamp": "2024-01-01T00:00:00Z"
+    }"#;
+    let ev: h2ai_types::events::BranchPrunedEvent = serde_json::from_str(json).unwrap();
+    assert_eq!(ev.retry_count, 0);
+}
+
+#[test]
+fn branch_pruned_event_retry_count_roundtrips() {
+    use chrono::Utc;
+    use h2ai_types::identity::{ExplorerId, TaskId};
+    use h2ai_types::sizing::RoleErrorCost;
+    let ev = h2ai_types::events::BranchPrunedEvent {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        reason: "test".to_owned(),
+        raw_output: String::new(),
+        constraint_error_cost: RoleErrorCost::new(0.0).unwrap(),
+        violated_constraints: vec![],
+        timestamp: Utc::now(),
+        retry_count: 3,
+        bypass_reason: None,
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: h2ai_types::events::BranchPrunedEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.retry_count, 3);
 }

@@ -74,9 +74,27 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
     // Orthogonal to C1: fires when diverse proposals share a fabricated entity.
     if engine_input.cfg.srani.enabled && proposals.len() >= 2 {
         let proposal_texts: Vec<&str> = proposals.iter().map(|p| p.raw_output.as_str()).collect();
-        let task_spec = &engine_input.manifest.description;
+        // Build effective spec: task description + constraint corpus text so that
+        // constraint-mandated technologies (e.g. Redis, Kafka required by constraints) are
+        // not flagged as ungrounded entities absent from the task description alone.
+        let constraint_text: String = engine_input
+            .constraint_corpus
+            .iter()
+            .flat_map(|doc| {
+                std::iter::once(doc.description.as_str())
+                    .chain(doc.binary_checks.iter().map(String::as_str))
+                    .chain(doc.pass_criteria.as_deref())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let effective_spec = format!(
+            "{}\n{}\n{}",
+            engine_input.manifest.description,
+            engine_input.manifest.context.as_deref().unwrap_or(""),
+            constraint_text
+        );
         if let Some(grounding) = crate::specification_grounding::check_specification_grounding(
-            task_spec,
+            &effective_spec,
             &proposal_texts,
         ) {
             // Always update EMA regardless of whether the gate fires.

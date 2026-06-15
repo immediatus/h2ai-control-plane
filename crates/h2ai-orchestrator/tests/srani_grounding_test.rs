@@ -55,8 +55,9 @@ use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
 use h2ai_config::{H2AIConfig, SraniConfig};
 use h2ai_orchestrator::engine::{EngineInput, ExecutionEngine};
 use h2ai_orchestrator::srani_grounding::{
-    format_grounding_hint, GroundingContext, GroundingProvider, GroundingResult, GroundingSource,
-    LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
+    format_grounding_hint, gap_hint_or_query, gap_queries_from_record, synthesis_meets_threshold,
+    GroundingContext, GroundingProvider, GroundingResult, GroundingSource, LlmResearcherGrounder,
+    SpecAnchorGrounder, SraniGroundingChain, WebSearchGrounder,
 };
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_test_utils::mock_adapter;
@@ -244,9 +245,12 @@ async fn system_web_search_chain_escalates_correctly_per_tier() {
     let web_snippet = "Redis sliding-window counter is the standard for rate limiting";
     let chain = SraniGroundingChain::new(vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
-            r#"{"alternatives": ["x"], "statement": "should not appear at tier 1"}"#,
-        )), 512)),
+        Box::new(LlmResearcherGrounder::new(
+            Arc::new(mock_adapter(
+                r#"{"alternatives": ["x"], "statement": "should not appear at tier 1"}"#,
+            )),
+            512,
+        )),
         Box::new(WebSearchGrounder::new(
             Arc::new(mock_search(web_snippet.to_string())),
             3,
@@ -718,9 +722,12 @@ async fn chain_tier0_merges_spec_anchor_and_researcher() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
-            r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua"}"#,
-        )), 512)),
+        Box::new(LlmResearcherGrounder::new(
+            Arc::new(mock_adapter(
+                r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua"}"#,
+            )),
+            512,
+        )),
     ];
     let chain = SraniGroundingChain::new(providers);
     let result = chain.resolve(&ctx, 0).await.unwrap();
@@ -745,9 +752,10 @@ async fn chain_tier1_escalates_to_web_search_skips_researcher() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
-            "should not appear",
-        )), 512)),
+        Box::new(LlmResearcherGrounder::new(
+            Arc::new(mock_adapter("should not appear")),
+            512,
+        )),
         Box::new(WebSearchGrounder::new(
             Arc::new(mock_search("Web result: use Redis".to_string())),
             3,
@@ -771,9 +779,10 @@ async fn chain_tier_clamped_at_last_tier() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
-            r#"{"alternatives": ["x"], "statement": "y"}"#,
-        )), 512)),
+        Box::new(LlmResearcherGrounder::new(
+            Arc::new(mock_adapter(r#"{"alternatives": ["x"], "statement": "y"}"#)),
+            512,
+        )),
     ];
     let chain = SraniGroundingChain::new(providers);
     let result = chain.resolve(&ctx, 99).await;
@@ -1093,9 +1102,12 @@ async fn chain_none_anchor_some_tier_uses_tier_result() {
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(NoneProvider),
-        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
-            r#"{"alternatives": ["Redis"], "statement": "Use Redis"}"#,
-        )), 512)),
+        Box::new(LlmResearcherGrounder::new(
+            Arc::new(mock_adapter(
+                r#"{"alternatives": ["Redis"], "statement": "Use Redis"}"#,
+            )),
+            512,
+        )),
     ];
     let chain = SraniGroundingChain::new(providers);
     let result = chain.resolve(&ctx, 0).await;
@@ -1153,4 +1165,97 @@ fn format_grounding_hint_empty_alternatives_and_empty_statement() {
     assert!(hint.contains("FakeLib"));
     assert!(!hint.contains("Spec-defined"));
     assert!(!hint.contains("alternatives:"));
+}
+
+// ── gap_i1 unit tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn gap_queries_from_record_are_non_empty() {
+    use h2ai_types::gap_i1::KnowledgeGapRecord;
+    let record = KnowledgeGapRecord {
+        constraint_id: "CONSTRAINT-008".to_string(),
+        check_idx: 1,
+        incorrect_concept: "SETNX as standalone idempotency primitive".to_string(),
+        gap_query: "Redis Lua EVAL atomic quota update without SETNX".to_string(),
+        pass_rate_across_waves: 0.0,
+    };
+    let queries = gap_queries_from_record(&record, "Does design use Lua EVAL for CAS?");
+    assert_eq!(queries.len(), 3);
+    assert!(queries.iter().all(|q| !q.is_empty()));
+}
+
+#[test]
+fn domain_synthesis_below_min_confidence_is_rejected() {
+    use h2ai_types::gap_i1::DomainSynthesis;
+    let synth = DomainSynthesis {
+        check_id: ("C".to_string(), 0),
+        incorrect_pattern: "wrong".to_string(),
+        correct_pattern: "right".to_string(),
+        mechanistic_reason: "because".to_string(),
+        source: None,
+        confidence: 0.5,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
+    };
+    assert!(!synthesis_meets_threshold(&synth, 0.7));
+}
+
+#[test]
+fn domain_synthesis_above_min_confidence_is_accepted() {
+    use h2ai_types::gap_i1::DomainSynthesis;
+    let synth = DomainSynthesis {
+        check_id: ("C".to_string(), 0),
+        incorrect_pattern: "wrong".to_string(),
+        correct_pattern: "right".to_string(),
+        mechanistic_reason: "because".to_string(),
+        source: None,
+        confidence: 0.85,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
+    };
+    assert!(synthesis_meets_threshold(&synth, 0.7));
+}
+
+#[test]
+fn synthesis_meets_threshold_works_with_optional_grounding_chain() {
+    use h2ai_types::gap_i1::KnowledgeGapRecord;
+    // Pure function test — just verify None doesn't break compilation
+    // (run_gap_researcher is async so just test the helper functions here)
+    // run_gap_researcher now accepts Option<&SraniGroundingChain> instead of
+    // Option<&WebSearchGrounder> — this test validates the helper functions.
+    let record = KnowledgeGapRecord {
+        constraint_id: "C".to_string(),
+        check_idx: 0,
+        incorrect_concept: "SETNX as lock".to_string(),
+        gap_query: "Redis Lua EVAL atomic CAS".to_string(),
+        pass_rate_across_waves: 0.0,
+    };
+    let queries = gap_queries_from_record(&record, "Does design use Lua EVAL?");
+    assert_eq!(queries.len(), 3);
+    // Verify that passing None for the chain (type-checked as Option<&SraniGroundingChain>)
+    // is expressible in user code.
+    let chain: Option<&SraniGroundingChain> = None;
+    assert!(chain.is_none());
+}
+
+#[test]
+fn corpus_hint_replaces_tautological_echo_when_no_web_grounding() {
+    let hint = Some("Use Redis Lua EVAL for atomic debit-then-publish.");
+    let gap_query = "correct approach for idempotency key";
+    let result = gap_hint_or_query(hint, gap_query);
+    assert_eq!(result, "Use Redis Lua EVAL for atomic debit-then-publish.");
+}
+
+#[test]
+fn falls_back_to_gap_query_when_hint_is_none() {
+    let result = gap_hint_or_query(None, "correct approach for idempotency key");
+    assert_eq!(result, "correct approach for idempotency key");
+}
+
+#[test]
+fn falls_back_to_gap_query_when_hint_is_empty() {
+    let result = gap_hint_or_query(Some(""), "fallback query");
+    assert_eq!(result, "fallback query");
 }

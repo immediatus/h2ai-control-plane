@@ -52,7 +52,7 @@
     clippy::no_effect_underscore_binding
 )]
 use h2ai_autonomic::calibration::{CalibrationHarness, CalibrationInput};
-use h2ai_config::{FamilyConstraint, H2AIConfig, SafetyConfig};
+use h2ai_config::{AuditGateConfig, FamilyConstraint, H2AIConfig, SafetyConfig};
 use h2ai_constraints::types::{
     ConstraintDoc, ConstraintPredicate, ConstraintSeverity, VocabularyMode,
 };
@@ -393,7 +393,8 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
 
 #[tokio::test]
 async fn engine_structured_auditor_non_json_fails_safe() {
-    // Auditor returns plain text → fail safe = reject → ZeroSurvival → MaxRetriesExhausted
+    // Auditor returns plain text. When fail_open_on_parse_error=false (legacy), the proposal
+    // is rejected → ZeroSurvival → MaxRetriesExhausted.
     let explorer = engine_mock_adapter();
     let scorer = verifier();
     let auditor = mock_adapter("I think this looks fine overall");
@@ -401,6 +402,9 @@ async fn engine_structured_auditor_non_json_fails_safe() {
     let store = TaskStore::new();
     let cfg = H2AIConfig {
         max_autonomic_retries: 0,
+        audit_gate: AuditGateConfig {
+            fail_open_on_parse_error: false,
+        },
         ..H2AIConfig::default()
     };
     let corpus = vec![ConstraintDoc::new_llm_judge(
@@ -980,6 +984,7 @@ fn constrained_exploration_tombstone_synthesis_unit() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }];
     let tombstone = synthesize_tombstone(&violations);
     assert!(
@@ -3880,9 +3885,10 @@ async fn srani_web_search_chain_resolves_at_tier1() {
     let web_snippet = "Redis sliding-window counter is the standard for rate limiting";
     let chain = SraniGroundingChain::new(vec![
         Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(Arc::new(mock_adapter(
-            "should not appear",
-        )), 512)),
+        Box::new(LlmResearcherGrounder::new(
+            Arc::new(mock_adapter("should not appear")),
+            512,
+        )),
         Box::new(WebSearchGrounder::new(
             Arc::new(mock_search(web_snippet.to_string())),
             3,
@@ -5428,4 +5434,143 @@ async fn engine_reasoning_checkpoint_non_strict_writes() {
         "non-strict reasoning checkpoint should not abort the engine: {:?}",
         result.err()
     );
+}
+
+// ── tiered_exit_engine_tests ──────────────────────────────────────────────────
+
+fn tee_n_for_wave_standalone(cfg: &H2AIConfig, retry_count: u32) -> u32 {
+    let tee = &cfg.tiered_exit;
+    if retry_count == 0 {
+        tee.min_n
+    } else {
+        tee.n_for_wave(retry_count, cfg.max_autonomic_retries)
+    }
+}
+
+fn make_tee_cfg(min_n: u32, max_n: u32, max_retries: u32) -> H2AIConfig {
+    use h2ai_config::TieredExitConfig;
+    H2AIConfig {
+        tiered_exit: TieredExitConfig {
+            enabled: true,
+            min_n,
+            max_n,
+            ..TieredExitConfig::default()
+        },
+        max_autonomic_retries: max_retries,
+        ..H2AIConfig::default()
+    }
+}
+
+#[test]
+fn escalation_wave0_uses_min_n() {
+    let cfg = make_tee_cfg(2, 6, 4);
+    assert_eq!(tee_n_for_wave_standalone(&cfg, 0), 2);
+}
+
+#[test]
+fn escalation_wave4_uses_max_n() {
+    let cfg = make_tee_cfg(2, 6, 4);
+    assert_eq!(tee_n_for_wave_standalone(&cfg, 4), 6);
+}
+
+// ── beyond_budget_injection_tests ─────────────────────────────────────────────
+
+fn cfg_with_decompose_enabled(decompose_threshold: u8) -> h2ai_config::ComplexityRoutingConfig {
+    h2ai_config::ComplexityRoutingConfig {
+        enabled: true,
+        verifier_decomposition_enabled: true,
+        decompose_threshold,
+        ..h2ai_config::ComplexityRoutingConfig::default()
+    }
+}
+
+fn inject_beyond_budget(
+    cfg: &h2ai_config::ComplexityRoutingConfig,
+    probe: &h2ai_autonomic::complexity_probe::ComplexityProbeResult,
+    vconfig: &mut h2ai_types::config::VerificationConfig,
+) {
+    if cfg.verifier_decomposition_enabled && probe.complexity >= cfg.decompose_threshold {
+        vconfig
+            .evaluator_system_prompt
+            .push_str(h2ai_orchestrator::engine::BEYOND_BUDGET_VERIFIER_ADDENDUM);
+    }
+}
+
+#[test]
+fn addendum_appended_when_complexity_meets_threshold() {
+    use h2ai_autonomic::complexity_probe::ComplexityProbeResult;
+    use h2ai_types::config::VerificationConfig;
+    let cfg = cfg_with_decompose_enabled(4);
+    let probe = ComplexityProbeResult {
+        complexity: 4,
+        rationale: "complex".into(),
+        decompose_recommended: true,
+    };
+    let mut vconfig = VerificationConfig::default();
+    let original_len = vconfig.evaluator_system_prompt.len();
+    inject_beyond_budget(&cfg, &probe, &mut vconfig);
+    assert!(
+        vconfig.evaluator_system_prompt.len() > original_len,
+        "addendum must be appended when complexity >= threshold"
+    );
+    assert!(
+        vconfig.evaluator_system_prompt.contains("BEYOND_BUDGET"),
+        "appended text must contain BEYOND_BUDGET label"
+    );
+}
+
+#[test]
+fn addendum_not_appended_when_complexity_below_threshold() {
+    use h2ai_autonomic::complexity_probe::ComplexityProbeResult;
+    use h2ai_types::config::VerificationConfig;
+    let cfg = cfg_with_decompose_enabled(4);
+    let probe = ComplexityProbeResult {
+        complexity: 3,
+        rationale: "simple".into(),
+        decompose_recommended: false,
+    };
+    let mut vconfig = VerificationConfig::default();
+    let original = vconfig.evaluator_system_prompt.clone();
+    inject_beyond_budget(&cfg, &probe, &mut vconfig);
+    assert_eq!(
+        vconfig.evaluator_system_prompt, original,
+        "prompt must not change when complexity < threshold"
+    );
+}
+
+#[test]
+fn addendum_not_appended_when_verifier_decomposition_disabled() {
+    use h2ai_autonomic::complexity_probe::ComplexityProbeResult;
+    use h2ai_types::config::VerificationConfig;
+    let cfg = h2ai_config::ComplexityRoutingConfig {
+        enabled: true,
+        verifier_decomposition_enabled: false,
+        decompose_threshold: 4,
+        ..h2ai_config::ComplexityRoutingConfig::default()
+    };
+    let probe = ComplexityProbeResult {
+        complexity: 5,
+        rationale: "very complex".into(),
+        decompose_recommended: true,
+    };
+    let mut vconfig = VerificationConfig::default();
+    let original = vconfig.evaluator_system_prompt.clone();
+    inject_beyond_budget(&cfg, &probe, &mut vconfig);
+    assert_eq!(
+        vconfig.evaluator_system_prompt, original,
+        "prompt must not change when verifier_decomposition_enabled = false"
+    );
+}
+
+// ── cost_guard_engine_tests ───────────────────────────────────────────────────
+
+#[test]
+fn cost_guard_event_variants_exist() {
+    use h2ai_types::events::{
+        BudgetExhaustedEvent, ConvergenceGateEvent, CostThresholdWarningEvent, H2AIEvent,
+    };
+    // Compile-time check: these variants must exist in H2AIEvent
+    let _: fn(CostThresholdWarningEvent) -> H2AIEvent = H2AIEvent::CostThresholdWarning;
+    let _: fn(BudgetExhaustedEvent) -> H2AIEvent = H2AIEvent::BudgetExhausted;
+    let _: fn(ConvergenceGateEvent) -> H2AIEvent = H2AIEvent::ConvergenceGate;
 }

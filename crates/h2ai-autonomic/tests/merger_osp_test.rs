@@ -46,6 +46,7 @@ fn v(cid: &str, hint: &str) -> ConstraintViolation {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 

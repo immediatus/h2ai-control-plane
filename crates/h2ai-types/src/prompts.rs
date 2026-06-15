@@ -281,6 +281,30 @@ pub const H1_GRAFT_CONTEXT: &str = concat!(
     "--- END GRAFT STEP ---"
 );
 
+/// Integration wave prompt — dispatched when plateau detection or isolation evidence fires.
+/// Distinct from H1_GRAFT_CONTEXT (which extends a single draft); this explicitly
+/// briefs the LLM for Branch-Solve-Merge integration of per-constraint partial solutions.
+///
+/// Variables: `{constraint_count}` (integer), `{partial_list}` (formatted partial proposals).
+pub const INTEGRATION_WAVE_PROMPT: &str = concat!(
+    "--- INTEGRATION WAVE ---\n",
+    "Sequential repair has converged. The following {constraint_count} proposals each satisfy\n",
+    "a DIFFERENT subset of the required constraints — no single proposal satisfies all.\n\n",
+    "{partial_list}\n\n",
+    "INTEGRATION TASK:\n",
+    "Produce ONE unified proposal that satisfies ALL constraints simultaneously.\n\n",
+    "MANDATORY STEPS BEFORE WRITING:\n",
+    "  1. Identify which specific techniques from each partial proposal are REQUIRED by the\n",
+    "     constraints it satisfies. List them.\n",
+    "  2. Identify any ARCHITECTURAL CONFLICTS between techniques from different partials.\n",
+    "     Resolve each conflict explicitly — choose one approach and state why.\n",
+    "  3. Only after steps 1 and 2: write the unified proposal.\n\n",
+    "COHERENCE MANDATE: the output must be a single coherent architecture. Do NOT\n",
+    "concatenate the partial proposals. Do NOT use techniques from a partial unless they\n",
+    "are required by the constraint that partial satisfies.\n",
+    "--- END INTEGRATION WAVE ---"
+);
+
 // ── CSPR (Constraint-Satisfying Prior Repair) prompts ─────────────────────────
 
 /// CSPR instruction-first repair header (wave with prior proposal available).

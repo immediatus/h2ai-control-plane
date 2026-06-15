@@ -24,6 +24,10 @@ pub struct Input<'a> {
     /// τ values from this generation wave; carried in the `ZeroSurvival` early exit so the
     /// MAPE-K loop can push them to `tau_values_tried` before calling `RetryPolicy::decide`.
     pub tau_values: Vec<f64>,
+    /// Constraint IDs whose verifier judgment is bypassed (from MAPE-K decide).
+    /// When all failing Hard constraints for a proposal are in this set,
+    /// the proposal passes pruning with bypass active.
+    pub bypassed_constraint_ids: std::collections::HashSet<String>,
 }
 
 pub struct Output {
@@ -150,7 +154,10 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
     }
     let ct_scale = input.verification_config.constraint_threshold_scale;
     for (prop, results, violations, any_cache_hit) in ver_out.failed {
-        let hard_gate = results.iter().all(|r| r.hard_passes_scaled(ct_scale));
+        let hard_gate = results.iter().all(|r| {
+            r.hard_passes_scaled(ct_scale)
+                || input.bypassed_constraint_ids.contains(&r.constraint_id)
+        });
         let soft = h2ai_constraints::types::aggregate_compliance_score(&results);
         let compliance = if hard_gate {
             soft
@@ -195,6 +202,8 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             constraint_error_cost: cost,
             violated_constraints: violations,
             timestamp: Utc::now(),
+            retry_count: 0,
+            bypass_reason: None,
         });
         engine_input.store.record_validation(task_id, false);
     }

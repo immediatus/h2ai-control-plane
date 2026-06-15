@@ -98,7 +98,7 @@ fn decide_retry_or_fail_on_multiplication_failed() {
             },
         },
     ));
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
     let decision = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::MultiplicationFailed {
             msg: "test".into(),
@@ -131,19 +131,25 @@ fn observe_aggregates_verification_events_across_waves() {
     wave1_events
         .verification_events
         .push(make_verification_event());
-    ctrl.observe(&PipelineWaveResult {
-        outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
-        events: wave1_events,
-    });
+    ctrl.observe(
+        &PipelineWaveResult {
+            outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
+            events: wave1_events,
+        },
+        0,
+    );
 
     let mut wave2_events = WaveEvents::default();
     wave2_events
         .verification_events
         .push(make_verification_event());
-    ctrl.observe(&PipelineWaveResult {
-        outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
-        events: wave2_events,
-    });
+    ctrl.observe(
+        &PipelineWaveResult {
+            outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
+            events: wave2_events,
+        },
+        1,
+    );
 
     // OracleBlocked always returns Fail with all accumulated verification events.
     let decision = ctrl.decide(
@@ -181,7 +187,7 @@ fn decide_fail_on_oracle_blocked() {
         outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
         events: WaveEvents::default(),
     };
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
     let decision = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
         0,
@@ -209,7 +215,7 @@ fn last_wave_n_eff_updates_after_zero_survival() {
         filter_ratio: 1.0,
         tau_values: vec![],
     }));
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
     // Trigger decide so handle_exit_reason runs and sets last_wave_n_eff.
     let _ = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
@@ -236,7 +242,7 @@ fn last_wave_n_eff_defaults_one_when_none() {
         filter_ratio: 1.0,
         tau_values: vec![],
     }));
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
     let _ = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
             failure_mode: None,

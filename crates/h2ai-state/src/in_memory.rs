@@ -555,32 +555,3 @@ impl TaskCheckpointStore for InMemoryStateBackend {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend::SkillStore;
-    use h2ai_types::identity::TenantId;
-
-    #[tokio::test]
-    async fn skill_store_roundtrip() {
-        let backend = InMemoryStateBackend::new();
-        let tenant = TenantId::default_tenant();
-        let bytes = b"[\"skill-node-json\"]".to_vec();
-
-        backend
-            .put_skill_nodes(&tenant, bytes.clone())
-            .await
-            .unwrap();
-        let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
-        assert_eq!(loaded, bytes);
-    }
-
-    #[tokio::test]
-    async fn skill_store_empty_returns_empty_vec() {
-        let backend = InMemoryStateBackend::new();
-        let tenant = TenantId::default_tenant();
-        let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
-        assert!(loaded.is_empty());
-    }
-}

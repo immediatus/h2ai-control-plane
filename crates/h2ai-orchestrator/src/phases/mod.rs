@@ -50,6 +50,7 @@ pub mod domain_coverage;
 pub mod frontier;
 pub mod generation;
 pub mod hallucination;
+pub mod llm_coverage;
 pub mod merge;
 pub mod multiply;
 pub mod oracle;

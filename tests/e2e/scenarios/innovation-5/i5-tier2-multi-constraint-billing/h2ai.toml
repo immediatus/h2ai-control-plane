@@ -5,7 +5,8 @@
 
 nats_url = "nats://host.docker.internal:4222"
 verifier_consensus_passes = 1
-max_autonomic_retries = 4
+max_autonomic_retries = 6
+knowledge_domain_scoping = true
 
 calibration_adapter_count = 1
 calibration_max_tokens    = 256

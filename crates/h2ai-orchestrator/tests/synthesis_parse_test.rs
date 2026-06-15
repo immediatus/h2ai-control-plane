@@ -62,5 +62,8 @@ fn plain_text_fallback_when_no_headers_found() {
     // Model may ignore the template entirely. Fallback: treat whole text as shared_understanding.
     let report = parse_synthesis_from_markdown("This is some free-form synthesis output.");
     assert!(report.shared_understanding.contains("free-form synthesis"));
-    assert_eq!(report.coverage_score, 0.5, "fallback coverage_score must be 0.5");
+    assert_eq!(
+        report.coverage_score, 0.5,
+        "fallback coverage_score must be 0.5"
+    );
 }

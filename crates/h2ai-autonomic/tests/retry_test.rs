@@ -26,6 +26,8 @@ fn pruned_event(reason: &str) -> BranchPrunedEvent {
         constraint_error_cost: RoleErrorCost::new(0.5).unwrap(),
         violated_constraints: vec![],
         timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     }
 }
 
@@ -39,6 +41,7 @@ fn hard_violation(id: &str, score: f64, hint: Option<&str>) -> ConstraintViolati
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 
@@ -52,6 +55,7 @@ fn hard_violation_with_reason(id: &str, score: f64, reason: &str) -> ConstraintV
         verifier_reason: Some(reason.into()),
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 
@@ -324,6 +328,7 @@ mod verifier_reason_aggregation {
             verifier_reason: Some("  ".into()),
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: None,
         }]);
         let e2 = pruned_with_violations(vec![ConstraintViolation {
             constraint_id: "GDPR-001".into(),
@@ -334,6 +339,7 @@ mod verifier_reason_aggregation {
             verifier_reason: Some("  ".into()),
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: None,
         }]);
         let action = RetryPolicy::decide(&zero_event(), &[], vec![e1, e2], vec![], None);
         if let RetryAction::RetryWithTargets { targets, .. } = action {

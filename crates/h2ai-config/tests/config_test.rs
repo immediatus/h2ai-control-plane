@@ -1,9 +1,12 @@
 use h2ai_config::{
+    apply_safety_profile, AuditGateConfig, AwarenessProbeConfig, AwarenessProbeMode,
     CalibrationBootstrapConfig, CalibrationProbeConfig, CalibrationSlowStartConfig,
-    ConfigLoadError, ConflictBetaConfig, CsprConfig, FamilyConstraint, H2AIConfig,
-    JudgePanelConfig, OproConfig, OracleGateConfig, ProbeTaskSource, ReasoningMemoryConfig,
-    SafetyConfig, SafetyProfile, SchedulerPolicy, ShadowAuditorConfig, SraniConfig, StateConfig,
-    StateDeltaConfig, SystemModifier, ThinkingLoopConfig,
+    ComplexityRoutingConfig, ConfigLoadError, ConflictBetaConfig, ConvergenceGateConfig,
+    CostGuardConfig, CsprConfig, DPPMConfig, FamilyConstraint, GapI1Config, GapK1Config,
+    H2AIConfig, JudgePanelConfig, OproConfig, OracleGateConfig, ProbeTaskSource,
+    ReasoningMemoryConfig, SafetyConfig, SafetyProfile, SchedulerPolicy, ShadowAuditorConfig,
+    SraniConfig, StateConfig, StateDeltaConfig, SystemModifier, ThinkingLoopConfig,
+    TieredExitConfig,
 };
 use h2ai_types::config::AdapterKind;
 use std::io::Write;
@@ -1772,5 +1775,679 @@ fn load_layered_wrong_type_returns_config_error() {
     assert!(
         matches!(result, Err(ConfigLoadError::Config(_))),
         "type mismatch must return ConfigLoadError::Config"
+    );
+}
+
+// ── DPPM-MetaRefine config tests ──────────────────────────────────────────────
+
+#[test]
+fn dppm_config_defaults_disabled() {
+    let cfg = DPPMConfig::default();
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.merge_max_retries, 2);
+    assert_eq!(cfg.max_parallel_solvers, 4);
+    assert!(cfg.meta_observer_enabled);
+}
+
+#[test]
+fn h2ai_config_has_dppm_field_defaulting_disabled() {
+    let cfg = H2AIConfig::default();
+    assert!(!cfg.dppm.enabled);
+}
+
+#[test]
+fn dppm_config_can_be_enabled_via_toml() {
+    let toml = r#"
+[dppm]
+enabled = true
+merge_max_retries = 3
+max_parallel_solvers = 8
+meta_observer_enabled = false
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        dppm: DPPMConfig,
+    }
+    let t: T = toml::from_str(toml).unwrap();
+    assert!(t.dppm.enabled);
+    assert_eq!(t.dppm.merge_max_retries, 3);
+    assert_eq!(t.dppm.max_parallel_solvers, 8);
+    assert!(!t.dppm.meta_observer_enabled);
+}
+
+// ── GapI1Config / GapK1Config / ambiguity / safety profile ───────────────────
+
+#[test]
+fn gap_i1_config_defaults() {
+    let cfg = GapI1Config::default();
+    assert!(!cfg.enabled, "I1 must be off by default");
+    assert_eq!(cfg.cold_check_threshold, 0.0);
+    assert!(cfg.synthesis_min_confidence > 0.5);
+    assert!(cfg.max_gap_records_per_wave >= 1);
+    assert!(cfg.researcher_timeout_secs > 0);
+}
+
+#[test]
+fn h2ai_config_has_gap_i1_field() {
+    let cfg = H2AIConfig::default();
+    let _ = cfg.gap_i1; // field must exist
+}
+
+#[test]
+fn gap_k1_config_defaults() {
+    let cfg = GapK1Config::default();
+    assert!(!cfg.enabled);
+    assert!(!cfg.auto_repair_enabled);
+    assert!((cfg.coherence_threshold - 0.80).abs() < 1e-9);
+    assert!((cfg.instability_threshold - 0.10).abs() < 1e-9);
+    assert!((cfg.repair_acceptance_threshold - 0.90).abs() < 1e-9);
+    assert_eq!(cfg.probe_runs, 5);
+    assert_eq!(cfg.repair_candidates, 3);
+    assert_eq!(cfg.probe_cache_ttl_secs, 86400);
+}
+
+#[test]
+fn h2ai_config_has_gap_k1_field() {
+    let cfg = H2AIConfig::default();
+    let _ = cfg.gap_k1;
+}
+
+#[test]
+fn ambiguity_detection_config_defaults() {
+    let cfg = h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default();
+    assert!(!cfg.enabled);
+    assert!((cfg.score_threshold - 0.6).abs() < f32::EPSILON);
+}
+
+#[test]
+fn h2ai_config_has_ambiguity_detection_field() {
+    let cfg = H2AIConfig::default();
+    assert!(!cfg.ambiguity_detection.enabled);
+}
+
+#[test]
+fn ambiguity_detection_parses_from_toml() {
+    let s = r#"
+        [ambiguity_detection]
+        enabled = true
+        score_threshold = 0.5
+        weight_multi_storage = 0.20
+        weight_fm_negation = 0.30
+        weight_remediation_conflict = 0.15
+        weight_cross_check_negation = 0.20
+        weight_llm_confirmed = 0.25
+        weight_jaccard_freeze_wave = 0.15
+        weight_positive_example_conflict = 0.35
+    "#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig,
+    }
+    let t: T = toml::from_str(s).expect("parse");
+    assert!(t.ambiguity_detection.enabled);
+    assert!((t.ambiguity_detection.score_threshold - 0.5).abs() < f32::EPSILON);
+    assert!((t.ambiguity_detection.weight_fm_negation - 0.30).abs() < f32::EPSILON);
+}
+
+#[test]
+fn shadow_auditor_config_strict_default_is_false() {
+    let cfg = ShadowAuditorConfig::default();
+    assert!(!cfg.strict, "strict must be false by default");
+}
+
+#[test]
+fn apply_safety_profile_sets_strict_for_production() {
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.profile = SafetyProfile::Production;
+    apply_safety_profile(&mut cfg);
+    assert!(cfg.safety.shadow_auditor.strict);
+}
+
+#[test]
+fn apply_safety_profile_sets_strict_for_strict_profile() {
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.profile = SafetyProfile::Strict;
+    apply_safety_profile(&mut cfg);
+    assert!(cfg.safety.shadow_auditor.strict);
+}
+
+#[test]
+fn apply_safety_profile_keeps_strict_false_for_development() {
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.profile = SafetyProfile::Development;
+    apply_safety_profile(&mut cfg);
+    assert!(!cfg.safety.shadow_auditor.strict);
+}
+
+// ── ComplexityRoutingConfig ───────────────────────────────────────────────────
+
+#[test]
+fn complexity_routing_config_defaults() {
+    let cfg = ComplexityRoutingConfig::default();
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.complexity_probe_adapter, "researcher");
+    assert_eq!(cfg.complexity_probe_timeout_secs, 30);
+    assert_eq!(cfg.decompose_threshold, 4);
+    assert_eq!(cfg.hitl_threshold, 5);
+    assert!(!cfg.verifier_decomposition_enabled);
+    assert!(!cfg.intra_retry.enabled);
+    assert_eq!(cfg.intra_retry.entropy_threshold, 0.6);
+    assert_eq!(cfg.intra_retry.retry_slope_threshold, 0.05);
+    assert_eq!(cfg.intra_retry.n_eff_cg_product_threshold, 0.3);
+    assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 2);
+}
+
+#[test]
+fn agent_dropout_config_defaults() {
+    let cfg = ComplexityRoutingConfig::default();
+    assert!(!cfg.agent_dropout.enabled);
+    assert_eq!(cfg.agent_dropout.n_eff_dropout_threshold, 0.5);
+}
+
+#[test]
+fn complexity_routing_config_toml_roundtrip() {
+    let toml_str = r#"
+        enabled = true
+        complexity_probe_adapter = "explorer"
+        complexity_probe_timeout_secs = 60
+        decompose_threshold = 3
+        hitl_threshold = 4
+        verifier_decomposition_enabled = true
+
+        [intra_retry]
+        enabled = true
+        entropy_threshold = 0.5
+        retry_slope_threshold = 0.02
+        n_eff_cg_product_threshold = 0.25
+        min_retry_count_for_detection = 3
+    "#;
+    let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
+    assert!(cfg.enabled);
+    assert_eq!(cfg.complexity_probe_adapter, "explorer");
+    assert_eq!(cfg.complexity_probe_timeout_secs, 60);
+    assert_eq!(cfg.decompose_threshold, 3);
+    assert_eq!(cfg.hitl_threshold, 4);
+    assert!(cfg.verifier_decomposition_enabled);
+    assert!(cfg.intra_retry.enabled);
+    assert_eq!(cfg.intra_retry.entropy_threshold, 0.5);
+    assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 3);
+}
+
+#[test]
+fn min_retries_before_graft_defaults_to_two() {
+    let cfg = ComplexityRoutingConfig::default();
+    assert_eq!(cfg.min_retries_before_graft, 2);
+}
+
+#[test]
+fn min_retries_before_graft_parses_from_toml() {
+    let toml_str = r#"
+        enabled = true
+        complexity_probe_adapter = "researcher"
+        complexity_probe_timeout_secs = 30
+        decompose_threshold = 4
+        hitl_threshold = 5
+        verifier_decomposition_enabled = false
+        min_retries_before_graft = 0
+
+        [intra_retry]
+        enabled = false
+        entropy_threshold = 0.6
+        retry_slope_threshold = 0.05
+        n_eff_cg_product_threshold = 0.3
+        min_retry_count_for_detection = 2
+    "#;
+    let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
+    assert_eq!(cfg.min_retries_before_graft, 0, "explicit 0 disables floor");
+}
+
+#[test]
+fn min_retries_before_graft_defaults_when_omitted_from_toml() {
+    // Existing TOML without min_retries_before_graft must still parse (backward compat).
+    let toml_str = r#"
+        enabled = true
+        complexity_probe_adapter = "explorer"
+        complexity_probe_timeout_secs = 60
+        decompose_threshold = 3
+        hitl_threshold = 4
+        verifier_decomposition_enabled = true
+
+        [intra_retry]
+        enabled = true
+        entropy_threshold = 0.5
+        retry_slope_threshold = 0.02
+        n_eff_cg_product_threshold = 0.25
+        min_retry_count_for_detection = 3
+    "#;
+    let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
+    assert_eq!(
+        cfg.min_retries_before_graft, 2,
+        "falls back to default when omitted"
+    );
+}
+
+// ── TieredExitConfig ──────────────────────────────────────────────────────────
+
+fn tiered_exit_cfg(min_n: u32, max_n: u32, quorum_fraction: f64) -> TieredExitConfig {
+    TieredExitConfig {
+        enabled: true,
+        min_n,
+        max_n,
+        quorum_fraction,
+        acceptance_score: 0.85,
+        require_all_binary_checks: true,
+    }
+}
+
+#[test]
+fn n_for_wave_wave0_returns_min_n() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    assert_eq!(c.n_for_wave(0, 4), 1);
+}
+
+#[test]
+fn n_for_wave_last_wave_returns_max_n() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    assert_eq!(c.n_for_wave(4, 4), 5);
+}
+
+#[test]
+fn n_for_wave_midpoint_rounds_correctly() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    // wave=2, max=4: frac=0.5, n = 1 + round(0.5 * 4) = 1 + 2 = 3
+    assert_eq!(c.n_for_wave(2, 4), 3);
+}
+
+#[test]
+fn n_for_wave_zero_max_retries_returns_max_n() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    assert_eq!(c.n_for_wave(0, 0), 5);
+}
+
+#[test]
+fn n_for_wave_clamps_to_bounds() {
+    let c = tiered_exit_cfg(3, 3, 0.5);
+    assert_eq!(c.n_for_wave(0, 4), 3);
+    assert_eq!(c.n_for_wave(4, 4), 3);
+}
+
+#[test]
+fn k_for_wave_fraction_half() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    assert_eq!(c.k_for_wave(1), 1); // ceil(0.5) = 1
+    assert_eq!(c.k_for_wave(3), 2); // ceil(1.5) = 2
+    assert_eq!(c.k_for_wave(5), 3); // ceil(2.5) = 3
+}
+
+#[test]
+fn k_for_wave_never_zero() {
+    let c = tiered_exit_cfg(1, 5, 0.01);
+    assert_eq!(c.k_for_wave(1), 1);
+}
+
+#[test]
+fn tiered_exit_default_is_disabled() {
+    let c = TieredExitConfig::default();
+    assert!(!c.enabled);
+}
+
+#[test]
+fn tiered_exit_toml_roundtrip() {
+    let toml_str = r#"
+        enabled                   = true
+        min_n                     = 2
+        max_n                     = 6
+        quorum_fraction           = 0.4
+        acceptance_score          = 0.90
+        require_all_binary_checks = false
+    "#;
+    let c: TieredExitConfig = toml::from_str(toml_str).expect("parse");
+    assert!(c.enabled);
+    assert_eq!(c.min_n, 2);
+    assert_eq!(c.max_n, 6);
+    assert!((c.quorum_fraction - 0.4).abs() < 1e-9);
+    assert!((c.acceptance_score - 0.90).abs() < 1e-9);
+    assert!(!c.require_all_binary_checks);
+}
+
+#[test]
+fn n_for_wave_wave_beyond_max_retries_clamps_to_max_n() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    // wave=6 > max_retries=4: frac=1.5, raw n=7, clamped to max_n=5
+    assert_eq!(c.n_for_wave(6, 4), 5);
+}
+
+#[test]
+fn k_for_wave_n_zero_returns_one() {
+    let c = tiered_exit_cfg(1, 5, 0.5);
+    // ceil(0 * 0.5) = 0, max(1, 0) = 1
+    assert_eq!(c.k_for_wave(0), 1);
+}
+
+#[test]
+fn reference_toml_contains_tiered_exit() {
+    let src = include_str!("../reference.toml");
+    assert!(
+        src.contains("[tiered_exit]"),
+        "reference.toml must have [tiered_exit] section"
+    );
+}
+
+// ── CostGuardConfig / ConvergenceGateConfig / AwarenessProbeConfig ────────────
+
+#[test]
+fn cost_guard_default_disabled() {
+    let cfg = CostGuardConfig::default();
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.budget_tokens_per_task, 100_000);
+    assert!((cfg.budget_warning_fraction - 0.80).abs() < 1e-9);
+    assert!((cfg.budget_abort_fraction - 1.00).abs() < 1e-9);
+    assert!(!cfg.budget_prompt_injection_enabled);
+    assert!((cfg.budget_injection_warn_fraction - 0.50).abs() < 1e-9);
+    assert_eq!(cfg.budget_injection_max_complexity, 3);
+}
+
+#[test]
+fn convergence_gate_default_disabled() {
+    let cfg = ConvergenceGateConfig::default();
+    assert!(!cfg.enabled);
+    assert!((cfg.theta_converge - 0.87).abs() < 1e-9);
+    assert!((cfg.supermajority_fraction_n3 - 0.67).abs() < 1e-9);
+    assert!((cfg.supermajority_fraction_n4plus - 0.80).abs() < 1e-9);
+    assert!((cfg.score_floor - 0.80).abs() < 1e-9);
+    assert_eq!(cfg.min_wave, 1);
+    assert!((cfg.budget_floor_fraction - 0.30).abs() < 1e-9);
+}
+
+#[test]
+fn cost_guard_parses_from_toml() {
+    let s = r#"
+        [cost_guard]
+        enabled = true
+        budget_tokens_per_task = 50000
+        budget_warning_fraction = 0.75
+        budget_abort_fraction = 0.95
+        budget_prompt_injection_enabled = true
+        budget_injection_warn_fraction = 0.60
+        budget_injection_max_complexity = 4
+        [convergence_gate]
+        enabled = true
+        theta_converge = 0.90
+        supermajority_fraction_n3 = 1.0
+        supermajority_fraction_n4plus = 0.80
+        score_floor = 0.75
+        min_wave = 2
+        budget_floor_fraction = 0.25
+    "#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        cost_guard: CostGuardConfig,
+        convergence_gate: ConvergenceGateConfig,
+    }
+    let t: T = toml::from_str(s).expect("parse");
+    assert!(t.cost_guard.enabled);
+    assert_eq!(t.cost_guard.budget_tokens_per_task, 50_000);
+    assert!(t.convergence_gate.enabled);
+    assert!((t.convergence_gate.theta_converge - 0.90).abs() < 1e-9);
+}
+
+#[test]
+fn h2ai_config_has_cost_guard_and_convergence_gate() {
+    let cfg = H2AIConfig::default();
+    assert!(!cfg.cost_guard.enabled);
+    assert!(!cfg.convergence_gate.enabled);
+}
+
+#[test]
+fn awareness_probe_config_defaults() {
+    let cfg = AwarenessProbeConfig::default();
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.mode, AwarenessProbeMode::Shadow);
+    assert_eq!(cfg.judge_max_tokens, 1024);
+}
+
+#[test]
+fn h2ai_config_has_awareness_probe_field() {
+    let cfg = H2AIConfig::default();
+    assert!(!cfg.awareness_probe.enabled);
+    assert!(!cfg.knowledge_domain_scoping);
+}
+
+#[test]
+fn awareness_probe_parses_from_toml() {
+    let toml = r#"
+knowledge_domain_scoping = true
+
+[awareness_probe]
+enabled = true
+mode = "active"
+judge_max_tokens = 2048
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        awareness_probe: AwarenessProbeConfig,
+        #[serde(default)]
+        knowledge_domain_scoping: bool,
+    }
+    let t: T = toml::from_str(toml).expect("parse");
+    assert!(t.awareness_probe.enabled);
+    assert_eq!(t.awareness_probe.mode, AwarenessProbeMode::Active);
+    assert_eq!(t.awareness_probe.judge_max_tokens, 2048);
+    assert!(t.knowledge_domain_scoping);
+}
+
+/// Regression guard: `knowledge_domain_scoping` placed AFTER a `[section]` header
+/// belongs to that section in TOML, not to the top level.  Serde silently drops it,
+/// so the field must remain `false` (its default).  If this test ever fails it means
+/// serde somehow started hoisting inner-section keys — which would mask the real bug.
+#[test]
+fn knowledge_domain_scoping_must_be_top_level() {
+    // key placed inside [awareness_probe] — must NOT reach H2AIConfig.knowledge_domain_scoping
+    let toml_misplaced = r#"
+[awareness_probe]
+enabled = true
+mode = "shadow"
+judge_max_tokens = 1024
+knowledge_domain_scoping = true
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        awareness_probe: AwarenessProbeConfig,
+        #[serde(default)]
+        knowledge_domain_scoping: bool,
+    }
+    let t: T = toml::from_str(toml_misplaced).expect("parse");
+    assert!(t.awareness_probe.enabled);
+    // The misplaced key must NOT appear at the top level.
+    assert!(
+        !t.knowledge_domain_scoping,
+        "knowledge_domain_scoping inside [awareness_probe] must not propagate to the top level"
+    );
+}
+
+// ── Pipeline Resilience configs ───────────────────────────────────────────────
+
+#[test]
+fn verifier_freeze_config_defaults() {
+    use h2ai_config::VerifierFreezeConfig;
+    let cfg = VerifierFreezeConfig::default();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.min_waves_to_detect, 3);
+    assert!((cfg.score_variance_threshold - 0.05).abs() < 1e-9);
+    assert!((cfg.reason_jaccard_threshold - 0.7).abs() < 1e-9);
+    assert_eq!(cfg.reason_window_size, 10);
+    assert!((cfg.other_constraint_success_threshold - 0.5).abs() < 1e-9);
+    assert!(cfg.bypass_hard_gate_on_freeze);
+    assert!(!cfg.emit_event_only);
+}
+
+#[test]
+fn verifier_freeze_config_parses_from_toml() {
+    use h2ai_config::VerifierFreezeConfig;
+    let toml = r#"
+[verifier_freeze]
+enabled = false
+min_waves_to_detect = 5
+score_variance_threshold = 0.02
+reason_jaccard_threshold = 0.8
+reason_window_size = 15
+other_constraint_success_threshold = 0.6
+bypass_hard_gate_on_freeze = false
+emit_event_only = true
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        verifier_freeze: VerifierFreezeConfig,
+    }
+    let t: T = toml::from_str(toml).unwrap();
+    assert!(!t.verifier_freeze.enabled);
+    assert_eq!(t.verifier_freeze.min_waves_to_detect, 5);
+    assert!((t.verifier_freeze.score_variance_threshold - 0.02).abs() < 1e-9);
+    assert!((t.verifier_freeze.reason_jaccard_threshold - 0.8).abs() < 1e-9);
+    assert_eq!(t.verifier_freeze.reason_window_size, 15);
+    assert!(!t.verifier_freeze.bypass_hard_gate_on_freeze);
+    assert!(t.verifier_freeze.emit_event_only);
+}
+
+#[test]
+fn generation_phase_config_defaults() {
+    use h2ai_config::GenerationPhaseConfig;
+    let cfg = GenerationPhaseConfig::default();
+    assert_eq!(cfg.timeout_secs, 300);
+}
+
+#[test]
+fn generation_phase_config_parses_from_toml() {
+    use h2ai_config::GenerationPhaseConfig;
+    let toml = r#"
+[generation_phase]
+timeout_secs = 600
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        generation_phase: GenerationPhaseConfig,
+    }
+    let t: T = toml::from_str(toml).unwrap();
+    assert_eq!(t.generation_phase.timeout_secs, 600);
+}
+
+#[test]
+fn oom_guard_config_defaults() {
+    use h2ai_config::OomGuardConfig;
+    let cfg = OomGuardConfig::default();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.rss_abort_mb, 4096);
+    assert_eq!(cfg.check_interval_waves, 1);
+}
+
+#[test]
+fn oom_guard_config_parses_from_toml() {
+    use h2ai_config::OomGuardConfig;
+    let toml = r#"
+[oom_guard]
+enabled = false
+rss_abort_mb = 8192
+check_interval_waves = 2
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        oom_guard: OomGuardConfig,
+    }
+    let t: T = toml::from_str(toml).unwrap();
+    assert!(!t.oom_guard.enabled);
+    assert_eq!(t.oom_guard.rss_abort_mb, 8192);
+    assert_eq!(t.oom_guard.check_interval_waves, 2);
+}
+
+#[test]
+fn gap_quality_config_defaults() {
+    use h2ai_config::GapQualityConfig;
+    let cfg = GapQualityConfig::default();
+    assert!((cfg.min_improvement_to_retain - 0.1).abs() < 1e-9);
+    assert_eq!(cfg.min_post_injection_waves, 2);
+}
+
+#[test]
+fn gap_quality_config_parses_from_toml() {
+    use h2ai_config::GapQualityConfig;
+    let toml = r#"
+[gap_quality]
+min_improvement_to_retain = 0.15
+min_post_injection_waves = 3
+"#;
+    #[derive(serde::Deserialize)]
+    struct T {
+        gap_quality: GapQualityConfig,
+    }
+    let t: T = toml::from_str(toml).unwrap();
+    assert!((t.gap_quality.min_improvement_to_retain - 0.15).abs() < 1e-9);
+    assert_eq!(t.gap_quality.min_post_injection_waves, 3);
+}
+
+#[test]
+fn h2ai_config_has_resilience_fields_with_sensible_defaults() {
+    let cfg = h2ai_config::H2AIConfig::default();
+    assert!(cfg.verifier_freeze.enabled);
+    assert_eq!(cfg.generation_phase.timeout_secs, 300);
+    assert!(cfg.oom_guard.enabled);
+    assert_eq!(cfg.oom_guard.rss_abort_mb, 4096);
+    assert!((cfg.gap_quality.min_improvement_to_retain - 0.1).abs() < 1e-9);
+}
+
+#[test]
+fn generation_phase_loads_from_reference_toml() {
+    let cfg = H2AIConfig::load_layered(None).unwrap();
+    assert_eq!(cfg.generation_phase.timeout_secs, 300);
+}
+
+#[test]
+fn generation_phase_override_applies() {
+    let toml = "[generation_phase]\ntimeout_secs = 3600\n";
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert_eq!(cfg.generation_phase.timeout_secs, 3600);
+}
+
+#[test]
+fn verifier_freeze_loads_from_reference_toml() {
+    let cfg = H2AIConfig::load_layered(None).unwrap();
+    assert!(cfg.verifier_freeze.enabled);
+    assert_eq!(cfg.verifier_freeze.min_waves_to_detect, 3);
+    assert!((cfg.verifier_freeze.score_variance_threshold - 0.05).abs() < 1e-9);
+    assert!((cfg.verifier_freeze.reason_jaccard_threshold - 0.7).abs() < 1e-9);
+    assert_eq!(cfg.verifier_freeze.reason_window_size, 10);
+    assert!((cfg.verifier_freeze.other_constraint_success_threshold - 0.5).abs() < 1e-9);
+    assert!(cfg.verifier_freeze.bypass_hard_gate_on_freeze);
+    assert!(!cfg.verifier_freeze.emit_event_only);
+}
+
+#[test]
+fn oom_guard_loads_from_reference_toml() {
+    let cfg = H2AIConfig::load_layered(None).unwrap();
+    assert!(cfg.oom_guard.enabled);
+    assert_eq!(cfg.oom_guard.rss_abort_mb, 4096);
+    assert_eq!(cfg.oom_guard.check_interval_waves, 1);
+}
+
+#[test]
+fn gap_quality_loads_from_reference_toml() {
+    let cfg = H2AIConfig::load_layered(None).unwrap();
+    assert!((cfg.gap_quality.min_improvement_to_retain - 0.1).abs() < 1e-9);
+    assert_eq!(cfg.gap_quality.min_post_injection_waves, 2);
+}
+
+#[test]
+fn audit_gate_default_fail_open() {
+    let cfg = AuditGateConfig::default();
+    assert!(cfg.fail_open_on_parse_error, "default must be fail-open");
+}
+
+#[test]
+fn audit_gate_loads_from_reference_toml() {
+    let cfg = H2AIConfig::load_layered(None).unwrap();
+    assert!(
+        cfg.audit_gate.fail_open_on_parse_error,
+        "reference.toml must set fail_open_on_parse_error=true"
     );
 }

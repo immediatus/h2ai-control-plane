@@ -195,165 +195,171 @@ pub fn synthesize_tombstone(violations: &[ConstraintViolation]) -> Option<String
     synthesize_repair_plan(violations).map(|p| p.render())
 }
 
-#[cfg(test)]
-mod repair_plan_tests {
-    use super::*;
-    use h2ai_types::events::ConstraintViolation;
+// ── Pipeline Resilience: Frozen Verifier Detection ────────────────────────────
 
-    fn v(id: &str, sev: &str, score: f64) -> ConstraintViolation {
-        ConstraintViolation {
-            constraint_id: id.to_string(),
-            score,
-            severity_label: sev.to_string(),
-            remediation_hint: None,
-            constraint_description: String::new(),
-            verifier_reason: None,
-            check_verdicts: vec![],
-            criteria_pass: None,
+/// Signal emitted when detect_frozen_verifier identifies a stuck verifier judgment.
+#[derive(Debug, Clone)]
+pub struct FrozenVerifierSignal {
+    pub constraint_id: String,
+    /// Wave index at which the frozen pattern first became detectable (caller fills this in).
+    pub frozen_since_wave: u32,
+    /// Per-wave mean scores for this constraint (the detection window).
+    pub per_wave_scores: Vec<f64>,
+    /// Most recent verifier reason from reason_history.
+    pub sample_reason: String,
+}
+
+/// Pure function: detect a stuck verifier for a single constraint.
+///
+/// Fires when ALL five conditions hold:
+/// 1. wave_scores.len() >= cfg.min_waves_to_detect
+/// 2. score_range(wave_scores) < cfg.score_variance_threshold
+/// 3. other_constraint_trends is non-empty
+/// 4. At least one entry in other_constraint_trends is monotonically non-decreasing
+///    with at least one strict increase AND mean(last N) > cfg.other_constraint_success_threshold
+/// 5. mean pairwise Jaccard of reason_history > cfg.reason_jaccard_threshold
+#[must_use]
+pub fn detect_frozen_verifier(
+    constraint_id: &str,
+    wave_scores: &[f64],
+    reason_history: &[String],
+    other_constraint_trends: &[&[f64]],
+    cfg: &h2ai_config::VerifierFreezeConfig,
+) -> Option<FrozenVerifierSignal> {
+    if wave_scores.len() < cfg.min_waves_to_detect as usize {
+        return None;
+    }
+    if other_constraint_trends.is_empty() {
+        return None;
+    }
+    let range = score_range(wave_scores);
+    if range >= cfg.score_variance_threshold {
+        return None;
+    }
+    let any_other_succeeding = other_constraint_trends.iter().any(|scores| {
+        is_monotonically_improving(scores)
+            && mean_last_n(scores, cfg.min_waves_to_detect as usize)
+                > cfg.other_constraint_success_threshold
+    });
+    if !any_other_succeeding {
+        return None;
+    }
+    if reason_history.len() < 2 {
+        return None;
+    }
+    let mean_j = mean_pairwise_jaccard_str(reason_history);
+    if mean_j <= cfg.reason_jaccard_threshold {
+        return None;
+    }
+
+    let sample_reason = reason_history.last().cloned().unwrap_or_default();
+    Some(FrozenVerifierSignal {
+        constraint_id: constraint_id.to_string(),
+        frozen_since_wave: 0,
+        per_wave_scores: wave_scores.to_vec(),
+        sample_reason,
+    })
+}
+
+fn score_range(scores: &[f64]) -> f64 {
+    if scores.len() < 2 {
+        return 0.0;
+    }
+    let max = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min = scores.iter().cloned().fold(f64::INFINITY, f64::min);
+    max - min
+}
+
+fn is_monotonically_improving(scores: &[f64]) -> bool {
+    if scores.len() < 2 {
+        return false;
+    }
+    let mut had_strict_increase = false;
+    for window in scores.windows(2) {
+        if window[1] < window[0] {
+            return false;
+        }
+        if window[1] > window[0] {
+            had_strict_increase = true;
         }
     }
+    had_strict_increase
+}
 
-    #[test]
-    fn empty_violations_returns_none() {
-        assert!(synthesize_repair_plan(&[]).is_none());
-        assert!(synthesize_tombstone(&[]).is_none());
+fn mean_last_n(scores: &[f64], n: usize) -> f64 {
+    let slice = if scores.len() > n {
+        &scores[scores.len() - n..]
+    } else {
+        scores
+    };
+    if slice.is_empty() {
+        return 0.0;
     }
+    slice.iter().sum::<f64>() / slice.len() as f64
+}
 
-    #[test]
-    fn render_contains_constraint_id_and_score() {
-        let plan = synthesize_repair_plan(&[v("C-001", "Hard", 0.32)]).unwrap();
-        let s = plan.render();
-        assert!(s.contains("C-001"));
-        assert!(s.contains("0.32"));
-        assert!(s.contains("Hard"));
+fn mean_pairwise_jaccard_str(reasons: &[String]) -> f64 {
+    let n = reasons.len();
+    if n < 2 {
+        return 1.0;
     }
-
-    #[test]
-    fn rule_uses_criteria_pass_first() {
-        let mut violation = v("C-1", "Hard", 0.0);
-        violation.criteria_pass = Some("use atomic Lua EVAL".into());
-        violation.constraint_description = "fallback description".into();
-        let plan = synthesize_repair_plan(&[violation]).unwrap();
-        let s = plan.render();
-        assert!(s.contains("atomic Lua EVAL"), "criteria_pass must win");
-        assert!(!s.contains("fallback description"));
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            sum += h2ai_constraints::ambiguity::jaccard(&reasons[i], &reasons[j]);
+            count += 1;
+        }
     }
-
-    #[test]
-    fn rule_falls_back_to_description_when_no_criteria_pass() {
-        let mut violation = v("C-1", "Hard", 0.0);
-        violation.criteria_pass = None;
-        violation.constraint_description = "use circuit breakers".into();
-        let plan = synthesize_repair_plan(&[violation]).unwrap();
-        assert!(plan.render().contains("circuit breakers"));
-    }
-
-    #[test]
-    fn what_to_try_uses_remediation_hint() {
-        let mut violation = v("C-1", "Hard", 0.0);
-        violation.remediation_hint = Some("wrap calls with Resilience4j".into());
-        let plan = synthesize_repair_plan(&[violation]).unwrap();
-        assert!(plan.render().contains("Resilience4j"));
-    }
-
-    #[test]
-    fn what_failed_uses_verifier_reason() {
-        let mut violation = v("C-1", "Hard", 0.2);
-        violation.verifier_reason = Some("non-atomic GET-SET detected".into());
-        let plan = synthesize_repair_plan(&[violation]).unwrap();
-        assert!(plan.render().contains("non-atomic GET-SET detected"));
-    }
-
-    #[test]
-    fn failed_check_indices_appended_to_what_failed() {
-        let mut violation = v("C-1", "Hard", 0.5);
-        violation.check_verdicts = vec![true, false, true, false];
-        let plan = synthesize_repair_plan(&[violation]).unwrap();
-        let s = plan.render();
-        // Checks 2 and 4 failed (1-indexed)
-        assert!(s.contains("checks failed: 2, 4"), "got: {s}");
-    }
-
-    #[test]
-    fn raw_proposal_text_never_appears() {
-        // The LLM's actual proposal text must never be injected (anchoring hazard).
-        // This is enforced structurally: synthesize_repair_plan only reads typed fields.
-        let raw_proposal = "The system uses PKCE with rolling refresh tokens";
-        let mut violation = v("C-1", "Hard", 0.0);
-        violation.verifier_reason = Some("missing Lua atomicity".into());
-        let plan = synthesize_repair_plan(&[violation]).unwrap();
-        assert!(!plan.render().contains(raw_proposal));
-    }
-
-    #[test]
-    fn multiple_violations_all_rendered() {
-        let vs = vec![v("A-1", "Hard", 0.1), v("B-2", "Soft", 0.3)];
-        let plan = synthesize_repair_plan(&vs).unwrap();
-        let s = plan.render();
-        assert!(s.contains("A-1"));
-        assert!(s.contains("B-2"));
-    }
-
-    #[test]
-    fn tombstone_delegates_to_render() {
-        let s = synthesize_tombstone(&[v("C-1", "Hard", 0.0)]).unwrap();
-        // Must contain the constraint ID (same as repair plan)
-        assert!(s.contains("C-1"));
+    if count == 0 {
+        1.0
+    } else {
+        sum / count as f64
     }
 }
 
-#[cfg(test)]
-mod pairwise_cosine_tests {
-    use super::*;
+// ── GAP-E2: Talagrand KL τ-spread update rule ────────────────────────────────
 
-    struct FakeEmbedder {
-        embeddings: std::collections::HashMap<String, Vec<f32>>,
+/// Compute the KL-divergence-based τ-spread delta for the Talagrand update rule.
+///
+/// `histogram` — normalised rank counts for ranks 1..N (pass `&rank_histogram[1..]`; index 0
+/// of the raw `TalagrandDiagnostic::rank_histogram` is unused and must be skipped by the caller).
+/// `eta` — learning rate controlling the magnitude of τ adjustment.
+///
+/// Returns Δτ = η × (U_score − Λ_score), where:
+/// - U_score = var(H) / mean(H): elevated when the histogram is U-shaped (over-confident).
+/// - Λ_score = max(H[middle]) / mean(H[edges]): elevated when centre mass exceeds edge mass.
+///
+/// Positive Δτ → expand τ-spread (U-shape); negative Δτ → contract τ-spread (Λ-shape).
+/// Caller clips the result to [τ_min, τ_max]. Returns 0.0 for < 3 bins or zero total.
+#[must_use]
+pub fn talagrand_kl_delta_tau(histogram: &[f64], eta: f64) -> f64 {
+    let n = histogram.len();
+    if n < 3 {
+        return 0.0;
     }
+    let total: f64 = histogram.iter().sum();
+    if total < 1e-10 {
+        return 0.0;
+    }
+    let h: Vec<f64> = histogram.iter().map(|&c| c / total).collect();
 
-    impl EmbeddingModel for FakeEmbedder {
-        fn embed(&self, text: &str) -> Vec<f32> {
-            self.embeddings.get(text).cloned().unwrap_or_default()
-        }
-    }
+    // U_score: dispersion relative to the uniform mean 1/N.
+    let mean_h = 1.0 / n as f64;
+    let var_h: f64 = h.iter().map(|x| (x - mean_h).powi(2)).sum::<f64>() / n as f64;
+    let u_score = var_h / mean_h;
 
-    #[test]
-    fn mean_pairwise_cosine_returns_none_for_single_text() {
-        let model = FakeEmbedder {
-            embeddings: Default::default(),
-        };
-        let result = mean_pairwise_cosine(&["hello".to_string()], &model);
-        assert!(result.is_none());
-    }
+    // Λ_score: peak of middle bins relative to average of the extreme bins.
+    let h_middle_max = h[1..n - 1]
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let h_edges_mean = (h[0] + h[n - 1]) / 2.0;
+    let lambda_score = if h_edges_mean > 1e-10 {
+        h_middle_max / h_edges_mean
+    } else {
+        0.0
+    };
 
-    #[test]
-    fn mean_pairwise_cosine_identical_texts_returns_one() {
-        let mut emb = std::collections::HashMap::new();
-        emb.insert("a".to_string(), vec![1.0_f32, 0.0]);
-        emb.insert("b".to_string(), vec![1.0_f32, 0.0]);
-        let model = FakeEmbedder { embeddings: emb };
-        let result = mean_pairwise_cosine(&["a".to_string(), "b".to_string()], &model).unwrap();
-        assert!((result - 1.0).abs() < 1e-5, "expected ~1.0 got {result}");
-    }
-
-    #[test]
-    fn mean_pairwise_cosine_orthogonal_returns_zero() {
-        let mut emb = std::collections::HashMap::new();
-        emb.insert("x".to_string(), vec![1.0_f32, 0.0]);
-        emb.insert("y".to_string(), vec![0.0_f32, 1.0]);
-        let model = FakeEmbedder { embeddings: emb };
-        let result = mean_pairwise_cosine(&["x".to_string(), "y".to_string()], &model).unwrap();
-        assert!(result.abs() < 1e-5, "expected ~0.0 got {result}");
-    }
-
-    #[test]
-    fn mean_pairwise_cosine_three_texts_averages_pairs() {
-        let mut emb = std::collections::HashMap::new();
-        for k in ["a", "b", "c"] {
-            emb.insert(k.to_string(), vec![1.0_f32, 0.0]);
-        }
-        let model = FakeEmbedder { embeddings: emb };
-        let texts: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        let result = mean_pairwise_cosine(&texts, &model).unwrap();
-        assert!((result - 1.0).abs() < 1e-5, "expected ~1.0 got {result}");
-    }
+    eta * (u_score - lambda_score)
 }

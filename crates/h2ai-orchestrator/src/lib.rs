@@ -74,7 +74,7 @@ pub mod error_class;
 pub mod induction_store;
 pub mod judge_panel;
 pub mod leader;
-pub(crate) mod llm_parse;
+pub mod llm_parse;
 pub mod mape_k;
 pub mod nats_dispatch_adapter;
 pub mod oracle;

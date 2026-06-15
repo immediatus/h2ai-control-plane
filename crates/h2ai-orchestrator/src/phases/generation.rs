@@ -12,6 +12,30 @@ use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::TauValue;
 use std::collections::HashMap;
 
+/// Classification of the generation phase outcome.
+#[derive(Debug)]
+pub enum GenerationPhaseResult {
+    /// All explorers completed within timeout. Full wave.
+    Full(Vec<h2ai_types::events::ProposalEvent>),
+    /// Some explorers completed, some timed out. Partial wave.
+    Partial(Vec<h2ai_types::events::ProposalEvent>),
+    /// No explorers completed within timeout (or completed is empty for any reason).
+    AllTimedOut,
+}
+
+/// Pure function: classify generation phase output.
+#[must_use]
+pub fn generation_outcome(
+    completed: Vec<h2ai_types::events::ProposalEvent>,
+    timed_out_count: usize,
+) -> GenerationPhaseResult {
+    match (completed.is_empty(), timed_out_count) {
+        (true, _) => GenerationPhaseResult::AllTimedOut,
+        (false, 0) => GenerationPhaseResult::Full(completed),
+        (false, _) => GenerationPhaseResult::Partial(completed),
+    }
+}
+
 pub struct Input<'a> {
     pub engine_input: &'a EngineInput<'a>,
     pub task_id: &'a TaskId,
@@ -343,6 +367,26 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
     // ── Phase B2: async context assembly ─────────────────────────────────────────
     use crate::context_assembler::{ContextAssembler, ContextAssemblerInput};
 
+    let compliance_checklist_text: Option<String> = {
+        let checks: Vec<String> = engine_input
+            .constraint_corpus
+            .iter()
+            .flat_map(|d| d.binary_checks.iter().cloned())
+            .collect();
+        if checks.is_empty() {
+            None
+        } else {
+            Some(
+                checks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{}. {}", i + 1, c))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        }
+    };
+
     let assembled_ctx_futs: Vec<_> = slot_data
         .iter()
         .enumerate()
@@ -367,6 +411,7 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
                 global_knowledge: knowledge_results[idx].0.as_deref(),
                 topic_knowledge: knowledge_results[idx].1.as_deref(),
                 constraint_tensions: knowledge_results[idx].2.as_deref(),
+                compliance_checklist: compliance_checklist_text.as_deref(),
             };
             ContextAssembler::build(assembler_input)
         })
@@ -468,7 +513,25 @@ pub async fn run(input: Input<'_>) -> StepResult<Output> {
         })
         .collect();
 
-    let results = join_all(futures_vec).await;
+    let timeout_secs = engine_input.cfg.generation_phase.timeout_secs;
+    let raw_results = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        join_all(futures_vec),
+    )
+    .await;
+
+    let results = match raw_results {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            tracing::warn!(
+                target: "h2ai.engine",
+                task_id = %task_id,
+                timeout_secs = timeout_secs,
+                "generation phase timed out — routing to ZeroSurvival"
+            );
+            vec![]
+        }
+    };
 
     let mut proposals: Vec<ProposalEvent> = Vec::new();
     let mut tao_turns_collected: Vec<u8> = Vec::new();

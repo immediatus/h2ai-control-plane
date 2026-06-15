@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use h2ai_planner::decomposer::PlanningEngine;
 use h2ai_planner::reviewer::PlanReviewer;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_types::config::ParetoWeights;
 use h2ai_types::config::{AdapterKind, CloudProvider};
 use h2ai_types::manifest::{ExplorerRequest, TaskManifest, TopologyRequest};
-use h2ai_types::config::ParetoWeights;
 use h2ai_types::sizing::TauValue;
 
 fn cloud_kind() -> AdapterKind {
@@ -51,7 +51,10 @@ fn test_manifest() -> TaskManifest {
     TaskManifest {
         description: "test task".to_string(),
         pareto_weights: ParetoWeights::new(0.33, 0.33, 0.34).unwrap(),
-        topology: TopologyRequest { kind: "auto".into(), branching_factor: None },
+        topology: TopologyRequest {
+            kind: "auto".into(),
+            branching_factor: None,
+        },
         explorers: ExplorerRequest {
             count: 1,
             tau_min: None,

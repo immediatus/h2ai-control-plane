@@ -13,6 +13,8 @@ fn make_pruned_with_violations(violations: Vec<ConstraintViolation>) -> BranchPr
         constraint_error_cost: RoleErrorCost::new(0.0).unwrap(),
         violated_constraints: violations,
         timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     }
 }
 
@@ -26,6 +28,7 @@ fn make_violation(desc: &str) -> ConstraintViolation {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 

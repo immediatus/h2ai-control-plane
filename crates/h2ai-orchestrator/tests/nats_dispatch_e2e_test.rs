@@ -101,6 +101,7 @@ fn fixed_cost_adapter(output: impl Into<String>, token_cost: u64) -> MockIComput
 /// 4. Build `NatsDispatchAdapter` and call `adapter.execute(...)`
 /// 5. Assert the response is non-empty and has token_cost > 0
 #[tokio::test]
+#[ignore = "requires live NATS + JetStream"]
 async fn nats_dispatch_e2e_full_pipeline() {
     let nats_url = h2ai_config::H2AIConfig::default().nats_url;
 

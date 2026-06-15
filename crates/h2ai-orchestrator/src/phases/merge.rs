@@ -50,6 +50,9 @@ pub struct Input<'a> {
     pub retry_accumulator: Option<&'a mut RetryAccumulator>,
     /// OSP configuration. `None` disables OSP (uses legacy strategy dispatch).
     pub osp_config: Option<&'a OspConfig>,
+    /// Current τ-spread factor carried from MAPE-K state — used as the starting point for the
+    /// KL-divergence update rule (GAP-E2). Pass `params.tau_spread_factor`.
+    pub current_tau_spread_factor: f64,
 }
 
 /// Run Phase 5: Merge.
@@ -87,8 +90,12 @@ pub async fn run(
             .map(|e| e.score)
             .collect();
         TalagrandDiagnostic::from_verification_scores(&[iter_scores]).map(|diag| {
-            // Return the raw factor; caller applies to tau_spread_factor.
-            diag.tau_expansion_factor(1.0, engine_input.cfg.tau_spread_max_factor)
+            diag.tau_kl_next(
+                input.current_tau_spread_factor,
+                engine_input.cfg.talagrand_eta,
+                engine_input.cfg.talagrand_tau_min,
+                engine_input.cfg.tau_spread_max_factor,
+            )
         })
     };
 

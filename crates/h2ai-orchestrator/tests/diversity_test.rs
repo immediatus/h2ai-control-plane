@@ -16,6 +16,7 @@ fn make_result(score: f64, hard: bool) -> ComplianceResult {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: vec![],
     }
 }
 
@@ -74,6 +75,7 @@ fn opposite_profiles_are_diverse() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
         ComplianceResult {
             constraint_id: "c2".into(),
@@ -84,6 +86,7 @@ fn opposite_profiles_are_diverse() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
     ];
     let results_b = vec![
@@ -96,6 +99,7 @@ fn opposite_profiles_are_diverse() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
         ComplianceResult {
             constraint_id: "c2".into(),
@@ -106,6 +110,7 @@ fn opposite_profiles_are_diverse() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
     ];
     let passed = vec![

@@ -30,7 +30,7 @@ type SpecAmbiguousSignal = (String, usize, Vec<String>, Vec<String>, f32, u32);
 /// Instructs the judge to decompose verification into sub-claims and tag uncomputable ones as
 /// BEYOND_BUDGET rather than UNVERIFIED, so the MAPE-K controller can distinguish
 /// "content rejected" from "computation limit reached".
-const BEYOND_BUDGET_VERIFIER_ADDENDUM: &str = "\n\n\
+pub const BEYOND_BUDGET_VERIFIER_ADDENDUM: &str = "\n\n\
     --- Sub-claim Verification Mode ---\n\
     This task requires multi-step proof verification. Decompose your verification \
     into sub-claims and label each as:\n\
@@ -117,6 +117,17 @@ pub fn consensus_agreement_rate_from_events(
     }
     let passed = events.iter().filter(|e| e.passed).count();
     passed as f64 / events.len() as f64
+}
+
+/// Pure function: compute the first wave to run when recovering from a checkpoint.
+///
+/// `WaveCompleted(k)` → start wave `k + 1` (resume from the next wave).
+/// Any other phase → start wave 0 (full restart).
+pub fn starting_wave_for_checkpoint(phase: &ReasoningCheckpointPhase) -> u32 {
+    match phase {
+        ReasoningCheckpointPhase::WaveCompleted(k) => k + 1,
+        _ => 0,
+    }
 }
 
 /// All inputs required to run the multi-phase execution pipeline for a single task.
@@ -666,7 +677,37 @@ impl ExecutionEngine {
                             input.cfg.osp.as_ref(),
                         )
                         .await;
-                    controller.observe(&wave);
+                    controller.observe(&wave, retry_count);
+
+                    // OOM guard: check wave-boundary RSS every check_interval_waves waves.
+                    {
+                        let oom_cfg = &input.cfg.oom_guard;
+                        if oom_cfg.enabled && retry_count % oom_cfg.check_interval_waves == 0 {
+                            match h2ai_autonomic::repair::read_rss_mb() {
+                                Ok(rss_mb) => {
+                                    if let Some(sig) =
+                                        h2ai_autonomic::repair::oom_signal(rss_mb, oom_cfg)
+                                    {
+                                        tracing::warn!(
+                                            target: "h2ai.engine",
+                                            task_id = %task_id,
+                                            rss_mb = sig.rss_mb,
+                                            limit_mb = sig.limit_mb,
+                                            wave = retry_count,
+                                            "OOM guard: RSS limit exceeded, aborting"
+                                        );
+                                        controller.mark_oom_abort();
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        target: "h2ai.engine",
+                                        "OOM guard: failed to read RSS: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
 
                     // ── GAP-H3: charge token budget ───────────────────────────────────────
                     {
@@ -1360,10 +1401,6 @@ impl ExecutionEngine {
                                 .await;
                         }
                     }
-                    return Err((
-                        EngineError::MaxRetriesExhausted,
-                        controller.take_run_context(),
-                    ));
                 }
 
                 // Select repair adapter: prefer researcher, fall back to first explorer.
@@ -1582,7 +1619,7 @@ impl ExecutionEngine {
                             task_id = %task_id,
                             constraint_id = %constraint_id,
                             best_score,
-                            "spec repair failed; returning MaxRetriesExhausted"
+                            "spec repair failed; continuing to exhaustion handler"
                         );
 
                         if !ambiguity_evidence.is_empty() {
@@ -1607,10 +1644,6 @@ impl ExecutionEngine {
                                     .await;
                             }
                         }
-                        return Err((
-                            EngineError::MaxRetriesExhausted,
-                            controller.take_run_context(),
-                        ));
                     }
                 }
             }
@@ -1688,9 +1721,216 @@ impl ExecutionEngine {
                             });
 
                             // Determine which synthesis path to take.
-                            let final_output: Option<String> = if input
-                                .cfg
-                                .sequential_grafting_enabled
+                            let final_output: Option<String> = if input.cfg.dppm.enabled
+                                && complexity_overflow_graft_signal
+                                && !sorted_partials.is_empty()
+                            {
+                                // ── DPPM-MetaRefine Wave ───────────────────────────────────────────
+                                use futures::future::join_all;
+                                use h2ai_autonomic::meta_observer::{
+                                    build_balancing_instruction, divergence_events_from_pruned,
+                                };
+                                use h2ai_autonomic::repair::{
+                                    build_integration_wave_context, find_oscillation_pairs,
+                                    seed_for_cluster, SolverOutput,
+                                };
+                                use h2ai_constraints::clustering::{
+                                    build_clusters, cluster_check_indices,
+                                };
+
+                                // 1. CLUSTER
+                                let clusters = build_clusters(&input.constraint_corpus);
+                                let max_solvers = input.cfg.dppm.max_parallel_solvers.max(1);
+                                let clusters: Vec<Vec<String>> =
+                                    clusters.into_iter().take(max_solvers).collect();
+
+                                // 2. META OBSERVE
+                                let all_pruned_snap = controller.all_pruned();
+                                let osc_pairs =
+                                    find_oscillation_pairs(all_pruned_snap, &all_checks);
+                                let divergences = divergence_events_from_pruned(all_pruned_snap);
+                                let balancing = if input.cfg.dppm.meta_observer_enabled {
+                                    build_balancing_instruction(&osc_pairs, &divergences)
+                                } else {
+                                    String::new()
+                                };
+
+                                let dppm_domain_syntheses = controller.all_domain_syntheses();
+
+                                // 3. PARALLEL SOLVE — one repair-context LLM call per cluster
+                                let solver_futures: Vec<_> = clusters
+                                    .iter()
+                                    .map(|cluster_ids| {
+                                        let c_check_idx = cluster_check_indices(
+                                            cluster_ids,
+                                            &all_checks,
+                                        );
+                                        let seed = seed_for_cluster(
+                                            &c_check_idx,
+                                            &sorted_partials,
+                                        );
+                                        let prior_text = seed
+                                            .as_ref()
+                                            .map(|s| s.proposal_text.as_str())
+                                            .unwrap_or("")
+                                            .to_owned();
+
+                                        let cluster_targets: Vec<
+                                            h2ai_autonomic::repair::RepairTarget,
+                                        > = input
+                                            .constraint_corpus
+                                            .iter()
+                                            .filter(|d| {
+                                                cluster_ids.contains(&d.id)
+                                            })
+                                            .map(|d| {
+                                                h2ai_autonomic::repair::RepairTarget {
+                                                    constraint_id: d.id.clone(),
+                                                    constraint_description: d
+                                                        .description
+                                                        .clone(),
+                                                    remediation_hint: d
+                                                        .remediation_hint
+                                                        .clone(),
+                                                    criteria_pass: d
+                                                        .pass_criteria
+                                                        .clone(),
+                                                    verifier_reasons: vec![],
+                                                }
+                                            })
+                                            .collect();
+
+                                        let system_ctx =
+                                            controller.system_context_with_rubric();
+                                        let empty_graph =
+                                            h2ai_constraints::conflict::ConstraintConflictGraph::build(
+                                                &[],
+                                            );
+                                        let solver_ctx =
+                                            h2ai_autonomic::repair::build_repair_context(
+                                                h2ai_autonomic::repair::RepairInput {
+                                                    prior_proposal_text: &prior_text,
+                                                    targets: &cluster_targets,
+                                                    zone3_hints: None,
+                                                    conflict_graph: &empty_graph,
+                                                    retry_count: 0,
+                                                    attempts_remaining: 1,
+                                                    system_context_with_rubric:
+                                                        system_ctx,
+                                                    checks: &all_checks,
+                                                    partial_passes: &[],
+                                                    prior_best_score: None,
+                                                    domain_syntheses: &dppm_domain_syntheses,
+                                                    coupled_constraint_hints: &[],
+                                                    passing_constraint_pins: &[],
+                                                },
+                                            );
+
+                                        let req = h2ai_types::adapter::ComputeRequest {
+                                            system_context: solver_ctx,
+                                            task: input.manifest.description.clone(),
+                                            tau,
+                                            max_tokens: input
+                                                .cfg
+                                                .synthesis_max_tokens,
+                                        };
+                                        adapter.execute(req)
+                                    })
+                                    .collect();
+
+                                let solver_results = join_all(solver_futures).await;
+
+                                let solver_outputs: Vec<SolverOutput> = clusters
+                                    .iter()
+                                    .zip(solver_results.iter())
+                                    .filter_map(|(cluster_ids, result)| {
+                                        result.as_ref().ok().map(|resp| {
+                                            let c_check_idx =
+                                                cluster_check_indices(cluster_ids, &all_checks);
+                                            let seed_passed =
+                                                seed_for_cluster(&c_check_idx, &sorted_partials)
+                                                    .map(|p| {
+                                                        p.passed_check_indices()
+                                                            .into_iter()
+                                                            .collect::<Vec<_>>()
+                                                    })
+                                                    .unwrap_or_default();
+                                            SolverOutput {
+                                                cluster_ids: cluster_ids.clone(),
+                                                proposal_text: resp.output.clone(),
+                                                seed_passed_checks: seed_passed,
+                                            }
+                                        })
+                                    })
+                                    .collect();
+
+                                if solver_outputs.is_empty() {
+                                    tracing::warn!(
+                                        target: "h2ai.engine",
+                                        task_id = %task_id,
+                                        "DPPM: all cluster solvers failed — falling back to best partial"
+                                    );
+                                    Some(sorted_partials[0].proposal_text.clone())
+                                } else {
+                                    // 4. MERGE — integration wave with balancing instruction
+                                    let n_constraints = input.constraint_corpus.len();
+                                    let corpus_checks: Vec<(String, Vec<String>)> = input
+                                        .constraint_corpus
+                                        .iter()
+                                        .map(|d| (d.id.clone(), d.binary_checks.clone()))
+                                        .collect();
+                                    let mut merge_output: Option<String> = None;
+                                    let mut current_balancing = balancing.clone();
+
+                                    for merge_attempt in 0..=input.cfg.dppm.merge_max_retries {
+                                        let integration_ctx = build_integration_wave_context(
+                                            controller.system_context_with_rubric(),
+                                            &current_balancing,
+                                            &solver_outputs,
+                                            n_constraints,
+                                            &corpus_checks,
+                                        );
+                                        let merge_req = h2ai_types::adapter::ComputeRequest {
+                                            system_context: integration_ctx,
+                                            task: input.manifest.description.clone(),
+                                            tau,
+                                            max_tokens: input.cfg.synthesis_max_tokens,
+                                        };
+                                        match adapter.execute(merge_req).await {
+                                            Ok(resp) => {
+                                                merge_output = Some(resp.output);
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    target: "h2ai.engine",
+                                                    task_id = %task_id,
+                                                    attempt = merge_attempt,
+                                                    error = %e,
+                                                    "DPPM merge LLM call failed"
+                                                );
+                                                if !current_balancing.is_empty() {
+                                                    current_balancing =
+                                                        h2ai_autonomic::meta_observer::sharpen_balancing_instruction(
+                                                            &current_balancing,
+                                                            &solver_outputs
+                                                                .iter()
+                                                                .flat_map(|o| {
+                                                                    o.cluster_ids
+                                                                        .iter()
+                                                                        .cloned()
+                                                                })
+                                                                .collect::<Vec<_>>(),
+                                                        );
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    merge_output
+                                        .or_else(|| Some(sorted_partials[0].proposal_text.clone()))
+                                }
+                            } else if input.cfg.sequential_grafting_enabled
                                 && sorted_partials.len() > 1
                             {
                                 // ── Sequential Constraint Grafting ──────────────
@@ -2051,6 +2291,18 @@ impl ExecutionEngine {
                             "reasoning checkpoint: skipping to merge output"
                         );
                     }
+
+                    if let ReasoningCheckpointPhase::WaveCompleted(_) = rc.phase {
+                        let start_wave = starting_wave_for_checkpoint(&rc.phase);
+                        tracing::info!(
+                            target: "h2ai.engine",
+                            task_id = %input.task_id,
+                            start_wave = start_wave,
+                            "reasoning checkpoint: resuming from wave {start_wave}"
+                        );
+                        // start_wave is available for future use when the engine retry loop
+                        // supports wave-offset resumption (GAP-F5 Step 5).
+                    }
                 }
             }
         }
@@ -2187,148 +2439,5 @@ impl ExecutionEngine {
             // Earlier phase or unknown stage — restart from scratch
             Self::run_offline(input).await
         }
-    }
-}
-
-#[cfg(test)]
-mod tiered_exit_engine_tests {
-    use h2ai_config::{H2AIConfig, TieredExitConfig};
-
-    fn tee_n_for_wave_standalone(cfg: &H2AIConfig, retry_count: u32) -> u32 {
-        let tee = &cfg.tiered_exit;
-        if retry_count == 0 {
-            tee.min_n
-        } else {
-            tee.n_for_wave(retry_count, cfg.max_autonomic_retries)
-        }
-    }
-
-    fn make_tee_cfg(min_n: u32, max_n: u32, max_retries: u32) -> H2AIConfig {
-        H2AIConfig {
-            tiered_exit: TieredExitConfig {
-                enabled: true,
-                min_n,
-                max_n,
-                ..TieredExitConfig::default()
-            },
-            max_autonomic_retries: max_retries,
-            ..H2AIConfig::default()
-        }
-    }
-
-    #[test]
-    fn escalation_wave0_uses_min_n() {
-        let cfg = make_tee_cfg(2, 6, 4);
-        assert_eq!(tee_n_for_wave_standalone(&cfg, 0), 2);
-    }
-
-    #[test]
-    fn escalation_wave4_uses_max_n() {
-        let cfg = make_tee_cfg(2, 6, 4);
-        assert_eq!(tee_n_for_wave_standalone(&cfg, 4), 6);
-    }
-}
-
-#[cfg(test)]
-mod beyond_budget_injection_tests {
-    use super::BEYOND_BUDGET_VERIFIER_ADDENDUM;
-    use h2ai_autonomic::complexity_probe::ComplexityProbeResult;
-    use h2ai_config::ComplexityRoutingConfig;
-    use h2ai_types::config::VerificationConfig;
-
-    fn cfg_with_decompose_enabled(decompose_threshold: u8) -> ComplexityRoutingConfig {
-        ComplexityRoutingConfig {
-            enabled: true,
-            verifier_decomposition_enabled: true,
-            decompose_threshold,
-            ..ComplexityRoutingConfig::default()
-        }
-    }
-
-    fn inject(
-        cfg: &ComplexityRoutingConfig,
-        probe: &ComplexityProbeResult,
-        vconfig: &mut VerificationConfig,
-    ) {
-        if cfg.verifier_decomposition_enabled && probe.complexity >= cfg.decompose_threshold {
-            vconfig
-                .evaluator_system_prompt
-                .push_str(BEYOND_BUDGET_VERIFIER_ADDENDUM);
-        }
-    }
-
-    #[test]
-    fn addendum_appended_when_complexity_meets_threshold() {
-        let cfg = cfg_with_decompose_enabled(4);
-        let probe = ComplexityProbeResult {
-            complexity: 4,
-            rationale: "complex".into(),
-            decompose_recommended: true,
-        };
-        let mut vconfig = VerificationConfig::default();
-        let original_len = vconfig.evaluator_system_prompt.len();
-        inject(&cfg, &probe, &mut vconfig);
-        assert!(
-            vconfig.evaluator_system_prompt.len() > original_len,
-            "addendum must be appended when complexity >= threshold"
-        );
-        assert!(
-            vconfig.evaluator_system_prompt.contains("BEYOND_BUDGET"),
-            "appended text must contain BEYOND_BUDGET label"
-        );
-    }
-
-    #[test]
-    fn addendum_not_appended_when_complexity_below_threshold() {
-        let cfg = cfg_with_decompose_enabled(4);
-        let probe = ComplexityProbeResult {
-            complexity: 3,
-            rationale: "simple".into(),
-            decompose_recommended: false,
-        };
-        let mut vconfig = VerificationConfig::default();
-        let original = vconfig.evaluator_system_prompt.clone();
-        inject(&cfg, &probe, &mut vconfig);
-        assert_eq!(
-            vconfig.evaluator_system_prompt, original,
-            "prompt must not change when complexity < threshold"
-        );
-    }
-
-    #[test]
-    fn addendum_not_appended_when_verifier_decomposition_disabled() {
-        let cfg = ComplexityRoutingConfig {
-            enabled: true,
-            verifier_decomposition_enabled: false,
-            decompose_threshold: 4,
-            ..ComplexityRoutingConfig::default()
-        };
-        let probe = ComplexityProbeResult {
-            complexity: 5,
-            rationale: "very complex".into(),
-            decompose_recommended: true,
-        };
-        let mut vconfig = VerificationConfig::default();
-        let original = vconfig.evaluator_system_prompt.clone();
-        inject(&cfg, &probe, &mut vconfig);
-        assert_eq!(
-            vconfig.evaluator_system_prompt, original,
-            "prompt must not change when verifier_decomposition_enabled = false"
-        );
-    }
-}
-
-#[cfg(test)]
-mod cost_guard_engine_tests {
-    use h2ai_types::events::{
-        BudgetExhaustedEvent, ConvergenceGateEvent, CostThresholdWarningEvent, H2AIEvent,
-    };
-
-    #[test]
-    fn cost_guard_event_variants_exist() {
-        // Compile-time check: these variants must exist in H2AIEvent
-        let _: fn(CostThresholdWarningEvent) -> H2AIEvent = H2AIEvent::CostThresholdWarning;
-        let _: fn(BudgetExhaustedEvent) -> H2AIEvent = H2AIEvent::BudgetExhausted;
-        let _: fn(ConvergenceGateEvent) -> H2AIEvent = H2AIEvent::ConvergenceGate;
     }
 }

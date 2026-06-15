@@ -101,7 +101,7 @@ fuel_budget           = 1_000_000
 
 ## 1c. Multi-tenancy
 
-H2AI supports multiple isolated tenants within a single control plane deployment. Every task, estimator, and approval record is scoped to a tenant. Tenant identity is carried as a URL path segment — not a header or query parameter.
+H2AI supports multiple isolated tenants within a single control plane deployment. Every task, estimator, and HITL signal is scoped to a tenant. Tenant identity is carried as a URL path segment — not a header or query parameter.
 
 ### HTTP routing
 
@@ -129,7 +129,7 @@ Single-tenant deployments use `default` as the tenant ID. The `tenant_id` field 
 | Estimators | `TenantRegistry` — `DashMap<TenantId, Arc<TenantState>>`, lazily created per tenant |
 | NATS KV keys | Per-tenant prefix: `{tenant_id}/tao`, `{tenant_id}/bandit`, `{tenant_id}/srani` |
 | Task ownership | `TaskStore::get_for_tenant()` returns `None` for cross-tenant access |
-| Approval records | `ApprovalRecord.tenant_id` stored in the record; reaper uses the embedded tenant, never the URL |
+| HITL signals | Subject-scoped: `h2ai.signals.{tenant_bucket_safe}.{task_id}` — tenant is in the subject by construction; no cross-tenant delivery possible |
 | Calibration | Shared (global) — calibration runs measure the adapter pool, not tenant workloads. New tenants inherit the default tenant's calibration on first task submission |
 
 ### Adding a tenant
@@ -162,6 +162,7 @@ NATS is the authoritative event log and the KV backing store. The runtime expect
 | `H2AI_CHECKPOINT_{tenant}` KV | — | TTL 7d | 1 | Reasoning Memory Phase 1: per-task `TaskReasoningCheckpoint` written at each engine phase gate; used by `run_from_checkpoint` for crash recovery. One bucket per tenant. |
 | `H2AI_META_{tenant}` KV | — | TTL 90d | 1 | Reasoning Memory Phase 1: `TaskMetaState` projected at task resolution; outcome record for induction. One bucket per tenant. |
 | `H2AI_INDUCTION_{tenant}` KV | — | — | 1 | InductionStore: constraint-node hit-rate patterns boosted on matching tasks. See §7. One bucket per tenant. |
+| `H2AI_SIGNALS` (`h2ai.signals.>`) | File | Limits, MaxAge 24h | 1 | HITL signal delivery — `ResumeSignal` envelopes (`Approve`, `WaveContinue`, `Unknown`). Subject per task: `h2ai.signals.{tenant_bucket_safe}.{task_id}`. Durable push consumer per task, deleted at task resolution. |
 
 JetStream message size limit defaults to 1 MB. `payload_offload_threshold_bytes` (default 524 288) governs when `system_context` is written to a content-addressed blob and replaced with a hash reference (`ContextPayload::Ref`) so the NATS message stays well under the limit.
 

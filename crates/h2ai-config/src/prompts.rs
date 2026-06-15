@@ -546,48 +546,11 @@ WHY THIS MATTERS: {mechanistic_reason}
 ══════════════════════════════════════════════════════════════════════════════════
 ";
 
-#[cfg(test)]
-mod gap_i1_prompt_tests {
-    use super::*;
-
-    #[test]
-    fn gap_extractor_prompts_defined() {
-        assert!(!I1_GAP_EXTRACTOR_SYSTEM.is_empty());
-        assert!(I1_GAP_EXTRACTOR_TASK.contains("{check_text}"));
-        assert!(I1_GAP_EXTRACTOR_TASK.contains("{verifier_reasons}"));
-    }
-
-    #[test]
-    fn synthesis_validator_prompt_defined() {
-        assert!(!I1_SYNTHESIS_VALIDATOR_TASK.is_empty());
-        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{check_text}"));
-        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{incorrect_pattern}"));
-        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{correct_pattern}"));
-        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{mechanistic_reason}"));
-    }
-
-    #[test]
-    fn semantic_repair_slot_template_defined() {
-        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{incorrect_pattern}"));
-        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{correct_pattern}"));
-        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{mechanistic_reason}"));
-    }
-
-    #[test]
-    fn i1_semantic_repair_slot_uses_prior_approach_not_wrong_belief() {
-        assert!(
-            !I1_SEMANTIC_REPAIR_SLOT.contains("WRONG BELIEF"),
-            "I1_SEMANTIC_REPAIR_SLOT must use PRIOR APPROACH, not WRONG BELIEF"
-        );
-        assert!(I1_SEMANTIC_REPAIR_SLOT.contains("PRIOR APPROACH"));
-    }
-
-    #[test]
-    fn i1_synthesis_validator_task_uses_prior_approach_not_wrong_belief() {
-        assert!(
-            !I1_SYNTHESIS_VALIDATOR_TASK.contains("WRONG BELIEF"),
-            "I1_SYNTHESIS_VALIDATOR_TASK must use PRIOR APPROACH, not WRONG BELIEF"
-        );
-        assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("PRIOR APPROACH"));
-    }
-}
+/// Instruction injected into the LlmJudge system prompt to request per-check evidence.
+///
+/// Placed after the binary check list so the judge provides structured per-check reasoning
+/// that `parse_check_reasons` can extract.
+pub const CHECK_EVIDENCE_FORMAT_INSTRUCTION: &str =
+    "For each CHECK, provide evidence from the proposal text. Format exactly as:\n\
+     CHECK N: <one-sentence evidence from proposal> → PRESENT or MISSING\n\
+     where N matches the check number. Include every check even if it passes.";

@@ -547,7 +547,7 @@ Source: `crates/h2ai-orchestrator/src/srani_gate.rs`, `crates/h2ai-orchestrator/
 
 SRANI (Specification-Relative Architectural Noun Intersection) measures entity-level cross-proposal fabrication — distinct from the token-level Jaccard CV in §6.
 
-### 9.1 CFI — Correlated Fabrication Index
+### 10.1 CFI — Correlated Fabrication Index
 
 For each proposal `i`, extract the set of architectural noun entities `E_i` that appear in the proposal but are absent from the task specification. The Correlated Fabrication Index is:
 
@@ -558,7 +558,7 @@ CFI = max_{i ≠ j} |ungrounded_i ∩ ungrounded_j| / max(|ungrounded_i|, |ungro
 
 CFI ∈ [0, 1]. CFI = 0 means no two proposals share any fabricated entity. CFI = 1 means at least one pair of proposals shares all fabricated entities — strong cross-proposal correlated fabrication signal.
 
-### 9.2 Adaptive sigmoid gate
+### 10.2 Adaptive sigmoid gate
 
 Rather than static thresholds, injection pressure is computed as:
 
@@ -599,7 +599,7 @@ When `injection_pressure ≥ srani.gate_threshold` (default 0.50), `SraniGroundi
 > is a detection + warning layer; high-CFI remediation (CFI ≥ 0.8) requires the researcher
 > adapter (`H2AI_RESEARCHER`) to inject verified alternatives, not just prohibitions.
 
-### 9.3 EMA properties
+### 10.3 EMA properties
 
 The EMA tracks the system's operating CFI regime. With α = 0.20, the effective memory horizon is approximately 5 tasks (`1/α`). Tasks in a low-CFI regime build a low baseline, so genuine spikes trigger grounding. Tasks in a sustained high-CFI regime raise the baseline, preventing every wave from triggering.
 
@@ -905,7 +905,7 @@ where `μ_recent` is the mean of the current window. O(1) per observation — th
 > of useful intervention. Window=20 was chosen empirically: window=10 fired false positives
 > on natural short-term variation; window=50 delayed warning by more than a typical LLM API
 > update cycle (see §2.4 halflife rationale). The DDM layer is a fast pre-filter only —
-> the BOCPD layer (§14.3) provides the statistically grounded changepoint posterior.
+> the BOCPD layer (§16.2) provides the statistically grounded changepoint posterior.
 
 ### 16.2 BOCPD — Normal-Inverse-Gamma conjugate prior
 
@@ -1043,3 +1043,45 @@ Returns 1.0 for an empty event set. Source: `consensus_agreement_rate_from_event
 | `drift_conformal_margin` | ORCA threshold widening on changepoint | 0.05 |
 | `drift_staleness_ttl_secs` | Margin TTL after changepoint | 3600 |
 | `auto_recalibrate_on_drift` | Trigger POST /calibrate on changepoint | false |
+
+---
+
+## 17. Talagrand KL τ-spread Update Rule
+
+Source: `crates/h2ai-autonomic/src/epistemic.rs::talagrand_kl_delta_tau`.
+
+After `MergeResolved`, the system measures the shape of the verification-score rank histogram to decide whether to widen or contract the τ-spread used in subsequent merge strategy selection. The rank histogram `H` (counts per score percentile bin, ≥3 bins) is first normalised to a probability vector `h = H / sum(H)`.
+
+Two shape statistics are computed:
+
+```
+mean_h  = 1 / N                                    [uniform reference — 1/N for N bins]
+
+U_score = var(h) / mean_h                          [U-shape index: elevated when mass
+                                                     concentrates at the extremes]
+
+Λ_score = max(h[1..N-2]) / mean(h[0], h[N-1])     [Λ-shape index: elevated when centre
+                                                     mass exceeds edge mass]
+
+Δτ = η × (U_score − Λ_score)
+```
+
+- **Positive Δτ** (U-score > Λ-score): histogram is U-shaped — scores cluster at extremes, meaning the ensemble is either very confident or very uncertain. τ is expanded to probe a wider range.
+- **Negative Δτ** (Λ-score > U-score): histogram is Λ-shaped — scores cluster in the middle, indicating a tight score distribution. τ is contracted to tighten the merge band.
+
+`TalagrandDiagnostic::tau_kl_next` clips the result:
+
+```
+τ_{t+1} = clip(τ_t + Δτ, τ_min, τ_max)
+```
+
+`current_tau_spread_factor` is propagated through `merge::Input` so that `MapeKController` sees the τ value from the prior wave (previously the merge phase always started from `1.0`, silently ignoring prior-wave calibration).
+
+Config:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `talagrand_eta` | 0.1 | Step size η for τ updates |
+| `talagrand_tau_min` | 0.5 | Lower clip bound for τ |
+
+6 unit tests in `crates/h2ai-autonomic/tests/epistemic_unit_test.rs`: empty/short histogram → 0.0; zero histogram → 0.0; flat histogram → Δτ ≈ 0; U-shaped → positive Δτ; Λ-shaped → negative Δτ; INNOVATION-5 Λ-shaped score distribution correctly detected as negative Δτ.

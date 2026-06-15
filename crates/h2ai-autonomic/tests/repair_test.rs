@@ -1,6 +1,7 @@
-use h2ai_autonomic::repair::{build_repair_context, RepairInput, RepairTarget};
+use h2ai_autonomic::repair::{build_repair_context, PartialPass, RepairInput, RepairTarget};
 use h2ai_constraints::conflict::ConstraintConflictGraph;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+use h2ai_types::gap_i1::DomainSynthesis;
 
 // ── Shared builders ────────────────────────────────────────────────────────────
 
@@ -340,4 +341,46 @@ mod positive_assertion_framing {
             "old negation directive must be gone"
         );
     }
+}
+
+// ── coupled_constraint_hints (moved from repair.rs) ───────────────────────────
+
+#[test]
+fn repair_context_includes_coupled_constraint_hints() {
+    let graph = ConstraintConflictGraph::build(&[]);
+    let targets: Vec<RepairTarget> = vec![];
+    let domain_syntheses: Vec<DomainSynthesis> = vec![];
+    let partial_passes: Vec<PartialPass> = vec![];
+
+    let input = RepairInput {
+        prior_proposal_text: "",
+        targets: &targets,
+        zone3_hints: None,
+        conflict_graph: &graph,
+        retry_count: 1,
+        attempts_remaining: 2,
+        system_context_with_rubric: "",
+        checks: &[],
+        partial_passes: &partial_passes,
+        prior_best_score: None,
+        domain_syntheses: &domain_syntheses,
+        coupled_constraint_hints: &[(
+            "CONSTRAINT-TAU-2".to_string(),
+            Some("quota audit must use PostgreSQL INSERT-only".to_string()),
+        )],
+        passing_constraint_pins: &[],
+    };
+    let ctx = build_repair_context(input);
+    assert!(
+        ctx.contains("CONSTRAINT-TAU-2"),
+        "repair context must include coupled constraint id"
+    );
+    assert!(
+        ctx.contains("quota audit must use PostgreSQL INSERT-only"),
+        "repair context must include coupled constraint hint text"
+    );
+    assert!(
+        ctx.contains("MUST NOT BE BROKEN"),
+        "repair context must frame coupled hints as a non-break constraint"
+    );
 }

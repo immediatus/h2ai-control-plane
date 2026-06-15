@@ -122,11 +122,6 @@ pub struct AppState {
     pub engine_runner: Arc<dyn EngineRunner>,
     /// Live skill node store, populated by post_run after each resolved task.
     pub skill_provider: Arc<SkillProvider>,
-    /// Constraint IDs whose binary checks crossed the ambiguity threshold at corpus load time.
-    /// Empty when `ambiguity_detection.enabled = false` (the default).
-    /// The engine treats verdicts for these constraints as non-trustable: no auto-repair is
-    /// attempted and compliance scores are flagged in events.
-    pub ambiguous_constraint_ids: Arc<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -156,9 +151,9 @@ impl AppState {
         let drift_monitor = std::sync::Arc::new(tokio::sync::Mutex::new(
             h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
         ));
-        let (constraint_resolver, ambiguous_constraint_ids) = {
-            use h2ai_constraints::ambiguity::seed_scorecards;
+        let (constraint_resolver, _) = {
             use h2ai_config::ConstraintWikiConfig;
+            use h2ai_constraints::ambiguity::seed_scorecards;
             let (resolver, flagged) = match &cfg.constraint_wiki {
                 ConstraintWikiConfig::Fs { corpus_path, .. } => {
                     let (index, store) = FsConstraintStore::load(corpus_path).unwrap_or_else(|e| {
@@ -212,7 +207,10 @@ impl AppState {
                     } else {
                         std::collections::HashSet::new()
                     };
-                    (ConstraintResolver::new(Arc::new(index), Arc::new(store)), flagged)
+                    (
+                        ConstraintResolver::new(Arc::new(index), Arc::new(store)),
+                        flagged,
+                    )
                 }
                 ConstraintWikiConfig::Disabled => (
                     ConstraintResolver::new(
@@ -276,7 +274,6 @@ impl AppState {
             thinking_loop_runner: Arc::new(DefaultThinkingLoopRunner),
             decomposer: Arc::new(DefaultDecomposer),
             engine_runner: Arc::new(DefaultEngineRunner),
-            ambiguous_constraint_ids,
         }
     }
 
@@ -347,7 +344,6 @@ impl AppState {
             thinking_loop_runner: Arc::new(DefaultThinkingLoopRunner),
             decomposer: Arc::new(DefaultDecomposer),
             engine_runner: Arc::new(DefaultEngineRunner),
-            ambiguous_constraint_ids: Arc::new(std::collections::HashSet::new()),
         }
     }
 

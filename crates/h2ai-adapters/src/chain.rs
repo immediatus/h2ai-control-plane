@@ -1,6 +1,6 @@
 use futures::future::join_all;
 use h2ai_types::adapter::{AdapterError, ComputeRequest, IComputeAdapter};
-use h2ai_types::chain::{ChainedRequest, ChainStep};
+use h2ai_types::chain::{ChainStep, ChainedRequest};
 use h2ai_types::sizing::TauValue;
 
 pub async fn execute_chain(
@@ -43,21 +43,24 @@ pub async fn tournament_merge(
     while current.len() > 1 {
         let (pairs, bye) = split_pairs(current);
 
-        let merge_futs: Vec<_> = pairs.into_iter().map(|(a, b)| {
-            let sys = format!("{system_context}\n\n## Current Best:\n{a}");
-            let task = merge_template.replace("{proposal_b}", &b);
-            execute_chain(
-                adapter,
-                ChainedRequest {
-                    initial_system_context: sys,
-                    steps: vec![ChainStep {
-                        template: task,
-                        tau,
-                        max_tokens,
-                    }],
-                },
-            )
-        }).collect();
+        let merge_futs: Vec<_> = pairs
+            .into_iter()
+            .map(|(a, b)| {
+                let sys = format!("{system_context}\n\n## Current Best:\n{a}");
+                let task = merge_template.replace("{proposal_b}", &b);
+                execute_chain(
+                    adapter,
+                    ChainedRequest {
+                        initial_system_context: sys,
+                        steps: vec![ChainStep {
+                            template: task,
+                            tau,
+                            max_tokens,
+                        }],
+                    },
+                )
+            })
+            .collect();
 
         let mut next: Vec<String> = join_all(merge_futs)
             .await

@@ -1,12 +1,12 @@
-use h2ai_adapters::chain::{execute_chain, tournament_merge};
-use h2ai_test_utils::mock_adapter;
-use h2ai_types::chain::{ChainedRequest, ChainStep};
-use h2ai_types::adapter::AdapterError;
-use h2ai_test_utils::failing_adapter;
-use std::sync::Mutex;
 use async_trait::async_trait;
+use h2ai_adapters::chain::{execute_chain, tournament_merge};
+use h2ai_test_utils::failing_adapter;
+use h2ai_test_utils::mock_adapter;
+use h2ai_types::adapter::AdapterError;
 use h2ai_types::adapter::{ComputeRequest, ComputeResponse, IComputeAdapter};
+use h2ai_types::chain::{ChainStep, ChainedRequest};
 use h2ai_types::config::AdapterKind;
+use std::sync::Mutex;
 
 // ── CapturingAdapter records every system_context it receives ─────────────────
 
@@ -25,7 +25,10 @@ impl std::fmt::Debug for CapturingAdapter {
 #[async_trait]
 impl IComputeAdapter for CapturingAdapter {
     async fn execute(&self, req: ComputeRequest) -> Result<ComputeResponse, AdapterError> {
-        self.contexts.lock().unwrap().push(req.system_context.clone());
+        self.contexts
+            .lock()
+            .unwrap()
+            .push(req.system_context.clone());
         Ok(ComputeResponse {
             output: self.response.clone(),
             token_cost: 0,
@@ -34,7 +37,9 @@ impl IComputeAdapter for CapturingAdapter {
             reasoning_trace: None,
         })
     }
-    fn kind(&self) -> &AdapterKind { &self.kind }
+    fn kind(&self) -> &AdapterKind {
+        &self.kind
+    }
 }
 
 fn capturing(response: &str) -> CapturingAdapter {
@@ -55,14 +60,17 @@ fn capturing(response: &str) -> CapturingAdapter {
 #[tokio::test]
 async fn single_step_returns_adapter_output() {
     let adapter = mock_adapter("hello world");
-    let result = execute_chain(&adapter, ChainedRequest {
-        initial_system_context: "sys".into(),
-        steps: vec![ChainStep {
-            template: "task".into(),
-            tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
-            max_tokens: 256,
-        }],
-    })
+    let result = execute_chain(
+        &adapter,
+        ChainedRequest {
+            initial_system_context: "sys".into(),
+            steps: vec![ChainStep {
+                template: "task".into(),
+                tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
+                max_tokens: 256,
+            }],
+        },
+    )
     .await
     .unwrap();
 
@@ -72,10 +80,13 @@ async fn single_step_returns_adapter_output() {
 #[tokio::test]
 async fn empty_steps_returns_empty_string() {
     let adapter = mock_adapter("anything");
-    let result = execute_chain(&adapter, ChainedRequest {
-        initial_system_context: "sys".into(),
-        steps: vec![],
-    })
+    let result = execute_chain(
+        &adapter,
+        ChainedRequest {
+            initial_system_context: "sys".into(),
+            steps: vec![],
+        },
+    )
     .await
     .unwrap();
 
@@ -87,40 +98,52 @@ async fn two_steps_output_becomes_next_system_context() {
     // Step 0 outputs "step0-output"; step 1 must receive it as system_context.
     let adapter = capturing("step0-output");
 
-    let _ = execute_chain(&adapter, ChainedRequest {
-        initial_system_context: "initial-ctx".into(),
-        steps: vec![
-            ChainStep {
-                template: "task0".into(),
-                tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
-                max_tokens: 256,
-            },
-            ChainStep {
-                template: "task1".into(),
-                tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
-                max_tokens: 256,
-            },
-        ],
-    })
+    let _ = execute_chain(
+        &adapter,
+        ChainedRequest {
+            initial_system_context: "initial-ctx".into(),
+            steps: vec![
+                ChainStep {
+                    template: "task0".into(),
+                    tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
+                    max_tokens: 256,
+                },
+                ChainStep {
+                    template: "task1".into(),
+                    tau: h2ai_types::sizing::TauValue::new(0.3).unwrap(),
+                    max_tokens: 256,
+                },
+            ],
+        },
+    )
     .await
     .unwrap();
 
     let ctxs = adapter.contexts.lock().unwrap();
     assert_eq!(ctxs.len(), 2);
-    assert_eq!(ctxs[0], "initial-ctx", "step 0 must receive initial_system_context");
-    assert_eq!(ctxs[1], "step0-output", "step 1 must receive step 0's output as system_context");
+    assert_eq!(
+        ctxs[0], "initial-ctx",
+        "step 0 must receive initial_system_context"
+    );
+    assert_eq!(
+        ctxs[1], "step0-output",
+        "step 1 must receive step 0's output as system_context"
+    );
 }
 
 #[tokio::test]
 async fn adapter_error_propagates() {
-    let result = execute_chain(&failing_adapter(), ChainedRequest {
-        initial_system_context: "sys".into(),
-        steps: vec![ChainStep {
-            template: "t".into(),
-            tau: h2ai_types::sizing::TauValue::new(0.1).unwrap(),
-            max_tokens: 64,
-        }],
-    })
+    let result = execute_chain(
+        &failing_adapter(),
+        ChainedRequest {
+            initial_system_context: "sys".into(),
+            steps: vec![ChainStep {
+                template: "t".into(),
+                tau: h2ai_types::sizing::TauValue::new(0.1).unwrap(),
+                max_tokens: 64,
+            }],
+        },
+    )
     .await;
 
     assert!(matches!(result, Err(AdapterError::NetworkError(_))));
@@ -133,7 +156,7 @@ fn tau() -> h2ai_types::sizing::TauValue {
 #[tokio::test]
 async fn tournament_merge_single_proposal_no_adapter_call() {
     // One proposal → returned as-is; adapter must not be called.
-    let adapter = failing_adapter();  // would error if called
+    let adapter = failing_adapter(); // would error if called
     let result = tournament_merge(
         &adapter,
         "sys",

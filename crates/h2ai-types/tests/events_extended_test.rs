@@ -254,6 +254,7 @@ fn constraint_violation_serde_roundtrip() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     };
     let s = serde_json::to_string(&v).unwrap();
     let back: ConstraintViolation = serde_json::from_str(&s).unwrap();
@@ -1242,6 +1243,7 @@ fn h2ai_event_zero_coordination_quality_serde_roundtrip() {
         active_contradictions: vec![],
         retries: 1,
         timestamp: Utc::now(),
+        bypassed_verifier_constraint_ids: vec![],
     });
     let s = serde_json::to_string(&e).unwrap();
     assert!(s.contains("\"event_type\":\"CoherenceIncomplete\""));

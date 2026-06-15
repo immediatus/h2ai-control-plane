@@ -9,18 +9,18 @@ use h2ai_types::identity::TaskId;
 use std::sync::Arc;
 use std::time::Duration;
 
-struct EventCounter {
+pub struct EventCounter {
     interval: usize,
     count: usize,
 }
 
 impl EventCounter {
-    const fn new(interval: usize) -> Self {
+    pub const fn new(interval: usize) -> Self {
         Self { interval, count: 0 }
     }
 
     /// Increments the counter and returns `true` when a snapshot should be taken.
-    const fn tick(&mut self) -> bool {
+    pub const fn tick(&mut self) -> bool {
         self.count += 1;
         self.interval > 0 && self.count.is_multiple_of(self.interval)
     }
@@ -255,36 +255,6 @@ impl SessionJournal<NatsClient> {
             nats: None,
             snapshot_interval: 0,
             counters: Arc::new(DashMap::new()),
-        }
-    }
-}
-
-#[cfg(test)]
-mod counter_tests {
-    use super::EventCounter;
-
-    #[test]
-    fn zero_interval_never_triggers() {
-        let mut c = EventCounter::new(0);
-        for _ in 0..100 {
-            assert!(!c.tick());
-        }
-    }
-
-    #[test]
-    fn triggers_at_every_multiple_of_interval() {
-        let mut c = EventCounter::new(5);
-        for i in 1usize..=20 {
-            let triggered = c.tick();
-            assert_eq!(triggered, i % 5 == 0, "at event {i}");
-        }
-    }
-
-    #[test]
-    fn interval_of_one_triggers_every_event() {
-        let mut c = EventCounter::new(1);
-        for _ in 0..10 {
-            assert!(c.tick());
         }
     }
 }

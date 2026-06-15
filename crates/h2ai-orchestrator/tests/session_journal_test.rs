@@ -352,6 +352,8 @@ fn apply_branch_pruned_increments_proposals_pruned() {
             constraint_error_cost: RoleErrorCost::new(0.8).unwrap(),
             violated_constraints: vec![],
             timestamp: Utc::now(),
+            retry_count: 0,
+            bypass_reason: None,
         }),
     );
     assert_eq!(state.proposals_pruned, 1);

@@ -40,6 +40,7 @@ fn compliance_result_hard_fail_gives_zero_score() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: vec![],
     };
     assert!(!r.hard_passes());
     assert!((r.score - 0.3).abs() < 1e-9);
@@ -56,6 +57,7 @@ fn compliance_result_hard_pass_when_score_meets_threshold() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: vec![],
     };
     assert!(r.hard_passes());
 }
@@ -71,6 +73,7 @@ fn compliance_result_soft_always_passes_hard_gate() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: vec![],
     };
     assert!(r.hard_passes());
 }
@@ -87,6 +90,7 @@ fn aggregate_compliance_score_weighted_average_of_soft() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
         ComplianceResult {
             constraint_id: "s2".into(),
@@ -97,6 +101,7 @@ fn aggregate_compliance_score_weighted_average_of_soft() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
     ];
     // (2.0*0.8 + 1.0*0.4) / 3.0 = 2.0/3.0
@@ -205,6 +210,7 @@ fn aggregate_compliance_score_one_when_no_soft_constraints() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: vec![],
     }];
     assert!((aggregate_compliance_score(&results) - 1.0).abs() < 1e-9);
 }
@@ -277,6 +283,7 @@ fn aggregate_compliance_score_returns_one_when_all_weights_zero() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: vec![],
     }];
     assert!(
         (aggregate_compliance_score(&results) - 1.0).abs() < 1e-9,
@@ -336,6 +343,7 @@ fn fractional_compliance_score_averages_all_hard_constraint_scores() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
         ComplianceResult {
             constraint_id: "HLE-2".into(),
@@ -346,6 +354,7 @@ fn fractional_compliance_score_averages_all_hard_constraint_scores() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
     ];
     let score = fractional_compliance_score(&results);
@@ -372,6 +381,7 @@ fn fractional_compliance_score_includes_hard_and_soft() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
         ComplianceResult {
             constraint_id: "s1".into(),
@@ -382,6 +392,7 @@ fn fractional_compliance_score_includes_hard_and_soft() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
     ];
     let score = fractional_compliance_score(&results);
@@ -403,6 +414,7 @@ fn fractional_compliance_score_all_zero_stays_zero() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
         ComplianceResult {
             constraint_id: "h2".into(),
@@ -413,6 +425,7 @@ fn fractional_compliance_score_all_zero_stays_zero() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: vec![],
         },
     ];
     assert!(

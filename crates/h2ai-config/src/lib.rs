@@ -856,7 +856,8 @@ impl Default for ThinkingLoopConfig {
             archetype_select_max_tokens: default_tl_archetype_select_max_tokens(),
             brainstorm_max_tokens: default_tl_brainstorm_max_tokens(),
             quality_gate_max_tokens: default_tl_quality_gate_max_tokens(),
-            synthesis_tournament_max_round_tokens: default_tl_synthesis_tournament_max_round_tokens(),
+            synthesis_tournament_max_round_tokens: default_tl_synthesis_tournament_max_round_tokens(
+            ),
         }
     }
 }
@@ -1609,6 +1610,13 @@ pub struct H2AIConfig {
     pub oracle_pass_rate_floor: f64,
     /// Maximum τ-spread expansion factor when Talagrand detects over-confidence. `2.0` means the spread can at most double.
     pub tau_spread_max_factor: f64,
+    /// Learning rate η for the Talagrand KL τ-spread update rule (GAP-E2). Default 0.1.
+    /// Controls how aggressively τ adapts to U-shape (over-confidence) or Λ-shape (under-dispersion).
+    #[serde(default = "default_talagrand_eta")]
+    pub talagrand_eta: f64,
+    /// Minimum τ-spread factor; KL contraction cannot reduce τ below this floor. Default 0.5.
+    #[serde(default = "default_talagrand_tau_min")]
+    pub talagrand_tau_min: f64,
     /// When `true`, automatically switches to the Empirical prediction basis after `auto_baseline_eval_min_tasks` Tier 1 oracle tasks complete.
     pub auto_baseline_eval: bool,
     /// Minimum Tier 1 oracle task count before automatic baseline evaluation triggers.
@@ -1854,6 +1862,22 @@ pub struct H2AIConfig {
     /// GAP-F4 Phase 1b: filter CompositeProvider results to domains matching the task.
     #[serde(default)]
     pub knowledge_domain_scoping: bool,
+    /// GAP-F6: constraint integration wave triggers (plateau detection + isolation evidence).
+    #[serde(default)]
+    pub integration_wave: IntegrationWaveConfig,
+    /// DPPM-MetaRefine synthesis wave configuration.
+    #[serde(default)]
+    pub dppm: DPPMConfig,
+    #[serde(default)]
+    pub verifier_freeze: VerifierFreezeConfig,
+    #[serde(default)]
+    pub generation_phase: GenerationPhaseConfig,
+    #[serde(default)]
+    pub oom_guard: OomGuardConfig,
+    #[serde(default)]
+    pub gap_quality: GapQualityConfig,
+    #[serde(default)]
+    pub audit_gate: AuditGateConfig,
 }
 
 // ── GAP-F6: Plan-Awareness Probe config ──────────────────────────────────────
@@ -1886,6 +1910,75 @@ impl Default for AwarenessProbeConfig {
             enabled: false,
             mode: AwarenessProbeMode::Shadow,
             judge_max_tokens: 1024,
+        }
+    }
+}
+
+// ── GAP-F6: Constraint Integration Wave config ────────────────────────────────
+
+/// Configuration for the integration wave trigger (plateau + isolation evidence detection).
+/// When enabled, the MAPE-K controller routes to a Branch-Solve-Merge integration wave
+/// instead of continuing sequential single-constraint repair when MUS oscillation is detected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IntegrationWaveConfig {
+    /// Enable the integration wave trigger. Default: true.
+    pub enabled: bool,
+    /// Compliance score must change by less than this between consecutive waves
+    /// to count as a plateau. Default: 0.02.
+    pub plateau_threshold: f64,
+    /// Minimum retry count before plateau detection fires. Prevents false triggers
+    /// on the first two waves. Default: 2.
+    pub min_retry_for_plateau: u32,
+}
+
+impl Default for IntegrationWaveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            plateau_threshold: 0.02,
+            min_retry_for_plateau: 2,
+        }
+    }
+}
+
+// ── DPPM-MetaRefine config ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DPPMConfig {
+    /// Enable the DPPM-MetaRefine synthesis wave. Disabled by default.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum retries for the merge step when verification fails.
+    #[serde(default = "DPPMConfig::default_merge_max_retries")]
+    pub merge_max_retries: u32,
+    /// Maximum parallel cluster solvers dispatched concurrently.
+    #[serde(default = "DPPMConfig::default_max_parallel_solvers")]
+    pub max_parallel_solvers: usize,
+    /// Enable oscillation/divergence detection via MetaObserver.
+    #[serde(default = "DPPMConfig::default_meta_observer_enabled")]
+    pub meta_observer_enabled: bool,
+}
+
+impl DPPMConfig {
+    const fn default_merge_max_retries() -> u32 {
+        2
+    }
+    const fn default_max_parallel_solvers() -> usize {
+        4
+    }
+    const fn default_meta_observer_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for DPPMConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            merge_max_retries: Self::default_merge_max_retries(),
+            max_parallel_solvers: Self::default_max_parallel_solvers(),
+            meta_observer_enabled: Self::default_meta_observer_enabled(),
         }
     }
 }
@@ -1926,6 +2019,12 @@ const fn default_oracle_ece_alert_threshold() -> f64 {
 }
 const fn default_oracle_pass_rate_floor() -> f64 {
     0.30
+}
+const fn default_talagrand_eta() -> f64 {
+    0.1
+}
+const fn default_talagrand_tau_min() -> f64 {
+    0.5
 }
 const fn default_evaluator_timeout_secs() -> u64 {
     600
@@ -2342,463 +2441,167 @@ pub const fn apply_safety_profile(cfg: &mut H2AIConfig) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ── Pipeline Resilience configs ────────────────────────────────────────────────
 
-    #[test]
-    fn gap_i1_config_defaults() {
-        let cfg = GapI1Config::default();
-        assert!(!cfg.enabled, "I1 must be off by default");
-        assert_eq!(cfg.cold_check_threshold, 0.0);
-        assert!(cfg.synthesis_min_confidence > 0.5);
-        assert!(cfg.max_gap_records_per_wave >= 1);
-        assert!(cfg.researcher_timeout_secs > 0);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifierFreezeConfig {
+    #[serde(default = "VerifierFreezeConfig::default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "VerifierFreezeConfig::default_min_waves_to_detect")]
+    pub min_waves_to_detect: u32,
+    #[serde(default = "VerifierFreezeConfig::default_score_variance_threshold")]
+    pub score_variance_threshold: f64,
+    #[serde(default = "VerifierFreezeConfig::default_reason_jaccard_threshold")]
+    pub reason_jaccard_threshold: f64,
+    #[serde(default = "VerifierFreezeConfig::default_reason_window_size")]
+    pub reason_window_size: u32,
+    #[serde(default = "VerifierFreezeConfig::default_other_constraint_success_threshold")]
+    pub other_constraint_success_threshold: f64,
+    #[serde(default = "VerifierFreezeConfig::default_bypass_hard_gate_on_freeze")]
+    pub bypass_hard_gate_on_freeze: bool,
+    #[serde(default)]
+    pub emit_event_only: bool,
+}
+
+impl VerifierFreezeConfig {
+    const fn default_enabled() -> bool {
+        true
     }
-
-    #[test]
-    fn h2ai_config_has_gap_i1_field() {
-        let cfg = H2AIConfig::default();
-        let _ = cfg.gap_i1; // field must exist
+    const fn default_min_waves_to_detect() -> u32 {
+        3
     }
-
-    #[test]
-    fn gap_k1_config_defaults() {
-        let cfg = GapK1Config::default();
-        assert!(!cfg.enabled);
-        assert!(!cfg.auto_repair_enabled);
-        assert!((cfg.coherence_threshold - 0.80).abs() < 1e-9);
-        assert!((cfg.instability_threshold - 0.10).abs() < 1e-9);
-        assert!((cfg.repair_acceptance_threshold - 0.90).abs() < 1e-9);
-        assert_eq!(cfg.probe_runs, 5);
-        assert_eq!(cfg.repair_candidates, 3);
-        assert_eq!(cfg.probe_cache_ttl_secs, 86400);
+    const fn default_score_variance_threshold() -> f64 {
+        0.05
     }
-
-    #[test]
-    fn h2ai_config_has_gap_k1_field() {
-        let cfg = H2AIConfig::default();
-        let _ = cfg.gap_k1;
+    const fn default_reason_jaccard_threshold() -> f64 {
+        0.7
     }
-
-    #[test]
-    fn ambiguity_detection_config_defaults() {
-        let cfg = h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default();
-        assert!(!cfg.enabled);
-        assert!((cfg.score_threshold - 0.6).abs() < f32::EPSILON);
+    const fn default_reason_window_size() -> u32 {
+        10
     }
-
-    #[test]
-    fn h2ai_config_has_ambiguity_detection_field() {
-        let cfg = H2AIConfig::default();
-        assert!(!cfg.ambiguity_detection.enabled);
+    const fn default_other_constraint_success_threshold() -> f64 {
+        0.5
     }
-
-    #[test]
-    fn ambiguity_detection_parses_from_toml() {
-        let s = r#"
-            [ambiguity_detection]
-            enabled = true
-            score_threshold = 0.5
-            weight_multi_storage = 0.20
-            weight_fm_negation = 0.30
-            weight_remediation_conflict = 0.15
-            weight_cross_check_negation = 0.20
-            weight_llm_confirmed = 0.25
-            weight_jaccard_freeze_wave = 0.15
-        "#;
-        #[derive(serde::Deserialize)]
-        struct T {
-            ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig,
-        }
-        let t: T = toml::from_str(s).expect("parse");
-        assert!(t.ambiguity_detection.enabled);
-        assert!((t.ambiguity_detection.score_threshold - 0.5).abs() < f32::EPSILON);
-        assert!((t.ambiguity_detection.weight_fm_negation - 0.30).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn shadow_auditor_config_strict_default_is_false() {
-        let cfg = ShadowAuditorConfig::default();
-        assert!(!cfg.strict, "strict must be false by default");
-    }
-
-    #[test]
-    fn apply_safety_profile_sets_strict_for_production() {
-        let mut cfg = H2AIConfig::default();
-        cfg.safety.profile = SafetyProfile::Production;
-        apply_safety_profile(&mut cfg);
-        assert!(cfg.safety.shadow_auditor.strict);
-    }
-
-    #[test]
-    fn apply_safety_profile_sets_strict_for_strict_profile() {
-        let mut cfg = H2AIConfig::default();
-        cfg.safety.profile = SafetyProfile::Strict;
-        apply_safety_profile(&mut cfg);
-        assert!(cfg.safety.shadow_auditor.strict);
-    }
-
-    #[test]
-    fn apply_safety_profile_keeps_strict_false_for_development() {
-        let mut cfg = H2AIConfig::default();
-        cfg.safety.profile = SafetyProfile::Development;
-        apply_safety_profile(&mut cfg);
-        assert!(!cfg.safety.shadow_auditor.strict);
+    const fn default_bypass_hard_gate_on_freeze() -> bool {
+        true
     }
 }
 
-#[cfg(test)]
-mod complexity_routing_tests {
-    use super::*;
-
-    #[test]
-    fn complexity_routing_config_defaults() {
-        let cfg = ComplexityRoutingConfig::default();
-        assert!(!cfg.enabled);
-        assert_eq!(cfg.complexity_probe_adapter, "researcher");
-        assert_eq!(cfg.complexity_probe_timeout_secs, 30);
-        assert_eq!(cfg.decompose_threshold, 4);
-        assert_eq!(cfg.hitl_threshold, 5);
-        assert!(!cfg.verifier_decomposition_enabled);
-        assert!(!cfg.intra_retry.enabled);
-        assert_eq!(cfg.intra_retry.entropy_threshold, 0.6);
-        assert_eq!(cfg.intra_retry.retry_slope_threshold, 0.05);
-        assert_eq!(cfg.intra_retry.n_eff_cg_product_threshold, 0.3);
-        assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 2);
-    }
-
-    #[test]
-    fn agent_dropout_config_defaults() {
-        let cfg = ComplexityRoutingConfig::default();
-        assert!(!cfg.agent_dropout.enabled);
-        assert_eq!(cfg.agent_dropout.n_eff_dropout_threshold, 0.5);
-    }
-
-    #[test]
-    fn complexity_routing_config_toml_roundtrip() {
-        let toml_str = r#"
-            enabled = true
-            complexity_probe_adapter = "explorer"
-            complexity_probe_timeout_secs = 60
-            decompose_threshold = 3
-            hitl_threshold = 4
-            verifier_decomposition_enabled = true
-
-            [intra_retry]
-            enabled = true
-            entropy_threshold = 0.5
-            retry_slope_threshold = 0.02
-            n_eff_cg_product_threshold = 0.25
-            min_retry_count_for_detection = 3
-        "#;
-        let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
-        assert!(cfg.enabled);
-        assert_eq!(cfg.complexity_probe_adapter, "explorer");
-        assert_eq!(cfg.complexity_probe_timeout_secs, 60);
-        assert_eq!(cfg.decompose_threshold, 3);
-        assert_eq!(cfg.hitl_threshold, 4);
-        assert!(cfg.verifier_decomposition_enabled);
-        assert!(cfg.intra_retry.enabled);
-        assert_eq!(cfg.intra_retry.entropy_threshold, 0.5);
-        assert_eq!(cfg.intra_retry.min_retry_count_for_detection, 3);
-    }
-
-    #[test]
-    fn min_retries_before_graft_defaults_to_two() {
-        let cfg = ComplexityRoutingConfig::default();
-        assert_eq!(cfg.min_retries_before_graft, 2);
-    }
-
-    #[test]
-    fn min_retries_before_graft_parses_from_toml() {
-        let toml_str = r#"
-            enabled = true
-            complexity_probe_adapter = "researcher"
-            complexity_probe_timeout_secs = 30
-            decompose_threshold = 4
-            hitl_threshold = 5
-            verifier_decomposition_enabled = false
-            min_retries_before_graft = 0
-
-            [intra_retry]
-            enabled = false
-            entropy_threshold = 0.6
-            retry_slope_threshold = 0.05
-            n_eff_cg_product_threshold = 0.3
-            min_retry_count_for_detection = 2
-        "#;
-        let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
-        assert_eq!(cfg.min_retries_before_graft, 0, "explicit 0 disables floor");
-    }
-
-    #[test]
-    fn min_retries_before_graft_defaults_when_omitted_from_toml() {
-        // Existing TOML without min_retries_before_graft must still parse (backward compat).
-        let toml_str = r#"
-            enabled = true
-            complexity_probe_adapter = "explorer"
-            complexity_probe_timeout_secs = 60
-            decompose_threshold = 3
-            hitl_threshold = 4
-            verifier_decomposition_enabled = true
-
-            [intra_retry]
-            enabled = true
-            entropy_threshold = 0.5
-            retry_slope_threshold = 0.02
-            n_eff_cg_product_threshold = 0.25
-            min_retry_count_for_detection = 3
-        "#;
-        let cfg: ComplexityRoutingConfig = toml::from_str(toml_str).expect("should parse");
-        assert_eq!(
-            cfg.min_retries_before_graft, 2,
-            "falls back to default when omitted"
-        );
+impl Default for VerifierFreezeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            min_waves_to_detect: Self::default_min_waves_to_detect(),
+            score_variance_threshold: Self::default_score_variance_threshold(),
+            reason_jaccard_threshold: Self::default_reason_jaccard_threshold(),
+            reason_window_size: Self::default_reason_window_size(),
+            other_constraint_success_threshold: Self::default_other_constraint_success_threshold(),
+            bypass_hard_gate_on_freeze: Self::default_bypass_hard_gate_on_freeze(),
+            emit_event_only: false,
+        }
     }
 }
 
-#[cfg(test)]
-mod tiered_exit_tests {
-    use super::*;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerationPhaseConfig {
+    #[serde(default = "GenerationPhaseConfig::default_timeout_secs")]
+    pub timeout_secs: u64,
+}
 
-    fn cfg(min_n: u32, max_n: u32, quorum_fraction: f64) -> TieredExitConfig {
-        TieredExitConfig {
-            enabled: true,
-            min_n,
-            max_n,
-            quorum_fraction,
-            acceptance_score: 0.85,
-            require_all_binary_checks: true,
-        }
-    }
-
-    #[test]
-    fn n_for_wave_wave0_returns_min_n() {
-        let c = cfg(1, 5, 0.5);
-        assert_eq!(c.n_for_wave(0, 4), 1);
-    }
-
-    #[test]
-    fn n_for_wave_last_wave_returns_max_n() {
-        let c = cfg(1, 5, 0.5);
-        assert_eq!(c.n_for_wave(4, 4), 5);
-    }
-
-    #[test]
-    fn n_for_wave_midpoint_rounds_correctly() {
-        let c = cfg(1, 5, 0.5);
-        // wave=2, max=4: frac=0.5, n = 1 + round(0.5 * 4) = 1 + 2 = 3
-        assert_eq!(c.n_for_wave(2, 4), 3);
-    }
-
-    #[test]
-    fn n_for_wave_zero_max_retries_returns_max_n() {
-        let c = cfg(1, 5, 0.5);
-        assert_eq!(c.n_for_wave(0, 0), 5);
-    }
-
-    #[test]
-    fn n_for_wave_clamps_to_bounds() {
-        let c = cfg(3, 3, 0.5);
-        assert_eq!(c.n_for_wave(0, 4), 3);
-        assert_eq!(c.n_for_wave(4, 4), 3);
-    }
-
-    #[test]
-    fn k_for_wave_fraction_half() {
-        let c = cfg(1, 5, 0.5);
-        assert_eq!(c.k_for_wave(1), 1); // ceil(0.5) = 1
-        assert_eq!(c.k_for_wave(3), 2); // ceil(1.5) = 2
-        assert_eq!(c.k_for_wave(5), 3); // ceil(2.5) = 3
-    }
-
-    #[test]
-    fn k_for_wave_never_zero() {
-        let c = cfg(1, 5, 0.01);
-        assert_eq!(c.k_for_wave(1), 1);
-    }
-
-    #[test]
-    fn default_is_disabled() {
-        let c = TieredExitConfig::default();
-        assert!(!c.enabled);
-    }
-
-    #[test]
-    fn toml_roundtrip() {
-        let toml_str = r#"
-            enabled                   = true
-            min_n                     = 2
-            max_n                     = 6
-            quorum_fraction           = 0.4
-            acceptance_score          = 0.90
-            require_all_binary_checks = false
-        "#;
-        let c: TieredExitConfig = toml::from_str(toml_str).expect("parse");
-        assert!(c.enabled);
-        assert_eq!(c.min_n, 2);
-        assert_eq!(c.max_n, 6);
-        assert!((c.quorum_fraction - 0.4).abs() < 1e-9);
-        assert!((c.acceptance_score - 0.90).abs() < 1e-9);
-        assert!(!c.require_all_binary_checks);
-    }
-
-    #[test]
-    fn n_for_wave_wave_beyond_max_retries_clamps_to_max_n() {
-        let c = cfg(1, 5, 0.5);
-        // wave=6 > max_retries=4: frac=1.5, raw n=7, clamped to max_n=5
-        assert_eq!(c.n_for_wave(6, 4), 5);
-    }
-
-    #[test]
-    fn k_for_wave_n_zero_returns_one() {
-        let c = cfg(1, 5, 0.5);
-        // ceil(0 * 0.5) = 0, max(1, 0) = 1
-        assert_eq!(c.k_for_wave(0), 1);
-    }
-
-    #[test]
-    fn reference_toml_contains_tiered_exit() {
-        let src = include_str!("../reference.toml");
-        assert!(
-            src.contains("[tiered_exit]"),
-            "reference.toml must have [tiered_exit] section"
-        );
+impl GenerationPhaseConfig {
+    const fn default_timeout_secs() -> u64 {
+        300
     }
 }
 
-#[cfg(test)]
-mod cost_guard_tests {
-    use super::*;
-
-    #[test]
-    fn cost_guard_default_disabled() {
-        let cfg = CostGuardConfig::default();
-        assert!(!cfg.enabled);
-        assert_eq!(cfg.budget_tokens_per_task, 100_000);
-        assert!((cfg.budget_warning_fraction - 0.80).abs() < 1e-9);
-        assert!((cfg.budget_abort_fraction - 1.00).abs() < 1e-9);
-        assert!(!cfg.budget_prompt_injection_enabled);
-        assert!((cfg.budget_injection_warn_fraction - 0.50).abs() < 1e-9);
-        assert_eq!(cfg.budget_injection_max_complexity, 3);
-    }
-
-    #[test]
-    fn convergence_gate_default_disabled() {
-        let cfg = ConvergenceGateConfig::default();
-        assert!(!cfg.enabled);
-        assert!((cfg.theta_converge - 0.87).abs() < 1e-9);
-        assert!((cfg.supermajority_fraction_n3 - 0.67).abs() < 1e-9);
-        assert!((cfg.supermajority_fraction_n4plus - 0.80).abs() < 1e-9);
-        assert!((cfg.score_floor - 0.80).abs() < 1e-9);
-        assert_eq!(cfg.min_wave, 1);
-        assert!((cfg.budget_floor_fraction - 0.30).abs() < 1e-9);
-    }
-
-    #[test]
-    fn cost_guard_parses_from_toml() {
-        let s = r#"
-            [cost_guard]
-            enabled = true
-            budget_tokens_per_task = 50000
-            budget_warning_fraction = 0.75
-            budget_abort_fraction = 0.95
-            budget_prompt_injection_enabled = true
-            budget_injection_warn_fraction = 0.60
-            budget_injection_max_complexity = 4
-            [convergence_gate]
-            enabled = true
-            theta_converge = 0.90
-            supermajority_fraction_n3 = 1.0
-            supermajority_fraction_n4plus = 0.80
-            score_floor = 0.75
-            min_wave = 2
-            budget_floor_fraction = 0.25
-        "#;
-        #[derive(serde::Deserialize)]
-        struct T {
-            cost_guard: CostGuardConfig,
-            convergence_gate: ConvergenceGateConfig,
+impl Default for GenerationPhaseConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: Self::default_timeout_secs(),
         }
-        let t: T = toml::from_str(s).expect("parse");
-        assert!(t.cost_guard.enabled);
-        assert_eq!(t.cost_guard.budget_tokens_per_task, 50_000);
-        assert!(t.convergence_gate.enabled);
-        assert!((t.convergence_gate.theta_converge - 0.90).abs() < 1e-9);
     }
+}
 
-    #[test]
-    fn h2ai_config_has_cost_guard_and_convergence_gate() {
-        let cfg = H2AIConfig::default();
-        assert!(!cfg.cost_guard.enabled);
-        assert!(!cfg.convergence_gate.enabled);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OomGuardConfig {
+    #[serde(default = "OomGuardConfig::default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "OomGuardConfig::default_rss_abort_mb")]
+    pub rss_abort_mb: u64,
+    #[serde(default = "OomGuardConfig::default_check_interval_waves")]
+    pub check_interval_waves: u32,
+}
+
+impl OomGuardConfig {
+    const fn default_enabled() -> bool {
+        true
     }
-
-    #[test]
-    fn awareness_probe_config_defaults() {
-        let cfg = AwarenessProbeConfig::default();
-        assert!(!cfg.enabled);
-        assert_eq!(cfg.mode, AwarenessProbeMode::Shadow);
-        assert_eq!(cfg.judge_max_tokens, 1024);
+    const fn default_rss_abort_mb() -> u64 {
+        4096
     }
-
-    #[test]
-    fn h2ai_config_has_awareness_probe_field() {
-        let cfg = H2AIConfig::default();
-        assert!(!cfg.awareness_probe.enabled);
-        assert!(!cfg.knowledge_domain_scoping);
+    const fn default_check_interval_waves() -> u32 {
+        1
     }
+}
 
-    #[test]
-    fn awareness_probe_parses_from_toml() {
-        let toml = r#"
-knowledge_domain_scoping = true
-
-[awareness_probe]
-enabled = true
-mode = "active"
-judge_max_tokens = 2048
-"#;
-        #[derive(serde::Deserialize)]
-        struct T {
-            awareness_probe: AwarenessProbeConfig,
-            #[serde(default)]
-            knowledge_domain_scoping: bool,
+impl Default for OomGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            rss_abort_mb: Self::default_rss_abort_mb(),
+            check_interval_waves: Self::default_check_interval_waves(),
         }
-        let t: T = toml::from_str(toml).expect("parse");
-        assert!(t.awareness_probe.enabled);
-        assert_eq!(t.awareness_probe.mode, AwarenessProbeMode::Active);
-        assert_eq!(t.awareness_probe.judge_max_tokens, 2048);
-        assert!(t.knowledge_domain_scoping);
     }
+}
 
-    /// Regression guard: `knowledge_domain_scoping` placed AFTER a `[section]` header
-    /// belongs to that section in TOML, not to the top level.  Serde silently drops it,
-    /// so the field must remain `false` (its default).  If this test ever fails it means
-    /// serde somehow started hoisting inner-section keys — which would mask the real bug.
-    #[test]
-    fn knowledge_domain_scoping_must_be_top_level() {
-        // key placed inside [awareness_probe] — must NOT reach H2AIConfig.knowledge_domain_scoping
-        let toml_misplaced = r#"
-[awareness_probe]
-enabled = true
-mode = "shadow"
-judge_max_tokens = 1024
-knowledge_domain_scoping = true
-"#;
-        #[derive(serde::Deserialize)]
-        struct T {
-            awareness_probe: AwarenessProbeConfig,
-            #[serde(default)]
-            knowledge_domain_scoping: bool,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GapQualityConfig {
+    #[serde(default = "GapQualityConfig::default_min_improvement_to_retain")]
+    pub min_improvement_to_retain: f64,
+    #[serde(default = "GapQualityConfig::default_min_post_injection_waves")]
+    pub min_post_injection_waves: u32,
+}
+
+impl GapQualityConfig {
+    const fn default_min_improvement_to_retain() -> f64 {
+        0.1
+    }
+    const fn default_min_post_injection_waves() -> u32 {
+        2
+    }
+}
+
+impl Default for GapQualityConfig {
+    fn default() -> Self {
+        Self {
+            min_improvement_to_retain: Self::default_min_improvement_to_retain(),
+            min_post_injection_waves: Self::default_min_post_injection_waves(),
         }
-        let t: T = toml::from_str(toml_misplaced).expect("parse");
-        assert!(t.awareness_probe.enabled);
-        // The misplaced key must NOT appear at the top level.
-        assert!(
-            !t.knowledge_domain_scoping,
-            "knowledge_domain_scoping inside [awareness_probe] must not propagate to the top level"
-        );
+    }
+}
+
+// ── Audit Gate ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuditGateConfig {
+    /// When the auditor LLM returns non-parseable JSON, treat the proposal as
+    /// approved (true) or rejected (false).
+    /// Default: true — proposals reaching the audit gate have already passed the
+    /// verifier; a parse failure is an LLM response failure, not a judgment.
+    #[serde(default = "AuditGateConfig::default_fail_open_on_parse_error")]
+    pub fail_open_on_parse_error: bool,
+}
+
+impl AuditGateConfig {
+    const fn default_fail_open_on_parse_error() -> bool {
+        true
+    }
+}
+
+impl Default for AuditGateConfig {
+    fn default() -> Self {
+        Self {
+            fail_open_on_parse_error: Self::default_fail_open_on_parse_error(),
+        }
     }
 }

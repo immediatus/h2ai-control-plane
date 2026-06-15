@@ -516,3 +516,29 @@ async fn task_checkpoint_store_roundtrip() {
     let after_delete = backend.list_task_checkpoints().await;
     assert!(after_delete.is_empty());
 }
+
+// ── SkillStore ────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn skill_store_roundtrip() {
+    use h2ai_state::backend::SkillStore;
+    let backend = InMemoryStateBackend::new();
+    let tenant = TenantId::default_tenant();
+    let bytes = b"[\"skill-node-json\"]".to_vec();
+
+    backend
+        .put_skill_nodes(&tenant, bytes.clone())
+        .await
+        .unwrap();
+    let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
+    assert_eq!(loaded, bytes);
+}
+
+#[tokio::test]
+async fn skill_store_empty_returns_empty_vec() {
+    use h2ai_state::backend::SkillStore;
+    let backend = InMemoryStateBackend::new();
+    let tenant = TenantId::default_tenant();
+    let loaded = backend.get_skill_nodes(&tenant).await.unwrap();
+    assert!(loaded.is_empty());
+}

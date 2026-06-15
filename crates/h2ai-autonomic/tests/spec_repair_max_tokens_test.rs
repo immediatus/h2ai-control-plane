@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use h2ai_autonomic::spec_repair::{RepairInput, SpecRepairAdvisor};
 use h2ai_config::GapK1Config;
-use h2ai_constraints::{nats_versioned::NatsVersionedSource, source::InMemorySource, spec::SemanticSpec};
+use h2ai_constraints::{
+    nats_versioned::NatsVersionedSource, source::InMemorySource, spec::SemanticSpec,
+};
 use h2ai_types::adapter::{AdapterError, ComputeRequest, ComputeResponse, IComputeAdapter};
 use h2ai_types::config::{AdapterKind, CloudProvider};
 

@@ -50,6 +50,9 @@ fn single_synthesis_injects_correction_slot() {
             .to_string(),
         source: Some("https://redis.io/docs/commands/set/".to_string()),
         confidence: 0.85,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
     }];
     let input = make_repair_input_with_syntheses(&syntheses, &graph);
     let ctx = build_repair_context(input);
@@ -75,6 +78,9 @@ fn correction_slot_appears_before_repair_target() {
         mechanistic_reason: "because".to_string(),
         source: None,
         confidence: 0.9,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
     }];
     let input = make_repair_input_with_syntheses(&syntheses, &graph);
     let ctx = build_repair_context(input);
@@ -98,6 +104,9 @@ fn multiple_syntheses_all_injected() {
             mechanistic_reason: "reason-a".to_string(),
             source: None,
             confidence: 0.8,
+            injected_at_wave: None,
+            pre_injection_pass_rate: None,
+            post_injection_pass_rates: vec![],
         },
         DomainSynthesis {
             check_id: ("C".to_string(), 1),
@@ -106,6 +115,9 @@ fn multiple_syntheses_all_injected() {
             mechanistic_reason: "reason-b".to_string(),
             source: None,
             confidence: 0.9,
+            injected_at_wave: None,
+            pre_injection_pass_rate: None,
+            post_injection_pass_rates: vec![],
         },
     ];
     let input = make_repair_input_with_syntheses(&syntheses, &graph);

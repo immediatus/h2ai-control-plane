@@ -167,6 +167,7 @@ fn tombstone_contains_constraint_ids_not_proposal_text() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: None,
         },
         ConstraintViolation {
             constraint_id: "CONSTRAINT-004".into(),
@@ -177,6 +178,7 @@ fn tombstone_contains_constraint_ids_not_proposal_text() {
             verifier_reason: None,
             check_verdicts: vec![],
             criteria_pass: None,
+            check_reasons: None,
         },
     ];
     let tombstone = synthesize_tombstone(&violations).expect("violations non-empty → Some");
@@ -246,6 +248,7 @@ fn constrained_exploration_tombstone_injection_signal() {
         verifier_reason: None,
         check_verdicts: vec![],
         criteria_pass: None,
+        check_reasons: None,
     }];
     let tombstone = synthesize_tombstone(&violations);
     assert!(

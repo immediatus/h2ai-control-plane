@@ -53,9 +53,13 @@ impl CompoundTaskEngine {
         input: CompoundTaskInput<'_, E>,
     ) -> Result<CompoundTaskOutput, CompoundError> {
         // Step 1: Decompose.
-        let mut plan =
-            PlanningEngine::decompose(&input.manifest, input.planning_adapter, input.planning_tau, input.decompose_max_tokens)
-                .await?;
+        let mut plan = PlanningEngine::decompose(
+            &input.manifest,
+            input.planning_adapter,
+            input.planning_tau,
+            input.decompose_max_tokens,
+        )
+        .await?;
         plan.parent_task_id = input.task_id.clone();
 
         // Step 2: Review.

@@ -80,7 +80,10 @@ pub struct LlmResearcherGrounder {
 
 impl LlmResearcherGrounder {
     pub fn new(adapter: Arc<dyn IComputeAdapter>, max_tokens: u64) -> Self {
-        Self { adapter, max_tokens }
+        Self {
+            adapter,
+            max_tokens,
+        }
     }
 }
 
@@ -314,8 +317,13 @@ impl SraniGroundingChain {
             && self.distill_enabled
         {
             if let Some(ref adapter) = self.distiller {
-                if let Some(distilled) =
-                    distill_with_llm(adapter, &merged.grounding_statement, ctx, self.distill_max_tokens).await
+                if let Some(distilled) = distill_with_llm(
+                    adapter,
+                    &merged.grounding_statement,
+                    ctx,
+                    self.distill_max_tokens,
+                )
+                .await
                 {
                     merged.grounding_statement = distilled;
                 }
@@ -504,6 +512,9 @@ pub async fn run_gap_researcher(
             mechanistic_reason: check_text.to_string(),
             source: None,
             confidence: min_confidence,
+            injected_at_wave: None,
+            pre_injection_pass_rate: None,
+            post_injection_pass_rates: vec![],
         };
         tracing::info!(
             target: "h2ai.gap_i1",
@@ -581,6 +592,9 @@ pub async fn run_gap_researcher(
         mechanistic_reason: reason,
         source,
         confidence: score,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
     };
 
     if synthesis_meets_threshold(&synth, min_confidence) {
@@ -670,91 +684,4 @@ pub fn format_grounding_hint(result: &GroundingResult, fabricated: &[String]) ->
          Design using the spec-defined components listed above.\n\
          ---"
     )
-}
-
-#[cfg(test)]
-mod gap_i1_tests {
-    use super::*;
-    use h2ai_types::gap_i1::{DomainSynthesis, KnowledgeGapRecord};
-
-    #[test]
-    fn gap_queries_from_record_are_non_empty() {
-        let record = KnowledgeGapRecord {
-            constraint_id: "CONSTRAINT-008".to_string(),
-            check_idx: 1,
-            incorrect_concept: "SETNX as standalone idempotency primitive".to_string(),
-            gap_query: "Redis Lua EVAL atomic quota update without SETNX".to_string(),
-            pass_rate_across_waves: 0.0,
-        };
-        let queries = gap_queries_from_record(&record, "Does design use Lua EVAL for CAS?");
-        assert_eq!(queries.len(), 3);
-        assert!(queries.iter().all(|q| !q.is_empty()));
-    }
-
-    #[test]
-    fn domain_synthesis_below_min_confidence_is_rejected() {
-        let synth = DomainSynthesis {
-            check_id: ("C".to_string(), 0),
-            incorrect_pattern: "wrong".to_string(),
-            correct_pattern: "right".to_string(),
-            mechanistic_reason: "because".to_string(),
-            source: None,
-            confidence: 0.5,
-        };
-        assert!(!synthesis_meets_threshold(&synth, 0.7));
-    }
-
-    #[test]
-    fn domain_synthesis_above_min_confidence_is_accepted() {
-        let synth = DomainSynthesis {
-            check_id: ("C".to_string(), 0),
-            incorrect_pattern: "wrong".to_string(),
-            correct_pattern: "right".to_string(),
-            mechanistic_reason: "because".to_string(),
-            source: None,
-            confidence: 0.85,
-        };
-        assert!(synthesis_meets_threshold(&synth, 0.7));
-    }
-
-    #[test]
-    fn synthesis_meets_threshold_works_with_optional_grounding_chain() {
-        // Pure function test — just verify None doesn't break compilation
-        // (run_gap_researcher is async so just test the helper functions here)
-        // run_gap_researcher now accepts Option<&SraniGroundingChain> instead of
-        // Option<&WebSearchGrounder> — this test validates the helper functions.
-        let record = KnowledgeGapRecord {
-            constraint_id: "C".to_string(),
-            check_idx: 0,
-            incorrect_concept: "SETNX as lock".to_string(),
-            gap_query: "Redis Lua EVAL atomic CAS".to_string(),
-            pass_rate_across_waves: 0.0,
-        };
-        let queries = gap_queries_from_record(&record, "Does design use Lua EVAL?");
-        assert_eq!(queries.len(), 3);
-        // Verify that passing None for the chain (type-checked as Option<&SraniGroundingChain>)
-        // is expressible in user code.
-        let chain: Option<&SraniGroundingChain> = None;
-        assert!(chain.is_none());
-    }
-
-    #[test]
-    fn corpus_hint_replaces_tautological_echo_when_no_web_grounding() {
-        let hint = Some("Use Redis Lua EVAL for atomic debit-then-publish.");
-        let gap_query = "correct approach for idempotency key";
-        let result = gap_hint_or_query(hint, gap_query);
-        assert_eq!(result, "Use Redis Lua EVAL for atomic debit-then-publish.");
-    }
-
-    #[test]
-    fn falls_back_to_gap_query_when_hint_is_none() {
-        let result = gap_hint_or_query(None, "correct approach for idempotency key");
-        assert_eq!(result, "correct approach for idempotency key");
-    }
-
-    #[test]
-    fn falls_back_to_gap_query_when_hint_is_empty() {
-        let result = gap_hint_or_query(Some(""), "fallback query");
-        assert_eq!(result, "fallback query");
-    }
 }

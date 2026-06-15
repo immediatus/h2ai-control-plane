@@ -34,6 +34,10 @@ pub struct PipelineParams {
     /// Budget hint suffix appended to `active_ctx` when cost conservation is active.
     /// Computed by `MapeKController::params()`. `None` when cost guard is disabled.
     pub budget_hint: Option<String>,
+    /// Constraint IDs whose verifier judgment is currently bypassed.
+    /// Populated from MapeKController.bypassed_verifier_constraints by params().
+    /// Passed to phases/verify.rs Input to modify hard-gate behavior.
+    pub bypassed_constraint_ids: std::collections::HashSet<String>,
 }
 
 /// Talagrand feedback stored in `WaveEvents`.
@@ -198,6 +202,12 @@ pub enum MapeKDecision {
     },
 }
 
+/// Per-corpus-constraint cached fields needed for repair signal enrichment.
+pub(crate) struct ConstraintPassEntry {
+    pub pass_criteria: Option<String>,
+    pub remediation_hint: Option<String>,
+}
+
 /// MAPE-K controller — owns all retry state. Full impl added in Task 9.
 #[allow(dead_code)] // bandit_state / tao_estimator / tao_multiplier reserved for future pipeline use
 pub struct MapeKController {
@@ -286,6 +296,8 @@ pub struct MapeKController {
     /// Cross-wave global best proposal: (score, `proposal_text`).
     /// Updated by `observe()` each wave; used by CSPR-v2 repair context builder.
     pub(crate) global_best_proposal: Option<(f64, String)>,
+    /// Mean compliance scores from each wave, used for plateau detection.
+    pub(crate) compliance_score_history: Vec<f64>,
     /// Static conflict graph built from the task's constraint corpus.
     /// Passed from engine.rs at construction time.
     pub(crate) conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph,
@@ -309,8 +321,8 @@ pub struct MapeKController {
     /// Grounding chain gap researcher: DDG search + LLM distiller.
     pub(crate) gap_grounding_chain:
         Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
-    /// Maps constraint_id → (pass_criteria, remediation_hint) for corpus-grounded gap fallback.
-    pub(crate) constraint_pass_map: std::collections::HashMap<String, (Option<String>, Option<String>)>,
+    /// Maps constraint_id → cached corpus fields for repair signal enrichment.
+    pub(crate) constraint_pass_map: std::collections::HashMap<String, ConstraintPassEntry>,
 
     // ── Complexity-Ceiling Routing ───────────────────────────────────
     /// Pre-dispatch complexity probe result. `None` when probe is disabled or not yet run.
@@ -318,6 +330,20 @@ pub struct MapeKController {
     /// True when the constraint corpus contains at least one `binary_checks` entry.
     /// Computed at construction time; gates `ComplexityOverflow{graft_first:true}` routing.
     pub(crate) corpus_synthesis_viable: bool,
+
+    // ── Pipeline Resilience: Frozen Verifier Detection ─────────────────────────
+    /// Per-constraint, per-wave mean violation scores. Key = constraint_id.
+    /// Populated in observe() from BranchPrunedEvent.violated_constraints.
+    pub(crate) per_constraint_wave_scores: std::collections::HashMap<String, Vec<f64>>,
+    /// Rolling window of verifier reasons per constraint_id.
+    /// Bounded by cfg_ref.verifier_freeze.reason_window_size.
+    pub(crate) verifier_reason_history:
+        std::collections::HashMap<String, std::collections::VecDeque<String>>,
+    /// Constraint IDs whose verifier judgment is currently bypassed.
+    /// Set by decide() when detect_frozen_verifier fires with bypass_hard_gate_on_freeze=true.
+    pub(crate) bypassed_verifier_constraints: std::collections::HashSet<String>,
+    /// Frozen verifier events queued during decide() for engine.rs to emit.
+    pub(crate) pending_frozen_verifier_events: Vec<h2ai_types::events::VerifierFrozenEvent>,
 
     // ── AgentDropout N-reduction ─────────────────────────────────────
     /// N_eff (participation ratio) from the most recently completed ZeroSurvival wave.
@@ -341,9 +367,50 @@ pub struct MapeKController {
 
 // ── Cross-wave instability detection ──────────────────────────────────
 
+/// Returns true when the last two compliance scores differ by less than `threshold`
+/// AND `retry_count` meets the minimum for reliable detection.
+/// This detects MUS oscillation: the model cannot exit the current compliance level
+/// through sequential single-constraint repair.
+pub fn is_compliance_plateau(history: &[f64], retry_count: u32, threshold: f64) -> bool {
+    if retry_count < 2 || history.len() < 2 {
+        return false;
+    }
+    let n = history.len();
+    (history[n - 1] - history[n - 2]).abs() < threshold
+}
+
+/// Returns true when:
+/// 1. ≥2 partials exist
+/// 2. The union of their passed check indices covers `total_checks`
+/// 3. No single partial covers all `total_checks`
+///
+/// This is the MUS integration failure signature: each constraint can be satisfied
+/// in isolation but not jointly in any single proposal.
+pub fn has_isolation_evidence(
+    partials: &[h2ai_autonomic::repair::PartialPass],
+    total_checks: usize,
+) -> bool {
+    if partials.len() < 2 || total_checks == 0 {
+        return false;
+    }
+    // Condition 3: no single partial covers everything.
+    if partials
+        .iter()
+        .any(|p| p.passed_check_indices().len() == total_checks)
+    {
+        return false;
+    }
+    // Condition 2: union of all passed indices covers everything.
+    let union: std::collections::HashSet<usize> = partials
+        .iter()
+        .flat_map(|p| p.passed_check_indices())
+        .collect();
+    union.len() == total_checks
+}
+
 /// Mean word-bag Jaccard between two lists of reason strings.
 /// Returns 1.0 when either list is empty (no divergence signal).
-pub(crate) fn constraint_reasons_jaccard(reasons_a: &[String], reasons_b: &[String]) -> f64 {
+pub fn constraint_reasons_jaccard(reasons_a: &[String], reasons_b: &[String]) -> f64 {
     if reasons_a.is_empty() || reasons_b.is_empty() {
         return 1.0;
     }
@@ -359,13 +426,13 @@ pub(crate) fn constraint_reasons_jaccard(reasons_a: &[String], reasons_b: &[Stri
 }
 
 #[derive(Debug)]
-struct InstabilitySignal {
-    constraint_id: String,
-    check_index: usize,
-    score: f64,
-    reasons: Vec<String>,
-    ambiguity_evidence: Vec<String>,
-    ambiguity_score: f32,
+pub struct InstabilitySignal {
+    pub constraint_id: String,
+    pub check_index: usize,
+    pub score: f64,
+    pub reasons: Vec<String>,
+    pub ambiguity_evidence: Vec<String>,
+    pub ambiguity_score: f32,
 }
 
 // ── GAP-H3: Cost Guard free functions ─────────────────────────────────────────
@@ -376,7 +443,7 @@ struct InstabilitySignal {
 /// - `cfg.enabled && cfg.budget_prompt_injection_enabled`
 /// - `fraction_used ∈ [cfg.budget_injection_warn_fraction, 0.85)` (TALE elasticity paradox guard)
 /// - `complexity <= cfg.budget_injection_max_complexity`
-pub(crate) fn build_budget_hint_if_needed(
+pub fn build_budget_hint_if_needed(
     cfg: &h2ai_config::CostGuardConfig,
     tokens_used: u64,
     complexity: u8,
@@ -409,7 +476,7 @@ pub(crate) fn build_budget_hint_if_needed(
 /// 3. `budget_fraction_used >= cfg.budget_floor_fraction`
 /// 4. `n_live >= 1` and `min_score >= cfg.score_floor`
 /// 5. `cosine_mean >= cfg.theta_converge`
-pub(crate) fn check_convergence_gate(
+pub fn check_convergence_gate(
     cfg: &h2ai_config::ConvergenceGateConfig,
     cosine_mean: Option<f64>,
     min_score: f64,
@@ -546,6 +613,7 @@ impl MapeKController {
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
+            compliance_score_history: Vec::new(),
             conflict_graph,
             binary_checks: input
                 .constraint_corpus
@@ -570,13 +638,25 @@ impl MapeKController {
             constraint_pass_map: input
                 .constraint_corpus
                 .iter()
-                .map(|d| (d.id.clone(), (d.pass_criteria.clone(), d.remediation_hint.clone())))
+                .map(|d| {
+                    (
+                        d.id.clone(),
+                        ConstraintPassEntry {
+                            pass_criteria: d.pass_criteria.clone(),
+                            remediation_hint: d.remediation_hint.clone(),
+                        },
+                    )
+                })
                 .collect(),
             probe_result: None,
             corpus_synthesis_viable: input
                 .constraint_corpus
                 .iter()
                 .any(|d| !d.binary_checks.is_empty()),
+            per_constraint_wave_scores: std::collections::HashMap::new(),
+            verifier_reason_history: std::collections::HashMap::new(),
+            bypassed_verifier_constraints: std::collections::HashSet::new(),
+            pending_frozen_verifier_events: vec![],
             last_wave_n_eff: 1.0,
             tee_event: None,
             tokens_used: 0,
@@ -613,6 +693,7 @@ impl MapeKController {
                 let complexity = self.probe_result.as_ref().map_or(0, |p| p.complexity);
                 build_budget_hint_if_needed(&self.cfg_ref.cost_guard, self.tokens_used, complexity)
             },
+            bypassed_constraint_ids: self.bypassed_verifier_constraints.clone(),
         }
     }
 
@@ -689,6 +770,11 @@ impl MapeKController {
         std::mem::replace(&mut self.budget_exhausted, false)
     }
 
+    /// Mark the pipeline as OOM-aborted, routing to the BudgetExhausted exit path.
+    pub fn mark_oom_abort(&mut self) {
+        self.budget_exhausted = true;
+    }
+
     /// Store the pre-dispatch complexity probe result for use in routing decisions.
     pub fn set_probe_result(
         &mut self,
@@ -700,7 +786,7 @@ impl MapeKController {
     // ── Observe ────────────────────────────────────────────────────────────────
 
     /// Aggregate events from a completed wave into the cross-wave accumulators.
-    pub fn observe(&mut self, wave: &PipelineWaveResult) {
+    pub fn observe(&mut self, wave: &PipelineWaveResult, wave_index: u32) {
         let e = &wave.events;
         self.all_verification_events
             .extend(e.verification_events.iter().cloned());
@@ -732,10 +818,16 @@ impl MapeKController {
         }
         // Rotate: prev_wave_pruned ← last_wave_pruned before overwriting with new wave.
         self.prev_wave_pruned = std::mem::take(&mut self.last_wave_pruned);
-        // Snapshot current wave's pruned events before extending the cross-wave accumulator.
-        self.last_wave_pruned = e.pruned_events.clone();
-        // Accumulate pruned events so RetryPolicy::decide can extract remediation hints.
-        self.all_pruned.extend(e.pruned_events.iter().cloned());
+        let annotated_pruned: Vec<h2ai_types::events::BranchPrunedEvent> = e
+            .pruned_events
+            .iter()
+            .map(|ev| h2ai_types::events::BranchPrunedEvent {
+                retry_count: wave_index,
+                ..ev.clone()
+            })
+            .collect();
+        self.last_wave_pruned = annotated_pruned.clone();
+        self.all_pruned.extend(annotated_pruned);
         // Epistemic leader: snapshot last-wave verification events and proposal texts.
         self.last_wave_verification_events = e.verification_events.clone();
         self.last_wave_proposal_texts = e.wave_proposal_texts.clone();
@@ -756,6 +848,84 @@ impl MapeKController {
                 if is_better {
                     self.global_best_proposal = Some((ev.score, text.clone()));
                 }
+            }
+        }
+        // Record wave mean compliance score for plateau detection.
+        let wave_events = &e.verification_events;
+        if !wave_events.is_empty() {
+            let mean =
+                wave_events.iter().map(|ev| ev.score).sum::<f64>() / wave_events.len() as f64;
+            self.compliance_score_history.push(mean);
+        }
+        // Populate per-constraint wave scores from this wave's pruned events.
+        {
+            let mut wave_constraint_scores: std::collections::HashMap<String, Vec<f64>> =
+                std::collections::HashMap::new();
+            for pruned_ev in &self.last_wave_pruned {
+                for violation in &pruned_ev.violated_constraints {
+                    wave_constraint_scores
+                        .entry(violation.constraint_id.clone())
+                        .or_default()
+                        .push(violation.score);
+                }
+            }
+            let window_size = self.cfg_ref.verifier_freeze.reason_window_size as usize;
+            for (cid, scores) in wave_constraint_scores {
+                let mean = scores.iter().sum::<f64>() / scores.len() as f64;
+                self.per_constraint_wave_scores
+                    .entry(cid.clone())
+                    .or_default()
+                    .push(mean);
+                // Push most recent verifier reason into rolling window.
+                if let Some(last_reason) = self
+                    .last_wave_pruned
+                    .iter()
+                    .flat_map(|p| p.violated_constraints.iter())
+                    .filter(|v| v.constraint_id == cid)
+                    .filter_map(|v| v.verifier_reason.as_deref())
+                    .next_back()
+                {
+                    let deque = self.verifier_reason_history.entry(cid).or_default();
+                    if deque.len() >= window_size {
+                        deque.pop_front();
+                    }
+                    deque.push_back(last_reason.to_string());
+                }
+            }
+        }
+        // Gap quality: update post-injection pass rates and evict ineffective syntheses.
+        if self.cfg_ref.gap_i1.enabled {
+            let gap_cfg = self.cfg_ref.gap_quality.clone();
+            let constraint_scores = self.per_constraint_wave_scores.clone();
+            let keys_to_evict: Vec<(String, usize)> = self
+                .domain_synthesis_cache
+                .iter_mut()
+                .filter_map(|(key, synth)| {
+                    synth.injected_at_wave?;
+                    let post_rate = constraint_scores
+                        .get(&key.0)
+                        .and_then(|scores| scores.last().copied())
+                        .unwrap_or(0.0);
+                    synth.post_injection_pass_rates.push(post_rate);
+                    let verdict = h2ai_autonomic::repair::assess_gap_quality(synth, &gap_cfg);
+                    if matches!(
+                        verdict,
+                        h2ai_autonomic::repair::GapQualityVerdict::Ineffective
+                    ) {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for key in keys_to_evict {
+                tracing::info!(
+                    target: "h2ai.gap_i1",
+                    constraint_id = %key.0,
+                    check_idx = key.1,
+                    "evicting ineffective gap synthesis"
+                );
+                self.domain_synthesis_cache.remove(&key);
             }
         }
         self.last_wave_violated_constraint_ids = self
@@ -798,6 +968,74 @@ impl MapeKController {
                     ambiguity_evidence: instability.ambiguity_evidence,
                     ambiguity_score: instability.ambiguity_score,
                 };
+            }
+        }
+
+        // Frozen verifier detection (pipeline resilience).
+        {
+            let freeze_cfg = self.cfg_ref.verifier_freeze.clone();
+            if freeze_cfg.enabled && retry_count >= freeze_cfg.min_waves_to_detect {
+                // Snapshot scores and reasons to avoid split-borrow issues when
+                // mutating bypassed_verifier_constraints inside the loop.
+                let scores_snapshot: std::collections::HashMap<String, Vec<f64>> =
+                    self.per_constraint_wave_scores.clone();
+                let reasons_snapshot: std::collections::HashMap<String, Vec<String>> = self
+                    .verifier_reason_history
+                    .iter()
+                    .map(|(k, dq)| (k.clone(), dq.iter().cloned().collect()))
+                    .collect();
+
+                let constraint_ids: Vec<String> = scores_snapshot.keys().cloned().collect();
+                for cid in &constraint_ids {
+                    if self.bypassed_verifier_constraints.contains(cid) {
+                        continue;
+                    }
+                    let scores = match scores_snapshot.get(cid) {
+                        Some(s) => s.as_slice(),
+                        None => continue,
+                    };
+                    // other_trends: all constraints except the one under test, excluding
+                    // already-bypassed ones — built fresh per iteration from the snapshot.
+                    let other_trends: Vec<&[f64]> = scores_snapshot
+                        .iter()
+                        .filter(|(other_cid, _)| {
+                            *other_cid != cid
+                                && !self.bypassed_verifier_constraints.contains(*other_cid)
+                        })
+                        .map(|(_, s)| s.as_slice())
+                        .collect();
+                    let reasons: Vec<String> =
+                        reasons_snapshot.get(cid).cloned().unwrap_or_default();
+                    if let Some(mut signal) = h2ai_autonomic::epistemic::detect_frozen_verifier(
+                        cid,
+                        scores,
+                        &reasons,
+                        &other_trends,
+                        &freeze_cfg,
+                    ) {
+                        signal.frozen_since_wave = retry_count;
+                        let bypassed =
+                            freeze_cfg.bypass_hard_gate_on_freeze && !freeze_cfg.emit_event_only;
+                        self.pending_frozen_verifier_events.push(
+                            h2ai_types::events::VerifierFrozenEvent {
+                                constraint_id: cid.clone(),
+                                frozen_since_wave: signal.frozen_since_wave,
+                                per_wave_scores: signal.per_wave_scores.clone(),
+                                sample_reason: signal.sample_reason.clone(),
+                                bypassed,
+                            },
+                        );
+                        if bypassed {
+                            tracing::warn!(
+                                target: "h2ai.engine",
+                                constraint_id = %cid,
+                                frozen_since_wave = signal.frozen_since_wave,
+                                "verifier frozen: bypassing hard gate for this constraint"
+                            );
+                            self.bypassed_verifier_constraints.insert(cid.clone());
+                        }
+                    }
+                }
             }
         }
 
@@ -1038,6 +1276,52 @@ impl MapeKController {
                     None => {}
                 }
 
+                // Integration wave triggers (GAP-F6): fires before ceiling detector to intercept
+                // MUS oscillation that the ceiling detector would otherwise classify as a generic ceiling.
+                if self.cfg_ref.integration_wave.enabled {
+                    let iw_cfg = &self.cfg_ref.integration_wave;
+
+                    // Trigger 1: Score plateau — last two waves at same compliance level.
+                    let plateau = is_compliance_plateau(
+                        &self.compliance_score_history,
+                        retry_count,
+                        iw_cfg.plateau_threshold,
+                    );
+
+                    // Trigger 2: Isolation evidence — cross-wave partial proposals cover all checks
+                    // in disjoint subsets, proving no single proposal can satisfy all constraints.
+                    let partials = h2ai_autonomic::repair::select_orthogonal_partials(
+                        &self.all_pruned,
+                        &self.binary_checks,
+                        &self.constraint_check_offsets,
+                        2,
+                        h2ai_autonomic::repair::partial_max_chars(
+                            self.cfg_ref.model_max_tokens,
+                            2,
+                            self.cfg_ref.partial_pass_overhead_factor,
+                        ),
+                    );
+                    let isolation = has_isolation_evidence(&partials, self.binary_checks.len());
+
+                    if plateau || isolation {
+                        tracing::info!(
+                            target: "h2ai.mape_k",
+                            task_id = %self.task_id,
+                            plateau,
+                            isolation,
+                            retry_count,
+                            "integration wave triggered"
+                        );
+                        return MapeKDecision::ComplexityOverflow {
+                            probe_score: 0,
+                            rationale: format!(
+                                "integration wave: plateau={plateau} isolation={isolation} at wave {retry_count}"
+                            ),
+                            graft_first: true,
+                        };
+                    }
+                }
+
                 // Intra-retry ceiling detector.
                 // Fires when probe-based routing was disabled or under-classified the
                 // task and ≥2/3 ceiling signals (peaked failure entropy, stalled
@@ -1120,7 +1404,9 @@ impl MapeKController {
                 MapeKDecision::Retry
             }
 
-            ExitReason::OraclePostSelectionBlocked { evicted_winner_summary } => {
+            ExitReason::OraclePostSelectionBlocked {
+                evicted_winner_summary,
+            } => {
                 tracing::warn!(
                     target: "h2ai.oracle",
                     task_id = %self.task_id,
@@ -1133,8 +1419,7 @@ impl MapeKController {
                     retry_count,
                 };
                 self.all_correlated_warnings.push(warning);
-                self.adapter_rotation_offset =
-                    self.adapter_rotation_offset.wrapping_add(1);
+                self.adapter_rotation_offset = self.adapter_rotation_offset.wrapping_add(1);
                 self.retry_context = Some(evicted_winner_summary);
                 self.run_apply_optimizer(1.0);
                 MapeKDecision::Retry
@@ -1274,6 +1559,23 @@ impl MapeKController {
                 MapeKDecision::Retry
             }
             RetryAction::Fail(reason) => {
+                // When DPPM is enabled and the corpus has binary checks, route to
+                // the integration wave instead of hard-failing. FRONTIER exhaustion
+                // is the unconditional DPPM trigger when the intra-retry detector
+                // didn't fire (e.g. too few partials or no isolation evidence yet).
+                if self.corpus_synthesis_viable && self.cfg_ref.dppm.enabled {
+                    tracing::info!(
+                        target: "h2ai.mape_k",
+                        task_id = %self.task_id,
+                        retry_count,
+                        "retry frontier exhausted with dppm enabled — routing to integration wave"
+                    );
+                    return MapeKDecision::ComplexityOverflow {
+                        probe_score: 0,
+                        rationale: "frontier exhausted; DPPM-MetaRefine synthesis triggered".into(),
+                        graft_first: true,
+                    };
+                }
                 tracing::warn!(
                     target: "h2ai.mape_k",
                     task_id = %self.task_id,
@@ -1657,10 +1959,39 @@ impl MapeKController {
     /// framing), and returns `None` when neither is present or both are empty strings.
     /// Used by `run_gap_i1_research` to supply a non-tautological `correct_pattern`
     /// when web search is unavailable.
+    /// Collect all accumulated gap_i1 domain syntheses for injection into DPPM solver prompts.
+    ///
+    /// Exposed so engine.rs can pass the full synthesis cache to every cluster solver's
+    /// `RepairInput.domain_syntheses` — without this, DPPM solvers never see the
+    /// incorrect→correct pattern corrections that gap researchers accumulated during
+    /// prior retry waves.
+    pub fn all_domain_syntheses(&self) -> Vec<h2ai_types::gap_i1::DomainSynthesis> {
+        self.domain_synthesis_cache.values().cloned().collect()
+    }
+
+    /// Per-constraint, per-wave mean violation scores (read-only).
+    pub fn per_constraint_wave_scores(&self) -> &std::collections::HashMap<String, Vec<f64>> {
+        &self.per_constraint_wave_scores
+    }
+
+    /// True if the frozen verifier bypass is active for this constraint_id.
+    pub fn is_verifier_bypassed(&self, constraint_id: &str) -> bool {
+        self.bypassed_verifier_constraints.contains(constraint_id)
+    }
+
+    /// Drain and return all pending frozen verifier events.
+    pub fn take_pending_frozen_verifier_events(
+        &mut self,
+    ) -> Vec<h2ai_types::events::VerifierFrozenEvent> {
+        std::mem::take(&mut self.pending_frozen_verifier_events)
+    }
+
     pub(crate) fn corpus_pass_hint_for(&self, constraint_id: &str) -> Option<String> {
-        self.constraint_pass_map.get(constraint_id).and_then(|(pass, hint)| {
-            pass.clone().filter(|s| !s.is_empty())
-                .or_else(|| hint.clone().filter(|s| !s.is_empty()))
+        self.constraint_pass_map.get(constraint_id).and_then(|e| {
+            e.pass_criteria
+                .clone()
+                .filter(|s| !s.is_empty())
+                .or_else(|| e.remediation_hint.clone().filter(|s| !s.is_empty()))
         })
     }
 
@@ -1778,17 +2109,25 @@ impl MapeKController {
 
     /// Extract the most representative failure reason for a given (constraint_id, check_idx)
     /// pair from all pruned proposals. Used to populate `incorrect_concept` for gap research.
-    fn extract_incorrect_concept(&self, constraint_id: &str, check_idx: usize) -> String {
-        // Collect all verifier reasons for this constraint where the specific check failed.
-        let reasons: Vec<&str> = self
-            .all_pruned
+    pub fn extract_incorrect_concept(&self, constraint_id: &str, check_idx: usize) -> String {
+        Self::extract_incorrect_concept_from(&self.all_pruned, constraint_id, check_idx)
+    }
+
+    /// Pure helper for testing: takes the pruned events slice directly.
+    pub fn extract_incorrect_concept_from(
+        all_pruned: &[h2ai_types::events::BranchPrunedEvent],
+        constraint_id: &str,
+        check_idx: usize,
+    ) -> String {
+        let reasons: Vec<&str> = all_pruned
             .iter()
             .flat_map(|p| &p.violated_constraints)
             .filter(|v| v.constraint_id == constraint_id)
             .filter(|v| {
-                // Include if this check_idx is known to have failed, or verdicts are empty.
-                v.check_verdicts.is_empty()
-                    || v.check_verdicts.get(check_idx).copied() == Some(false)
+                // Only include if this check_idx is KNOWN to have failed.
+                // Empty verdicts carry no per-check attribution; ignore them.
+                !v.check_verdicts.is_empty()
+                    && v.check_verdicts.get(check_idx).copied() == Some(false)
             })
             .filter_map(|v| v.verifier_reason.as_deref())
             .filter(|r| !r.is_empty())
@@ -1796,7 +2135,6 @@ impl MapeKController {
         if reasons.is_empty() {
             return String::new();
         }
-        // Use the shortest reason as the most focused description of the failure.
         reasons
             .into_iter()
             .min_by_key(|r| r.len())
@@ -1811,7 +2149,7 @@ impl MapeKController {
     /// Scan `last_wave_pruned` and `prev_wave_pruned` for the same constraint
     /// appearing in both waves with hard violations whose rejection reasons have
     /// low Jaccard similarity (indicating the verifier is flipping).
-    fn find_instability(&mut self, wave: u32) -> Option<InstabilitySignal> {
+    pub fn find_instability(&mut self, wave: u32) -> Option<InstabilitySignal> {
         let mut last_reasons: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         let mut prev_reasons: std::collections::HashMap<String, Vec<String>> =
@@ -1998,6 +2336,46 @@ impl MapeKController {
 
     // ── Test helpers ───────────────────────────────────────────────────────────
 
+    pub fn set_n_agents(&mut self, n: u32) {
+        self.current_params.n_agents = n;
+    }
+
+    pub fn tee_event_ref(&self) -> Option<&h2ai_types::events::TieredExitEvent> {
+        self.tee_event.as_ref()
+    }
+
+    pub fn set_corpus_viable(&mut self, v: bool) {
+        self.corpus_synthesis_viable = v;
+    }
+
+    pub fn corpus_synthesis_viable_flag(&self) -> bool {
+        self.corpus_synthesis_viable
+    }
+
+    pub fn seed_pruned_waves(
+        &mut self,
+        last: Vec<h2ai_types::events::BranchPrunedEvent>,
+        prev: Vec<h2ai_types::events::BranchPrunedEvent>,
+    ) {
+        self.last_wave_pruned = last;
+        self.prev_wave_pruned = prev;
+    }
+
+    pub fn seed_ambiguity_scorecard(
+        &mut self,
+        key: (String, usize),
+        card: h2ai_constraints::ambiguity::AmbiguityScorecard,
+    ) {
+        self.ambiguity_scorecards.insert(key, card);
+    }
+
+    pub fn ambiguity_scorecards_ref(
+        &self,
+    ) -> &std::collections::HashMap<(String, usize), h2ai_constraints::ambiguity::AmbiguityScorecard>
+    {
+        &self.ambiguity_scorecards
+    }
+
     #[must_use]
     pub fn new_for_test(cfg: h2ai_config::H2AIConfig) -> Self {
         use crate::tao_loop::TaoMultiplierEstimator;
@@ -2084,6 +2462,7 @@ impl MapeKController {
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
+            compliance_score_history: Vec::new(),
             conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph::build(&[]),
             binary_checks: Vec::new(),
             constraint_check_offsets: Vec::new(),
@@ -2093,6 +2472,10 @@ impl MapeKController {
             constraint_pass_map: std::collections::HashMap::new(),
             probe_result: None,
             corpus_synthesis_viable: false,
+            per_constraint_wave_scores: std::collections::HashMap::new(),
+            verifier_reason_history: std::collections::HashMap::new(),
+            bypassed_verifier_constraints: std::collections::HashSet::new(),
+            pending_frozen_verifier_events: vec![],
             last_wave_n_eff: 1.0,
             tee_event: None,
             tokens_used: 0,
@@ -2100,770 +2483,19 @@ impl MapeKController {
             convergence_gate_event: None,
         }
     }
-}
 
-#[cfg(test)]
-mod gap_k1_tests {
-    use super::constraint_reasons_jaccard;
-
-    #[test]
-    fn detect_instability_fires_on_low_jaccard() {
-        let reasons_a = vec!["quota atomic CAS redis".to_owned()];
-        let reasons_b = vec!["audit log missing actor".to_owned()];
-        let score = constraint_reasons_jaccard(&reasons_a, &reasons_b);
-        assert!(score < 0.10, "low jaccard expected, got {score}");
+    #[must_use]
+    pub fn new_minimal() -> Self {
+        Self::new_for_test(h2ai_config::H2AIConfig::default())
     }
 
-    #[test]
-    fn detect_instability_stable_when_same_reasons() {
-        let reasons = vec!["quota atomic CAS redis lua eval".to_owned()];
-        let score = constraint_reasons_jaccard(&reasons, &reasons);
-        assert!(score > 0.90, "high jaccard expected, got {score}");
-    }
-}
-
-#[cfg(test)]
-mod gap_i1_tests {
-    use super::*;
-    use h2ai_autonomic::knowledge_gap::detect_cold_checks;
-
-    #[test]
-    fn cold_check_detection_returns_empty_when_all_checks_pass() {
-        let rates = vec![
-            (("C-001".to_string(), 0usize), 1.0_f64),
-            (("C-001".to_string(), 1usize), 0.5_f64),
-        ];
-        let cold = detect_cold_checks(&rates, 0.0);
-        assert!(cold.is_empty());
-    }
-
-    #[test]
-    fn mape_k_controller_has_synthesis_cache_field() {
-        fn _assert_has_field(ctrl: &MapeKController) {
-            let _ = &ctrl.domain_synthesis_cache;
-        }
-    }
-
-    #[test]
-    fn run_gap_i1_research_is_noop_when_disabled() {
-        // When gap_i1.enabled = false (the default), calling run_gap_i1_research
-        // is a no-op — synthesis cache stays empty.
-        // This is a compile-time + logic check; the method is async so we
-        // verify the gate via the default config flag.
-        let cfg = h2ai_config::H2AIConfig::default();
-        assert!(!cfg.gap_i1.enabled, "gap_i1 must be disabled by default");
-    }
-}
-
-#[cfg(test)]
-mod gap_l1_tee_tests {
-    use super::*;
-    use h2ai_types::sizing::{MergeStrategy, PredictionBasis};
-
-    fn make_test_merge_output(
-        verification_events: Vec<h2ai_types::events::VerificationScoredEvent>,
-    ) -> MergeOutput {
-        let task_id = h2ai_types::identity::TaskId::new();
-        let explorer_id = h2ai_types::identity::ExplorerId::new();
-        MergeOutput {
-            task_id: task_id.clone(),
-            resolved_output: "test output".to_string(),
-            selection_resolved: true,
-            selection_resolved_event: h2ai_types::events::SelectionResolvedEvent {
-                task_id: task_id.clone(),
-                valid_proposals: vec![explorer_id.clone()],
-                pruned_proposals: vec![],
-                merge_strategy: MergeStrategy::ScoreOrdered,
-                timestamp: chrono::Utc::now(),
-                merge_elapsed_secs: None,
-                n_input_proposals: 1,
-                n_failed_proposals: 0,
-            },
-            attribution: crate::attribution::HarnessAttribution {
-                baseline_quality: 0.0,
-                topology_gain: 0.0,
-                verification_gain: 0.0,
-                tao_gain: 0.0,
-                q_confidence: 1.0,
-                prediction_basis: PredictionBasis::Heuristic,
-                q_measured: None,
-                rho_adjusted: 0.0,
-                case_b_flag: false,
-                synthesis_gain: 0.0,
-            },
-            attribution_interval: None,
-            talagrand: None,
-            suggested_next_params: None,
-            waste_ratio: 0.0,
-            applied_optimizations: vec![],
-            epistemic_yield: None,
-            frontier_event: None,
-            adapter_correctness: vec![(explorer_id, true)],
-            coherence_state: crate::coherence::CoherenceState::default(),
-            comparison_events: vec![],
-            oracle_gate_passed: None,
-            tau_values: vec![],
-            iteration_verification_events: verification_events,
-            wave_token_cost: 0,
-            pairwise_cosine_mean: None,
-        }
-    }
-
-    fn make_scored_event(score: f64, passed: bool) -> h2ai_types::events::VerificationScoredEvent {
-        h2ai_types::events::VerificationScoredEvent {
-            task_id: h2ai_types::identity::TaskId::new(),
-            explorer_id: h2ai_types::identity::ExplorerId::new(),
-            score,
-            reason: "test".to_string(),
-            passed,
-            cache_hit: false,
-            timestamp: chrono::Utc::now(),
-        }
-    }
-
-    #[test]
-    fn tee_gate_forces_retry_when_k_not_met() {
-        let cfg = h2ai_config::H2AIConfig {
-            tiered_exit: h2ai_config::TieredExitConfig {
-                enabled: true,
-                min_n: 1,
-                max_n: 3,
-                quorum_fraction: 0.5,
-                acceptance_score: 0.90,
-                require_all_binary_checks: false,
-            },
-            max_autonomic_retries: 4,
-            ..h2ai_config::H2AIConfig::default()
-        };
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.current_params.n_agents = 1;
-
-        // score 0.5 below acceptance_score 0.90
-        let merge_out = make_test_merge_output(vec![make_scored_event(0.50, true)]);
-        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 0, 1.0);
-        assert!(matches!(decision, MapeKDecision::Retry), "expected Retry");
-        assert!(ctrl.tee_event.is_none());
-    }
-
-    #[test]
-    fn tee_gate_accepts_when_k_met() {
-        let cfg = h2ai_config::H2AIConfig {
-            tiered_exit: h2ai_config::TieredExitConfig {
-                enabled: true,
-                min_n: 1,
-                max_n: 3,
-                quorum_fraction: 0.5,
-                acceptance_score: 0.85,
-                require_all_binary_checks: false,
-            },
-            max_autonomic_retries: 4,
-            ..h2ai_config::H2AIConfig::default()
-        };
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.current_params.n_agents = 1;
-
-        // score 0.95 >= acceptance_score 0.85, passed=true
-        let merge_out = make_test_merge_output(vec![make_scored_event(0.95, true)]);
-        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 0, 1.0);
-        assert!(
-            matches!(decision, MapeKDecision::Return(_)),
-            "expected Return"
-        );
-        let evt = ctrl.tee_event.as_ref().expect("tee_event should be set");
-        assert_eq!(evt.wave, 0);
-        assert_eq!(evt.n, 1);
-        assert_eq!(evt.k_required, 1);
-        assert_eq!(evt.k_accepted, 1);
-    }
-
-    #[test]
-    fn tee_gate_accepts_on_last_retry_even_if_k_not_met() {
-        let cfg = h2ai_config::H2AIConfig {
-            tiered_exit: h2ai_config::TieredExitConfig {
-                enabled: true,
-                min_n: 1,
-                max_n: 3,
-                quorum_fraction: 0.5,
-                acceptance_score: 0.90,
-                require_all_binary_checks: false,
-            },
-            max_autonomic_retries: 2,
-            ..h2ai_config::H2AIConfig::default()
-        };
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.current_params.n_agents = 1;
-
-        // score 0.50 below threshold but retry_count == max_autonomic_retries
-        let merge_out = make_test_merge_output(vec![make_scored_event(0.50, true)]);
-        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 2, 1.0);
-        assert!(
-            matches!(decision, MapeKDecision::Return(_)),
-            "expected Return on last retry"
-        );
-        assert!(
-            ctrl.tee_event.is_some(),
-            "tee_event should be set even on last retry"
-        );
-    }
-
-    #[test]
-    fn tee_disabled_does_not_interfere() {
-        // tiered_exit.enabled = false by default
-        let cfg = h2ai_config::H2AIConfig::default();
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.current_params.n_agents = 3;
-
-        // score way below any threshold — but TEE disabled so should still Return
-        let merge_out = make_test_merge_output(vec![make_scored_event(0.20, true)]);
-        let decision = ctrl.decide(PipelineOutcome::Resolved(Box::new(merge_out)), 0, 1.0);
-        assert!(
-            matches!(decision, MapeKDecision::Return(_)),
-            "TEE disabled should always Return on Resolved"
-        );
-    }
-}
-
-#[cfg(test)]
-mod pipeline_params_budget_tests {
-    use super::*;
-
-    #[test]
-    fn wave_events_default_has_zero_token_cost() {
-        let e = WaveEvents::default();
-        assert_eq!(e.wave_token_cost, 0);
-    }
-
-    #[test]
-    fn merge_output_has_wave_token_cost_and_cosine_fields() {
-        // Compile-time check: verify the fields exist on MergeOutput with the correct types.
-        // This test will fail to compile until the fields are added to MergeOutput.
-        use h2ai_types::sizing::{MergeStrategy, PredictionBasis};
-        let task_id = h2ai_types::identity::TaskId::new();
-        let explorer_id = h2ai_types::identity::ExplorerId::new();
-        let mo = MergeOutput {
-            task_id: task_id.clone(),
-            resolved_output: "test".to_string(),
-            selection_resolved: true,
-            selection_resolved_event: h2ai_types::events::SelectionResolvedEvent {
-                task_id: task_id.clone(),
-                valid_proposals: vec![explorer_id.clone()],
-                pruned_proposals: vec![],
-                merge_strategy: MergeStrategy::ScoreOrdered,
-                timestamp: chrono::Utc::now(),
-                merge_elapsed_secs: None,
-                n_input_proposals: 1,
-                n_failed_proposals: 0,
-            },
-            attribution: crate::attribution::HarnessAttribution {
-                baseline_quality: 0.0,
-                topology_gain: 0.0,
-                verification_gain: 0.0,
-                tao_gain: 0.0,
-                q_confidence: 1.0,
-                prediction_basis: PredictionBasis::Heuristic,
-                q_measured: None,
-                rho_adjusted: 0.0,
-                case_b_flag: false,
-                synthesis_gain: 0.0,
-            },
-            attribution_interval: None,
-            talagrand: None,
-            suggested_next_params: None,
-            waste_ratio: 0.0,
-            applied_optimizations: vec![],
-            epistemic_yield: None,
-            frontier_event: None,
-            adapter_correctness: vec![(explorer_id, true)],
-            coherence_state: crate::coherence::CoherenceState::default(),
-            comparison_events: vec![],
-            oracle_gate_passed: None,
-            tau_values: vec![],
-            iteration_verification_events: vec![],
-            wave_token_cost: 42,
-            pairwise_cosine_mean: Some(0.85),
-        };
-        assert_eq!(mo.wave_token_cost, 42);
-        assert_eq!(mo.pairwise_cosine_mean, Some(0.85));
-    }
-
-    #[test]
-    fn pipeline_params_has_budget_hint_field() {
-        // Compile-time check: verify the field exists on PipelineParams with the correct type.
-        // This test will fail to compile until the field is added.
-        fn _assert_field_exists(p: &PipelineParams) -> &Option<String> {
-            &p.budget_hint
-        }
-        let _ = _assert_field_exists; // suppress unused warning
-    }
-}
-
-#[cfg(test)]
-mod cost_guard_controller_tests {
-    use h2ai_config::{ConvergenceGateConfig, CostGuardConfig};
-
-    fn enabled_cost_guard(budget: u64, inject: bool) -> CostGuardConfig {
-        CostGuardConfig {
-            enabled: true,
-            budget_tokens_per_task: budget,
-            budget_warning_fraction: 0.80,
-            budget_abort_fraction: 1.00,
-            budget_prompt_injection_enabled: inject,
-            budget_injection_warn_fraction: 0.50,
-            budget_injection_max_complexity: 3,
-        }
-    }
-
-    #[test]
-    fn fraction_used_computes_correctly_when_enabled() {
-        let cg = enabled_cost_guard(100_000, false);
-        assert!((cg.fraction_used(80_000) - 0.80).abs() < 1e-9);
-        assert!((cg.fraction_used(100_000) - 1.00).abs() < 1e-9);
-    }
-
-    #[test]
-    fn budget_hint_built_when_in_injection_window() {
-        use super::build_budget_hint_if_needed;
-        let cg = enabled_cost_guard(100_000, true);
-        let hint = build_budget_hint_if_needed(&cg, 60_000, 2);
-        assert!(hint.is_some(), "expected hint at 60% consumption");
-        assert!(hint.unwrap().contains("tokens remain"));
-    }
-
-    #[test]
-    fn budget_hint_skipped_above_85_percent() {
-        use super::build_budget_hint_if_needed;
-        let cg = enabled_cost_guard(100_000, true);
-        let hint = build_budget_hint_if_needed(&cg, 90_000, 2);
-        assert!(hint.is_none(), "must not inject above 85%");
-    }
-
-    #[test]
-    fn budget_hint_skipped_for_high_complexity() {
-        use super::build_budget_hint_if_needed;
-        let cg = enabled_cost_guard(100_000, true);
-        let hint = build_budget_hint_if_needed(&cg, 60_000, 4);
-        assert!(hint.is_none(), "must not inject for complexity > max");
-    }
-
-    fn enabled_convergence_gate() -> ConvergenceGateConfig {
-        ConvergenceGateConfig {
-            enabled: true,
-            ..ConvergenceGateConfig::default()
-        }
-    }
-
-    #[test]
-    fn convergence_gate_fires_when_conditions_met() {
-        use super::check_convergence_gate;
-        let gate = enabled_convergence_gate();
-        assert!(check_convergence_gate(&gate, Some(0.92), 0.83, 1, 2, 0.50));
-    }
-
-    #[test]
-    fn convergence_gate_skipped_below_budget_floor() {
-        use super::check_convergence_gate;
-        let gate = enabled_convergence_gate();
-        assert!(!check_convergence_gate(&gate, Some(0.92), 0.85, 1, 2, 0.10));
-    }
-
-    #[test]
-    fn convergence_gate_skipped_on_wave_zero() {
-        use super::check_convergence_gate;
-        let gate = enabled_convergence_gate();
-        assert!(!check_convergence_gate(&gate, Some(0.92), 0.85, 0, 2, 0.50));
-    }
-
-    #[test]
-    fn convergence_gate_skipped_when_score_below_floor() {
-        use super::check_convergence_gate;
-        let gate = enabled_convergence_gate();
-        assert!(!check_convergence_gate(&gate, Some(0.92), 0.75, 1, 2, 0.50));
-    }
-}
-
-#[cfg(test)]
-mod probe_routing_guard_tests {
-    use super::*;
-
-    #[test]
-    fn corpus_synthesis_viable_false_by_default_in_test_constructor() {
-        let ctrl = MapeKController::new_for_test(h2ai_config::H2AIConfig::default());
-        assert!(
-            !ctrl.corpus_synthesis_viable,
-            "new_for_test has empty binary_checks so viable must be false"
-        );
-    }
-
-    #[test]
-    fn corpus_viable_true_when_binary_checks_present() {
-        let mut ctrl = MapeKController::new_for_test(h2ai_config::H2AIConfig::default());
-        // Simulate what engine.rs does when corpus has binary_checks:
-        // set corpus_synthesis_viable = true manually to verify the field is writable
-        ctrl.corpus_synthesis_viable = true;
-        assert!(ctrl.corpus_synthesis_viable);
-    }
-
-    fn make_zero_survival_exit() -> PipelineOutcome {
-        use crate::coherence::CoherenceState;
-        use crate::phases::ExitReason;
-        PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
-            failure_mode: None,
-            coherence: CoherenceState::default(),
-            n_eff_cosine: Some(1.0),
-            filter_ratio: 1.0,
-            tau_values: vec![0.2],
-        })
-    }
-
-    fn make_cfg_with_routing(
-        decompose_threshold: u8,
-        min_retries_before_graft: u32,
-    ) -> h2ai_config::H2AIConfig {
-        h2ai_config::H2AIConfig {
-            complexity_routing: h2ai_config::ComplexityRoutingConfig {
-                enabled: true,
-                decompose_threshold,
-                hitl_threshold: 5,
-                min_retries_before_graft,
-                ..h2ai_config::ComplexityRoutingConfig::default()
-            },
-            max_autonomic_retries: 10,
-            ..h2ai_config::H2AIConfig::default()
-        }
-    }
-
-    #[test]
-    fn graft_blocked_when_corpus_not_viable() {
-        // corpus_synthesis_viable = false (default in new_for_test)
-        // probe says complex=4, min_retries_before_graft=0 (most permissive possible)
-        // → graft must NOT fire because corpus is not viable
-        let cfg = make_cfg_with_routing(4, 0);
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.corpus_synthesis_viable = false;
-        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
-            complexity: 4,
-            rationale: "test".to_string(),
-            decompose_recommended: true,
-        });
-
-        let decision = ctrl.decide(make_zero_survival_exit(), 0, 1.0);
-        assert!(
-            !matches!(
-                decision,
-                MapeKDecision::ComplexityOverflow {
-                    graft_first: true,
-                    ..
-                }
-            ),
-            "graft must not fire when corpus has no binary_checks"
-        );
-    }
-
-    #[test]
-    fn graft_blocked_before_min_retries_floor() {
-        // corpus viable, probe says complex=4, min_retries=2, retry_count=1
-        // → floor not yet reached, graft must NOT fire
-        let cfg = make_cfg_with_routing(4, 2);
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.corpus_synthesis_viable = true;
-        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
-            complexity: 4,
-            rationale: "test".to_string(),
-            decompose_recommended: true,
-        });
-
-        let decision = ctrl.decide(make_zero_survival_exit(), 1, 1.0);
-        assert!(
-            !matches!(
-                decision,
-                MapeKDecision::ComplexityOverflow {
-                    graft_first: true,
-                    ..
-                }
-            ),
-            "graft must not fire before min_retries_before_graft (retry_count=1 < floor=2)"
-        );
-    }
-
-    #[test]
-    fn graft_fires_when_both_conditions_met() {
-        // corpus viable + probe=4 + retry_count=2 >= min_retries=2 → graft MUST fire
-        let cfg = make_cfg_with_routing(4, 2);
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.corpus_synthesis_viable = true;
-        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
-            complexity: 4,
-            rationale: "test".to_string(),
-            decompose_recommended: true,
-        });
-
-        let decision = ctrl.decide(make_zero_survival_exit(), 2, 1.0);
-        assert!(
-            matches!(
-                decision,
-                MapeKDecision::ComplexityOverflow {
-                    graft_first: true,
-                    ..
-                }
-            ),
-            "graft must fire when corpus viable AND retry_count >= min_retries_before_graft"
-        );
-    }
-
-    #[test]
-    fn graft_fires_immediately_when_floor_zero_and_corpus_viable() {
-        // min_retries_before_graft=0 restores old aggressive behavior when corpus is viable
-        let cfg = make_cfg_with_routing(4, 0);
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.corpus_synthesis_viable = true;
-        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
-            complexity: 4,
-            rationale: "test".to_string(),
-            decompose_recommended: true,
-        });
-
-        let decision = ctrl.decide(make_zero_survival_exit(), 0, 1.0);
-        assert!(
-            matches!(
-                decision,
-                MapeKDecision::ComplexityOverflow {
-                    graft_first: true,
-                    ..
-                }
-            ),
-            "floor=0 must fire immediately (backward-compat for viable corpus)"
-        );
-    }
-
-    #[test]
-    fn backstop_invariant_signal_requires_viable_corpus() {
-        // Invariant: complexity_overflow_graft_signal is set in engine.rs only when
-        // graft_first=true is returned by handle_exit_reason.
-        // After Task 4, graft_first=true requires corpus_synthesis_viable=true.
-        // Therefore: if corpus_synthesis_viable=false, the signal can never be set,
-        // and the error! backstop in the synthesis wave should never be reached.
-        //
-        // This test encodes the logic contract: when corpus is not viable,
-        // even with the most aggressive config (min_retries=0), decide() returns
-        // something other than ComplexityOverflow{graft_first:true}.
-        let cfg = make_cfg_with_routing(1, 0); // lowest possible thresholds
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        ctrl.corpus_synthesis_viable = false;
-        ctrl.set_probe_result(h2ai_autonomic::complexity_probe::ComplexityProbeResult {
-            complexity: 4,
-            rationale: "test".to_string(),
-            decompose_recommended: true,
-        });
-
-        for retry_count in 0..10u32 {
-            let decision = ctrl.decide(make_zero_survival_exit(), retry_count, 1.0);
-            assert!(
-                !matches!(
-                    decision,
-                    MapeKDecision::ComplexityOverflow { graft_first: true, .. }
-                ),
-                "graft_first=true must never fire when corpus_synthesis_viable=false (retry={retry_count})"
-            );
-            // Reset for next iteration (decide() may mutate state).
-            ctrl.corpus_synthesis_viable = false;
-        }
-    }
-}
-
-#[cfg(test)]
-mod gap_f8_ambiguity_tests {
-    use super::*;
-    use h2ai_types::sizing::RoleErrorCost;
-
-    fn pruned_event_with_reason(cid: &str, reason: &str) -> h2ai_types::events::BranchPrunedEvent {
-        h2ai_types::events::BranchPrunedEvent {
-            task_id: h2ai_types::identity::TaskId::new(),
-            explorer_id: h2ai_types::identity::ExplorerId::new(),
-            reason: reason.to_string(),
-            raw_output: String::new(),
-            constraint_error_cost: RoleErrorCost::new(0.0).unwrap(),
-            violated_constraints: vec![h2ai_types::events::ConstraintViolation {
-                constraint_id: cid.to_string(),
-                score: 0.0,
-                severity_label: "Hard".to_string(),
-                remediation_hint: None,
-                constraint_description: String::new(),
-                verifier_reason: Some(reason.to_string()),
-                check_verdicts: vec![],
-                criteria_pass: None,
-            }],
-            timestamp: chrono::Utc::now(),
-        }
-    }
-
-    fn inject_divergence(ctrl: &mut MapeKController, cid: &str) {
-        ctrl.last_wave_pruned = vec![
-            pruned_event_with_reason(cid, "alpha bravo charlie delta echo"),
-            pruned_event_with_reason(cid, "alpha bravo charlie delta foxtrot"),
-        ];
-        ctrl.prev_wave_pruned = vec![
-            pruned_event_with_reason(cid, "zulu yankee xray whiskey victor"),
-            pruned_event_with_reason(cid, "zulu yankee xray whiskey uniform"),
-        ];
-    }
-
-    fn ambiguity_cfg() -> h2ai_config::H2AIConfig {
-        h2ai_config::H2AIConfig {
-            gap_k1: h2ai_config::GapK1Config {
-                enabled: true,
-                instability_threshold: 0.10,
-                ..h2ai_config::GapK1Config::default()
-            },
-            ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig {
-                enabled: true,
-                score_threshold: 0.6,
-                ..h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default()
-            },
-            ..h2ai_config::H2AIConfig::default()
-        }
-    }
-
-    /// Legacy path: ambiguity disabled → find_instability returns simple signal with check_index=0.
-    #[test]
-    fn find_instability_legacy_path_when_ambiguity_disabled() {
-        let cfg = h2ai_config::H2AIConfig {
-            gap_k1: h2ai_config::GapK1Config {
-                enabled: true,
-                instability_threshold: 0.10,
-                ..h2ai_config::GapK1Config::default()
-            },
-            ambiguity_detection: h2ai_constraints::ambiguity::AmbiguityDetectionConfig {
-                enabled: false,
-                ..h2ai_constraints::ambiguity::AmbiguityDetectionConfig::default()
-            },
-            ..h2ai_config::H2AIConfig::default()
-        };
-        let mut ctrl = MapeKController::new_for_test(cfg);
-        inject_divergence(&mut ctrl, "C-001");
-
-        let sig = ctrl.find_instability(0).expect("instability should fire");
-        assert_eq!(sig.constraint_id, "C-001");
-        assert_eq!(sig.check_index, 0, "legacy path must set check_index=0");
-        assert!(sig.ambiguity_evidence.is_empty());
-        assert_eq!(sig.ambiguity_score, 0.0);
-    }
-
-    /// Accumulation path: score below threshold → returns None, scorecard is updated.
-    #[test]
-    fn find_instability_accumulates_below_threshold_returns_none() {
-        // weight_jaccard_freeze_wave=0.15, score_threshold=0.6 → one wave is not enough
-        let mut ctrl = MapeKController::new_for_test(ambiguity_cfg());
-        inject_divergence(&mut ctrl, "C-002");
-
-        let result = ctrl.find_instability(1);
-        assert!(
-            result.is_none(),
-            "below threshold, must return None; got {result:?}"
-        );
-        // Scorecard should now have the evidence recorded
-        let has_scorecard = ctrl
-            .ambiguity_scorecards
-            .values()
-            .any(|sc| sc.constraint_id == "C-002" && !sc.evidence.is_empty());
-        assert!(
-            has_scorecard,
-            "scorecard must be updated after accumulation"
-        );
-    }
-
-    /// Threshold crossed with Precise patch mode → returns real check_index.
-    #[test]
-    fn find_instability_threshold_crossed_precise_returns_real_check_idx() {
-        use h2ai_constraints::ambiguity::{AmbiguityEvidence, AmbiguityScorecard};
-        // Pre-seed a scorecard for C-003/check_idx=2 with static evidence near threshold.
-        // weight_fm_negation=0.30 → one static evidence puts score at 0.30.
-        // Then one JaccardFreezeWave (0.15) → total 0.45, still below 0.6.
-        // Add another fm_negation (0.30) → 0.75 >= 0.6 → fires.
-        // Simpler: pre-seed with score just below threshold so one more wave crosses it.
-        let mut cfg = ambiguity_cfg();
-        // Lower threshold so a single JaccardFreezeWave (0.15) crosses it after static seeding.
-        cfg.ambiguity_detection.score_threshold = 0.14;
-        // Also need static evidence on check_idx=2 so patch_mode returns Precise.
-        let mut ctrl = MapeKController::new_for_test(cfg.clone());
-
-        // Insert a scorecard with static evidence (FmTermNegation) at check_idx=2, score=0.0
-        // so the next JaccardFreezeWave (0.15 weight) will push it to 0.15 >= 0.14.
-        let mut base_card = AmbiguityScorecard::new("C-003".to_string(), 2);
-        base_card.evidence.push(AmbiguityEvidence::FmTermNegation {
-            term: "cockroachdb".to_string(),
-            negated_in: "avoid cockroachdb".to_string(),
-        });
-        // score stays 0.0 in the card (we manually inserted evidence without scoring)
-        // so score_evidence will add the JaccardFreezeWave weight on top.
-        ctrl.ambiguity_scorecards
-            .insert(("C-003".to_string(), 2), base_card);
-
-        inject_divergence(&mut ctrl, "C-003");
-        let sig = ctrl
-            .find_instability(2)
-            .expect("threshold crossed, must return Some");
-        assert_eq!(sig.constraint_id, "C-003");
-        assert_eq!(
-            sig.check_index, 2,
-            "Precise patch mode must set real check_index"
-        );
-        assert!(!sig.ambiguity_evidence.is_empty());
-        assert!(sig.ambiguity_score >= cfg.ambiguity_detection.score_threshold);
-    }
-
-    /// Threshold crossed with DiagnosticOnly → returns None, queues pending event.
-    #[test]
-    fn find_instability_threshold_crossed_diagnostic_queues_event_returns_none() {
-        // Dynamic-only scorecard (DYNAMIC_ONLY_CHECK_IDX) → DiagnosticOnly.
-        let mut cfg = ambiguity_cfg();
-        cfg.ambiguity_detection.score_threshold = 0.14; // crossed by one JaccardFreezeWave
-        let mut ctrl = MapeKController::new_for_test(cfg);
-
-        // No static evidence — key points to DYNAMIC_ONLY_CHECK_IDX.
-        // ambiguity_scorecards is empty from new_for_test, so accumulate_ambiguity
-        // will create a new DYNAMIC_ONLY card and add the JaccardFreezeWave.
-        inject_divergence(&mut ctrl, "C-004");
-        let result = ctrl.find_instability(3);
-        assert!(
-            result.is_none(),
-            "DiagnosticOnly must return None; got {result:?}"
-        );
-        let events = ctrl.take_pending_ambiguity_events();
-        assert_eq!(
-            events.len(),
-            1,
-            "one pending ambiguity event must be queued"
-        );
-        assert_eq!(events[0].constraint_id, "C-004");
-        assert!(events[0].check_idx.is_none());
-    }
-
-    /// No double-trigger: after rewrite_applied=true, find_instability returns None.
-    #[test]
-    fn find_instability_no_double_trigger_after_fired() {
-        let mut cfg = ambiguity_cfg();
-        cfg.ambiguity_detection.score_threshold = 0.14;
-        let mut ctrl = MapeKController::new_for_test(cfg);
-
-        inject_divergence(&mut ctrl, "C-005");
-        // First call fires (DiagnosticOnly) — queues one event
-        let _ = ctrl.find_instability(1);
-        // Drain the first event to isolate subsequent calls
-        let first_events = ctrl.take_pending_ambiguity_events();
-        assert_eq!(first_events.len(), 1, "first call must queue one event");
-
-        // Second call with same divergence — rewrite_applied=true → must return None
-        inject_divergence(&mut ctrl, "C-005");
-        let result2 = ctrl.find_instability(2);
-        assert!(
-            result2.is_none(),
-            "double-trigger must be prevented after rewrite_applied=true"
-        );
-        // No additional events queued on the second call
-        let events2 = ctrl.take_pending_ambiguity_events();
-        assert!(
-            events2.is_empty(),
-            "no second pending event after rewrite_applied"
-        );
+    pub fn seed_synthesis(
+        &mut self,
+        constraint_id: &str,
+        check_idx: usize,
+        synthesis: h2ai_types::gap_i1::DomainSynthesis,
+    ) {
+        self.domain_synthesis_cache
+            .insert((constraint_id.to_string(), check_idx), synthesis);
     }
 }

@@ -121,7 +121,7 @@ fn prepare_leader_election_picks_highest_score_as_leader() {
     let id_a = ExplorerId::new();
     let id_b = ExplorerId::new();
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.3), (id_b.clone(), 0.7)]);
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
 
     let cfg = H2AIConfig {
         leader_enabled: true,
@@ -137,7 +137,7 @@ fn apply_leader_result_populates_leader_state() {
     let mut ctrl = MapeKController::new_for_test(H2AIConfig::default());
     let id_a = ExplorerId::new();
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.6)]);
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
 
     let cfg = H2AIConfig {
         leader_enabled: true,
@@ -158,7 +158,7 @@ fn leader_events_buffered_after_apply() {
     let mut ctrl = MapeKController::new_for_test(H2AIConfig::default());
     let id_a = ExplorerId::new();
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.6)]);
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
 
     let cfg = H2AIConfig {
         leader_enabled: true,
@@ -184,13 +184,13 @@ fn stagnation_count_increments_on_flat_confidence() {
 
     // Wave 1
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.5)]);
-    ctrl.observe(&wave);
+    ctrl.observe(&wave, 0);
     let plan = ctrl.prepare_leader_election(&cfg).unwrap();
     ctrl.apply_leader_result(plan, "Q1?".into(), 1, 0, &cfg);
 
     // Wave 2 — same score (no improvement)
     let wave2 = failed_wave_with_scores(vec![(id_a.clone(), 0.5)]);
-    ctrl.observe(&wave2);
+    ctrl.observe(&wave2, 1);
     let plan2 = ctrl.prepare_leader_election(&cfg).unwrap();
     ctrl.apply_leader_result(plan2, "Q2?".into(), 1, 0, &cfg);
 

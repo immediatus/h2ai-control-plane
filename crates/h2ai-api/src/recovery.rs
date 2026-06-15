@@ -124,7 +124,10 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
         // If a previous run published TaskFailed/MergeResolved but crashed before
         // deleting the checkpoint, we must not re-run the task — it would compete
         // for adapter pool slots and corrupt the NATS event stream.
-        let nats_ref = state.nats.as_ref().expect("NATS required for task recovery");
+        let nats_ref = state
+            .nats
+            .as_ref()
+            .expect("NATS required for task recovery");
         {
             use futures::StreamExt;
             if let Ok(mut stream) = nats_ref.tail_task_events_boxed(&task_id, 0).await {
@@ -138,7 +141,10 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                                 task_id = %checkpoint.task_id,
                                 "recovery: task already terminal, deleting stale checkpoint"
                             );
-                            nats_ref.delete_task_checkpoint(&checkpoint.task_id).await.ok();
+                            nats_ref
+                                .delete_task_checkpoint(&checkpoint.task_id)
+                                .await
+                                .ok();
                             return;
                         }
                     }

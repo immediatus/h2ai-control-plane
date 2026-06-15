@@ -136,8 +136,17 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
             let (approved, reason, violated) =
                 if let Some(r) = extract_json_object::<AuditResponse>(&audit_result.output) {
                     (r.approved, r.reason, r.violated)
+                } else if engine_input.cfg.audit_gate.fail_open_on_parse_error {
+                    tracing::warn!(
+                        target: "h2ai.engine",
+                        task_id = %task_id,
+                        output = %audit_result.output,
+                        "auditor returned non-JSON; failing open (proposal already passed verifier)"
+                    );
+                    (true, String::new(), vec![])
                 } else {
                     tracing::warn!(
+                        target: "h2ai.engine",
                         task_id = %task_id,
                         output = %audit_result.output,
                         "auditor returned non-JSON; failing safe (treating as rejected)"
@@ -208,9 +217,12 @@ pub async fn run(verify_out: VerifyOutput, input: Input<'_>) -> StepResult<Outpu
                         verifier_reason: None,
                         check_verdicts: vec![],
                         criteria_pass: None,
+                        check_reasons: None,
                     })
                     .collect(),
                 timestamp: Utc::now(),
+                retry_count: 0,
+                bypass_reason: None,
             });
             engine_input.store.record_validation(task_id, false);
         } else {

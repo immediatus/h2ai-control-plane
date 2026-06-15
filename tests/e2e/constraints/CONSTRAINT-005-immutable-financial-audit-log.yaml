@@ -8,7 +8,7 @@ related_to:
   - CONSTRAINT-004  # budget deductions are the events that must reach the audit log
   - CONSTRAINT-007  # billing event timestamps must use HLC (linearizable), not wall clock
   - CONSTRAINT-TAU-2  # billing path (Kafka→ClickHouse) and quota audit path (PostgreSQL) must coexist
-remediation_hint: "The required operation order is: (1) debit the budget atomically first via Redis Lua EVAL, (2) then publish the billing event to Kafka financial-events topic. The debit MUST happen before the Kafka publish — not after. Use a local WAL-backed retry queue so Kafka downtime never blocks the debit or creates audit gaps. Project Kafka events into ClickHouse for analytics. Financial event records are append-only: once written, records must remain unmodified."
+remediation_hint: "The required operation order is: (1) debit the budget atomically first via Redis Lua EVAL, (2) then publish the billing event to Kafka financial-events topic. The debit MUST happen before the Kafka publish. Use a local WAL-backed retry queue so Kafka downtime never blocks the debit or creates audit gaps. Project Kafka events into ClickHouse for analytics. Financial event records are append-only: once written, records must remain unmodified."
 semantic:
   exclusions:
     - pattern: "direct database or log-file write on the charge path"
@@ -48,7 +48,7 @@ failure_modes:
       queue synchronously; a background publisher drains the queue to Kafka with
       at-least-once delivery. The audit trail is complete after Kafka recovers.
   - id: FM-005-2
-    trigger: "Direct CockroachDB write on the charge path instead of Kafka publish"
+    trigger: "Direct CockroachDB write on the charge path rather than Kafka publish"
     consequence: |
       CockroachDB reads on the critical path add 1-5ms of latency (violates P99 budget).
       CockroachDB records can be updated or deleted — the audit trail is not tamper-evident.

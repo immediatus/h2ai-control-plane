@@ -34,6 +34,8 @@ fn make_event(raw_output: &str, violations: Vec<ConstraintViolation>) -> BranchP
         constraint_error_cost: RoleErrorCost::new(0.5).unwrap(),
         violated_constraints: violations,
         timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     }
 }
 
@@ -47,6 +49,7 @@ fn violation(id: &str, check_verdicts: Vec<bool>) -> ConstraintViolation {
         verifier_reason: None,
         check_verdicts,
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 
@@ -60,6 +63,7 @@ fn violation_with_score(id: &str, score: f64) -> ConstraintViolation {
         verifier_reason: None,
         check_verdicts: vec![], // LLM skipped CHECK format
         criteria_pass: None,
+        check_reasons: None,
     }
 }
 

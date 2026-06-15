@@ -66,6 +66,17 @@ impl TalagrandDiagnostic {
         }
     }
 
+    /// Compute the next τ-spread factor using the principled KL-divergence update rule (GAP-E2).
+    ///
+    /// Δτ = η × (U_score − Λ_score); τ_new = clip(current_factor + Δτ, tau_min, tau_max).
+    /// Replaces the heuristic 1.2× expansion with an adaptive rule that also contracts τ
+    /// when the histogram is Λ-shaped (under-dispersed, proposals converging).
+    pub fn tau_kl_next(&self, current_factor: f64, eta: f64, tau_min: f64, tau_max: f64) -> f64 {
+        let h: Vec<f64> = self.rank_histogram[1..].iter().map(|&c| c as f64).collect();
+        let delta = h2ai_autonomic::epistemic::talagrand_kl_delta_tau(&h, eta);
+        (current_factor + delta).clamp(tau_min, tau_max)
+    }
+
     /// Build a Talagrand diagnostic from a collection of per-run verification scores.
     ///
     /// `per_run_scores`: each element is a Vec of N adapter verification scores for one run.

@@ -6,12 +6,14 @@ use std::collections::{HashMap, HashSet};
 /// Domain-level epistemic closure state for a MAPE-K wave.
 ///
 /// A domain is "uncovered" when any of its constraints appear in a pruned proposal's
-/// `violated_constraints` list. A contradiction exists when two surviving proposals
-/// score on opposite sides of the pass threshold for the same constraint domain.
-/// When `is_closed()` is true, both fields are empty.
+/// `violated_constraints` list AND no surviving proposal adequately covers that domain
+/// (i.e., scores ≥ 0.5 on at least one constraint in the domain). A contradiction exists
+/// when two surviving proposals score on opposite sides of the pass threshold for the same
+/// constraint domain. When `is_closed()` is true, both fields are empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CoherenceState {
-    /// Constraint domains that had violations in pruned proposals. Sorted alphabetically.
+    /// Constraint domains that had violations in pruned proposals and are NOT covered by
+    /// any surviving proposal. Sorted alphabetically.
     pub uncovered_domains: Vec<String>,
     /// Pairs of surviving proposals that contradict on the same constraint domain.
     /// Each entry is (`explorer_a`, `explorer_b`, domain). Sorted by domain then explorer ID.
@@ -129,6 +131,61 @@ impl CoherenceState {
                 .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
         });
 
+        self
+    }
+
+    /// Remove domains from `uncovered_domains` that are adequately covered by at least
+    /// one surviving proposal (score ≥ 0.5 on any constraint in the domain).
+    ///
+    /// A domain flagged by `from_pruned` is a false-positive uncovered signal when the
+    /// winning proposal correctly satisfies the same domain. This method filters those
+    /// out using the satisfaction matrix from the `ConstraintFrontierEvent`.
+    #[must_use]
+    pub fn filter_covered_by_survivors(
+        mut self,
+        corpus: &[ConstraintDoc],
+        satisfaction_matrix: &[Vec<f64>],
+        constraint_ids: &[String],
+    ) -> Self {
+        const PASS_THRESHOLD: f64 = 0.5;
+
+        if self.uncovered_domains.is_empty() || satisfaction_matrix.is_empty() {
+            return self;
+        }
+
+        let id_to_domains: HashMap<&str, &[String]> = corpus
+            .iter()
+            .filter(|d| !d.domains.is_empty())
+            .map(|d| (d.id.as_str(), d.domains.as_slice()))
+            .collect();
+
+        let mut covered: HashSet<String> = HashSet::new();
+        for (j, cid) in constraint_ids.iter().enumerate() {
+            let any_survivor_passes = satisfaction_matrix
+                .iter()
+                .any(|row| row.get(j).copied().unwrap_or(0.0) >= PASS_THRESHOLD);
+            if any_survivor_passes {
+                if let Some(domains) = id_to_domains.get(cid.as_str()) {
+                    for d in *domains {
+                        covered.insert(d.clone());
+                    }
+                }
+            }
+        }
+
+        self.uncovered_domains.retain(|d| !covered.contains(d));
+        self
+    }
+
+    /// Remove domains from `uncovered_domains` that are provably covered by surviving proposals.
+    ///
+    /// Unlike `filter_covered_by_survivors` (which re-derives coverage from a satisfaction
+    /// matrix), this method accepts a pre-computed `covered` set produced by the
+    /// `llm_coverage` phase. Any domain present in `covered` is dropped from
+    /// `uncovered_domains`. `active_contradictions` is left untouched.
+    #[must_use]
+    pub fn subtract_covered_domains(mut self, covered: &HashSet<String>) -> Self {
+        self.uncovered_domains.retain(|d| !covered.contains(d));
         self
     }
 

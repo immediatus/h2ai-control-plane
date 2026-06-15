@@ -488,3 +488,134 @@ async fn run_uses_fallback_archetype_on_parse_failure() {
         "fallback archetype must allow all iterations to run"
     );
 }
+
+// ── parse_archetypes — preamble text and clean JSON fast path ─────────────────
+
+#[test]
+fn parse_archetypes_with_preamble_text() {
+    use h2ai_orchestrator::thinking_loop::parse_archetypes;
+    // Regression: Gemini (and other models) sometimes output reasoning prose before the JSON
+    // array even when instructed "Output ONLY the JSON array." extract_first_json_array must
+    // recover the array from within the mixed-content response.
+    let json_fragment = r#"[{"name":"security-engineer","persona":"You are a security engineer who focuses on auth boundaries.","scope":"auth","confidence":0.9,"tau":0.2,"model_tier":"capable","cot_style":"step_by_step"}]"#;
+    let with_preamble = format!("Here are the archetypes I selected:\n\n{json_fragment}");
+    let result = parse_archetypes(&with_preamble);
+    assert!(
+        result.is_some(),
+        "must parse array preceded by preamble text"
+    );
+    assert_eq!(result.unwrap().len(), 1);
+}
+
+#[test]
+fn parse_archetypes_clean_json_still_works() {
+    use h2ai_orchestrator::thinking_loop::parse_archetypes;
+    // Fast path must not regress.
+    let json = r#"[{"name":"x","persona":"You are a p who does q.","scope":"s","confidence":0.8,"tau":0.3,"model_tier":"fast","cot_style":"none"}]"#;
+    let result = parse_archetypes(json);
+    assert!(result.is_some());
+}
+
+// ── fallback_archetypes ───────────────────────────────────────────────────────
+
+#[test]
+fn fallback_archetypes_has_three_distinct_items() {
+    use h2ai_orchestrator::thinking_loop::fallback_archetypes;
+    let archetypes = fallback_archetypes();
+    assert_eq!(
+        archetypes.len(),
+        3,
+        "must have exactly three fallback archetypes"
+    );
+    let names: Vec<&str> = archetypes.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(
+        names.len(),
+        names.iter().collect::<std::collections::HashSet<_>>().len(),
+        "all archetype names must be distinct"
+    );
+}
+
+#[test]
+fn fallback_archetypes_cover_distinct_cot_styles() {
+    use h2ai_orchestrator::thinking_loop::fallback_archetypes;
+    use h2ai_types::manifest::CotStyle;
+    let archetypes = fallback_archetypes();
+    // Count distinct CotStyle values without requiring Hash.
+    let mut distinct_styles: Vec<&CotStyle> = Vec::new();
+    for a in &archetypes {
+        if !distinct_styles.iter().any(|s| **s == a.cot_style) {
+            distinct_styles.push(&a.cot_style);
+        }
+    }
+    assert!(
+        distinct_styles.len() >= 2,
+        "fallback archetypes must use at least two distinct CotStyles"
+    );
+}
+
+// ── adapter_error_in_select_archetypes ───────────────────────────────────────
+
+#[tokio::test]
+async fn adapter_error_in_select_archetypes_produces_default_report() {
+    use h2ai_test_utils::failing_adapter;
+    // Regression: select_archetypes silently returned vec![] on adapter error,
+    // causing the loop to break at iteration 0 → ThinkingReport::default().
+    // After this fix a tracing::warn! at h2ai.thinking is emitted; observable via RUST_LOG.
+    let adapter = failing_adapter();
+    let cfg = ThinkingLoopConfig {
+        enabled: true,
+        max_iterations: 1,
+        ..Default::default()
+    };
+    let input = ThinkingLoopInput {
+        task_description: "test task",
+        constraint_ids: &[],
+        constraint_tags: &[],
+        research_context: "stub context",
+        knowledge_provider: None,
+        n_archetypes: 2,
+        cfg: &cfg,
+        adapter: &adapter,
+        embedding_model: None,
+        nats_client: None,
+        task_id: "test-task-id",
+        induction_patterns: &[],
+        constraint_corpus: &[],
+    };
+    let report = run(input).await;
+    assert_eq!(
+        report.shared_understanding, "",
+        "adapter failure must produce empty shared_understanding"
+    );
+    assert_eq!(
+        report.coverage_score, 0.0,
+        "adapter failure must produce zero coverage_score"
+    );
+}
+
+// ── format_induction_priors ───────────────────────────────────────────────────
+
+#[test]
+fn format_induction_priors_empty_returns_empty_string() {
+    use h2ai_orchestrator::thinking_loop::format_induction_priors;
+    let result = format_induction_priors(&[]);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn format_induction_priors_formats_top_5() {
+    use h2ai_orchestrator::thinking_loop::format_induction_priors;
+    use h2ai_types::config::AgentRole;
+    use h2ai_types::knowledge::KnowledgeNodePattern;
+    let patterns: Vec<KnowledgeNodePattern> = (0..7)
+        .map(|i| KnowledgeNodePattern {
+            node_id: format!("node-{i}"),
+            role: AgentRole::Executor,
+            domain_tags: vec!["billing".to_string()],
+            hit_rate: i as f32,
+        })
+        .collect();
+    let result = format_induction_priors(&patterns);
+    // Only top 5 shown even though 7 provided
+    assert_eq!(result.matches("node-").count(), 5);
+}

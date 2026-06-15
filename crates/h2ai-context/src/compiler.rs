@@ -25,10 +25,15 @@ pub fn compile(manifest: &str, corpus: &[ConstraintDoc], include_rubric: bool) -
     }
 }
 
-fn artifact_scaffold(doc: &ConstraintDoc) -> Option<String> {
+pub fn artifact_scaffold(doc: &ConstraintDoc) -> Option<String> {
     const MARKERS: &[&str] = &[
-        "DDL", "migration", "Lua", "script", "schema",
-        "audit table", "audit record",
+        "DDL",
+        "migration",
+        "Lua",
+        "script",
+        "schema",
+        "audit table",
+        "audit record",
     ];
     let hit = doc.binary_checks.iter().any(|c| {
         let lc = c.to_lowercase();
@@ -138,45 +143,4 @@ fn build_system_context(manifest: &str, corpus: &[ConstraintDoc], include_rubric
         }
     }
     parts.join("\n\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::artifact_scaffold;
-    use h2ai_constraints::types::ConstraintDoc;
-
-    fn doc_with_checks(id: &str, checks: &[&str]) -> ConstraintDoc {
-        ConstraintDoc {
-            binary_checks: checks.iter().map(|s| s.to_string()).collect(),
-            ..ConstraintDoc::new_llm_judge(id, "test rubric")
-        }
-    }
-
-    #[test]
-    fn artifact_scaffold_triggers_on_ddl_keyword() {
-        let doc = doc_with_checks("BFT-1", &["Does the migration use additive DDL only (ALTER TABLE ADD COLUMN, no DROP)?"]);
-        let scaffold = artifact_scaffold(&doc);
-        assert!(scaffold.is_some(), "must produce scaffold when binary_check mentions DDL");
-        let text = scaffold.unwrap();
-        assert!(text.contains("REQUIRED OUTPUT ARTIFACT"), "scaffold must include the REQUIRED OUTPUT ARTIFACT header");
-        assert!(text.contains("BFT-1"), "scaffold must reference the constraint id");
-    }
-
-    #[test]
-    fn artifact_scaffold_triggers_on_migration_keyword() {
-        let doc = doc_with_checks("C1", &["Is a migration plan present?"]);
-        assert!(artifact_scaffold(&doc).is_some());
-    }
-
-    #[test]
-    fn artifact_scaffold_silent_for_non_artifact_constraint() {
-        let doc = doc_with_checks("C2", &["Does the response use JSON output format?"]);
-        assert!(artifact_scaffold(&doc).is_none(), "no scaffold for constraints without artifact keywords");
-    }
-
-    #[test]
-    fn artifact_scaffold_silent_when_no_binary_checks() {
-        let doc = doc_with_checks("C3", &[]);
-        assert!(artifact_scaffold(&doc).is_none());
-    }
 }

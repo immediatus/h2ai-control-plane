@@ -11,10 +11,8 @@
 
 use futures::future::join_all;
 use h2ai_adapters::chain::{execute_chain, tournament_merge};
-use h2ai_types::chain::{ChainedRequest, ChainStep};
 use h2ai_config::prompts::{
-    THINKING_ARCHETYPE_MD_ITER1, THINKING_ARCHETYPE_MD_ITERN,
-    THINKING_ARCHETYPE_SYSTEM_MD,
+    THINKING_ARCHETYPE_MD_ITER1, THINKING_ARCHETYPE_MD_ITERN, THINKING_ARCHETYPE_SYSTEM_MD,
     THINKING_BRAINSTORM_TASK, THINKING_QUALITY_GATE_SYSTEM, THINKING_QUALITY_GATE_TASK,
     THINKING_SYNTHESIS_MD_PAIRWISE, THINKING_SYNTHESIS_MD_SYSTEM,
 };
@@ -23,11 +21,12 @@ use h2ai_context::embedding::EmbeddingModel;
 use h2ai_knowledge::provider::KnowledgeProvider;
 use h2ai_knowledge::types::{KnowledgeQuery, NodeDepth, NodeSource, SearchScope};
 use h2ai_types::adapter::{ComputeRequest, IComputeAdapter};
+use h2ai_types::chain::{ChainStep, ChainedRequest};
 use h2ai_types::config::AgentRole;
 use h2ai_types::events::OracleGateResultEvent;
 use h2ai_types::knowledge::{profile_for_role, RetrievalMode as TypesRetrievalMode};
-use h2ai_types::sizing::TauValue;
 use h2ai_types::manifest::CotStyle;
+use h2ai_types::sizing::TauValue;
 use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ModelTier, ThinkingReport};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -296,7 +295,9 @@ pub fn format_constraint_context(corpus: &[h2ai_constraints::types::ConstraintDo
     if corpus.is_empty() {
         return String::new();
     }
-    let mut out = String::from("CONSTRAINT SPECIFICATIONS (read these carefully to choose domain-matched archetypes):\n");
+    let mut out = String::from(
+        "CONSTRAINT SPECIFICATIONS (read these carefully to choose domain-matched archetypes):\n",
+    );
     for doc in corpus {
         out.push_str(&format!("\n{}", doc.id));
         if !doc.description.is_empty() {
@@ -311,7 +312,7 @@ pub fn format_constraint_context(corpus: &[h2ai_constraints::types::ConstraintDo
 
 /// Single pragmatic archetype used when LLM archetype selection fails to parse.
 /// Keeps the thinking loop alive for at least one brainstorm iteration.
-fn fallback_archetypes() -> Vec<ArchetypeSpec> {
+pub fn fallback_archetypes() -> Vec<ArchetypeSpec> {
     vec![
         ArchetypeSpec {
             name: "Constraint Satisfier".to_string(),
@@ -625,8 +626,7 @@ async fn synthesize(
 
     let system_context = format!(
         "{}\n\nPRIOR UNDERSTANDING (from previous iteration — empty on first pass):\n{}",
-        THINKING_SYNTHESIS_MD_SYSTEM,
-        prior.shared_understanding,
+        THINKING_SYNTHESIS_MD_SYSTEM, prior.shared_understanding,
     );
 
     match tournament_merge(
@@ -736,7 +736,11 @@ pub fn parse_archetypes_from_markdown(text: &str) -> Result<Vec<ArchetypeSpec>, 
 
 fn parse_archetype_block(block: &str) -> Result<ArchetypeSpec, String> {
     // First non-empty line: "N: name-in-kebab-case" or just "name-in-kebab-case"
-    let name_line = block.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let name_line = block
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     let name = name_line
         .split_once(':')
         .map_or(name_line, |(_prefix, rest)| rest.trim())
@@ -883,7 +887,8 @@ pub fn parse_synthesis_from_markdown(text: &str) -> ThinkingReport {
     let coverage_section = extract_section(text, "## Coverage Assessment");
 
     // If no sections found at all, plain-text fallback
-    if shared_understanding.is_empty() && tensions_section.is_empty() && coverage_section.is_empty() {
+    if shared_understanding.is_empty() && tensions_section.is_empty() && coverage_section.is_empty()
+    {
         return ThinkingReport {
             shared_understanding: text.to_string(),
             tensions: vec![],
@@ -934,126 +939,3 @@ fn extract_section(text: &str, header: &str) -> String {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use h2ai_test_utils::failing_adapter;
-
-    fn single_iter_cfg() -> ThinkingLoopConfig {
-        ThinkingLoopConfig {
-            enabled: true,
-            max_iterations: 1,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn parse_archetypes_with_preamble_text() {
-        // Regression: Gemini (and other models) sometimes output reasoning prose before the JSON
-        // array even when instructed "Output ONLY the JSON array." extract_first_json_array must
-        // recover the array from within the mixed-content response.
-        let json_fragment = r#"[{"name":"security-engineer","persona":"You are a security engineer who focuses on auth boundaries.","scope":"auth","confidence":0.9,"tau":0.2,"model_tier":"capable","cot_style":"step_by_step"}]"#;
-        let with_preamble = format!("Here are the archetypes I selected:\n\n{json_fragment}");
-        let result = parse_archetypes(&with_preamble);
-        assert!(
-            result.is_some(),
-            "must parse array preceded by preamble text"
-        );
-        assert_eq!(result.unwrap().len(), 1);
-    }
-
-    #[test]
-    fn parse_archetypes_clean_json_still_works() {
-        // Fast path must not regress.
-        let json = r#"[{"name":"x","persona":"You are a p who does q.","scope":"s","confidence":0.8,"tau":0.3,"model_tier":"fast","cot_style":"none"}]"#;
-        let result = parse_archetypes(json);
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn fallback_archetypes_has_three_distinct_items() {
-        let archetypes = fallback_archetypes();
-        assert_eq!(archetypes.len(), 3, "must have exactly three fallback archetypes");
-        let names: Vec<&str> = archetypes.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(
-            names.len(),
-            names.iter().collect::<std::collections::HashSet<_>>().len(),
-            "all archetype names must be distinct"
-        );
-    }
-
-    #[test]
-    fn fallback_archetypes_cover_distinct_cot_styles() {
-        let archetypes = fallback_archetypes();
-        // Count distinct CotStyle values without requiring Hash.
-        let mut distinct_styles: Vec<&CotStyle> = Vec::new();
-        for a in &archetypes {
-            if !distinct_styles.iter().any(|s| **s == a.cot_style) {
-                distinct_styles.push(&a.cot_style);
-            }
-        }
-        assert!(
-            distinct_styles.len() >= 2,
-            "fallback archetypes must use at least two distinct CotStyles"
-        );
-    }
-
-    #[tokio::test]
-    async fn adapter_error_in_select_archetypes_produces_default_report() {
-        // Regression: select_archetypes silently returned vec![] on adapter error,
-        // causing the loop to break at iteration 0 → ThinkingReport::default().
-        // After this fix a tracing::warn! at h2ai.thinking is emitted; observable via RUST_LOG.
-        let adapter = failing_adapter();
-        let cfg = single_iter_cfg();
-        let input = ThinkingLoopInput {
-            task_description: "test task",
-            constraint_ids: &[],
-            constraint_tags: &[],
-            research_context: "stub context",
-            knowledge_provider: None,
-            n_archetypes: 2,
-            cfg: &cfg,
-            adapter: &adapter,
-            embedding_model: None,
-            nats_client: None,
-            task_id: "test-task-id",
-            induction_patterns: &[],
-            constraint_corpus: &[],
-        };
-        let report = run(input).await;
-        assert_eq!(
-            report.shared_understanding, "",
-            "adapter failure must produce empty shared_understanding"
-        );
-        assert_eq!(
-            report.coverage_score, 0.0,
-            "adapter failure must produce zero coverage_score"
-        );
-    }
-
-    #[test]
-    fn format_induction_priors_empty_returns_empty_string() {
-        let result = format_induction_priors(&[]);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn format_induction_priors_formats_top_5() {
-        use h2ai_types::knowledge::KnowledgeNodePattern;
-        use h2ai_types::config::AgentRole;
-        let patterns: Vec<KnowledgeNodePattern> = (0..7)
-            .map(|i| KnowledgeNodePattern {
-                node_id: format!("node-{i}"),
-                role: AgentRole::Executor,
-                domain_tags: vec!["billing".to_string()],
-                hit_rate: i as f32,
-            })
-            .collect();
-        let result = format_induction_priors(&patterns);
-        // Only top 5 shown even though 7 provided
-        assert_eq!(result.matches("node-").count(), 5);
-    }
-}

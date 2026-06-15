@@ -30,6 +30,11 @@ criteria:
     - Is the idempotency check atomic (Lua script or single Redis command — not a read-then-write sequence)?
     - Does the proposal set a TTL (≤30s) on idempotency keys to prevent unbounded Redis growth?
     - Is CockroachDB read absent from the critical request path for budget enforcement?
+  check_repair_hints:
+    - "Pre-allocate the budget counter using Redis SET NX before serving requests, so the key always exists when DECRBY references it. Example: SET budget:{campaign_id} {initial_budget} NX on campaign activation."
+    - "Use a single Lua EVAL that checks the idempotency key AND debits in one script — no two separate commands. Pattern: local cached = redis.call('GET', idem_key); if cached then return {0, cached} end; redis.call('DECRBY', KEYS[1], ARGV[1]); redis.call('SETEX', idem_key, 30, result); return {1, result}."
+    - "Set TTL ≤30s on idempotency keys using SETEX inside the same Lua script as the DECRBY. Never use a bare SET followed by EXPIRE as two separate commands — that creates a race where the key exists without TTL."
+    - "Remove CockroachDB reads from the charge path entirely. Budget balance must be read from Redis only (DECRBY returns the new balance). CockroachDB reconciliation happens asynchronously via a Kafka consumer."
 
 failure_modes:
   - id: FM-004-1

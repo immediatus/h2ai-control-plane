@@ -125,33 +125,3 @@ pub async fn run_post_selection(input: PostSelectionInput<'_>) -> PostSelectionD
 const _: fn() = || {
     let _: Option<EngineError> = None;
 };
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn evict_policy_on_failed_gate() {
-        assert_eq!(apply_on_fail_policy(Some(false), "evict"), PostSelectionDecision::Evict);
-    }
-
-    #[test]
-    fn pass_policy_ignores_failure() {
-        assert_eq!(apply_on_fail_policy(Some(false), "pass"), PostSelectionDecision::Accept);
-    }
-
-    #[test]
-    fn accept_when_gate_passed() {
-        assert_eq!(apply_on_fail_policy(Some(true), "evict"), PostSelectionDecision::Accept);
-    }
-
-    #[test]
-    fn accept_when_gate_not_run() {
-        assert_eq!(apply_on_fail_policy(None, "evict"), PostSelectionDecision::Accept);
-    }
-
-    #[test]
-    fn clarify_policy_on_failure() {
-        assert_eq!(apply_on_fail_policy(Some(false), "clarify"), PostSelectionDecision::Clarify);
-    }
-}

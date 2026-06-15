@@ -1,9 +1,7 @@
 # H2AI Gaps — Research and Engineering Agenda
 
 This document is the actionable companion to [`research-state.md`](research-state.md). Every gap
-is a falsifiable question with a concrete research or engineering path. Where previous editions
-listed status only, this edition adds: literature grounding, innovative solution design,
-mathematical improvement, and simulation protocol for every open gap.
+is a falsifiable question with a concrete research or engineering path.
 
 ---
 
@@ -11,14 +9,18 @@ mathematical improvement, and simulation protocol for every open gap.
 
 | Section | What it covers |
 |---|---|
-| [Problem Space Map](#problem-space-map) | At-a-glance status and severity for all gaps |
+| [Problem Space Map](#problem-space-map) | At-a-glance status and severity for all open/partial gaps |
 | [Innovations Roadmap](#innovations-roadmap) | Cross-cutting solutions that close multiple gaps simultaneously |
 | [Group A — Core Thesis](#brainstorm-group-a--core-thesis-validity) | Does the fundamental approach work and beat its competitors? |
 | [Group B — Math Apparatus](#brainstorm-group-b--mathematical-formula-validity) | Are the formulas principled or arbitrary? |
 | [Group D — Infrastructure](#brainstorm-group-d--infrastructure-and-operational-gaps) | Do the inputs to the math arrive correctly? |
-| [Group E — Quality Measurement](#brainstorm-group-e--quality-measurement-infrastructure) | Can we measure what we claim to optimise? |
-| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | One open production gap: small-N human rating calibration (GAP-H4) |
+| [Group F — Knowledge and Retrieval](#brainstorm-group-f--knowledge-and-retrieval) | Does knowledge injection improve outputs, and do constraint signals reshape routing? |
+| [Group G — Reasoning Memory](#brainstorm-group-g--reasoning-memory) | Does the system learn across tasks? |
+| [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | One open production gap: small-N human rating calibration |
+| [Group S — Signal Fidelity](#brainstorm-group-s--signal-fidelity) | Are internal signals accurate representations of reality? |
+| [Gap Priority Matrix](#gap-priority-matrix) | Suggested implementation order |
 | [Shared Infrastructure](#shared-infrastructure-required-for-group-a) | Pre-work that blocks Group A experiments |
+| [Foundational Framing](#foundational-framing--every-problem-is-a-team-epistemology-problem) | Epistemic framing of the H2AI problem space |
 
 ---
 
@@ -26,153 +28,37 @@ mathematical improvement, and simulation protocol for every open gap.
 
 | Gap | Status | Severity | Innovation opportunity |
 |---|---|---|---|
-| **GAP-A1 Self-MoA vs. multi-family routing** | 🟡 PARTIAL | **Critical** | H2-P vs. B3 experiment runnable today |
-| **GAP-A2 USL N_max vs. quality curve** | 🔴 OPEN | **Critical** | Replace USL with N_IT as primary sizer; USL → cost cap only |
-| **GAP-A6 Self-MoA as direct empirical competitor** | 🟢 CLOSED | **Critical** | Tier 1 ✅ PASS (H2-P=1.0, B3=0.0); Tier 3 null result on pass^k (model ceiling); secondary signal: H2-P 9 proposals avg=0.357 vs B3 3 proposals avg=0.254 (+40%, 3×). Archetype parse failures closed (2026-06-15, two-layer fix): (1) `THINKING_ARCHETYPE_SYSTEM_MD` replaces `THINKING_ARCHETYPE_SYSTEM` — old system prompt said "Output only a valid JSON array" overriding the template's markdown intent; (2) `THINKING_ARCHETYPE_MD_ITER1/N` templates changed from fill-in format (with `## Archetype N:` embedded as USER message markers) to instruction-based format ("begin each section with '## Archetype N: kebab-name'") — old fill-in format caused the 122B model to treat provided headers as given context and output only field values without reproducing `## Archetype` section headers, resulting in `parse_archetypes_from_markdown` returning empty (split on `"## Archetype"` found zero chunks). E2E Tier 1 re-run (2026-06-15): zero `select_archetypes` WARNs confirmed across 3 ThinkingLoop iterations — parse fix verified. Observation: coverage=0.5 (3 iterations to max_iterations) vs 0.92 with fallback archetypes (1 iteration) — LLM-generated archetypes less constraint-focused than hardcoded `Constraint Satisfier`/`Failure Mode Analyst`/`Migration Safety Specialist` fallbacks; parse correctness separate from archetype quality. Test timed out at 60m (MAPE-K wave 3 starting). Third Tier 1 run (2026-06-15, post-kafka-audit.yaml wiki expansion, commit `a3798b7`+): MergeResolved `pass=true` in 47 min; CONSTRAINT-005 dual-ledger wiki fix validated — 1 of 3 proposals scored 1.0 on both CONSTRAINT-004 and CONSTRAINT-005 (LlmJudge confirmed "synchronous Kafka publish order, append-only ClickHouse schema, 7-year TTL, distinct separation of operational vs. audit ledgers"); `thinking_loop_coverage=0.5` and 3 iterations persisted due to synthesis system prompt regression (GAP-D5, pre-`ab644a2` binary); zero `select_archetypes` WARNs across all iterations (two-layer archetype fix confirmed); GAP-I1 first live data — 3 cold check gaps synthesized from 3 binary check failures; oracle `CalibrationDrift` WARNs from prior NATS KV state (unit-test runs) — not blocking. |
-| **GAP-B1 β_eff functional form** | 🟡 PARTIAL | Medium | Epistemic β₀ wired 2026-05-20 — empirical validation of linear β_eff still open |
+| **GAP-A1 Self-MoA vs. multi-family routing** | 🟡 PARTIAL | **Critical** | H2-P vs. B3 experiment runnable; TCC parameters unfit |
+| **GAP-A2 USL N_max vs. quality curve** | 🟡 PARTIAL | **Critical** | N_IT primary sizer implemented; empirical validation open |
+| **GAP-B1 β_eff functional form** | 🟡 PARTIAL | Medium | Epistemic β₀ wired; empirical validation open |
 | GAP-B3 Attribution self-referential | 🟡 PARTIAL | Medium | Conformal prediction once oracle data exists |
-| **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🔴 OPEN | **High** | Three interconnected heuristic proxies; online ρ_EMA mitigates rho after 30 obs |
-| **GAP-B6 LLM-as-Judge validity — Krum on biased scores** | 🟢 CLOSED | **High** | Binary-verdict scoring implemented (Issue 1 / Lever 3): `score_from_verdicts` in `verification.rs` derives deterministic score from check verdicts; `tau` overridden to 0.0 for binary-check constraints. Talagrand τ-spread rule tracked separately under GAP-E2. |
-| **GAP-C5 Krum breakdown under majority correlated hallucination** *(new)* | 🟢 CLOSED | **High** | BFT Levers 1–2 both implemented: Lever 1 — family diversity gate (`model_lineage_key()` on `AdapterKind`, `min_explorer_families` in `SafetyConfig`, warning in `calibrate.rs`); Lever 2 — oracle post-selection hard-gate (`on_fail` in `OracleGateConfig`, `run_post_selection` in `oracle.rs`, `OraclePostSelectionBlocked` ExitReason → adapter rotation + `CorrelatedEnsembleWarning` in `mape_k.rs`). Enforcement auto-activates on second adapter family. |
-| **GAP-D5 Synthesis merge bottleneck — single sequential merge** | 🟢 CLOSED | Medium | Closed (2026-06-15): `tournament_merge` in `h2ai-adapters/src/chain.rs` runs pairwise synthesis rounds in parallel via `futures::future::join_all`; Krum leader placed in `proposals[0]` for attention primacy; synthesis migrated to `THINKING_SYNTHESIS_MD_PAIRWISE` + `parse_synthesis_from_markdown`. Regression fixed (2026-06-15, commit `ab644a2`): initial close wired `THINKING_SYNTHESIS_SYSTEM` ("Output a single JSON object — no markdown") as the `tournament_merge` system prompt while the USER message uses the markdown pairwise template — model obeyed JSON instruction, causing `parse_synthesis_from_markdown` to always fall back to `coverage_score=0.5` and forcing `max_iterations=3` every run; fix: new `THINKING_SYNTHESIS_MD_SYSTEM` ("Respond using exactly the markdown section format shown — no extra preamble") wired in `thinking_loop.rs:569–573`; regression test `synthesis_md_system_does_not_instruct_json_output` in `h2ai-config/tests/prompts_test.rs`. |
-| GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit probe |
-| **GAP-E2 Talagrand feedback loop** | 🔴 OPEN | Medium | τ-spread KL update rule |
-| **GAP-F3 Wiki YAML generation tooling absent** | 🟢 CLOSED | Low | Interim fix closed: `artifact_scaffold()` in `compiler.rs` injects `REQUIRED OUTPUT ARTIFACT` block for constraints with DDL/migration/Lua keywords in `binary_checks`; 4 unit tests. Structured `diagnostic_codes:` YAML schema deferred as follow-on. |
-| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1 logging partial: `skill_nodes_injected` in `TaskAttributionEvent` counts skill nodes that reached the LLM prompt, enabling offline delta analysis; Phase 1b (task-matched corpus scoping) ✅ shipped (`scope_by_domains` in `skill_provider.rs`, `CompositeProvider.domain_scoping`, `knowledge_domain_scoping: bool` in `H2AIConfig`); Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open. Phase 1 contrastive logging ✅ CLOSED (2026-06-15): `GenerationKnowledgeEvent` emitted per task with `knowledge_injected: bool` and `q_confidence`; published to NATS alongside `TaskAttributionEvent`. Offline query: `mean(q_confidence | knowledge_injected=true) - mean(... | false)`. |
-| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🟡 PARTIAL | Medium | Steps 1–2 implemented in-memory: `CompositeProvider.violation_map` down-weights non-Synthetic nodes co-occurring with topology retries (delta=0.1, cap=0.9, applied before dedup/top_k); NATS persistence and Step 3 (retroactive induction trigger) remain open; Step 4 (constraint difficulty map, NATS-persisted) proposed |
-| **GAP-F6 Thinking loop shared understanding not validated against constraints** | 🟢 CLOSED | Medium | Plan-Awareness Probe closed (2026-06-14): `run_awareness_probe` (`h2ai-orchestrator/src/awareness_probe.rs`) batches all corpus constraints into one LLM judge call against `thinking_report.shared_understanding`; verdicts `Acknowledged` / `NotAddressed` / `Contradicted`; Active mode re-iterates the thinking loop on Hard non-gated `Contradicted` outcomes via `awareness_hints: Option<String>` on `ThinkingLoopArgs`; Shadow mode emits `AwarenessProbeCompletedEvent` only. `AmbiguityDetectionConfig` gates ambiguous constraints from blocking. `LlmAwarenessJudge` uses auditor adapter at `judge_max_tokens = 1024`. Config: `[awareness_probe]` section, `enabled = false` (opt-in). |
-| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live (checkpoint + TaskMetaState); skill extraction (2026-06-08) provides a depth-stratified Phase 3 analogue — Topic nodes carry Socratic diagnostic questions + resolution excerpts; Constraint-keyed and Reason-keyed Leaf nodes carry per-constraint domain signals; full Induction (Phase 2), archetype priors (Phase 3), hybrid retrieval (Phase 4) not yet implemented. Layer 3 partial path live (2026-06-15): `format_induction_priors` formats top-5 `KnowledgeNodePattern` entries by `hit_rate` as prior context prepended to archetype selection `system_context`. Full Layer 3 (TenantMemoryStore archetype confidence boosts) remains blocked on Layer 2 (AlgorithmicInductionWorker). |
-| **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | N<10 ratings give noisy calibration; Dirichlet-Categorical posterior + credible-interval circuit breaker |
+| **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🟡 PARTIAL | **High** | Online ρ_EMA live after 30 obs; cold-start prior 0.45 unvalidated |
+| GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit; HITL escalation on graft_first=false path open |
+| **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1b closed; Phases 2–3 open |
+| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🟡 PARTIAL | Medium | Steps 1–2 live; Step 3 unblocked; Step 4 deferred |
+| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Layer 3 partial; Phases 2–4 designed, pending |
+| **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | Dirichlet-Categorical posterior + credible-interval circuit breaker |
+| **GAP-S1 SRANI fires for technology-specific impl details** | 🟡 PARTIAL | Low | Implied-by suppression table or CFI-gated hint emission |
+
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
-
-**Infrastructure note (2026-06-08, updated):** Cross-task skill extraction is live with depth-stratified nodes on both success and failure paths. Core logic lives in `extract_skill_nodes` (private, `h2ai-orchestrator/src/skill_extractor.rs`); two public entry points delegate to it: `skill_from_output` (success path, takes `&EngineOutput`) and `skill_from_retry_events` (failure path, takes `Vec<TopologyProvisionedEvent>`, `&[VerificationScoredEvent]`, `&[ConstraintDoc]`, and `&TaskId` — called when `MaxRetriesExhausted` fires in `task_pipeline.rs`). Three node types: (1) **Topic node** (`skill:{task_id}:{domain}:topic`, `NodeDepth::Topic`) — `tensions` = exact-deduped Socratic diagnostic questions, `entry_points` = resolution excerpt (≤300 chars), `failure_modes` = tombstones + SRANI + uncovered domains, `importance` scales with retry count; (2) **Constraint-keyed Leaf** (`skill:{task_id}:{constraint_id}`, `NodeDepth::Leaf`) — one per tombstone with parseable `[A-Z]+-\d+` constraint ID, `importance=1.0` if tombstone appeared in ≥2 retries else `0.6`; (3) **Reason-keyed Leaf** (`skill:{task_id}:reason:{fnv32a(reason)}`, `NodeDepth::Leaf`) — fallback for verifier rejections not covered by a constraint-keyed leaf. `MaxRetriesExhausted` carries `topology_retry_events: Vec<TopologyProvisionedEvent>` so the failure path has retry signal. `SkillProvider.query()` filters by `query.depths` so Topic nodes are visible to thinking-loop queries. `ThinkingReport` gains `retrieved_node_ids: Vec<String>` + `skill_nodes_used: u32`; `TaskAttributionEvent` gains `skill_nodes_injected: u32` (GAP-F4 partial). `CompositeProvider` gains `violation_map` + `source_cache` + `record_violations(delta=0.1, cap=0.9)`; `post_run` calls `record_violations` when `topology_retry_events` is non-empty (GAP-F5 Steps 1–2). Tests: `skill_injection_scenario_cross_task_learning`, `attribution_event_carries_skill_nodes_injected`, `post_run_records_violations_when_retries_occurred` in `crates/h2ai-api`; `zero_valid_proposals_with_retries_produces_skills` + `zero_valid_proposals_and_zero_retries_returns_empty` in `h2ai-orchestrator`.
-
-**Infrastructure note (2026-06-07):** NATS backend abstraction is now mockable. `NatsBackend` supertrait (`h2ai-state/src/backend.rs`) unifies all KV/stream operations behind a trait object. `TaskDispatchBackend` provides a narrow dispatch-only view. `MockNatsBackend` + `MockTaskDispatchBackend` in `h2ai-test-utils` enable all NATS-dependent unit tests without a live NATS server. All three production fields (`AppState.nats`, `EngineInput.nats`, `NatsDispatchConfig.nats`) are now trait objects.
-
-**Infrastructure note (2026-05-14):** Delta checkpoint encoding (JSON Patch RFC 6902, `CheckpointKind::Base/Delta`, O(N) NATS KV storage) is now live in `h2ai-state`. Previously O(N²) checkpoint growth would have exhausted NATS KV space during the long multi-task experiment runs required by GAP-A6 and GAP-A1. This blocker is resolved; experiment runs are no longer storage-constrained.
-
-**Infrastructure note (2026-05-15):** Persistent Reasoning Memory Phase 1 is live: `TaskReasoningCheckpoint` written at each engine phase gate, `TaskMetaState` projected at resolution, per-tenant NATS KV buckets (`H2AI_CHECKPOINT_{tenant}` 7d TTL, `H2AI_META_{tenant}` 90d TTL). Crash recovery: `run_from_checkpoint` reads `CheckpointPhase` to skip completed phases. Phases 2–4 are designed and pending implementation.
-
-**Reasoning Memory — Pending Phases 2–4 Design**
-
-| Phase | Layers | Value |
-|-------|--------|-------|
-| Phase 2 | Induction | First induction cycle; `TenantMemoryStore` populated from `TaskMetaState` history |
-| Phase 3 | Thinking loop integration | Archetype priors + tension seeding; fewer iterations needed |
-| Phase 4 | Hybrid retrieval | Embedding rerank on top of tag-gate; precision at scale |
-
-**Layer 2 — Induction**
-
-Two components with strict separation: `InductionWorker` trait (pure computation — no I/O, testable with `MockInductionWorker`) and `InductionScheduler` (owns JetStream subscription, NATS KV reads/writes, CAS swap).
-
-`InductionScheduler` triggers a distillation cycle when ≥ `induction_batch_size` (10) resolved tasks accumulate, or `induction_max_interval_secs` (86400s) have elapsed. It loads up to `induction_max_tasks_per_run` (50) `TaskMetaState` records, calls `worker.distill()`, writes result to a staging key, then CAS-swaps `latest` only on full success — the previous snapshot is never touched on failure.
-
-`AlgorithmicInductionWorker` — pure Rust, no LLM calls. Distillation steps:
-1. **ArchetypePrior** — group `ArchetypeResult` entries by `archetype_name + domain_tags`; `net_confidence = weighted_mean(confidence, weight=2.0 if dominated_synthesis else 1.0)`; `avoid_for_tags` = tags where `net_confidence < 0.4` across ≥ 3 tasks.
-2. **TensionPattern** — collect all tension strings; cluster by cosine similarity (threshold 0.85) if `EmbeddingModel` is available, exact dedup otherwise; store `frequency` + `resolution_hint` from tasks that resolved the tension.
-3. **RetryHintPattern** — group `(trigger_tags, exit_reason_kind, retry_context_that_resolved)` tuples; keep top hint per pair by `success_rate`.
-4. **DecompositionTemplate** — group `shared_understanding` strings by `(quadrant, constraint_tags)`; select embedding centroid if model available, most recent otherwise.
-
-`TenantMemoryStore` lives in `H2AI_MEMORY_{tenant_id}` KV bucket. Schema: `{tenant_id, generated_at, task_count_seen, archetype_priors[], tension_patterns[], retry_hint_patterns[], decomposition_templates[]}`. Published event: `InductionCycleCompletedEvent` to `h2ai.telemetry.induction`.
-
-New files: `crates/h2ai-orchestrator/src/induction/mod.rs` (trait + mock), `induction/algorithmic.rs` (distillation), `induction/scheduler.rs` (I/O). New types: `crates/h2ai-types/src/memory.rs`.
-
-**Layer 3 — Thinking Loop Integration**
-
-Before the thinking loop runs, load `TenantMemoryStore` from `NatsClient::get_tenant_memory(&tenant_id)`. Thread as `Option<TenantMemoryStore>` into `ThinkingLoopInput`.
-
-- **Archetype priors** — `select_archetypes()` gives +0.15 weight boost to archetypes with `net_confidence > 0.6` + matching domain tags; -0.20 penalty to archetypes in `avoid_for_tags` matching current task.
-- **Tension seeding** — Iteration 0 is pre-loaded with top 3 `TensionPattern` entries matching constraint tags (Jaccard tag intersection). Injected as hypotheses: "previously observed tensions — validate, refute, or refine."
-- **Retry hint priming** — `MapeKController::new()` receives `Vec<RetryHintPattern>` matching task tags stored as `primed_retry_hints`. When `ZeroSurvival` or `HallucinationDetected` fires, checks `primed_retry_hints` before computing retry context from scratch.
-
-**Layer 4 — Hybrid Retrieval**
-
-Tag-gate (Layer 3 baseline): Jaccard `|tags_task ∩ tags_pattern| / |tags_task ∪ tags_pattern| ≥ 0.2`. O(1) per candidate — eliminates irrelevant patterns before any embedding work.
-
-Embedding rerank (Layer 4 addition, only when tag-gate returns > 5 candidates): embed current task description; compute cosine similarity against stored `TensionPattern.embedding`; final score = `0.6 × jaccard + 0.4 × cosine`. Return top 3. Pattern embeddings are precomputed during induction — no embedding call at query time for stored patterns.
-
-Config additions to `reference.toml`: `reasoning_memory_tag_gate_threshold = 0.2`, `reasoning_memory_max_tension_candidates = 3`, `reasoning_memory_max_archetype_boost = 0.15`, `reasoning_memory_max_archetype_penalty = 0.20`.
 
 ---
 
 ## Innovations Roadmap
 
-One cross-cutting innovation that requires implementation before running Group A experiments — the experiments will produce better-grounded data if the math inputs are correct.
-
 ### INNOVATION-5 — Structured Self-MoA Experiment Protocol
 
-**Closes:** GAP-A6.  
-**Status: EXPERIMENT COMPLETE (2026-06-13) — Tier 1 PASS; Tier 2 invalid (LLM 503 in H2-P arm); Tier 3 null result on pass^k, positive secondary signal (+40% avg_score, 3× proposals).**  
+**Closes:** GAP-A1 (comparative signal).
+**Status: COMPLETE (2026-06-18)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, avg=0.833), Tier 2 (4 constraints, avg=0.667), and Tier 3 (6 constraints, avg=0.667; 1/3 proposals 1.0 on all 6 constraints) with the full DPPM+SRANI+manifest.context stack.
 **Implementation:** `tests/e2e/scenarios/innovation-5/` — three e2e scenarios (Tier 1/2/3).
 
 **Experiment arms:**
+- **B3 — Self-MoA baseline:** `baseline.toml`, `max_autonomic_retries = 0`. Three explorers with τ-spread; verifier scores; synthesis selects winner. No MAPE-K enforcement loop.
+- **H2-P — Full H2AI pipeline:** `h2ai.toml`, `max_autonomic_retries = 4`. Same three explorers plus MAPE-K retry waves pruning non-compliant proposals and regenerating with repair context.
 
-**B3 — Self-MoA baseline:** `baseline.toml` with `max_autonomic_retries = 0`. Three explorers with τ-spread generate proposals; verifier scores them; synthesis selects winner. No MAPE-K retry enforcement loop.
+**Primary metric:** Constraint compliance rate — fraction of `_expected.should_prune` patterns that H2-P rejects and B3 passes through. Secondary: j_eff, verification scores, token cost.
 
-**H2-P — Full H2AI pipeline:** `h2ai.toml` with `max_autonomic_retries = 4`. Same three explorers, plus MAPE-K retry waves that prune non-compliant proposals and regenerate with repair context.
-
-**How B3 is implemented:** Setting `max_autonomic_retries = 0` disables the MAPE-K retry loop while keeping all other pipeline components identical (thinking loop, gap researcher, decomposition, verifier). This makes B3 a clean ablation — the only variable is whether the enforcement loop fires.
-
-Primary metric: **constraint compliance rate** (fraction of `_expected.should_prune` patterns that H2-P rejects and B3 passes through). Secondary: j_eff, verification scores, token cost.
-
-Key prediction: H2-P > B3 on Tier 3 (6+ constraints) because:
-1. Phase 0 decomposition focuses each slot on a distinct constraint domain (same in both arms)
-2. MAPE-K enforcement iteratively prunes and regenerates non-compliant proposals (H2-P only)
-3. B3 has no enforcement loop — temperature diversity alone cannot guarantee constraint compliance
-
-If H2-P ≤ B3 on Tier 3 tasks, the MAPE-K loop adds latency and cost without quality benefit. Document that outcome and pivot to positioning H2AI as "structured Self-MoA with better observability."
-
-**Scenario tiers:**
-- Tier 1 (`i5-tier1-idempotent-quota`): 2 constraints, `_compare_semantics: "no_regression"` — internal validity anchor
-- Tier 2 (`i5-tier2-multi-constraint-billing`): 4 constraints, `_compare_semantics: "strict"` — intermediate enforcement
-- Tier 3 (`i5-tier3-enterprise-enforcement`): 6 constraints, `_compare_semantics: "strict"` — primary hypothesis test
-
-**Run:**
-```bash
-python3 tests/e2e/replay.py --compare innovation-5/i5-tier1-idempotent-quota
-python3 tests/e2e/replay.py --compare innovation-5/i5-tier2-multi-constraint-billing
-python3 tests/e2e/replay.py --compare innovation-5/i5-tier3-enterprise-enforcement
-```
-
-**Experiment results (single-trial, local Qwen3 122B model, 2026-06-13):**
-
-| Tier | Constraints | H2-P terminal | B3 terminal | pass^k H2-P | pass^k B3 | valid_proposals H2-P | valid_proposals B3 | avg_score H2-P | avg_score B3 | Verdict |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Tier 1 | 2 | MergeResolved | TaskFailed | **1.000** | 0.000 | 3 | 3 | 0.375 | — | ✅ PASS (H2-P wins) |
-| Tier 2 | 4 | TaskFailed | TaskFailed | 0.000 | 0.000 | 0* | 3 | — | 0.181 | ❌ invalid (H2-P arm hit LLM 503) |
-| Tier 3 | 6 | TaskFailed | TaskFailed | 0.000 | 0.000 | **9** | 3 | **0.357** | 0.254 | ❌ SAME/WORSE on pass^k; H2-P secondary signal positive |
-
-*Tier 2 H2-P arm invalid — LLM returned 503 immediately after the Tier 1 run exhausted the model. A prior run (before harness fix) showed H2-P generating 10 proposals at avg_score=0.409 vs B3's 0.181; consistent with Tier 3 pattern.
-
-**Tier 1 re-run history (2026-06-15):** Three re-runs executed to validate successive fixes. Run 2 (post-archetype two-layer fix): timed out at 60 min (MAPE-K wave 3 starting) — CONSTRAINT-005 still failing due to missing dual-ledger wiki context. Run 3 (post-kafka-audit.yaml wiki expansion, commit `a3798b7`+): MergeResolved `pass=true` in 47 min; CONSTRAINT-005 dual-ledger check passed for the first time; `thinking_loop_coverage=0.5` constant across all 3 iterations — synthesis prompt regression (pre-`ab644a2` binary) masked real coverage; zero `select_archetypes` WARNs across 3 iterations (two-layer fix confirmed stable); GAP-I1 synthesized 3 cold check gaps (first live production data from gap researcher). Full coverage scores (>0.5) will appear only in runs using commit `ab644a2` (`THINKING_SYNTHESIS_MD_SYSTEM` fix).
-
-**Tier 2 re-run (2026-06-15, single H2-P arm, commit `ab644a2`+):** Ran `python3 tests/e2e/replay.py innovation-5/i5-tier2-multi-constraint-billing` to validate synthesis fix and MAPE-K enforcement on 4-constraint billing task. Result: harness timeout (2h window; `terminal_kind=""`, `thinking_loop_iterations=3`). Key observations: (1) `thinking_loop_coverage=0.95` — confirms `THINKING_SYNTHESIS_MD_SYSTEM` fix (commit `ab644a2`) working; was 0.5 (fallback) in all pre-`ab644a2` runs. (2) 4 MAPE-K waves ran; all 12 proposals pruned across all waves — enforcement loop is active and aggressive. (3) Compliance trajectory: 0.25 (wave 1) → 0.0 (wave 2, 4 LlmJudge timeouts defaulting to 0.5) → 0.5425 (wave 3) → 0.5425 (wave 4). CONSTRAINT-TAU-1 scored 1.0 in wave 3 (proposal: JWT-derived tenant_id namespaces all Redis keys and rate limit counters, structurally impossible cross-tenant exhaustion). CONSTRAINT-004 scored 1.0 in wave 4. (4) Two root-cause binary check defects identified and fixed (2026-06-15): CONSTRAINT-005 check[0] said "published to Kafka before acknowledging" — LlmJudge interpreted as strict Kafka-before-ACK, failing all proposals that correctly use the local WAL-backed retry queue (`positive_examples`); rewrote to "Is every billing event written to a durable store (Kafka directly, or a local WAL-backed retry queue when Kafka is unavailable) before the service acknowledges the spend?" CONSTRAINT-TAU-1 check[2] said "rate limit budget" without specifying scope — proposals namespace quota/balance keys but not a separate rate-limiter; rewrote to explicitly include "balance keys, idempotency keys, and rate limit counters" all namespaced with JWT tenant_id. Re-run pending with corrected binary checks.
-
-**Tier 2 re-run #2 (2026-06-15, commit `c905f65`+, corrected binary checks):** Both CONSTRAINT-005 check[0] and CONSTRAINT-TAU-1 check[2] rewritten (commit `c905f65`) to remove the ambiguity identified in re-run #1. Simultaneously: `PositiveExampleConflict` 5th evidence type added to `scan_constraint` to catch "check demands strict keyword but positive_examples show try/except fallback" patterns; startup corpus pre-validation added to `AppState::new()` — `seed_scorecards` runs at corpus load time and logs `ERROR`/`WARN` per check before the first task (commit `49b2771`). **Final result: `MaxRetriesExhausted` (4 waves, 12 proposals, best compliance=0.75).** Wave-by-wave: (1) Wave 1 — best=0.75 (e190a882: violated only CONSTRAINT-008); CONSTRAINT-005 check[0] fix confirmed — LlmJudge scored 1.0 "including the critical local WAL fallback for Kafka outages" for the first time; CONSTRAINT-TAU-1 also 1.0 (JWT-derived key namespacing). (2) Wave 2 — regression, all 3 at 0.0 (truncated proposals + Lua atomicity failures); structural divergence fired (CONSTRAINT-004 Jaccard=0.04, CONSTRAINT-005 Jaccard=0.0); gap researcher injected CONSTRAINT-TAU-1 check[2] / CONSTRAINT-004 check[3] / CONSTRAINT-008 check[1] synthesis. (3) Wave 3 — best=0.5 (3807938d: violated only CONSTRAINT-004 and CONSTRAINT-008); CONSTRAINT-TAU-1 still 0.67 (proposals namespace balance+idempotency keys but not rate limit counters). (4) Wave 4 — best=0.25; one proposal achieved 1.0 on CONSTRAINT-004 alone but failed CONSTRAINT-005 and CONSTRAINT-TAU-1. **Improvements vs. re-run #1:** Best compliance improved 0.5425 → 0.75 — the two check-wording defects were the primary cause of prior underperformance. **Persistent blockers:** (a) CONSTRAINT-TAU-1 check[2] — local LLM generates proposals that mention balance/idempotency key namespacing but omit rate-limit counter namespacing despite gap researcher injection; model capability ceiling. (b) CONSTRAINT-004 — four sub-checks require simultaneous atomic Lua EVAL, pre-allocation with TTL, CockroachDB off hot-path, and no external lock; no single proposal satisfied all four. (c) CONSTRAINT-005 check[3] — 7-year retention TTL omitted in waves 3–4. Structural divergence (mean Jaccard CONSTRAINT-004=0.13, CONSTRAINT-TAU-1=0.22) consistent across all waves — local 122B model is unable to reliably produce coherent constraint-aligned reasoning, not a binary check wording issue.
-
-**Tier 2 re-run #3 (2026-06-15, archetype corpus injection):** Full constraint corpus (IDs + binary check texts) injected into `THINKING_ARCHETYPE_MD_ITER1` via `format_constraint_context()` so the archetype-selection LLM receives each constraint's rubric alongside its ID. Startup `seed_scorecards` logs correctly: CONSTRAINT-005 check[0] and check[3] marked `ERROR` (non-trustable); CONSTRAINT-004, CONSTRAINT-TAU-2, CONSTRAINT-TAU-1, CONSTRAINT-008 sub-checks marked `WARN` (sub-threshold evidence). **Archetype domain-scoping confirmed:** Iteration 0 produced `atomic-redis-engineer` ("designing the hot-path quota deduction logic using Redis Lua EVAL..."), `immutable-audit-architect` ("defining the dual-ledger architecture flow (Redis → Kafka → CockroachDB → ClickHouse)..."), `zero-trust-security-specialist` ("enforcing strict tenant scope enforcement by deriving all keys exclusively from the authenticated JWT..."), `event-sourcing-system-designer` — all four directly name the specific technologies and constraints they must address, vs. generic "distributed-systems-engineer" type personas in earlier runs. Iterations 1–2 also domain-scoped: `temporal-consistency-architect`, `immutable-state-reconciler` (resolving idempotency window tension), `distributed-state-recovery-specialist`, `idempotency-engineering-architect`. Coverage=0.98 (3 iterations). **Final result: `MaxRetriesExhausted` (4 waves, 12 proposals, best compliance=0.75), same ceiling as re-run #2.** Best proposals (0.75) violated only CONSTRAINT-008 in two different waves; both failures attributed to Lua implementation mistakes: (a) Wave 1 — `WATCH/MULTI/EXEC` cited as fallback mechanism; (b) Wave 4 — synchronous `fsync` on critical path (violates ≤0.5ms P99 check). CONSTRAINT-TAU-1 reappeared as a secondary blocker in waves 2–4: proposals namespace budget/quota keys but the Lua idempotency key is constructed as `idem:{request_id}` without `{tenant_id}` prefix — gap researcher injection of this pattern has not been retained across the wave boundary by the 122B local model. **Conclusion:** Archetype corpus injection is confirmed working — scopes are richer, more specific, and domain-aligned. The execution ceiling remains at 0.75; CONSTRAINT-008 (Lua atomicity checks) is the primary barrier. The model capability limitation (122B local) is the binding constraint; archetype quality is no longer the bottleneck.
-
-**Tier 1 detail (MergeResolved):** H2-P: j_eff=0.667, avg_score=0.375, verified=3, srani_events=1. B3: TaskFailed at avg_score=0.833 — B3's proposals clustered at 0.75 (below merge threshold); MAPE-K found the 1.00-scoring proposal and merged it. Internal validity anchor confirms MAPE-K enforcement provides measurable benefit at 2 constraints.
-
-**Tier 3 detail (both TaskFailed):** H2-P: 9 proposals (3 MAPE-K retry waves × 3 explorers), avg_score=0.357, ComplexityCeilingDetected. B3: 3 proposals (1 wave), avg_score=0.254. H2-P explored **3× more candidate space** with **+40% higher average verifier scores**. Neither arm produced a fully compliant design — the 6-constraint task exceeds the local 122B model's simultaneous-constraint capability. The null result on pass^k is a model ceiling issue, not an architectural failure.
-
-**Tier 3 latency / harness-timeout note (2026-06-14, source-verified).** A subsequent single-arm Tier 3 run reported `terminal=` (empty), `verified=0`, `avg_score=0.000` in the replay summary. **This is a harness timeout, not an engine result.** `task.json` sets `_timeout_s = 7200` (2 h); the captured `events.jsonl` contained only `ThinkingLoopCompleted` and `ComplexityProbe` (`complexity=4`), while the server log for the same `task_id` shows the engine ran the full thinking loop (~16 min, 5 iterations) plus **4 MAPE-K waves generating 12 proposals (all pruned)** and was still executing past the 2-hour window. Implications: (a) Tier 3 wall-clock (~16 min thinking + ~15–25 min/wave) exceeds the replay window, so empty-terminal summaries must not be read as engine `TaskFailed`; (b) `avg_score=0.000` is the empty-list default — the log is full of real 0.0–1.0 scores; (c) BFT-1 fails *every* wave because no additive migration DDL is generated (a generation-alignment gap, see GAP-F3), and when DDL was produced it used `DROP COLUMN` (destructive). Measurement of any Tier 3 intervention requires first reducing per-run latency (fewer thinking iterations / retries) so a terminal event lands inside the window.
-
-**Harness fix (2026-06-13):** Added `_wait_for_llm_ready()` gate before each arm in `--compare` mode. The 122B model reloads after eviction between long runs; without the gate, the second arm sees 503s on every call. Fix is live in `tests/e2e/replay.py`.
-
-**Primary hypothesis (H₁):** On Tier 3 tasks (6 constraints), H2-P achieves oracle-verified constraint compliance ≥ 10pp higher than B3.
-
-**Internal validity check:** `mean(H2P − B3)` at Tier 1 ≤ `mean(H2P − B3)` at Tier 3. If this fails, the comparison is confounded — do not interpret the primary hypothesis.
-
-**Pre-registered decision table (Tier 3):**
-
-| H2P − B3 delta | Cohen's d | Interpretation | Next step |
-|---|---|---|---|
-| ≥ 20pp | ≥ 0.5 | Strong validation | Full 200-task study |
-| 10–20pp | ≥ 0.25 | Moderate validation | Efficiency arm analysis |
-| 5–10pp | any | Weak signal | Extend to Tier B tasks |
-| < 5pp or CI ∋ 0 | any | Null result | Reposition H2AI |
-| H2-P < B3 | any | Regression | Debug MAPE-K path immediately |
+**Open:** A matched B3 run at current code level (post-DPPM+SRANI+manifest.context) has not been completed. The +41pp H₁ delta is against the original pre-stack B3 baseline.
 
 ---
 
@@ -218,10 +104,8 @@ Loops  :
 
 | Gap | Epistemic violation |
 |---|---|
-| GAP-A6: Self-MoA as competitor | Core diversity premise is empirically untested |
 | GAP-B3: attribution without oracle | Cannot distinguish confident-and-correct from confident-and-wrong |
 | GAP-B5: proxy chain | Three proxies (rho_mean, p_mean, β_eff) all use CG_mean as input with no empirical validation; cold-start prior 0.45 unvalidated |
-| GAP-B6: judge validity | Krum and verifier consensus depend on LLM judge scores; judge bias (verbosity, self-preference) corrupts outlier rejection |
 
 ### Stopping criteria
 
@@ -230,7 +114,7 @@ Loops  :
 | TAO inner | `agent_max_tool_iterations` (budget) | No productive hypothesis extensions remain | Budget is proxy for epistemic exhaustion |
 | MAPE-K retry | Proposals satisfy threshold OR retries exhausted; ZeroSurvival + is_closed() gate | Coherent closure: no active constraint violated, no domain uncovered | Quality threshold is rubric-coherent, not oracle-grounded |
 | Calibration | Startup-automatic + POST /calibrate | Confidence intervals narrow enough for decision quality required | — |
-| Oracle grounding | Phase 4.5 gate wired (NATS request/reply, `OracleGateConfig`); thinking loop Stage 2 inline oracle; `PendingClarificationEvent` suspension via `clarification_waiters`; control plane is oracle-agnostic — `OracleClient` POSTs winning output to external `runner_uri` and receives `{ passed, score, details }`; `OracleSpec` has 3 fields (`runner_uri`, `timeout_ms`, `domain`); in-process oracle type implementations removed (oracle refactor, 2026-05-23); `OracleAccumulator` calibration loop unchanged | All load-bearing beliefs grounded in at least one oracle test | — |
+| Oracle grounding | Phase 4.5 gate wired (NATS request/reply, `OracleGateConfig`); thinking loop Stage 2 inline oracle; `PendingClarificationEvent` suspension via `clarification_waiters`; `OracleClient` POSTs winning output to external `runner_uri`, receives `{ passed, score, details }` | All load-bearing beliefs grounded in at least one oracle test | — |
 
 ---
 
@@ -261,12 +145,6 @@ TCC parameters are unfit priors. The smoke test measured latency, not quality. `
 false` means unfitted priors are live in production. The 2×2 cross-family experiment requires a
 second model family not currently available.
 
-**Innovative solution (available today).**
-Run INNOVATION-5 (H2-P vs. B3 experiment protocol). H2-P is the minimum viable falsification:
-same model, τ-spread, Phase 0 decomposition, full constraint enforcement loop. This can run on
-the devcontainer today. The result either validates H2AI's Phase 0 + MAPE-K claim or reveals that
-constraint enforcement adds nothing above temperature diversity.
-
 **Falsification condition.**
 If H2-P ≤ B3 on Tier 3 tasks (6+ constraints) with oracle pass rate as the signal (not internal
 verifier score), the Coverage routing adds cost without benefit and should be replaced by Precision
@@ -274,38 +152,16 @@ routing universally.
 
 ---
 
-### GAP-A2: USL N_max vs. Actual Quality Curve 🔴 OPEN — **Critical**
+### GAP-A2: USL N_max vs. Actual Quality Curve 🟡 PARTIAL — **Critical**
 
-**Gap statement.**
-`N_max = round(√((1−α)/β_eff))` is derived from USL's throughput model by setting `dX/dN = 0`.
-USL models CPU/network throughput under parallelism — not output quality. No published arXiv paper
-applies USL to LLM multi-agent quality ceiling. This is confirmed by our search: zero results for
-`abs:"universal scalability law" AND abs:agent`. The domain transfer assumption is unvalidated.
+**Status: PARTIAL** — N_IT promoted to primary sizer; empirical validation of the N_IT vs. quality curve still open.
 
-Additionally, USL's ceiling and the Condorcet n_optimal serve different purposes: USL caps cost;
-Condorcet maximises quality-per-agent. Using a cost model as a quality predictor can cause
-over-sizing (high ρ → USL gives high N_max because β is suppressed, but Condorcet gives low N
-because diversity is poor) or under-sizing (low ρ → large N_IT but USL may cap lower than optimal).
+`N_max = round(√((1−α)/β_eff))` is derived from USL's throughput model — not output quality. No
+published paper applies USL to LLM multi-agent quality ceiling. The USL ceiling and Condorcet
+n_optimal serve different purposes: USL caps cost; Condorcet maximises quality-per-agent. Using a
+cost model as a quality predictor can cause over-sizing or under-sizing depending on ρ regime.
 
-**Literature grounding.**
-arXiv 0808.1431 (Gunther, 2008) — foundational USL derivation. β is defined as the "coherency
-cost" — serialisation overhead per N(N-1) pairwise checks. Applicable to compute platforms;
-domain transfer to quality requires explicit argument.
-
-arXiv 2006.04969 (Hamann & Reina, 2020) — applies USL and Amdahl's law to robot swarms: the
-closest bridge to autonomous agent systems. Finds USL describes swarm throughput; quality metrics
-(task success rate) follow different scaling laws.
-
-arXiv 2509.19489 (Nowak, 2025) — derives optimal compute allocation for self-consistency under
-budget B = m×n: optimum is m,n ∝ √B, not n→∞. Directly constrains the ensemble budget
-allocation, independent of USL.
-
-**Innovative solution — N_IT as primary sizer (implemented 2026-05-26).**
-
-Promote `n_it_optimal` to primary N recommendation. Demote N_max_USL to cost cap. The
-information-theoretic formula has a self-contained derivation (see math.md §5.1) and does
-not require the USL domain-transfer assumption. **Implemented 2026-05-26.** In code: N_max is
-`n_max_cost_ceiling` and adjust the planning logic:
+**Implemented.** `n_it_optimal` is primary N recommendation; `n_max_USL` is demoted to cost cap:
 
 ```rust
 let n_target = calibration.n_it_optimal();            // info-theoretic target
@@ -313,90 +169,17 @@ let n_max    = calibration.n_max();                   // USL cost ceiling
 let n_final  = n_target.min(n_max).min(cfg.calibration_max_ensemble_size);
 ```
 
-Document USL explicitly as: "N_max is a cost heuristic drawn from throughput engineering. It
-prevents runaway token cost but is not a quality predictor. The quality target is n_IT."
+USL is now explicitly documented as: "N_max is a cost heuristic drawn from throughput engineering.
+It prevents runaway token cost but is not a quality predictor. The quality target is n_IT."
 
-**Simulation — validate N_IT vs empirical quality curve:**
+**Remaining open.** Empirical validation of N_IT vs. quality curve requires a labeled multi-N
+benchmark set (see Shared Infrastructure). Monte Carlo simulation (Gaussian copula, `q_condorcet`
+vs `monte_carlo_ensemble_quality`) can validate the formula before oracle data is available.
 
-```python
-# Monte Carlo: quality as a function of N for given p and rho
-import numpy as np
-from scipy.stats import binom
-
-def monte_carlo_ensemble_quality(n, p, rho, n_tasks=10000):
-    """Simulate majority-vote ensemble quality with correlated errors."""
-    # Generate correlated binary outcomes using Gaussian copula
-    from scipy.stats import norm
-    # Cholesky decomposition of correlation matrix
-    corr_matrix = rho * np.ones((n, n)) + (1 - rho) * np.eye(n)
-    L = np.linalg.cholesky(corr_matrix)
-    u = norm.cdf(np.random.randn(n_tasks, n) @ L.T)
-    correct = (u < p).astype(int)
-    majority_correct = (correct.sum(axis=1) > n // 2).mean()
-    return majority_correct
-
-p, rho = 0.70, 0.30
-print("N | Q_condorcet | Q_monte_carlo | N_IT | N_max_USL")
-for n in [1, 2, 3, 5, 7, 9]:
-    q_cjt = p + (sum(binom.pmf(k, n, p) for k in range(n//2+1, n+1)) - p) * (1 - rho)
-    q_mc  = monte_carlo_ensemble_quality(n, p, rho)
-    n_it  = max(1, int(np.ceil(np.log(0.5) / np.log(max(1e-9, 1-rho)))))
-    n_usl = max(1, round(np.sqrt(0.88 / (0.039 * (1 - (1-rho))))))
-    print(f"{n} | {q_cjt:.3f}       | {q_mc:.3f}         | {n_it}    | {n_usl}")
-```
-
----
-
-### GAP-A6: Self-MoA Is a Direct Empirical Competitor 🟡 PARTIAL — **Critical**
-
-**Status: PARTIAL** — INNOVATION-5 complete (2026-06-13). Tier 1 validates H2-P at 2 constraints (PASS). Tier 3 primary hypothesis: null result on pass^k (both arms fail 6-constraint task on local 122B model); secondary signal positive (H2-P: 9 proposals avg=0.357 vs B3: 3 proposals avg=0.254, +40%). Cross-family Coverage quadrant unmeasurable without second adapter family.
-
-**Gap statement.**
-arXiv 2502.00674 (Li et al., 2025) — Self-MoA beats multi-family MoA by 6.6% on AlpacaEval 2.0.
-H2AI's full machinery must beat a single strong model at multiple temperatures to justify its
-existence. The Coverage quadrant (cross-family committee) is the architectural bet against
-Self-MoA; it has not been measured.
-
-**Literature grounding.**
-arXiv 2502.00674 — Self-MoA paper; primary threat.
-
-arXiv 2505.24442 (Xie et al., 2025) — *"RMoA: Optimising MoA through Diversity Maximisation and
-Residual Compensation"* — finds explicit diversity maximisation in agent selection is "the single
-biggest lever for MoA quality." Validates H2AI's Phase 0 decomposition as the right intervention;
-now needs empirical validation against B3 baseline.
-
-arXiv 2601.16715 — *"Dynamic Expert-Guided Model Averaging"* — LLM-guided ensemble weighting
-outperforms uniform averaging when the LLM's structural knowledge is partially correct. Validates
-Phase 0 mandate-based slot selection.
-
-arXiv 2503.03535 — *"Trade-offs in Ensembling, Merging, and Routing"* — systematic comparison:
-ensembling dominates on distribution-shift tasks; routing wins in-distribution. Constraint-
-compliance tasks under novel specifications are distribution-shift scenarios → ensemble approach
-is architecturally correct for H2AI's target domain.
-
-**H2AI's specific claim and where it can win.**
-The Precision quadrant (τ-spread within one family) is architecturally aligned with Self-MoA.
-The Coverage quadrant (cross-family) is the bet against it. H2AI's additional bet: the MAPE-K
-enforcement loop adds constraint compliance above what any temperature-spread ensemble can achieve
-without an enforcement mechanism.
-
-**Innovative solution — INNOVATION-5: Structured experiment protocol.**
-
-See INNOVATION-5 above. The key insight from the literature: H2AI should not try to beat Self-MoA
-on general benchmarks. The correct metric is **constraint compliance rate on multi-constraint
-tasks** — tasks where Self-MoA has no enforcement mechanism and MAPE-K has structural advantage.
-
-**Concrete falsification table:**
-
-| Condition | Task | Expected result if H2AI hypothesis holds |
-|---|---|---|
-| H2-P vs B3 | Tier 1 (1-2 constraints) | B3 ≈ H2-P (enforcement loop rarely fires) |
-| H2-P vs B3 | Tier 3 (6+ constraints) | H2-P > B3 (enforcement loop provides value) |
-| H2-C vs B3 | Any tier | Unmeasurable until second adapter family available |
-
-If the Tier 3 advantage does not materialise, H2AI's value is observability and governance (audit
-trail, constraint provenance) rather than quality improvement — which is still a valid product
-position but requires rewritten documentation.
+**Key literature.** arXiv 0808.1431 (Gunther, 2008) — foundational USL derivation, β is coherency
+cost in compute platforms. arXiv 2006.04969 (Hamann & Reina, 2020) — USL describes swarm
+throughput; quality metrics follow different scaling laws. arXiv 2509.19489 (Nowak, 2025) —
+optimal compute allocation: m,n ∝ √B, not n→∞.
 
 ---
 
@@ -406,135 +189,70 @@ position but requires rewritten documentation.
 
 ### GAP-B1: β_eff Functional Form 🟡 PARTIAL — Medium
 
-**Status: PARTIAL** — Epistemic β₀ wired (2026-05-20). Empirical validation of the linear β_eff assumption remains open.
+**Status: PARTIAL** — Epistemic β₀ wired. Empirical validation of the linear β_eff assumption remains open.
 
-**Gap statement.**
-`β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation under the assumption that conflict resolution cost is linear in conflict count (see math.md §2). However, the **linear-cost assumption is empirically unvalidated**. If conflict resolution is super-linear (e.g. due to "Lost in the Middle" attention degradation in long synthesis contexts), the formula needs a higher-order term.
+`β_eff = β₀ × (1 − CG_mean)` has a first-principles derivation under the assumption that conflict
+resolution cost is linear in conflict count. The assumption is falsifiable: if conflict resolution
+cost is super-linear (e.g. due to "Lost in the Middle" attention degradation in long synthesis
+contexts), the formula needs a higher-order term.
 
-**Literature grounding.**
-arXiv 0808.1431 (Gunther, 2008) — USL β is defined as the per-pair coherency synchronisation
-overhead. In H2AI terms, this is the per-adapter-pair constraint conflict resolution cost.
-
-**Innovative solution — First-principles derivation (resolves the gap conceptually).**
-
-In USL, β is the fraction of time spent on N(N-1) pairwise coherency checks. In H2AI's merge:
-
-- Expected constraint conflicts between adapters i and j ∝ (1 - CG(i,j)) × |corpus|
-- Mean expected conflicts ∝ (1 - CG_mean)
-- Conflict resolution cost ∝ n_conflicts (approximately linear — one synthesis token per conflict)
-
-Therefore: `β_eff ∝ β₀ × (1 - CG_mean)` is a first-principles consequence if conflict resolution
-cost is linear in conflict count. The linear form is correct under this assumption.
-
-The assumption is falsifiable: if conflict resolution cost is super-linear (e.g. due to attention
-degradation in a long synthesis context), the formula needs a higher-order term.
-
-**Improved formula unifying with context-aware term (from math.md §2.3):**
-
-```
-β_eff(N) = β₀ × (1 - CG_mean) × (1 + γ × fill(N))
-fill(N)  = min(1, N × proposal_tokens / max_tokens)
-```
-
-This is already computed in `n_max_context_aware` but is not used in the primary `n_max()`
-function. Unify them: make the attention term the standard formula, not a contextual variant.
-
-**Empirical validation with conflict-count β data:**
-With `beta_quality` now live (`ConflictRateAccumulator`, `H2AI_CONFLICT_{tenant}` KV), regress `conflict_rate` against
-`(1 - CG_mean)` and `(1 - CG_mean) × fill(N)`. If the bivariate R² > R² of the univariate fit,
-the attention term has explanatory power.
+A context-aware formula `β_eff(N) = β₀ × (1 - CG_mean) × (1 + γ × fill(N))` is computed in
+`n_max_context_aware` but is not the default path. With `beta_quality` live
+(`ConflictRateAccumulator`, `H2AI_CONFLICT_{tenant}` KV), empirical validation is possible:
+regress `conflict_rate` against `(1 - CG_mean)` and `(1 - CG_mean) × fill(N)`. If bivariate
+R² > univariate R², the attention term has explanatory power.
 
 ---
 
 ### GAP-B3: Attribution Formula Is Self-Referential 🟡 PARTIAL
 
-Oracle-grounded calibration is now available via `OracleAccumulator`. Apply conformal prediction:
+Oracle-grounded calibration is available via `OracleAccumulator`. Remaining open: apply conformal
+prediction:
 
 ```
 conformal_margin(α) = quantile(|q_confidence - q_oracle|, 1-α)  over calibration split
 output: q_confidence ± conformal_margin(0.10)   [90% coverage guarantee]
 ```
 
-arXiv 2410.11594 (Wagner et al., 2024) — *"Black-box Uncertainty Quantification for LLM-as-a-
-Judge"* — sampling-based confidence intervals for LLM judge scores without white-box access.
-Applicable to H2AI's Phase 3.5 verifier score intervals.
+arXiv 2410.11594 (Wagner et al., 2024) — *"Black-box Uncertainty Quantification for
+LLM-as-a-Judge"* — applicable to H2AI's Phase 3.5 verifier score intervals. Blocked on
+sufficient oracle-grounded calibration data.
 
 ---
 
 ### GAP-B5: Proxy Chain — rho_mean, p_mean, β_eff All Unvalidated 🔴 OPEN — **High**
 
-**Gap statement.**
 Three interconnected proxies form a chain of unvalidated assumptions. Each propagates error into
-the Condorcet Q(N, p, ρ) model and the USL ceiling N_max. The chain is:
+the Condorcet Q(N, p, ρ) model and the USL ceiling N_max. The chain:
 
 1. `rho_mean = 1 − CG_mean` — correlation proxy
 2. `p_mean = 0.5 + CG_mean / 2` — accuracy proxy (`sizing.rs:635`)
 3. `β_eff = β₀ × (1 − CG_mean)` — conflict cost proxy
 
-**p_mean proxy analysis (`sizing.rs:635`).**
-`p_mean = 0.5 + CG_mean / 2` maps constraint agreement linearly to ground-truth accuracy.
-This is only valid if the constraint corpus perfectly covers the failure modes of interest.
-An ensemble that agrees on constraints but fails on unmodeled dimensions would have high CG_mean
-but low true accuracy — the proxy would overestimate p_mean and recommend too few agents.
-No empirical validation against held-out accuracy measurements exists.
+**rho_mean formula inversion problem.** `rho_mean = 1 − CG_mean` implies CG_mean = 0 (zero
+constraint agreement) → ρ = 1.0 (fully correlated). This is backwards: low CG_mean means agents
+disagree on constraints, which should indicate *less* error correlation. The formula
+`ρ = CG_mean` (agreement → correlation) is derivable from Hamming geometry, but neither form is
+derivable from first principles without additional assumptions about whether error correlation
+tracks constraint specialization.
 
-**β_eff linear assumption.**
-`β_eff = β₀ × (1 − CG_mean)` assumes conflict resolution cost scales linearly with conflict
-count. This breaks if the LLM synthesiser exhibits super-linear attention degradation on long
-contexts ("Lost in the Middle" effect). A context-aware `n_max_context_aware` correction exists
-in `sizing.rs` but the linear base assumption is still the default path.
-
-**rho_mean proxy analysis.**
-`rho_mean = 1 − CG_mean` is used as the correlation correction in `Q(N, p, ρ)`. No derivation.
-The formula implies CG_mean = 0 (zero constraint agreement) → ρ = 1.0 (fully correlated).
-This is backwards: low CG_mean means agents disagree on constraints, which should indicate *less*
-error correlation, not more.
-
-**Analysis of the implicit logic.**
-
-The intended interpretation: CG_mean measures *similarity* of behavioural profiles. High
-similarity → high correlation. So `ρ = CG_mean` would be the natural proxy.
-
-The actual formula `ρ = 1 - CG_mean` inverts this: high similarity → low ρ. The implicit
-reasoning may be: "if agents agree (high CG), they're diverse in other ways, so ρ is low" — but
-this is neither stated nor justified.
-
-**Alternative derivation from Hamming geometry:**
-
-If two agents have CG(i,j) = c (constraint agreement fraction), then:
-- The fraction of constraints where they disagree = 1 - c
-- Disagreement means independent error patterns on those constraints
-- Agreement means correlated error patterns on those constraints
-- If errors only occur on disagreed constraints: ρ ∝ c (agreement)
-
-This gives `ρ_mean = CG_mean`, not `1 - CG_mean`.
-
-However: agreement on constraint profiles doesn't mean agreement on *which wrong answer* to
-give. Two agents can agree on satisfying constraint k but disagree on constraint l — yet both
-hallucinate the same wrong entity. The SRANI CFI mechanism is precisely designed to detect this.
-
-**Pragmatic conclusion:** Neither `ρ = CG_mean` nor `ρ = 1 - CG_mean` is derivable from first
-principles without additional assumptions. Online ρ_EMA is now live (`rho_ema.rs`) and replaces
-the proxy once 30 task observations accumulate. Until that threshold is reached, the system uses:
-
+**Pragmatic resolution documented as operational convention:**
 > "Operational convention: low CG (diverse constraint profiles) is assumed to indicate lower error
 > correlation. This assumes error patterns track constraint specialisation. The assumption is
 > unvalidated and replaced by empirical ρ_EMA once 30 task observations exist."
 
-**Implementation cold-start detail (`rho_ema.rs`):**
-The EMA returns a hard-coded prior of `0.45` before 30 pairwise observations accumulate. This
-prior was chosen conservatively (mid-range correlation) but is unvalidated against any empirical
-distribution of LLM ensemble error correlations. The prior directly enters the Condorcet Q(N,p,ρ)
-model, meaning all ensemble sizing decisions for the first ~30 tasks of a tenant's lifetime rest
-on this assumption. External validation against a held-out benchmark dataset is the correct fix.
+**Cold-start detail.** Online ρ_EMA (`rho_ema.rs`) returns a hard-coded prior of `0.45` before
+30 pairwise observations accumulate. This prior enters Condorcet Q(N,p,ρ) directly — all ensemble
+sizing decisions for the first ~30 tasks rest on this unvalidated assumption. External validation
+against a held-out benchmark dataset is the correct fix.
 
-**Simulation to reveal the assumption sensitivity:**
+**Sensitivity analysis:**
 
 ```python
 import numpy as np
+from scipy.stats import binom
 
 def q_condorcet(n, p, rho):
-    from scipy.stats import binom
     q_ind = sum(binom.pmf(k, n, p) for k in range(n//2 + 1, n+1))
     return p + (q_ind - p) * (1 - rho)
 
@@ -550,153 +268,7 @@ for rho_formula, label in [(cg, "rho=CG"), (1-cg, "rho=1-CG")]:
 
 ---
 
-## Brainstorm Group C — Correlated Failure Modes
-
----
-
-### GAP-C5: Krum Selection Fails Under Majority Correlated Hallucination 🟢 CLOSED — **High**
-
-**Status: CLOSED (BFT Levers 1–2 implemented 2026-06-14)** — Lever 1 (family diversity gate): `model_lineage_key()` on `AdapterKind` (returns `cloud::{provider}::{endpoint}::{model}` or `local::{model_path}`) + `min_explorer_families: usize` in `SafetyConfig` (#[serde(default)]) + `tracing::warn!` when gate not met in `calibrate.rs`. Enforcement dormant in monoculture dev environment; auto-activates when second adapter family is added to the pool. Lever 2 (oracle post-selection hard-gate): `on_fail: String` in `OracleGateConfig` (default `"evict"`) + `PostSelectionDecision { Accept, Evict, Clarify }` + `apply_on_fail_policy` + `run_post_selection` async fn in `oracle.rs` + `OraclePostSelectionBlocked { evicted_winner_summary }` ExitReason in `pipeline.rs` + routing in `mape_k.rs::handle_exit_reason` (emits `CorrelatedEnsembleWarning`, increments `adapter_rotation_offset`, sets `retry_context`, calls `run_apply_optimizer`). 5 tests in `oracle.rs`.
-
-**INNOVATION-5 experimental evidence (2026-06-13):** Tier 3 H2-P generated 9 proposals across 3 MAPE-K retry waves. Verifier scores: 0.23, 0.18, 0.39, 0.49, 0.39, 0.43, 0.43, 0.38, 0.29 — all within a tight 0.18–0.49 band. Three full retry waves could not escape this band. This is the correlated-output signature predicted by this gap: a single-family 122B model pool produces proposals that all fail the same constraints in similar ways, and MAPE-K retry simply re-samples from the same failure mode. The Krum winner in each wave was the most central proposal in this clustered score space — not a correct proposal. Family diversity (Coverage quadrant) is the structural fix.
-
-**Gap statement.**
-
-`OutlierResistant{f}` (Krum-style multi-Krum) selects the proposal with minimum sum of distances to its `N−f` nearest neighbours — the most central proposal in embedding space. This guarantees Byzantine fault tolerance when faults are *independent* outliers: Byzantine proposals cluster far from each other and from the correct answer, so the distance criterion excludes them.
-
-The guarantee inverts when the majority of agents share a correlated hallucination. LLMs across different providers are pre-trained on the same internet corpus (Common Crawl, Wikipedia, a small set of code repositories). On tasks that activate a shared misconception — a plausible but false historical claim, a misremembered API signature, a canonical-but-wrong example — five adapters from five different providers can produce the same confident wrong answer. In this case:
-
-- The hallucinated proposals are semantically clustered (low pairwise embedding distance).
-- The correct proposal (if any agent produced it) is the outlier in distance space.
-- Krum selects the cluster centroid — the hallucination — as the "safe" output.
-
-This is not a corner case. Bradley (2024) — arXiv 2411.01539 — demonstrates that LLM errors are *systematically* correlated across architecturally similar models on shared-corpus content. Krum was designed for adversarial Byzantine nodes (federated learning, distributed state machines) — its Byzantine fraction proof assumes independent failures. That assumption does not hold for stochastically correlated LLM outputs.
-
-**Current mitigations and their limits.**
-
-| Mitigation | What it does | Why it is insufficient |
-|---|---|---|
-| GAP-C1: Token-Jaccard CV detector | Fires `CorrelatedEnsembleWarning` when `CV(distances) < 0.30` AND `mean_jaccard < 0.50`; triggers MAPE-K retry. `CorrelatedEnsembleWarning` is now **also** emitted on oracle post-selection eviction (`OraclePostSelectionBlocked`) — Lever 2 adds a second signal path that fires when the oracle hard-gate rejects the winner, treating eviction as a correlated-failure event (`cv=1.0, mean_jaccard_distance=0.0`). | Reactive — fires after generation, after Krum has already run. Both paths increment `adapter_rotation_offset` and set `retry_context` so the next wave rotates adapter selection. Cross-provider hallucination requires Lever 1 (family diversity gate) to be effective. |
-| GAP-C2: Shadow auditor | Concurrent auditor from a different family; promotes to AND-vote on high disagreement | Addresses audit bias, not generation diversity. Shadow auditor cannot vote a correlated hallucination into being correct. |
-| GAP-A7: Cross-family judge rotation | Verifier adapter from non-majority family | Addresses verifier bias after Krum selection, not the Krum input distribution. |
-| `family_constraint = "require_diverse"` | Warns / blocks monoculture explorer pools | Prevents single-provider monoculture. Does not prevent cross-provider shared training overlap on specific misconception domains. |
-
-Lever 2 (oracle post-selection gate) blocks a correlated-hallucination winner *after* Krum selects it, but does not prevent the correlated output from entering the Krum input in the first place when the correlation source is shared training data rather than provider identity. Lever 1 (family diversity gate) addresses this structurally once a second adapter family is available.
-
-**Connection to other gaps.**
-
-- **GAP-A6** (empirical ρ) — the only way to know whether a specific task domain activates majority correlated hallucination is to measure it with an oracle. Without GAP-A6 data, GAP-C5 cannot be quantified.
-- **GAP-A7** (judge preference leakage) — the auditor phase may itself prefer the correlated output if judge and explorers share a family, compounding the error after Krum selection.
-
-**Implemented solution (2026-06-14).**
-
-**Lever 1 — Family-diversity gate.** `model_lineage_key()` on `AdapterKind` identifies each adapter's model lineage (`cloud::{provider}::{endpoint}::{model}` or `local::{model_path}`). `min_explorer_families: usize` in `SafetyConfig` (`#[serde(default)]`) specifies the minimum distinct lineage count. `calibrate.rs` emits `tracing::warn!` when the pool contains fewer distinct lineages than required.
-
-```toml
-[safety]
-min_explorer_families = 2   # warn when calibration pool lacks family diversity
-```
-
-**Lever 2 — Oracle post-selection hard-gate.** `on_fail = "evict"` in `[oracle_gate]` causes `run_post_selection` in `oracle.rs` to return `PostSelectionDecision::Evict` when the oracle rejects the Krum winner. `pipeline.rs` translates this to `PipelineOutcome::EarlyExit(ExitReason::OraclePostSelectionBlocked { evicted_winner_summary })`. `mape_k.rs::handle_exit_reason` emits `CorrelatedEnsembleWarning`, increments `adapter_rotation_offset`, sets `retry_context`, and returns `MapeKDecision::Retry`.
-
-**Remaining follow-on work (open).**
-
-Family-rotation on ModeCollapse beyond offset increment: when the pool is all-same-family, `adapter_rotation_offset` wrapping has no diversity effect. A per-family least-used rotation is the next structural step:
-
-```toml
-[mape_k]
-mode_collapse_family_rotation = true   # proposed: rotate to least-used provider family
-```
-
-**Falsification condition.**
-
-Construct a task set activating a known common internet misconception (verifiable by external oracle). Run N=5 with (a) same-provider pool vs. (b) ≥3-family pool. Measure how often the Krum-selected output is oracle-correct in each condition. If family-diverse condition is significantly more accurate (p < 0.05), Lever 1 is validated. Requires GAP-A6 oracle-correct label set.
-
----
-
-### GAP-B6: LLM-as-Judge Validity — Krum Operates on Potentially Biased Scores 🟢 CLOSED — **High**
-
-**Status: CLOSED (Issue 1 / Lever 3 implemented 2026-06-14)** — binary-verdict scoring implemented: `pub fn score_from_verdicts(verdicts: &[bool], n_checks: usize, llm_float: f64) -> f64` in `verification.rs` derives deterministic `present_checks / n_checks` from parsed `check_verdicts`, bypassing the LLM holistic float for constraints with binary checks; `effective_tau = TauValue::new(0.0)` override when `n_checks > 0`, ensuring hard-check constraints do not tolerate any τ spread. 3 unit tests. The verbosity/holistic-judgment drift that GAP-B6 identified is removed for all constraints with `binary_checks`. Talagrand τ-spread KL update rule tracked separately under GAP-E2. Full judge calibration (GAP-B3) remains as follow-on work.
-
-**Gap statement.**
-The Krum-style epistemic leader election and verifier consensus phases both depend on
-`VerificationScoredEvent` scores produced by an LLM judge. If the judge is biased (self-
-preference, length bias, sycophancy), the Krum input distribution is corrupted and outlier
-rejection selects the *judge-preferred* proposal, not the *correct* one.
-
-**Why this matters for Byzantine robustness.**
-The Krum algorithm was designed for distributed ML under Byzantine worker attacks. Its guarantees
-hold when the scoring function is trustworthy. Substituting LLM-as-Judge introduces a new
-failure mode: a flawed judge that consistently prefers verbose, confident-sounding proposals
-will cause Krum to surface the most persuasive wrong answer, not the most accurate one.
-
-**Known LLM judge failure modes (from literature):**
-- **Self-preference / position bias**: judges rate outputs similar to their own training higher
-- **Verbosity bias**: longer responses receive higher scores independent of accuracy
-- **Sycophancy cascade**: if the judge has seen the proposal being judged (shared context), it
-  tends to rate it higher
-
-**Mitigations implemented.**
-| Mitigation | Coverage | Status |
-|---|---|---|
-| Binary-verdict scoring (Lever 3) | `score_from_verdicts` derives `present_checks / n_checks` deterministically from parsed `check_verdicts`; `tau` overridden to 0.0 for binary-check constraints — removes holistic-judgment drift and verdict-vs-score inconsistency from the Krum input | ✅ **Closed 2026-06-14** |
-| GAP-A7 cross-family judge rotation | Reduces family-level preference leakage; doesn't fix verbosity or position bias | 🟡 partial |
-| Shadow auditor (concurrent independent verifier) | Second opinion but from same judge distribution | 🟡 partial |
-| `verifier_consensus_passes = N` majority vote | Reduces single-call variance; amplifies systematic bias | 🟡 partial |
-
-**Root cause and fix (2026-06-14).** In `verification.rs::eval_all`, the per-constraint score that gates Hard constraints and feeds Krum was the LLM-sampled float (`ScoreResponse.score`), while the parsed binary `check_verdicts` were stored but not used to derive the score. The two could disagree — the Tier 3 log shows the judge sometimes returning a holistic float that contradicted its own verdict list. **Fix:** `score_from_verdicts(verdicts, n_checks, llm_float)` in `verification.rs` returns `present_checks as f64 / n_checks as f64` when `n_checks > 0`, bypassing the LLM float entirely. The `find_instability`/`SpecAmbiguous` escalation path is unaffected (it keys on verifier reason text Jaccard, not on the score).
-
-**Remaining follow-on work (open).**
-1. **Calibrated judges**: measure judge accuracy on a held-out set with known-correct answers; use the measured judge accuracy as a discount factor on verification scores — blocked on GAP-A6
-2. **Comparative judging**: ask judge to rank pairs of proposals rather than absolute scores; pairwise ranking is less susceptible to position bias (1 week)
-3. **Adversarial critique**: for each proposal, generate a dedicated critique (adversarial probe); score = f(judge_score, critique_score) (2 weeks)
-
----
-
 ## Brainstorm Group D — Infrastructure and Operational Gaps
-
----
-
-### GAP-D5: Synthesis Merge Bottleneck — Single Sequential Synthesis Step 🟢 CLOSED — Medium
-
-**Status: CLOSED (2026-06-15).** `tournament_merge` in `h2ai-adapters/src/chain.rs` runs pairwise bracket synthesis in parallel via `futures::future::join_all`; Krum leader seeded into `proposals[0]` for attention primacy; synthesis uses `THINKING_SYNTHESIS_MD_PAIRWISE` template with `parse_synthesis_from_markdown`. Regression discovered and fixed same day (commit `ab644a2`): initial close used `THINKING_SYNTHESIS_SYSTEM` ("Output a single JSON object — no markdown") as system prompt alongside the markdown USER template — model obeyed JSON instruction, causing `parse_synthesis_from_markdown` to always fall back to `coverage_score=0.5`, forcing 3 thinking-loop iterations on every run. Fix: `THINKING_SYNTHESIS_MD_SYSTEM` ("Respond using exactly the markdown section format shown — no extra preamble") imported in `thinking_loop.rs` and wired at line 569–573. Regression test `synthesis_md_system_does_not_instruct_json_output` in `h2ai-config/tests/prompts_test.rs` guards against recurrence.
-
-**Gap statement.**
-Phase 5a (synthesis/merge) is a single sequential LLM call that receives all N proposals
-concatenated into one context. For N=5 proposals of 1000 tokens each with a 500-token system
-prompt, the synthesis context is ~5500 tokens. This creates two problems:
-
-1. **Length-sensitivity bias** — the synthesis LLM is exposed to "Lost in the Middle" attention
-   degradation on long contexts. Proposals in the middle of the concatenated input receive less
-   attention. Merger output quality degrades as N increases.
-
-2. **No parallelism** — the synthesis call is inherently sequential (one call, one output). If the
-   synthesis LLM fails or timeouts, there is no fallback within the phase.
-
-**Literature grounding.**
-arXiv 2307.03172 (Liu et al., 2023) — *"Lost in the Middle: How Language Models Use Long
-Contexts"* — demonstrates that LLMs use context from the beginning and end most reliably; middle
-items in long lists are systematically under-weighted. For 5+ proposals concatenated in a merge
-context, the middle proposals are systematically disadvantaged.
-
-**Innovative solution — hierarchical tournament merge.**
-
-Instead of one N-way merge, use a bracket tournament:
-- Round 1: pair proposals (N/2 independent merge calls in parallel)
-- Round 2: merge the round-1 outputs (N/4 calls)
-- Finals: single merge of the 2 finalists
-
-Benefits:
-- Each merge call sees at most 2 proposals — context length is bounded regardless of N
-- Round 1 calls are parallel — same wall-clock time as 1-call merge
-- Middle-position bias is eliminated (every proposal is in position 1 or 2 in its merge)
-
-Trade-off: log₂(N) merge rounds vs. 1 round. For N=5: 3 rounds, each with bounded context.
-The Krum/epistemic leader elected proposal should be seeded into round 1 position 1 (always "first"
-position) to exploit the attention recency effect.
-
-**Effort estimate.** 1 week for hierarchical merge. Requires new `MergeStrategy` variant in
-`merger.rs` (`HierarchicalTournament` vs current `OneShot`). Config toggle to enable.
 
 ---
 
@@ -705,273 +277,165 @@ position) to exploit the attention recency effect.
 A `CompoundTaskEngine` DAG fires a full wave for each subtask with no pre-execution cost estimate
 or operator confirmation gate. Up to 75 LLM calls before synthesis for a 5-subtask compound.
 
-**INNOVATION-5 experimental evidence (2026-06-13):** `ComplexityCeilingDetected` fired in H2-P Tier 2 and Tier 3 (both 4- and 6-constraint tasks). The complexity probe correctly identified these tasks as exceeding the model's capacity. However, the current `MapeKDecision::ComplexityOverflow { graft_first: false }` path simply breaks the retry loop and produces `TaskFailed` — no HITL escalation, no N scaling, no operator notification beyond the SSE event. The probe is doing the right diagnostic work but the action is wrong: a ceiling detection should trigger HITL (human review) or resource scaling (cross-family pool), not a silent terminal failure. This gap is more urgent than its Low severity suggests when a capable probe is already firing correctly.
+`ComplexityOverflow { graft_first: true }` routes to DPPM-MetaRefine synthesis instead of silent
+terminal failure. The `graft_first: false` path (HITL surface, `complexity >= hitl_threshold`)
+still produces `TaskFailed` without active HITL escalation.
 
-**Correction / refinement (2026-06-14, source-verified).** Which `ComplexityOverflow` path fires depends on config and is easy to misattribute. Two distinct mechanisms exist: (1) the **probe/threshold path** in `handle_exit_reason` (`mape_k.rs:914`), gated by `probe.complexity >= hitl_threshold`, which only runs *after* a wave exits early — never before wave 0; and (2) the **intra-retry ceiling detector** (`mape_k.rs:1059`), which emits `ComplexityOverflow` on ≥2 ceiling signals. In the current Tier 3 scenario (`hitl_threshold = 5`) the probe scored `complexity = 4`, so path (1) **does not fire** — the run proceeds through the normal retry loop to exhaustion or harness timeout. The `ComplexityCeilingDetected` evidence above is therefore path (2) (or an earlier config). The observed Tier 3 `terminal=` (empty) is **not** a `ComplexityOverflow → TaskFailed` abort; it is a harness timeout (see the INNOVATION-5 Tier 3 latency note). Any HITL-escalation redesign here must distinguish the two paths explicitly.
+**Remaining open.** HITL escalation on the `graft_first: false` path; compound task cost
+estimation before dispatch.
 
-**Research approach.** Complexity probe + bandit routing. Before dispatching ensemble, call a
-lightweight adapter (smallest available) to rate subtask complexity 1–5. Route 1–2 to single-
-adapter path; 3–5 to full ensemble. The probe cost is 1 small-model call vs. N full-model calls.
-Use the existing Thompson Sampling bandit to improve probe accuracy over time.
-
-**Effort estimate.** 1 week cost estimate + SSE event; 2 weeks complexity probe + bandit routing.
-
----
-
-## Brainstorm Group E — Quality Measurement Infrastructure
+**Research approach.** Complexity bandit probe: call a lightweight adapter (smallest available)
+to rate subtask complexity 1–5 before dispatching ensemble. Route 1–2 to single-adapter path;
+3–5 to full ensemble. Thompson Sampling bandit improves probe accuracy over time.
 
 ---
 
-### GAP-E2: Talagrand Histogram KL-Divergence Update Rule Unimplemented 🟡 PARTIAL — Medium
-
-**Gap statement.**
-`TalagrandDiagnostic::from_verification_scores` computes the rank histogram. U-shape = over-
-confident (increase τ spread); Λ-shape = under-dispersed (decrease τ spread). A basic feedback
-loop IS implemented: `MapeKController::tau_spread_factor` (`h2ai-orchestrator/src/mape_k.rs:216`)
-is updated from `TalagrandFeedback` at mape_k.rs line 713
-(`self.tau_spread_factor = tf.tau_spread_next`), and `pipeline.rs` populates
-`talagrand_feedback` via `TalagrandDiagnostic::from_verification_scores`. The remaining open
-gap is the KL-divergence update rule described below — the current update uses a raw
-`tau_spread_next` value rather than the principled KL(H ∥ Uniform) correction.
-
-**INNOVATION-5 experimental evidence (2026-06-13):** Tier 3 H2-P verifier score distribution across 9 proposals: 0.18, 0.23, 0.29, 0.38, 0.39, 0.39, 0.43, 0.43, 0.49. Sorted, this is a Λ-shape (mass concentrated in 0.35–0.45, thin tails) — the under-dispersed pattern that the Talagrand update rule would detect and correct by increasing τ-spread. If the KL-divergence update rule were implemented, it would have computed `Λ_score = max(H[middle]) / mean(H[edges])` on this distribution, detected the centre-heavy shape, and reduced τ on the next wave — increasing temperature diversity to break the score cluster. This is a concrete case where the unimplemented rule would have changed the retry strategy.
-
-**Innovative solution — KL-divergence τ-spread update rule.**
-
-arXiv 2605.07775 (Menet et al., 2026) — *"POETS: Uncertainty-Aware LLM Optimisation via Policy
-Ensembles"* — uses Thompson Sampling over KL-regularised reward models for ensemble policy
-updates. The KL framework directly applies to Talagrand histogram correction.
-
-Define the Talagrand update rule:
-
-```
-KL_flat(H) = KL(H || Uniform)   [divergence from flat histogram]
-U_score    = variance(H) / mean(H)   [U-shape detection: high variance relative to mean]
-Λ_score    = max(H[middle]) / mean(H[edges])   [Λ-shape: centre mass exceeds edges]
-
-Δτ = η × (U_score - Λ_score)
-τ_new = clip(τ_current + Δτ, τ_min, τ_max)
-```
-
-Where η (learning rate) is fit from the time to cover one effective Talagrand window (default:
-30 verification score observations).
-
-Store `tau_spread_factor` history in `H2AI_CALIBRATION` KV alongside α and β₀. This persists τ
-tuning across restarts — the system accumulates calibration from production traffic rather than
-resetting on each deployment.
-
-**arXiv precedent:**
-Meteorological ensemble calibration (the origin of Talagrand histograms) uses exactly this
-feedback: when the rank histogram is non-uniform, the spread parameter of the ensemble is adjusted.
-The τ-spread in H2AI is the direct analogue of the ensemble spread parameter in NWP.
-
-**Research question:** Is τ adjustment per-task-domain appropriate? A coding task may have
-naturally high verification score variance (pass/fail) while a factual QA task may have low
-variance. Per-domain Talagrand calibration requires enough observations per domain.
-
-**Effort estimate.** 1 week for KL update rule implementation; 2 weeks for η tuning on a
-representative task distribution.
-
----
-
-## Solvita-Derived Findings (2026-05-20)
-
-**Source:** *"Solvita: Enhancing Large Language Models for Competitive Programming via Agentic Evolution"* (arXiv 2605.15301).
-
-Solvita is a four-agent closed loop (Planner → Solver → Oracle → Hacker) where each agent maintains a trainable knowledge graph updated via REINFORCE from task outcomes — without modifying the frozen LLM backbone. On CodeContests it lifts single-pass accuracy from 40.0% → 82.4%; on APPS from 37.9% → 67.7%. Ablations attribute the largest single gain to the **Solver knowledge network**, with Oracle and Hacker providing complementary but smaller additive gains. All three Solvita variants reached Legendary Grandmaster (≥3000) on Codeforces within 12 rounds.
-
-The architecture maps closely to H2AI:
-
-| Solvita | H2AI equivalent | Open gap |
-|---|---|---|
-| Planner (strategy retrieval) | Context assembler + knowledge provider | GAP-F4 |
-| Hacker (adversarial attack) | Auditor / constraint eval | GAP-B6, GAP-C5 |
-| Trainable edge weights (REINFORCE) | Bandit state / `conflict_beta` | GAP-F4, GAP-F5 |
-
-The defining difference: **Solvita's agents learn via trainable edge weights (REINFORCE)**. H2AI now has a cross-task skill learning channel (2026-06-08): resolved task failure signals are extracted as `KnowledgeNode` entries via `skill_from_output` (topology retries, uncovered domains, SRANI fabrication, low verification scores), persisted to NATS KV (`H2AI_SKILLS` bucket), rehydrated at startup, and surfaced to the thinking loop on domain-matched future tasks via `SkillProvider` + `CompositeProvider([wiki, skill])`. The signal is trace-level: the thinking loop receives the failure type, constraint tombstone, and retry count — not a trained retrieval graph with outcome-weighted edge updates. Full Solvita parity (REINFORCE-weighted retrieval, violation→edge-weight feedback) remains open via GAP-F4/GAP-F5. End-to-end path verified: `skill_injection_scenario_cross_task_learning` in `h2ai-api` confirms that a topology-retry failure on a resolved task surfaces in the composite provider's query result for a future task sharing the same domain tag.
-
----
-
-### GAP-F3: Wiki YAML Generation Tooling Absent 🟢 CLOSED (interim) — Low
-
-**Status: CLOSED (interim, 2026-06-14)** — `artifact_scaffold(doc: &ConstraintDoc) -> Option<String>` (private fn in `compiler.rs`) keyword-scans `binary_checks` for DDL/migration/Lua keywords and injects a `REQUIRED OUTPUT ARTIFACT` block into the system context after the `remediation_hint` block, before `parts.push(entry)`. Covers `CREATE TABLE`, `ALTER TABLE`, `CONSTRAINT`, `INDEX`, `SET NX`, `EVAL`, `migrate`, `schema`, `rollback` keyword patterns. 4 unit tests. CLI generation tooling and structured `diagnostic_codes:` YAML schema remain as follow-on work.
-
-**Gap statement.**
-The `wiki/` subdirectory schema (`YamlDirSource`) is defined and loaded, but no CLI or LLM-assisted tooling exists to generate `wiki/<topic>.yaml` files from a constraint corpus. The schema also lacks a machine-actionable `diagnostic_codes` section — every constraint is documented with human-readable `description` and optional `remediation_hint`, but the structure is too loose to drive automated repair.
-
-**Enrichment from compiler-grade diagnostics (2026-06-08).**
-Zerolang's diagnostic model provides the right template: every error carries `code`, `rule` (the invariant violated), `expected` (what the compiler required), `actual` (what it received), and `repair_hint` (a structured suggestion, not prose). H2AI's `ConstraintDoc` already has `id`, `description`, and `remediation_hint` — but these are prose fields read by humans, not structured fields consumed by the retry planner.
-
-**Proposed YAML schema extension:**
-
-```yaml
-id: CONSTRAINT-008
-description: "Redis Lua scripts must atomically gate idempotency key and write the result"
-domains: [billing, atomicity]
-remediation_hint: "Move all side-effects inside a single Lua script; no I/O outside the script boundary"
-diagnostic_codes:
-  - code: C008-SYNC-PUBLISH
-    rule: "All writes within the idempotency gate must be atomic"
-    expected: "Lua MULTI/EXEC or single-script atomicity"
-    repair_hint: "Move Kafka publish outside Lua block; return idempotency key result first"
-  - code: C008-MISSING-KEY
-    rule: "Idempotency key must be written before result is returned"
-    expected: "SET NX with TTL before result write"
-    repair_hint: "Add SET NX guard as first Lua command; abort if key exists"
-```
-
-This makes `ConstraintDoc` a structured diagnostic document: the retry planner can select the specific `diagnostic_code` that matches the verifier's tombstone text and inject its `repair_hint` directly into the explorer prompt — no LLM inference needed to derive the repair.
-
-**Implemented (2026-06-14).** The interim artifact scaffold (`artifact_scaffold()` in `compiler.rs`) addresses the immediate gap: explorers are directed to produce the mandatory DDL/Lua artifact. The structured `diagnostic_codes:` schema above remains as follow-on work.
-
-**Remaining follow-on work (open).** Schema extension: 1 day (`h2ai-constraints`). CLI scaffolding for wiki generation: 3 days. Back-filling `diagnostic_codes` for existing constraints: 1 day per constraint (manual or LLM-assisted).
+## Brainstorm Group F — Knowledge and Retrieval
 
 ---
 
 ### GAP-F4: Knowledge Provider Has No Contrastive Evaluation 🟡 PARTIAL — **High**
 
-**Update (2026-06-11):** Phase 1b (domain-scoped retrieval) is now implemented. `scope_by_domains` in `skill_provider.rs` + `CompositeProvider.domain_scoping` + `knowledge_domain_scoping: bool` in `H2AIConfig`. Enabled in INNOVATION-5 tier2 E2E configs. See infrastructure note above.
+**Status: PARTIAL** — Phase 1b (domain scoping) closed; Phases 2–3 open.
 
-**Update (2026-06-08):** Phase 1 logging is partially implemented. `ThinkingReport.skill_nodes_used` counts how many Synthetic (skill) nodes appeared in the thinking loop's retrieved context; this count is emitted as `TaskAttributionEvent.skill_nodes_injected`. Offline delta analysis is now possible: compute `mean(verification_score | skill_nodes_injected > 0) − mean(score | skill_nodes_injected = 0)` across 50+ tasks per domain. Falsification condition: if delta ≤ 0 across 100 tasks, skill injection is neutral or harmful. Phase 2 (per-domain routing bandit) and Phase 3 (graph edge weights) remain open.
+Phase 1: `GenerationKnowledgeEvent` emitted per task with `knowledge_injected: bool` and
+`q_confidence`; published to NATS alongside `TaskAttributionEvent`. Offline query:
+`mean(q_confidence | knowledge_injected=true) - mean(... | false)`. Phase 1b: `scope_by_domains`
+in `skill_provider.rs`; `CompositeProvider.domain_scoping`; `knowledge_domain_scoping: bool` in
+`H2AIConfig`. Domain scoping prevents auth and security constraint nodes from polluting billing
+task retrieval context.
 
-**Gap statement.**
-The BM25 knowledge provider is wired into the generation pipeline (GAP-F1 closed), but there is no mechanism to measure whether it actually improves output quality. The knowledge provider could be degrading results (irrelevant retrievals inflating context, diluting focused problem-solving) and the system would not detect it. The passthrough (no-knowledge) path produces exactly the same downstream metrics as the retrieval path, making the two indistinguishable from the bandit's perspective.
+**Cross-reference.** GAP-F4 is the H2AI analogue of the Planner role in Solvita (arXiv 2605.15301):
+structured retrieval routing over what context is assembled per role is more defensible than
+prompt-level diversity (temperature spread). Full Solvita parity requires Phase 3 graph edge weight
+updates via REINFORCE on calibrated oracle signal — depends on GAP-B3 closing first.
 
-**Solvita evidence.**
-Solvita's contrastive REINFORCE addresses exactly this problem. The Solver generates a candidate twice — once with the knowledge network augmenting the prompt, once without — and computes the gradient signal from the difference in test outcomes. The counterfactual isolates the knowledge network's marginal contribution with no need for a held-out oracle set. H2AI cannot do this comparison today because the knowledge provider path and the passthrough path run in the same pipeline call without tracking which slots received knowledge-augmented context.
+**Remaining open:**
 
-**Recommended approach.**
+**Phase 2 — Per-slot knowledge routing bandit.** Promote contrastive signal into Thompson Sampling
+bandit. Maintain two arms per task domain: `(domain_tag, knowledge_on)` vs
+`(domain_tag, knowledge_off)`. After sufficient observations, domains where knowledge injection
+hurts are automatically routed to the passthrough path.
 
-Three-phase implementation:
-
-**Phase 1 — Contrastive logging (no architecture change).**
-Tag each slot's generation call with whether knowledge context was injected (`knowledge_injected: bool`). After the verifier runs, log `(slot_id, knowledge_injected, verification_score)` to a NATS telemetry subject. After 50+ tasks, compute mean score delta across the two conditions per tenant. This is a one-day instrumentation change that answers the question without changing any logic.
-
-**Phase 2 — Per-slot knowledge routing bandit.**
-Promote the contrastive signal into the Thompson Sampling bandit. Maintain two arms per task domain: `(domain_tag, knowledge_on)` vs `(domain_tag, knowledge_off)`. The bandit explores knowledge injection per domain independently. After sufficient observations, domains where knowledge injection hurts are automatically routed to the passthrough path. This mirrors Solvita's REINFORCE update at a coarser granularity (no graph update, just arm selection).
-
-**Phase 3 — Graph edge weight updates (Solvita parity).**
-When `InductionStore` records a high-hit-rate node on `MergeResolved`, also record the verification score delta attributed to that node retrieval. Update the node's edge weight proportional to the delta. This requires threading the contrastive delta from Phase 1 back into `InductionStore::record`. The effect: BM25 node weights become calibrated to actual impact, not just retrieval frequency.
-
-**Cold-start economics (Solvita finding).**
-Solvita requires ~5,000 training problems before knowledge network costs amortize. H2AI's per-tenant task volumes are far smaller. This means Phase 3 (graph weight updates) may be net-negative for tenants with fewer than ~200 tasks — retrieval weights would be too noisy to improve over BM25 baseline. Phase 1 contrastive logging should track cumulative task count per tenant and gate Phase 2 arm splitting on reaching a minimum observation threshold (suggested: 50 tasks per domain tag before enabling per-domain knowledge routing).
-
-**Falsification condition.**
-After Phase 1 logging is live: if the mean verification score delta (`knowledge_on` − `knowledge_off`) is ≤ 0 across 100 tasks for any tenant, knowledge retrieval is net-neutral or harmful for that tenant and the passthrough should become the default for that domain. If delta > 0 and p < 0.05, retrieval is helping and Phase 2 should be enabled.
-
-**Phase 1b — Task-matched corpus scoping ✅ Implemented (2026-06-11).**
-`scope_by_domains` in `skill_provider.rs` pre-filters `CompositeProvider` candidates to `ConstraintDoc` entries whose `domains` intersect the task's domain tags before the BM25 query runs. `CompositeProvider.domain_scoping: bool` flag; `knowledge_domain_scoping: bool` in `H2AIConfig` (top-level, `#[serde(default)]`). Enabled in all three INNOVATION-5 tier2 E2E configs. On a 4-constraint billing task, auth and security constraints no longer pollute the retrieval context with irrelevant nodes.
-
-**Effort estimate.** Phase 1: 1 day. Phase 2: 1 week. Phase 3: 2 weeks (blocked on InductionStore instrumentation and sufficient task volume).
+**Phase 3 — Graph edge weight updates (Solvita parity).** When `InductionStore` records a
+high-hit-rate node on `MergeResolved`, record the verification score delta attributed to that node
+retrieval. Update node's edge weight proportional to the delta. Requires closing GAP-B3 (calibrated
+judge) first — REINFORCE gradients on biased soft rewards amplify judge bias into retrieval weights.
+Cold-start note: Phase 3 may be net-negative for tenants with fewer than ~200 tasks.
 
 ---
 
 ### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing 🟡 PARTIAL (Steps 1–2) — Medium
 
-**Update (2026-06-08):** Steps 1–2 are implemented in-memory. `CompositeProvider` gains a `violation_map: Arc<RwLock<HashMap<String, f32>>>` that accumulates violation penalties for non-Synthetic nodes retrieved during a task's thinking loop. `record_violations(node_ids, delta=0.1)` is called in `post_run` when `topology_retry_events` is non-empty; penalty is capped at 0.9 and applied as `score × (1 − penalty)` before the dedup/top_k merge in `query()`. Synthetic skill nodes are permanently exempt (they document failures, not guidance). The penalty map is in-memory only — it resets on restart; NATS persistence is deferred. Step 3 (retroactive induction trigger on ZeroSurvival) remains open.
+**Status: PARTIAL** — Steps 1–2 live in-memory; Step 3 unblocked; Step 4 deferred.
 
-**Gap statement.**
-When the MAPE-K loop detects `ZeroSurvival` or `HallucinationDetected`, the failure signal reaches `conflict_beta` and the bandit, but it never reaches the knowledge retrieval layer. The retrieval graph (BM25 index, InductionStore node weights) is unchanged by the failure. The next task with identical constraint tags will retrieve the same context that contributed to the failure — the system does not learn that a particular retrieval pattern led to a bad outcome.
+Steps 1–2 implemented: `CompositeProvider.violation_map: Arc<RwLock<HashMap<String, f32>>>`
+accumulates violation penalties for non-Synthetic nodes co-occurring with topology retries
+(delta=0.1, cap=0.9, applied before dedup/top_k in `query()`). Synthetic skill nodes permanently
+exempt. Penalty map is in-memory only — resets on restart; NATS persistence deferred.
 
-**Solvita evidence.**
-Solvita's closed-loop failure propagation is its most structurally distinctive feature: when the Hacker agent discovers a vulnerability (adversarial test failure), the failure event updates **all four** knowledge networks simultaneously. The Planner network learns to avoid that strategy class; the Solver network deprioritizes the skill pattern; the Oracle network adjusts its test routing weights; the Hacker network reinforces the attack pattern that succeeded. H2AI has the equivalent of the Hacker (auditor) and Oracle (verifier), but constraint violation signals reach neither the retrieval layer nor the planning context for future tasks.
+**Remaining open:**
 
-**Recommended approach.**
+**Step 3 — Retroactive induction trigger.** When `ZeroSurvival` fires on a domain with ≥10 prior
+tasks, trigger an induction cycle immediately (don't wait for batch threshold). Unblocked:
+`post_injection_pass_rates` field on `DomainSynthesis` (pipeline-resilience spec) provides the
+per-injection quality signal Step 3's retroactive trigger needs to distinguish productive from
+noise injections.
 
-**Step 1 — Violation tagging on InductionStore entries.**
-When `MergeResolved` fires and the task had MAPE-K retries before resolution (i.e., `autonomic_retries > 0`), record the constraint IDs that were violated during those retries alongside the resolved node IDs in `InductionStore`. This annotates which retrievals co-occurred with constraint failures.
-
-**Step 2 — Negative-weight retrieval filter.**
-Before injecting knowledge context for a new task, check whether the candidate BM25 nodes have a violation co-occurrence rate above a threshold for the current task's constraint tags. Nodes with high co-occurrence with violation events are downweighted or excluded. This is the retrieval analogue of Solvita's Planner network learning to avoid strategy classes that led to Hacker-detected failures.
-
-**Step 3 — Retroactive induction trigger.**
-When `ZeroSurvival` fires on a domain that has seen ≥ 10 prior tasks, trigger an induction cycle immediately (don't wait for the batch threshold) to incorporate the failure signal into the archetype and tension pattern stores. This makes the `TenantMemoryStore` responsive to acute failure clusters, not just periodic batch updates.
-
-**Why not implement the full REINFORCE loop (Solvita Phase 3).**
-Solvita's graph-weight REINFORCE works because it has access to binary test pass/fail signals (competitive programming judges). H2AI's verification scores are LLM-judged (soft, not binary) and are subject to judge bias (GAP-B6). Computing REINFORCE gradients on soft, biased rewards would amplify judge bias into the retrieval weights. The correct sequence: close GAP-B6 (calibrated judge) first, then implement graph-weight REINFORCE.
-
-**Step 4 — Constraint difficulty map (NATS-persisted).**
-Track empirical constraint difficulty per `(constraint_id, task_quadrant)` pair across all tasks. After each `MaxRetriesExhausted` or `MergeResolved`, update a NATS KV entry `H2AI_CONSTRAINT_DIFFICULTY_{tenant}`:
-
-```rust
-pub struct ConstraintDifficultyStats {
-    pub attempts: u32,
-    pub failures: u32,
-    pub avg_score: f32,
-}
-// difficulty = failures / attempts, smoothed with Laplace prior (1 attempt, 0.5 failure rate)
-```
-
-When the MAPE-K controller provisions a topology wave and the task's constraint set contains a constraint with `difficulty > 0.75` for the current quadrant, adapt:
-- Increase N_max by 1 (budget one extra proposal)
-- Escalate to HITL after `max_retries / 2` rather than `max_retries` — the model is unlikely to self-repair on a historically hard constraint
-
-This is the H2AI equivalent of zerolang's `xfail` test model: the system knows in advance which constraints are hard for this model×quadrant combination and adapts its budget before exhausting all retries silently.
-
-**Effort estimate.** Step 1: 2 days. Step 2: 1 week. Step 3: 3 days. Step 4: 3 days (NATS schema + MAPE-K provisioning hook). Total: ~3 weeks.
+**Step 4 — Constraint difficulty map (NATS-persisted). ⚠️ DEFERRED.** Track empirical constraint
+difficulty per `(constraint_id, model_lineage_key)` pair across all tasks. Deferred because: (a)
+most historical failures are integration failures, not inherent constraint difficulty — the map
+would mislabel constraints as "hard" when they are individually solvable; (b) difficulty map must
+be stratified by `model_lineage_key` and use a decaying Beta posterior. Implement after
+DPPM-MetaRefine stabilizes and difficulty signal is no longer polluted by MUS oscillation
+artifacts.
 
 ---
 
-### Solvita Cross-Cutting Insights for Existing Gaps
-
-**GAP-C5 (Krum under correlated hallucination) — Hacker-Oracle complementarity.**
-Solvita's Oracle and Hacker decompose the problem space with opposite optimization targets: Oracle is conservative (high precision — only certifies tests it is confident about), while Hacker is aggressive (high sensitivity — deliberately probes edge cases and failure modes). Combined, they achieve 90%+ wrong-solution detection and 95%+ correct-solution preservation. H2AI's verifier (Oracle analogue) and auditor (Hacker analogue) currently use similar prompting strategies — both score proposals on compliance. Differentiating their roles — verifier as conservative filter, auditor as aggressive adversarial probe — would improve combined coverage without increasing the false-positive rate. Practically: the auditor prompt should be explicitly framed as "find any way this output could fail the constraints" rather than "score this output on the constraints."
-
-**GAP-B6 (LLM-as-Judge validity) — Adversarial critique as debiasing.**
-Solvita's Hacker generates adversarial test cases that attack surviving proposals. The H2AI equivalent is adversarial critique generation: for each proposal that passes verification, generate a dedicated "attack" prompt asking the judge to find a constraint the proposal violates or a scenario where it fails. Proposals that survive adversarial critique are more reliable than those that only survive the forward verification pass. This addresses the verbosity bias and sycophancy cascade identified in GAP-B6 by forcing a contrarian evaluation path independent of the forward judgment.
-
-**GAP-A6 (Self-MoA as empirical competitor) — Routing over retrieval, not prompting.**
-Solvita's most actionable finding for H2AI's positioning debate: freezing LLM weights while training only the retrieval routing layer (knowledge graph edge weights) matches or exceeds performance from architectures that invest in prompt engineering. The implication is that H2AI's comparative advantage over Self-MoA will be more defensible if it is grounded in structured retrieval routing (what context is assembled for each role, GAP-F4) than in prompt-level diversity (temperature spread, GAP-A1). The INNOVATION-5 experiment should specifically test whether the knowledge provider, when calibrated contrastively, adds measurable advantage over Self-MoA — not just whether MAPE-K enforcement does.
+## Brainstorm Group G — Reasoning Memory
 
 ---
 
-## Gap Priority Matrix
+### GAP-G1: Reasoning Memory Phases 2–4 Unimplemented 🟡 PARTIAL — Medium
 
-| Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
-|---|---|---|---|---|
-| **INNOVATION-5 H2-P vs B3 experiment** | Critical | 1 week | None (single-model) | **Week 1** |
-| **GAP-F3 ConstraintDoc diagnostic_codes schema** | Medium | 1 day + 1 day/constraint | None | **Week 1** |
-| **GAP-B5 rho_mean documentation** | Medium | 2 days | None | **Week 2** |
-| GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
-| GAP-A6 Full experiment (cross-family) | Critical | Timeline open | Second adapter family | Session 2+ |
-| GAP-A2 USL quality curve experiment | High | 2 weeks | Shared task set | Session 2 |
-| GAP-E2 Talagrand feedback loop | Medium | 3 weeks | Task runs | Session 4 |
-| GAP-D5 Hierarchical merge | Medium | 1 week | None | Week 3 |
-| **GAP-F4 Knowledge provider contrastive eval** | High | Phase 1: 1 day; Phase 2: 1 week | 50+ tasks per domain | **Week 1 (Phase 1 logging)** |
-| **GAP-F5 Violation → retrieval feedback** | Medium | ~3 weeks (Steps 1–4) | InductionStore + GAP-B6 | Week 3 |
-| GAP-D2 Compound task cost | Low | 3 weeks | None | Any |
-| **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
+**Status: PARTIAL** — Phase 1 live; Layer 3 partial path live; Phases 2–4 designed, pending implementation.
 
----
+**Phase 1 (live).** `TaskReasoningCheckpoint` written at each engine phase gate; `TaskMetaState`
+projected at resolution; per-tenant NATS KV buckets (`H2AI_CHECKPOINT_{tenant}` 7d TTL,
+`H2AI_META_{tenant}` 90d TTL). `run_from_checkpoint` reads `CheckpointPhase` to skip completed
+phases. Skill extraction provides a depth-stratified analogue: Topic nodes carry Socratic
+diagnostic questions + resolution excerpts; Constraint-keyed and Reason-keyed Leaf nodes carry
+per-constraint domain signals. `format_induction_priors` formats top-5 `KnowledgeNodePattern`
+entries by `hit_rate` as prior context prepended to archetype selection `system_context` (Layer 3
+partial path).
 
-## Shared Infrastructure Required for Group A
+**Remaining open — Phases 2–4:**
 
-Sessions 1 and 2 block on building a shared measurement harness:
+**Phase 2 — Induction (Layer 2).** Two components with strict separation: `InductionWorker` trait
+(pure computation — no I/O, testable with `MockInductionWorker`) and `InductionScheduler` (owns
+JetStream subscription, NATS KV reads/writes, CAS swap).
 
-1. **Labeled task set.** 100–200 tasks across code (test oracle), factual QA (reference answers),
-   and constraint-heavy reasoning. Stratified by constraint count:
-   - Tier 1: 1–2 constraints (simple) — validates B0 baseline
-   - Tier 2: 3–5 constraints (moderate) — tests enforcement value
-   - Tier 3: 6+ constraints (complex) — primary H2-P vs B3 battlefield
+`InductionScheduler` triggers when ≥ `induction_batch_size` (10) resolved tasks accumulate, or
+`induction_max_interval_secs` (86400s) elapsed. Loads up to `induction_max_tasks_per_run` (50)
+`TaskMetaState` records, calls `worker.distill()`, writes to staging key, CAS-swaps `latest` only
+on full success — the previous snapshot is never touched on failure.
 
-2. **JSON schema + cargo test oracle.** Minimum viable oracle for Session 1. Structured output
-   tasks have zero-dependency validation. Code tasks need a ShellExecutor extension.
+`AlgorithmicInductionWorker` — pure Rust, no LLM calls. Distillation steps:
+1. **ArchetypePrior** — group `ArchetypeResult` entries by `archetype_name + domain_tags`;
+   `net_confidence = weighted_mean(confidence, weight=2.0 if dominated_synthesis else 1.0)`;
+   `avoid_for_tags` = tags where `net_confidence < 0.4` across ≥ 3 tasks.
+2. **TensionPattern** — collect all tension strings; cluster by cosine similarity (threshold 0.85)
+   if `EmbeddingModel` available, exact dedup otherwise; store `frequency` + `resolution_hint`
+   from tasks that resolved the tension.
+3. **RetryHintPattern** — group `(trigger_tags, exit_reason_kind, retry_context_that_resolved)`
+   tuples; keep top hint per pair by `success_rate`.
+4. **DecompositionTemplate** — group `shared_understanding` strings by
+   `(quadrant, constraint_tags)`; select embedding centroid if model available, most recent
+   otherwise.
 
-3. **Per-N quality measurement.** The benchmark harness extended to record oracle pass rate per
-   adapter, per N value (2, 3, 5, 7, 9), and per task tier.
+`TenantMemoryStore` lives in `H2AI_MEMORY_{tenant_id}` KV bucket. Schema:
+`{tenant_id, generated_at, task_count_seen, archetype_priors[], tension_patterns[],
+retry_hint_patterns[], decomposition_templates[]}`. Published event:
+`InductionCycleCompletedEvent` to `h2ai.telemetry.induction`.
 
-4. **Pairwise error correlation logging.** Per-adapter binary correct/incorrect logged per task.
-   Stored to SQLite or Parquet for offline ρ analysis and ρ_EMA validation (online ρ EMA is now
-   live in `rho_ema.rs`; offline logging enables retrospective validation of its convergence).
+New files: `crates/h2ai-orchestrator/src/induction/mod.rs` (trait + mock),
+`induction/algorithmic.rs` (distillation), `induction/scheduler.rs` (I/O).
+New types: `crates/h2ai-types/src/memory.rs`.
 
-Building this harness is the pre-work for Session 1 and is the first concrete deliverable before
-any gap-resolution experiments begin.
+**Phase 3 — Thinking Loop Integration (Layer 3, full).** Before the thinking loop runs, load
+`TenantMemoryStore` from `NatsClient::get_tenant_memory(&tenant_id)`. Thread as
+`Option<TenantMemoryStore>` into `ThinkingLoopInput`.
+
+- **Archetype priors** — `select_archetypes()` gives +0.15 weight boost to archetypes with
+  `net_confidence > 0.6` + matching domain tags; -0.20 penalty to archetypes in `avoid_for_tags`
+  matching current task.
+- **Tension seeding** — Iteration 0 pre-loaded with top 3 `TensionPattern` entries matching
+  constraint tags (Jaccard tag intersection). Injected as hypotheses: "previously observed
+  tensions — validate, refute, or refine."
+- **Retry hint priming** — `MapeKController::new()` receives `Vec<RetryHintPattern>` matching
+  task tags as `primed_retry_hints`. When `ZeroSurvival` or `HallucinationDetected` fires, checks
+  `primed_retry_hints` before computing retry context from scratch.
+
+Full Layer 3 is blocked on Layer 2 (AlgorithmicInductionWorker) being live.
+
+Config additions to `reference.toml`: `reasoning_memory_max_archetype_boost = 0.15`,
+`reasoning_memory_max_archetype_penalty = 0.20`.
+
+**Phase 4 — Hybrid Retrieval (Layer 4).** Tag-gate (Layer 3 baseline): Jaccard
+`|tags_task ∩ tags_pattern| / |tags_task ∪ tags_pattern| ≥ 0.2`. O(1) per candidate — eliminates
+irrelevant patterns before embedding work.
+
+Embedding rerank (Layer 4 addition, only when tag-gate returns > 5 candidates): embed current
+task description; compute cosine similarity against stored `TensionPattern.embedding`; final score
+= `0.6 × jaccard + 0.4 × cosine`. Return top 3. Pattern embeddings precomputed during induction
+— no embedding call at query time for stored patterns.
+
+Config additions: `reasoning_memory_tag_gate_threshold = 0.2`,
+`reasoning_memory_max_tension_candidates = 3`.
 
 ---
 
 ## Brainstorm Group H — Skeptical Audit Resilience
-
-One open gap identified in adversarial review of the H2AI architecture:
 
 ---
 
@@ -988,35 +452,30 @@ small N:
 - Outlier ratings dominate; one unusual evaluator can flip a bin's calibration signal
 - At N<10, MoM produces calibration estimates with confidence intervals wider than the [0,1] scale
 
-For most tenants, human rating volumes will be N=3–30 per constraint domain (qualitative tasks are
-expensive to rate). The calibration output from human ratings is essentially noise at these
-volumes, yet it feeds directly into `EnsembleCalibration` with the same weight as oracle-grounded
-accuracy estimates with N=1000+.
+For most tenants, human rating volumes will be N=3–30 per constraint domain. The calibration
+output from human ratings is essentially noise at these volumes, yet it feeds directly into
+`EnsembleCalibration` with the same weight as oracle-grounded accuracy estimates with N=1000+.
 
 **Literature grounding.**
 
 *Dirichlet-Categorical posterior* (Minka, 2000; Gelman et al., 2013) — the correct Bayesian model
-for small-N count data on a discrete rating scale (1–5 or pass/fail). The Dirichlet prior
-concentrates posterior mass on the prior mean when N is small, and releases toward the empirical
-mean as N grows. This provides natural shrinkage without requiring a sample-size threshold.
+for small-N count data on a discrete rating scale. The Dirichlet prior concentrates posterior mass
+on the prior mean when N is small, and releases toward the empirical mean as N grows.
 
 *Bayesian average for rating aggregation* (Laplace Smoothing generalization):
 ```
 bayesian_mean = (sum_of_ratings + C × prior_mean) / (N + C)
 ```
-where `C` is the effective prior count (analogous to "virtual observations from the prior").
-Standard recommendation (MovieLens, Goodreads, IMDb): `C = sqrt(mean_N)` where `mean_N` is the
-average rating count across all items.
+where `C` is the effective prior count. Standard recommendation (MovieLens, Goodreads, IMDb):
+`C = sqrt(mean_N)` where `mean_N` is the average rating count across all items.
 
 *SSBC — Small-Sample Bootstrap Calibration* (Bröcker & Smith, 2007, Monthly Weather Review) —
-conformal calibration valid down to N=47. Bootstrap resampling with bias correction for small
-histogram bins. The meteorological community standard for rank histogram calibration with
-< 50 samples.
+conformal calibration valid down to N=47. The meteorological community standard for rank histogram
+calibration with < 50 samples.
 
 *Hybrid weight schedule* — practical recommendation from Bayesian A/B testing literature (Kohavi
-et al., 2020): `weight = min(1.0, N / N_effective_min)` where `N_effective_min` is the sample
-size at which the posterior credible interval narrows below a target width. For a beta-binomial
-model on pass/fail ratings, N_effective_min ≈ 15 gives a 95% credible interval of ±0.25.
+et al., 2020): `weight = min(1.0, N / N_effective_min)` where N_effective_min ≈ 15 gives a 95%
+credible interval of ±0.25 for a beta-binomial model on pass/fail ratings.
 
 **N threshold tiers.**
 
@@ -1061,10 +520,10 @@ pub fn estimate_human_rating(
 ) -> HumanRatingEstimate { ... }
 ```
 
-The proposed integration point in `calibration.rs` would receive `HumanRatingEstimate`;
-apply the `weight` to the ECE update and skip the update if `credible_interval_half_width >
-max_credible_interval_width`. (Note: this integration is not yet implemented — no
-`update_from_oracle_verdict` function exists in `calibration.rs` as of this writing.)
+The proposed integration point in `calibration.rs` would receive `HumanRatingEstimate`; apply the
+`weight` to the ECE update and skip the update if `credible_interval_half_width >
+max_credible_interval_width`. (`update_from_oracle_verdict` is not yet implemented in
+`calibration.rs` — this integration is pending.)
 
 **Config additions in `reference.toml`:**
 
@@ -1080,18 +539,91 @@ human_rating_max_credible_interval_width = 0.30  # circuit breaker: skip update 
 **Test strategy.**
 - Unit: `estimate_human_rating` returns `PriorOnly` for N<10, `BayesianAverage` for N=12,
   `BootstrapCorrected` for N=35, `StandardMoM` for N=60
-- Unit: Bayesian average formula is mathematically correct against closed-form for 3 specific inputs
+- Unit: Bayesian average formula is mathematically correct against closed-form for 3 specific
+  inputs
 - Unit: circuit breaker fires when CI width > threshold; calibration update skipped
 - Unit: weight = `min(1.0, N/15)` — verifies N=7.5 → 0.5, N=15 → 1.0, N=30 → 1.0
 - Integration: simulate 8-rating stream; verify calibration does not update until N reaches 10
 
-**Effort estimate.** 1 week. Core estimator is pure math, no external crates needed. Bootstrap
-requires ~50 lines of Rust. Config wiring through existing `CalibrationConfig`.
-
 **Falsification condition.**
 Inject synthetic human rating streams with N=5, N=15, N=40, N=100 and known ground-truth ECE.
 If Bayesian estimator does not reduce RMSE vs. MoM for N=15 on 1000 bootstrap trials, the prior
-is mis-specified and `human_rating_prior_count` needs tuning. Expected: RMSE(Bayesian) < RMSE(MoM)
-for N ≤ 30 by at least 20%.
+is mis-specified and `human_rating_prior_count` needs tuning. Expected: RMSE(Bayesian) <
+RMSE(MoM) for N ≤ 30 by at least 20%.
 
+---
 
+## Brainstorm Group S — Signal Fidelity
+
+---
+
+### GAP-S1: SRANI Fires for Technology-Specific Implementation Details 🟡 PARTIAL — Low
+
+**Status: PARTIAL** — Core infrastructure false-positive (manifest.context exclusion) fixed.
+Residual: SRANI still fires for technology-specific sub-terms.
+
+`check_specification_grounding` receives an `effective_spec` built from
+`manifest.description + manifest.context + constraint corpus text`. Core infrastructure terms
+named in `manifest.context` (Redis, Kafka, ClickHouse, CockroachDB) are grounded; no harmful
+"avoid Redis/Kafka" hints are injected.
+
+**Observable trait.** SRANI still emits `shared_ungrounded` entries for technology-specific
+sub-terms implied by but not explicitly named in spec/constraints/context. Examples: `"MergeTree"`
+(ClickHouse table engine — strongly implied when ClickHouse is grounded in constraint binary
+checks), `"BillingEvent"` (proposal-introduced named event type). ResearcherGrounding hint at
+these sub-terms may redirect generation away from correct implementation choices: "use standard
+idempotency patterns with TTL-based caches" when MergeTree is the correct ClickHouse choice.
+
+**Cross-reference.** GAP-S1 residual is analogous to GAP-F5: constraint-mandated entities should
+reinforce grounding signal, not suppress it. See `phases/srani.rs:extract_arch_nouns`.
+
+**Candidate fixes:**
+- **Implied-by suppression table:** Extend `extract_arch_nouns()` with a parent→sub-term map.
+  When a grounded parent technology implies a sub-term, suppress from the ungrounded set. Example:
+  `"ClickHouse"` grounded → suppress
+  `{"MergeTree", "ReplacingMergeTree", "SummingMergeTree", "AggregatingMergeTree"}`;
+  `"Redis"` grounded → suppress `{"EVAL", "Lua EVAL", "SETEX", "SETNX"}`. Requires maintaining
+  the suppression table as the lexicon grows.
+- **CFI-gated hint emission:** Suppress ResearcherGrounding hint when CFI < 0.4 (partial
+  fabrication with no shared consensus). Simpler but loses information — all sub-term fabrication
+  suppressed regardless of whether hints are harmful.
+
+---
+
+## Gap Priority Matrix
+
+| Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
+|---|---|---|---|---|
+| **GAP-F5 Step 3 retroactive induction trigger** | Medium | 3 days | GAP-I1 signal live | Week 2 (unblocked) |
+| **GAP-G1 Phase 2 induction (Layer 2)** | Medium | 1 week | None | Week 2 |
+| GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
+| GAP-A1 Full experiment (cross-family Coverage quadrant) | Critical | Timeline open | Second adapter family | Session 2+ |
+| GAP-A2 USL quality curve empirical validation | High | 2 weeks | Labeled multi-N benchmark | Session 2 |
+| **GAP-F4 Knowledge provider contrastive eval Phase 2** | High | 1 week | 50+ tasks per domain | Week 3 |
+| GAP-D2 Compound task HITL escalation | Low | 1 week | None | Any |
+| **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
+
+---
+
+## Shared Infrastructure Required for Group A
+
+Sessions 1 and 2 block on building a shared measurement harness:
+
+1. **Labeled task set.** 100–200 tasks across code (test oracle), factual QA (reference answers),
+   and constraint-heavy reasoning. Stratified by constraint count:
+   - Tier 1: 1–2 constraints (simple) — validates B0 baseline
+   - Tier 2: 3–5 constraints (moderate) — tests enforcement value
+   - Tier 3: 6+ constraints (complex) — primary H2-P vs B3 battlefield
+
+2. **JSON schema + cargo test oracle.** Minimum viable oracle for Session 1. Structured output
+   tasks have zero-dependency validation. Code tasks need a ShellExecutor extension.
+
+3. **Per-N quality measurement.** The benchmark harness extended to record oracle pass rate per
+   adapter, per N value (2, 3, 5, 7, 9), and per task tier.
+
+4. **Pairwise error correlation logging.** Per-adapter binary correct/incorrect logged per task.
+   Stored to SQLite or Parquet for offline ρ analysis and ρ_EMA validation (online ρ EMA is now
+   live in `rho_ema.rs`; offline logging enables retrospective validation of its convergence).
+
+Building this harness is the pre-work for Session 1 and is the first concrete deliverable before
+any gap-resolution experiments begin.

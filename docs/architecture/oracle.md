@@ -224,7 +224,7 @@ When `run_post_selection` returns `Evict`:
    - Sets `retry_context` to the evicted winner summary for repair context injection.
    - Calls `run_apply_optimizer(1.0)` and returns `MapeKDecision::Retry`.
 
-5 unit tests in `crates/h2ai-orchestrator/src/phases/oracle.rs` cover: `accept_when_gate_passes`, `evict_when_gate_fails_on_fail_evict`, `pass_when_gate_fails_on_fail_pass`, `fail_when_gate_fails_on_fail_fail`, `accept_when_gate_passes_regardless_of_on_fail`.
+19 tests in `crates/h2ai-orchestrator/tests/oracle_gate_test.rs` cover `apply_on_fail_policy` decision mapping (`evict_policy_on_failed_gate`, `pass_policy_ignores_failure`, `accept_when_gate_passed`, `accept_when_gate_not_run`, `clarify_policy_on_failure`), plus `fill_placeholders_*`, `match_clarification_template_*`, `aggregate_failure_summary_*`, and `effective_concurrency_*` helpers.
 
 ---
 
@@ -246,8 +246,19 @@ oracle_pass_rate_floor = 0.40      # pass_rate WARN threshold (n≥30)
 ### Unit Tests
 
 ```bash
+# Oracle accumulator, calibration, and FUSE tests (h2ai-api)
 cargo test --package h2ai-api -- oracle
+
+# Oracle gate, post-selection, and helper tests (h2ai-orchestrator)
+cargo test --package h2ai-orchestrator -- oracle
 ```
+
+| Test file | Tests | Coverage |
+|---|---|---|
+| `h2ai-api/tests/oracle_test.rs` | 19 | OracleAccumulator: observation window, calibration basis, ECE, patch |
+| `h2ai-api/tests/oracle_accumulator_test.rs` | 11 | Accumulator edge cases |
+| `h2ai-api/tests/oracle_fuse_test.rs` | 6 | FUSE `fuse_reduce_by_family` |
+| `h2ai-orchestrator/tests/oracle_gate_test.rs` | 19 | `apply_on_fail_policy`, `fill_placeholders`, `aggregate_failure_summary`, `effective_concurrency` |
 
 ### E2E Tests
 

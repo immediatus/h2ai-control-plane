@@ -51,8 +51,11 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
+use std::collections::HashSet;
+
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 use h2ai_orchestrator::coherence::CoherenceState;
+use h2ai_orchestrator::phases::llm_coverage;
 use h2ai_types::events::{BranchPrunedEvent, ConstraintViolation};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::RoleErrorCost;
@@ -95,9 +98,12 @@ fn make_pruned(task_id: &TaskId, violated_ids: &[&str]) -> BranchPrunedEvent {
                 verifier_reason: None,
                 check_verdicts: vec![],
                 criteria_pass: None,
+                check_reasons: None,
             })
             .collect(),
         timestamp: chrono::Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
     }
 }
 
@@ -175,10 +181,8 @@ fn constraints_not_in_corpus_are_ignored() {
 
 // ── with_contradictions ────────────────────────────────────────────────────
 
-fn make_explorers(n: usize) -> Vec<h2ai_types::identity::ExplorerId> {
-    (0..n)
-        .map(|_| h2ai_types::identity::ExplorerId::new())
-        .collect()
+fn make_explorers(n: usize) -> Vec<ExplorerId> {
+    (0..n).map(|_| ExplorerId::new()).collect()
 }
 
 #[test]
@@ -323,4 +327,362 @@ fn is_closed_true_at_exact_boundary_scores() {
     assert!(state.uncovered_domains.is_empty());
     assert!(state.active_contradictions.is_empty());
     assert!(state.is_closed());
+}
+
+// ── filter_covered_by_survivors ────────────────────────────────────────────
+
+#[test]
+fn domain_removed_from_uncovered_when_survivor_covers_it() {
+    // Reproduces the GAP-C1 false positive: a proposal is pruned for violating C1
+    // (domains=["billing","compliance"]) but the winning proposal correctly handles it.
+    let corpus = vec![
+        make_constraint("C1", &["billing", "compliance"]),
+        make_constraint("C2", &["consistency"]),
+    ];
+    let task_id = TaskId::new();
+    let pruned = vec![make_pruned(&task_id, &["C1"])];
+    let base = CoherenceState::from_pruned(&corpus, &pruned);
+    // Before filtering: billing and compliance are uncovered
+    assert!(base.uncovered_domains.contains(&"billing".to_string()));
+    assert!(base.uncovered_domains.contains(&"compliance".to_string()));
+
+    // Survivor matrix: 1 survivor, scores [1.0, 0.8] on [C1, C2]
+    let matrix = vec![vec![1.0_f64, 0.8]];
+    let filtered =
+        base.filter_covered_by_survivors(&corpus, &matrix, &["C1".to_string(), "C2".to_string()]);
+    // Survivor scores 1.0 on C1 → billing and compliance are now covered → removed
+    assert!(
+        !filtered.uncovered_domains.contains(&"billing".to_string()),
+        "billing should be covered by survivor"
+    );
+    assert!(
+        !filtered
+            .uncovered_domains
+            .contains(&"compliance".to_string()),
+        "compliance should be covered by survivor"
+    );
+    assert!(filtered.is_closed());
+}
+
+#[test]
+fn domain_stays_uncovered_when_no_survivor_passes_threshold() {
+    let corpus = vec![make_constraint("C1", &["billing"])];
+    let task_id = TaskId::new();
+    let pruned = vec![make_pruned(&task_id, &["C1"])];
+    let base = CoherenceState::from_pruned(&corpus, &pruned);
+
+    // Survivor scores 0.3 on C1 — below 0.5 threshold
+    let matrix = vec![vec![0.3_f64]];
+    let filtered = base.filter_covered_by_survivors(&corpus, &matrix, &["C1".to_string()]);
+    assert!(
+        filtered.uncovered_domains.contains(&"billing".to_string()),
+        "billing still uncovered"
+    );
+    assert!(!filtered.is_closed());
+}
+
+#[test]
+fn partial_cover_removes_only_covered_domains() {
+    // C1 has domains [billing, compliance], C2 has domain [consistency]
+    // Survivor passes C1 (billing+compliance covered) but fails C2 (consistency uncovered)
+    let corpus = vec![
+        make_constraint("C1", &["billing", "compliance"]),
+        make_constraint("C2", &["consistency"]),
+    ];
+    let task_id = TaskId::new();
+    let pruned = vec![make_pruned(&task_id, &["C1", "C2"])];
+    let base = CoherenceState::from_pruned(&corpus, &pruned);
+
+    let matrix = vec![vec![0.9_f64, 0.2]]; // passes C1, fails C2
+    let filtered =
+        base.filter_covered_by_survivors(&corpus, &matrix, &["C1".to_string(), "C2".to_string()]);
+    assert!(!filtered.uncovered_domains.contains(&"billing".to_string()));
+    assert!(!filtered
+        .uncovered_domains
+        .contains(&"compliance".to_string()));
+    assert!(
+        filtered
+            .uncovered_domains
+            .contains(&"consistency".to_string()),
+        "consistency still uncovered"
+    );
+}
+
+#[test]
+fn empty_matrix_leaves_uncovered_domains_unchanged() {
+    let corpus = vec![make_constraint("C1", &["billing"])];
+    let task_id = TaskId::new();
+    let pruned = vec![make_pruned(&task_id, &["C1"])];
+    let base = CoherenceState::from_pruned(&corpus, &pruned);
+
+    let filtered = base.filter_covered_by_survivors(&corpus, &[], &["C1".to_string()]);
+    assert!(filtered.uncovered_domains.contains(&"billing".to_string()));
+}
+
+// ── subtract_covered_domains ───────────────────────────────────────────────
+
+fn make_state_with_uncovered(uncovered: &[&str]) -> CoherenceState {
+    CoherenceState {
+        uncovered_domains: uncovered.iter().map(|s| s.to_string()).collect(),
+        active_contradictions: vec![],
+    }
+}
+
+#[test]
+fn subtract_removes_matching_domain() {
+    let state = make_state_with_uncovered(&["billing", "compliance"]);
+    let covered: HashSet<String> = HashSet::from(["billing".to_string()]);
+    let result = state.subtract_covered_domains(&covered);
+    assert_eq!(result.uncovered_domains, vec!["compliance".to_string()]);
+}
+
+#[test]
+fn subtract_removes_all_when_fully_covered() {
+    let state = make_state_with_uncovered(&["billing", "compliance"]);
+    let covered: HashSet<String> = HashSet::from(["billing".to_string(), "compliance".to_string()]);
+    let result = state.subtract_covered_domains(&covered);
+    assert!(result.uncovered_domains.is_empty());
+}
+
+#[test]
+fn subtract_leaves_non_matching_intact() {
+    let state = make_state_with_uncovered(&["billing"]);
+    let covered: HashSet<String> = HashSet::from(["audit".to_string()]);
+    let result = state.subtract_covered_domains(&covered);
+    assert_eq!(result.uncovered_domains, vec!["billing".to_string()]);
+}
+
+#[test]
+fn subtract_empty_set_is_noop() {
+    let state = make_state_with_uncovered(&["billing", "compliance"]);
+    let covered: HashSet<String> = HashSet::new();
+    let result = state.subtract_covered_domains(&covered);
+    assert_eq!(
+        result.uncovered_domains,
+        vec!["billing".to_string(), "compliance".to_string()]
+    );
+}
+
+#[test]
+fn subtract_on_empty_uncovered_is_noop() {
+    let state = make_state_with_uncovered(&[]);
+    let covered: HashSet<String> = HashSet::from(["billing".to_string()]);
+    let result = state.subtract_covered_domains(&covered);
+    assert!(result.uncovered_domains.is_empty());
+}
+
+#[test]
+fn subtract_does_not_touch_active_contradictions() {
+    let corpus = vec![make_constraint("C1", &["billing"])];
+    let explorers = make_explorers(2);
+    let matrix = vec![vec![0.9], vec![0.1]];
+    let state = CoherenceState {
+        uncovered_domains: vec!["billing".to_string()],
+        active_contradictions: vec![],
+    }
+    .with_contradictions(&corpus, &explorers, &matrix, &["C1".to_string()]);
+
+    assert_eq!(state.active_contradictions.len(), 1);
+
+    let covered: HashSet<String> = HashSet::from(["billing".to_string()]);
+    let result = state.subtract_covered_domains(&covered);
+    assert!(result.uncovered_domains.is_empty());
+    assert_eq!(
+        result.active_contradictions.len(),
+        1,
+        "contradictions must be untouched"
+    );
+}
+
+#[test]
+fn subtract_makes_is_closed_true_when_both_fields_clear() {
+    let state = make_state_with_uncovered(&["billing"]);
+    assert!(!state.is_closed(), "should be open before subtraction");
+    let covered: HashSet<String> = HashSet::from(["billing".to_string()]);
+    let result = state.subtract_covered_domains(&covered);
+    assert!(
+        result.is_closed(),
+        "should be closed after all domains removed"
+    );
+}
+
+// ── GAP-C1 composition / regression tests ─────────────────────────────────
+
+fn make_soft_constraint(id: &str, domains: &[&str]) -> ConstraintDoc {
+    let mut c = ConstraintDoc::new_soft_llm_judge(id, "rubric");
+    c.domains = domains.iter().map(|s| s.to_string()).collect();
+    c
+}
+
+/// GAP-C1 core regression: Hard constraint, all branches pruned, survivor clears false positive.
+///
+/// Before the GAP-C1 fix, `from_pruned` would mark "billing" and "compliance" as uncovered
+/// even when surviving proposals correctly handled C1. `llm_coverage::run` + `subtract_covered_domains`
+/// clears the false positive when survivor_count >= 1.
+#[test]
+fn gap_c1_false_positive_cleared_by_survivor() {
+    let corpus = vec![make_constraint("C1", &["billing", "compliance"])];
+    let task_id = TaskId::new();
+    let pruned = vec![
+        make_pruned(&task_id, &["C1"]),
+        make_pruned(&task_id, &["C1"]),
+    ];
+    let state = CoherenceState::from_pruned(&corpus, &pruned);
+    // Both "billing" and "compliance" are initially marked uncovered (false positive)
+    assert!(state.uncovered_domains.contains(&"billing".to_string()));
+    assert!(state.uncovered_domains.contains(&"compliance".to_string()));
+
+    let llm_out = llm_coverage::run(llm_coverage::Input {
+        corpus: &corpus,
+        survivor_count: 1,
+        bypassed_ids: &HashSet::new(),
+    });
+    let covered: HashSet<String> = llm_out.covered_domains.into_iter().collect();
+    // llm_coverage should have covered both domains from the Hard constraint
+    assert!(covered.contains("billing"));
+    assert!(covered.contains("compliance"));
+
+    let final_state = state.subtract_covered_domains(&covered);
+    assert!(
+        final_state.uncovered_domains.is_empty(),
+        "all domains should be cleared when survivor covers them"
+    );
+    assert!(final_state.is_closed());
+}
+
+/// GAP-C1 boundary: zero survivors means no domains are covered — false positive stays.
+#[test]
+fn gap_c1_stays_open_with_no_survivors() {
+    let corpus = vec![make_constraint("C1", &["billing", "compliance"])];
+    let task_id = TaskId::new();
+    let pruned = vec![
+        make_pruned(&task_id, &["C1"]),
+        make_pruned(&task_id, &["C1"]),
+    ];
+    let state = CoherenceState::from_pruned(&corpus, &pruned);
+
+    let llm_out = llm_coverage::run(llm_coverage::Input {
+        corpus: &corpus,
+        survivor_count: 0,
+        bypassed_ids: &HashSet::new(),
+    });
+    assert!(
+        llm_out.covered_domains.is_empty(),
+        "zero survivors → no covered domains"
+    );
+
+    let covered: HashSet<String> = llm_out.covered_domains.into_iter().collect();
+    let final_state = state.subtract_covered_domains(&covered);
+    assert!(
+        !final_state.uncovered_domains.is_empty(),
+        "domains must remain uncovered when no survivor exists"
+    );
+    assert!(!final_state.is_closed());
+}
+
+/// GAP-C1 design boundary: Soft constraints are excluded from llm_coverage by design.
+/// Even when survivors exist, a Soft-domain violation is NOT cleared by subtract_covered_domains.
+#[test]
+fn soft_violated_domain_stays_uncovered_by_design() {
+    let corpus = vec![make_soft_constraint("C2", &["audit"])];
+    let task_id = TaskId::new();
+    let pruned = vec![make_pruned(&task_id, &["C2"])];
+    let state = CoherenceState::from_pruned(&corpus, &pruned);
+    assert!(
+        state.uncovered_domains.contains(&"audit".to_string()),
+        "audit should be initially uncovered"
+    );
+
+    // llm_coverage excludes Soft constraints, so covered_domains is empty even with survivors
+    let llm_out = llm_coverage::run(llm_coverage::Input {
+        corpus: &corpus,
+        survivor_count: 1,
+        bypassed_ids: &HashSet::new(),
+    });
+    assert!(
+        llm_out.covered_domains.is_empty(),
+        "Soft constraint domains must not appear in llm_coverage output"
+    );
+
+    let covered: HashSet<String> = llm_out.covered_domains.into_iter().collect();
+    let final_state = state.subtract_covered_domains(&covered);
+    assert!(
+        final_state.uncovered_domains.contains(&"audit".to_string()),
+        "audit must remain uncovered — Soft domains are not cleared by llm_coverage"
+    );
+    assert!(!final_state.is_closed());
+}
+
+/// GAP-C1 partial clear: Hard domain cleared by survivor, Soft domain stays uncovered.
+#[test]
+fn hard_covered_soft_uncovered_partial_clear() {
+    let corpus = vec![
+        make_constraint("C1", &["billing"]),
+        make_soft_constraint("C2", &["audit"]),
+    ];
+    let task_id = TaskId::new();
+    let pruned = vec![make_pruned(&task_id, &["C1", "C2"])];
+    let state = CoherenceState::from_pruned(&corpus, &pruned);
+    // Both domains initially uncovered
+    assert!(state.uncovered_domains.contains(&"audit".to_string()));
+    assert!(state.uncovered_domains.contains(&"billing".to_string()));
+
+    // llm_coverage only covers Hard domains → ["billing"]
+    let llm_out = llm_coverage::run(llm_coverage::Input {
+        corpus: &corpus,
+        survivor_count: 1,
+        bypassed_ids: &HashSet::new(),
+    });
+    assert_eq!(llm_out.covered_domains, vec!["billing".to_string()]);
+
+    let covered: HashSet<String> = llm_out.covered_domains.into_iter().collect();
+    let final_state = state.subtract_covered_domains(&covered);
+    // "billing" removed (Hard, covered), "audit" remains (Soft, not cleared)
+    assert_eq!(
+        final_state.uncovered_domains,
+        vec!["audit".to_string()],
+        "only Hard domain should be cleared"
+    );
+    assert!(!final_state.is_closed());
+}
+
+/// GAP-C1 invariant: subtract_covered_domains never touches active_contradictions.
+#[test]
+fn full_chain_subtract_does_not_clear_active_contradictions() {
+    let corpus = vec![make_constraint("C1", &["billing"])];
+    let explorers = make_explorers(2);
+    // Survivor matrix: explorer 0 passes C1, explorer 1 fails → contradiction on "billing"
+    let matrix = vec![vec![0.9_f64], vec![0.1]];
+    let state = CoherenceState {
+        uncovered_domains: vec!["billing".to_string()],
+        active_contradictions: vec![],
+    }
+    .with_contradictions(&corpus, &explorers, &matrix, &["C1".to_string()]);
+
+    assert_eq!(
+        state.active_contradictions.len(),
+        1,
+        "should have one contradiction before subtract"
+    );
+    assert!(state.uncovered_domains.contains(&"billing".to_string()));
+
+    let llm_out = llm_coverage::run(llm_coverage::Input {
+        corpus: &corpus,
+        survivor_count: 1,
+        bypassed_ids: &HashSet::new(),
+    });
+    let covered: HashSet<String> = llm_out.covered_domains.into_iter().collect();
+    let final_state = state.subtract_covered_domains(&covered);
+
+    assert!(
+        final_state.uncovered_domains.is_empty(),
+        "billing should be removed from uncovered_domains"
+    );
+    assert_eq!(
+        final_state.active_contradictions.len(),
+        1,
+        "contradictions must not be touched by subtract_covered_domains"
+    );
+    // Contradiction is still present → not closed
+    assert!(!final_state.is_closed());
 }

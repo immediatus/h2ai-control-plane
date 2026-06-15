@@ -45,11 +45,6 @@ pub async fn reset_experiment_state(
     Json(reset_response_body_value(&tenant_id))
 }
 
-#[cfg(test)]
-pub(crate) fn reset_response_body(tenant_id: &str) -> String {
-    reset_response_body_value(tenant_id).to_string()
-}
-
 fn reset_response_body_value(tenant_id: &str) -> serde_json::Value {
     serde_json::json!({
         "tenant_id": tenant_id,
@@ -62,35 +57,4 @@ fn reset_response_body_value(tenant_id: &str) -> serde_json::Value {
             "rho_ema"
         ]
     })
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn reset_response_is_json_with_tenant() {
-        let body = super::reset_response_body("test-tenant");
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["tenant_id"], "test-tenant");
-        assert_eq!(v["reset"], true);
-        assert!(v["fields_reset"].is_array());
-        let fields = v["fields_reset"].as_array().unwrap();
-        assert_eq!(fields.len(), 5);
-    }
-
-    #[test]
-    fn reset_response_contains_all_expected_fields() {
-        let body = super::reset_response_body("tenant-42");
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let fields: Vec<&str> = v["fields_reset"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|f| f.as_str().unwrap())
-            .collect();
-        assert!(fields.contains(&"tau_spread_estimator"));
-        assert!(fields.contains(&"bandit_state"));
-        assert!(fields.contains(&"tao_multiplier_estimator"));
-        assert!(fields.contains(&"srani_state"));
-        assert!(fields.contains(&"rho_ema"));
-    }
 }

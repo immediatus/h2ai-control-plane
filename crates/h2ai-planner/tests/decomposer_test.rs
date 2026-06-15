@@ -201,9 +201,13 @@ async fn decomposer_recognises_synthesizer_and_coordinator_role_hints() {
 
 #[tokio::test]
 async fn decomposer_propagates_adapter_error() {
-    let result =
-        PlanningEngine::decompose(&manifest(), &failing_adapter(), TauValue::new(0.4).unwrap(), 1024)
-            .await;
+    let result = PlanningEngine::decompose(
+        &manifest(),
+        &failing_adapter(),
+        TauValue::new(0.4).unwrap(),
+        1024,
+    )
+    .await;
     assert!(
         matches!(result, Err(PlannerError::Adapter(_))),
         "adapter failure must propagate as PlannerError::Adapter, got: {result:?}"

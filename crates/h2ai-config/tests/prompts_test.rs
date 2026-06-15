@@ -1,5 +1,6 @@
 use h2ai_config::prompts::{
-    PromptTemplate, COMPILER_CONSTRAINT_ORDERING, THINKING_ARCHETYPE_SELECT_ITER1,
+    PromptTemplate, COMPILER_CONSTRAINT_ORDERING, I1_GAP_EXTRACTOR_SYSTEM, I1_GAP_EXTRACTOR_TASK,
+    I1_SEMANTIC_REPAIR_SLOT, I1_SYNTHESIS_VALIDATOR_TASK, THINKING_ARCHETYPE_SELECT_ITER1,
     THINKING_SYNTHESIS_MD_SYSTEM, THINKING_SYNTHESIS_TASK,
 };
 
@@ -57,4 +58,45 @@ fn synthesis_md_system_does_not_instruct_json_output() {
         THINKING_SYNTHESIS_MD_SYSTEM.contains("markdown"),
         "THINKING_SYNTHESIS_MD_SYSTEM should instruct markdown format"
     );
+}
+
+#[test]
+fn gap_extractor_prompts_defined() {
+    assert!(!I1_GAP_EXTRACTOR_SYSTEM.is_empty());
+    assert!(I1_GAP_EXTRACTOR_TASK.contains("{check_text}"));
+    assert!(I1_GAP_EXTRACTOR_TASK.contains("{verifier_reasons}"));
+}
+
+#[test]
+fn synthesis_validator_prompt_defined() {
+    assert!(!I1_SYNTHESIS_VALIDATOR_TASK.is_empty());
+    assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{check_text}"));
+    assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{incorrect_pattern}"));
+    assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{correct_pattern}"));
+    assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("{mechanistic_reason}"));
+}
+
+#[test]
+fn semantic_repair_slot_template_defined() {
+    assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{incorrect_pattern}"));
+    assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{correct_pattern}"));
+    assert!(I1_SEMANTIC_REPAIR_SLOT.contains("{mechanistic_reason}"));
+}
+
+#[test]
+fn i1_semantic_repair_slot_uses_prior_approach_not_wrong_belief() {
+    assert!(
+        !I1_SEMANTIC_REPAIR_SLOT.contains("WRONG BELIEF"),
+        "I1_SEMANTIC_REPAIR_SLOT must use PRIOR APPROACH, not WRONG BELIEF"
+    );
+    assert!(I1_SEMANTIC_REPAIR_SLOT.contains("PRIOR APPROACH"));
+}
+
+#[test]
+fn i1_synthesis_validator_task_uses_prior_approach_not_wrong_belief() {
+    assert!(
+        !I1_SYNTHESIS_VALIDATOR_TASK.contains("WRONG BELIEF"),
+        "I1_SYNTHESIS_VALIDATOR_TASK must use PRIOR APPROACH, not WRONG BELIEF"
+    );
+    assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("PRIOR APPROACH"));
 }

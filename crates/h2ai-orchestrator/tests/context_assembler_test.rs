@@ -230,6 +230,7 @@ fn make_input_with_leader(lp: &str) -> ContextAssemblerInput<'_> {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     }
 }
 
@@ -251,6 +252,7 @@ fn make_input_with_retry(rc: &str) -> ContextAssemblerInput<'_> {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     }
 }
 
@@ -272,6 +274,7 @@ fn make_empty_input<'a>() -> ContextAssemblerInput<'a> {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     }
 }
 
@@ -366,6 +369,7 @@ async fn build_no_budget_returns_compression_none() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert_eq!(result.compression, CompressionKind::None);
@@ -393,6 +397,7 @@ async fn build_with_budget_runs_rule_pass() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -450,6 +455,7 @@ async fn build_with_prev_wave_sets_delta_flag() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -477,6 +483,7 @@ async fn global_knowledge_section_preserved_under_tight_budget() {
         global_knowledge: Some("Global overview: financial systems require atomicity."),
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -506,6 +513,7 @@ async fn topic_knowledge_section_included_when_provided() {
         global_knowledge: None,
         topic_knowledge: Some("Topic: idempotency patterns for distributed payments."),
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(
@@ -537,6 +545,7 @@ fn assemble_raw_includes_all_optional_sections() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: Some("C-001 vs C-007 tension"),
+        compliance_checklist: None,
     };
     let raw = assemble_raw(&input);
     assert!(raw.contains("[STATE-OF-THE-ART]: grounding hint"));
@@ -570,6 +579,7 @@ fn build_sections_with_all_optional_fields() {
         global_knowledge: Some("global"),
         topic_knowledge: Some("topic"),
         constraint_tensions: Some("tensions"),
+        compliance_checklist: None,
     };
     let sections = build_sections(&input);
     let tags: Vec<&SectionTag> = sections.iter().map(|s| &s.tag).collect();
@@ -692,6 +702,7 @@ async fn build_returns_importance_scored_on_tight_budget_no_adapter() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert_eq!(result.compression, CompressionKind::ImportanceScored);
@@ -725,6 +736,7 @@ async fn build_returns_llm_summarized_with_adapter_on_tight_budget() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: None,
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert_eq!(result.compression, CompressionKind::LlmSummarized);
@@ -751,7 +763,40 @@ async fn constraint_tensions_appear_in_build_output() {
         global_knowledge: None,
         topic_knowledge: None,
         constraint_tensions: Some("C-001 conflicts with C-007"),
+        compliance_checklist: None,
     };
     let result = ContextAssembler::build(input).await;
     assert!(result.text.contains("C-001 conflicts with C-007"));
+}
+
+#[test]
+fn compliance_checklist_appears_in_assembled_raw() {
+    let checklist = "1. Is debit atomic?\n2. Is audit log immutable?";
+    let mut input = make_empty_input();
+    input.active_ctx = "Design a billing system.";
+    input.compliance_checklist = Some(checklist);
+    let raw = assemble_raw(&input);
+    assert!(
+        raw.contains("[COMPLIANCE CHECKLIST]"),
+        "expected compliance checklist header in raw output"
+    );
+    assert!(
+        raw.contains("Is debit atomic?"),
+        "expected checklist item in raw output"
+    );
+}
+
+#[test]
+fn compliance_checklist_section_is_preserved() {
+    let checklist = "1. Atomic debit required\n2. No distributed locks";
+    let mut input = make_empty_input();
+    input.active_ctx = "ctx";
+    input.compliance_checklist = Some(checklist);
+    let sections = build_sections(&input);
+    let cl = sections
+        .iter()
+        .find(|s| s.tag == SectionTag::ComplianceChecklist)
+        .expect("ComplianceChecklist section must exist");
+    assert!(cl.preserve, "compliance checklist must be preserve=true");
+    assert_eq!(cl.importance, 1.0);
 }

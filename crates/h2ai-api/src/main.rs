@@ -247,13 +247,20 @@ async fn main() {
         let mut tiers: Vec<Box<dyn h2ai_orchestrator::srani_grounding::GroundingProvider>> =
             vec![Box::new(SpecAnchorGrounder)];
         if let Some(ref r) = app_state.researcher_adapter {
-            tiers.push(Box::new(LlmResearcherGrounder::new(r.clone(), srani_cfg.researcher_max_tokens)));
+            tiers.push(Box::new(LlmResearcherGrounder::new(
+                r.clone(),
+                srani_cfg.researcher_max_tokens,
+            )));
         }
         let chain = SraniGroundingChain::new(tiers)
             .with_compress_threshold(srani_cfg.grounding_compress_threshold);
         // Wire distiller from the researcher adapter if distillation is enabled.
         let chain = if let Some(ref r) = app_state.researcher_adapter {
-            chain.with_distiller(r.clone(), srani_cfg.grounding_distill, srani_cfg.distill_max_tokens)
+            chain.with_distiller(
+                r.clone(),
+                srani_cfg.grounding_distill,
+                srani_cfg.distill_max_tokens,
+            )
         } else {
             chain
         };
@@ -265,11 +272,12 @@ async fn main() {
         );
     }
 
-    // ── gap research chain: DuckDuckGo + LLM distiller ───────────────
+    // ── gap research chain: StackOverflow + LLM distiller ───────────────
+    // DuckDuckGo lite is CAPTCHA-blocked on cloud/devcontainer IPs; SO is not.
     {
         use h2ai_orchestrator::srani_grounding::{SraniGroundingChain, WebSearchGrounder};
-        use h2ai_tools::web_search::DuckDuckGoSearchBackend;
-        let backend = std::sync::Arc::new(DuckDuckGoSearchBackend::new());
+        use h2ai_tools::web_search::StackOverflowSearchBackend;
+        let backend = std::sync::Arc::new(StackOverflowSearchBackend::new());
         let web_grounder = WebSearchGrounder::new(backend, 5);
         let providers: Vec<Box<dyn h2ai_orchestrator::srani_grounding::GroundingProvider>> =
             vec![Box::new(web_grounder)];
@@ -277,12 +285,16 @@ async fn main() {
         let chain = SraniGroundingChain::new(providers)
             .with_compress_threshold(srani_cfg.grounding_compress_threshold);
         let chain = if let Some(ref r) = app_state.researcher_adapter {
-            chain.with_distiller(r.clone(), srani_cfg.grounding_distill, srani_cfg.distill_max_tokens)
+            chain.with_distiller(
+                r.clone(),
+                srani_cfg.grounding_distill,
+                srani_cfg.distill_max_tokens,
+            )
         } else {
             chain
         };
         app_state.gap_research_chain = Some(std::sync::Arc::new(chain));
-        tracing::info!(target: "h2ai.startup", "gap research chain built (DuckDuckGo + distiller)");
+        tracing::info!(target: "h2ai.startup", "gap research chain built (StackOverflow + distiller)");
     }
 
     // Wire knowledge provider — always a CompositeProvider that fans to [wiki, skill_provider]

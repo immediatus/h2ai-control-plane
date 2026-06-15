@@ -62,6 +62,8 @@ pub enum SectionTag {
     /// Cross-domain constraint tensions surfaced by Synthesizer knowledge query.
     /// preserve=false, importance=0.85. Only injected for Synthesizer slots.
     ConstraintTension,
+    /// Compliance checklist from constraint binary_checks. preserve=true, importance=1.0.
+    ComplianceChecklist,
 }
 
 /// Input to `ContextAssembler::build()`.
@@ -90,6 +92,9 @@ pub struct ContextAssemblerInput<'a> {
     pub topic_knowledge: Option<&'a str>,
     /// Constraint tension text for Synthesizer slots. None = omit. preserve=false, importance=0.85.
     pub constraint_tensions: Option<&'a str>,
+    /// Numbered compliance checklist derived from constraint binary_checks.
+    /// preserve=true, importance=1.0. None = omit.
+    pub compliance_checklist: Option<&'a str>,
 }
 
 pub struct ContextAssembler;
@@ -294,6 +299,11 @@ pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
             parts.push(format!("[CONSTRAINT TENSIONS]:\n{ct}"));
         }
     }
+    if let Some(cl) = input.compliance_checklist {
+        if !cl.is_empty() {
+            parts.push(format!("[COMPLIANCE CHECKLIST]:\n{cl}"));
+        }
+    }
     parts.join("\n\n")
 }
 
@@ -427,6 +437,16 @@ pub fn build_sections(input: &ContextAssemblerInput<'_>) -> Vec<Section> {
                 text: ct.to_string(),
                 importance: 0.85,
                 preserve: false,
+            });
+        }
+    }
+    if let Some(cl) = input.compliance_checklist {
+        if !cl.is_empty() {
+            sections.push(Section {
+                tag: SectionTag::ComplianceChecklist,
+                text: cl.to_string(),
+                importance: 1.0,
+                preserve: true,
             });
         }
     }
