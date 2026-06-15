@@ -91,3 +91,14 @@ entropy_threshold             = 0.6
 retry_slope_threshold         = 0.05
 n_eff_cg_product_threshold    = 0.3
 min_retry_count_for_detection = 2
+
+[ambiguity_detection]
+enabled                          = true
+score_threshold                  = 0.6
+weight_multi_storage             = 0.20
+weight_fm_negation               = 0.30
+weight_remediation_conflict      = 0.15
+weight_cross_check_negation      = 0.20
+weight_llm_confirmed             = 0.25
+weight_jaccard_freeze_wave       = 0.15
+weight_positive_example_conflict = 0.35

@@ -11,6 +11,7 @@
 
 pub mod a2a;
 pub mod anthropic;
+pub mod chain;
 pub mod cloud;
 pub mod factory;
 pub mod ollama;

@@ -242,6 +242,15 @@ pub const THINKING_ARCHETYPE_SYSTEM: &str =
      Each archetype must be defined by a specific professional lens that will surface insights \
      a generic reviewer would miss. Output only a valid JSON array — no markdown, no explanation.";
 
+/// System prompt for the markdown-fill archetype selection path.
+/// Used with `THINKING_ARCHETYPE_MD_ITER1` / `THINKING_ARCHETYPE_MD_ITERN`.
+pub const THINKING_ARCHETYPE_SYSTEM_MD: &str =
+    "You are a cognitive strategist selecting expert reviewer archetypes for a technical problem. \
+     Each archetype must be defined by a specific professional lens that will surface insights \
+     a generic reviewer would miss. \
+     Start each archetype section with a line containing ONLY \"## Archetype N: kebab-name\" \
+     (N = 1, 2, 3…), then fill in the required fields with natural prose — no JSON.";
+
 /// Archetype selection task for iteration 1 (no prior thinking context).
 /// Variables: `{description}`, `{constraints}`, `{research_context}`, `{n}`.
 pub const THINKING_ARCHETYPE_SELECT_ITER1: PromptTemplate = PromptTemplate(concat!(
@@ -278,6 +287,71 @@ pub const THINKING_ARCHETYPE_SELECT_ITERN: PromptTemplate = PromptTemplate(conca
     "Output ONLY the JSON array."
 ));
 
+/// Markdown-fill archetype selection template — iteration 1 (no prior thinking context).
+///
+/// Replaces `THINKING_ARCHETYPE_SELECT_ITER1` for the markdown-chain path.
+/// Variables: `{description}`, `{constraints}`, `{research_context}`, `{n}`.
+pub const THINKING_ARCHETYPE_MD_ITER1: PromptTemplate = PromptTemplate(concat!(
+    "Select exactly {n} expert archetypes for this task. Each must have a fundamentally \
+     different cognitive lens — not just different titles, but different things they notice FIRST.\n\n",
+    "TASK: {description}\n\n",
+    "ACTIVE CONSTRAINTS: {constraints}\n\n",
+    "RESEARCH CONTEXT: {research_context}\n\n",
+    "For each archetype (number them 1 through {n}), begin a new section with a line containing \
+     ONLY \"## Archetype N: your-kebab-name\" (replace N with 1, 2, 3…), \
+     then fill in these fields on separate lines:\n\n",
+    "**Lens:** [professional role and cognitive angle in one sentence]\n",
+    "**Persona:** You are a [role] who [characteristic approach]. \
+     [2-3 sentences: how this archetype reasons, what they notice first, what failure modes they catch.]\n",
+    "**Scope:** [specific slice of the problem this archetype owns]\n",
+    "**Confidence:** [0.0–1.0 — how reliably this archetype applies to this domain]\n",
+    "**Tau:** [0.0–1.0 — reasoning temperature; lower for precision, higher for creative]\n",
+    "**Model tier:** [fast | standard | capable]\n",
+    "**CoT style:** [step_by_step | devil_s_advocate | first_principles | backward_chaining | none]"
+));
+
+/// Markdown-fill archetype selection template — iteration N > 1 (prior synthesis available).
+///
+/// Replaces `THINKING_ARCHETYPE_SELECT_ITERN` for the markdown-chain path.
+/// Variables: `{description}`, `{understanding}`, `{tensions}`, `{n}`.
+pub const THINKING_ARCHETYPE_MD_ITERN: PromptTemplate = PromptTemplate(concat!(
+    "TASK: {description}\n\n",
+    "PRIOR SYNTHESIS:\n{understanding}\n\n",
+    "UNRESOLVED TENSIONS (these gaps were NOT resolved in the previous iteration):\n{tensions}\n\n",
+    "Select exactly {n} archetypes. REPLACE any archetype whose perspective did not resolve any \
+     tension above. New archetypes must specifically target the unresolved gaps.\n\n",
+    "For each archetype (number them 1 through {n}), begin a new section with a line containing \
+     ONLY \"## Archetype N: your-kebab-name\" (replace N with 1, 2, 3…), \
+     then fill in these fields on separate lines:\n\n",
+    "**Lens:** [professional role and cognitive angle]\n",
+    "**Persona:** You are a [role] who [characteristic approach]. [2-3 sentences.]\n",
+    "**Scope:** [specific slice of the problem]\n",
+    "**Confidence:** [0.0–1.0]\n",
+    "**Tau:** [0.0–1.0]\n",
+    "**Model tier:** [fast | standard | capable]\n",
+    "**CoT style:** [step_by_step | devil_s_advocate | first_principles | backward_chaining | none]"
+));
+
+/// Pairwise synthesis merge template for tournament rounds.
+///
+/// Proposal A is provided as `system_context` ("## Current Best:").
+/// Variable: `{proposal_b}` — the challenger perspective.
+pub const THINKING_SYNTHESIS_MD_PAIRWISE: &str = concat!(
+    "## Challenger Perspective:\n{proposal_b}\n\n",
+    "You have two expert perspectives. Synthesise them into a unified view. \
+     Weight the perspective whose reasoning is more concrete and grounded.\n\n",
+    "Fill in:\n\n",
+    "## Shared Understanding\n",
+    "[3–5 sentences: what both perspectives agree on; what is now resolved]\n\n",
+    "## Unresolved Tensions\n",
+    "- [tension 1 — name the specific disagreement]\n",
+    "- [tension 2]\n",
+    "[Omit this section entirely if none remain]\n\n",
+    "## Coverage Assessment\n",
+    "**Score:** [0.0–1.0]\n",
+    "[One sentence: how completely the combined view covers the problem space]"
+);
+
 /// Task prompt for per-archetype brainstorm session.
 /// Variables: `{description}`, `{research_context}`, `{cot_instruction}`.
 pub const THINKING_BRAINSTORM_TASK: PromptTemplate = PromptTemplate(concat!(
@@ -298,6 +372,13 @@ pub const THINKING_SYNTHESIS_SYSTEM: &str =
     "You are a synthesis facilitator merging insights from multiple expert perspectives. \
      Weight higher-confidence views more heavily when resolving conflicts (ReConcile method). \
      Output a single JSON object — no markdown, no explanation.";
+
+/// System prompt for markdown-format synthesis used with tournament_merge + THINKING_SYNTHESIS_MD_PAIRWISE.
+/// Must NOT instruct structured-data output — parse_synthesis_from_markdown expects markdown sections.
+pub const THINKING_SYNTHESIS_MD_SYSTEM: &str =
+    "You are a synthesis facilitator merging insights from multiple expert perspectives. \
+     Weight higher-confidence views more heavily when resolving conflicts (ReConcile method). \
+     Respond using exactly the markdown section format shown — no extra preamble, no prose outside the sections.";
 
 /// Synthesis task: confidence-weighted merge of all archetype outputs.
 /// Variables: `{perspectives}`, `{prior_understanding}`.

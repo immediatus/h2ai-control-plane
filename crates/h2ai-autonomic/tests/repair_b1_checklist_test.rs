@@ -24,6 +24,7 @@ fn base_input<'a>(
         prior_best_score: None,
         domain_syntheses: &[],
         coupled_constraint_hints: &[],
+        passing_constraint_pins: &[],
     }
 }
 

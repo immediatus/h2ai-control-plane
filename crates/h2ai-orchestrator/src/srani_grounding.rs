@@ -16,6 +16,14 @@ pub use h2ai_types::events::GroundingSource;
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
+/// Execution options for [`run_gap_researcher`].
+pub struct GapResearcherOpts<'a> {
+    pub min_confidence: f64,
+    pub timeout_secs: u64,
+    pub corpus_pass_hint: Option<&'a str>,
+    pub synthesis_max_tokens: u64,
+}
+
 pub struct GroundingContext {
     pub fabricated_entities: Vec<String>,
     pub task_description: String,
@@ -437,11 +445,14 @@ pub async fn run_gap_researcher(
     check_text: &str,
     adapter: &Arc<dyn IComputeAdapter>,
     chain: Option<&SraniGroundingChain>,
-    min_confidence: f64,
-    timeout_secs: u64,
-    corpus_pass_hint: Option<&str>,
-    synthesis_max_tokens: u64,
+    opts: GapResearcherOpts<'_>,
 ) -> Option<DomainSynthesis> {
+    let GapResearcherOpts {
+        min_confidence,
+        timeout_secs,
+        corpus_pass_hint,
+        synthesis_max_tokens,
+    } = opts;
     let queries = gap_queries_from_record(record, check_text);
 
     let ctx = GroundingContext {

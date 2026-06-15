@@ -73,6 +73,7 @@ fn repair(
         prior_best_score: None,
         domain_syntheses: &[],
         coupled_constraint_hints: &[],
+        passing_constraint_pins: &[],
     })
 }
 
@@ -199,6 +200,7 @@ mod conflict_detection {
             prior_best_score: None,
             domain_syntheses: &[],
             coupled_constraint_hints: &[],
+            passing_constraint_pins: &[],
         });
         assert!(ctx.contains("COMPETING CONSTRAINTS DETECTED"));
         assert!(ctx.contains("Fix A first"));
@@ -243,6 +245,7 @@ mod conflict_detection {
             partial_passes: &[],
             prior_best_score: None,
             coupled_constraint_hints: &[],
+            passing_constraint_pins: &[],
         });
         assert!(ctx.contains("COMPETING CONSTRAINTS"));
         assert!(

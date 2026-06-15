@@ -727,6 +727,22 @@ const fn default_waste_ratio() -> f64 {
     1.0
 }
 
+/// Emitted once per task after verification, alongside `TaskAttributionEvent`.
+///
+/// Links `knowledge_injected` to `q_confidence` for GAP-F4 Phase 1 contrastive analysis.
+/// Offline query: `mean(q_confidence WHERE knowledge_injected=true) - mean(... WHERE false)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationKnowledgeEvent {
+    pub task_id: TaskId,
+    /// True when the thinking loop had ≥1 Synthetic skill node injected into context.
+    pub knowledge_injected: bool,
+    /// Count of Synthetic skill nodes that reached the LLM context.
+    pub skill_nodes_count: u32,
+    /// Task-level confidence estimate from the attribution chain.
+    pub q_confidence: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Emitted at the end of Phase 1.5 (Task Complexity Assessment).
 ///
 /// Records the full complexity signal chain: structural prior → optional empirical probe →
@@ -1326,6 +1342,8 @@ pub enum H2AIEvent {
     SubtaskCompleted(SubtaskCompletedEvent),
     /// Wraps [`TaskAttributionEvent`]: quality attribution snapshot for a completed task.
     TaskAttribution(TaskAttributionEvent),
+    /// Wraps [`GenerationKnowledgeEvent`]: per-task knowledge injection signal for GAP-F4 Phase 1.
+    GenerationKnowledge(GenerationKnowledgeEvent),
     /// Wraps [`EpistemicYieldEvent`]: semantic independence of surviving proposals (async, post-merge).
     EpistemicYield(EpistemicYieldEvent),
     /// Wraps [`TaskComplexityAssessedEvent`]: Phase 1.5 task complexity and routing quadrant.
@@ -1745,5 +1763,20 @@ mod cost_propagation_tests {
             ev.skill_nodes_injected, 0,
             "skill_nodes_injected must default to 0 for old events"
         );
+    }
+
+    #[test]
+    fn generation_knowledge_event_roundtrip() {
+        let ev = GenerationKnowledgeEvent {
+            task_id: crate::identity::TaskId::new(),
+            knowledge_injected: true,
+            skill_nodes_count: 3,
+            q_confidence: 0.82,
+            timestamp: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let restored: GenerationKnowledgeEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.skill_nodes_count, 3);
+        assert!(restored.knowledge_injected);
     }
 }

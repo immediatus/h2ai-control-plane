@@ -1,6 +1,6 @@
 use h2ai_config::prompts::{
     PromptTemplate, COMPILER_CONSTRAINT_ORDERING, THINKING_ARCHETYPE_SELECT_ITER1,
-    THINKING_SYNTHESIS_TASK,
+    THINKING_SYNTHESIS_MD_SYSTEM, THINKING_SYNTHESIS_TASK,
 };
 
 #[test]
@@ -42,4 +42,19 @@ fn synthesis_task_renders_perspectives_and_prior() {
 fn prompt_template_display_returns_raw_text() {
     const T: PromptTemplate = PromptTemplate("hello {world}");
     assert_eq!(format!("{T}"), "hello {world}");
+}
+
+#[test]
+fn synthesis_md_system_does_not_instruct_json_output() {
+    // THINKING_SYNTHESIS_MD_SYSTEM is used with tournament_merge + THINKING_SYNTHESIS_MD_PAIRWISE,
+    // which expects markdown sections. Verifying it does NOT say "JSON" prevents the conflict
+    // where the system says JSON but the template expects markdown (coverage_score=0.5 fallback bug).
+    assert!(
+        !THINKING_SYNTHESIS_MD_SYSTEM.to_lowercase().contains("json"),
+        "THINKING_SYNTHESIS_MD_SYSTEM must not instruct JSON output — use with markdown pairwise template"
+    );
+    assert!(
+        THINKING_SYNTHESIS_MD_SYSTEM.contains("markdown"),
+        "THINKING_SYNTHESIS_MD_SYSTEM should instruct markdown format"
+    );
 }

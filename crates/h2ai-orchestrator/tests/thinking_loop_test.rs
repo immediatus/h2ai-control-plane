@@ -141,6 +141,8 @@ async fn disabled_loop_returns_empty_report() {
         embedding_model: None,
         nats_client: None,
         task_id: "",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
     let report = run(input).await;
     assert!(report.shared_understanding.is_empty());
@@ -248,6 +250,8 @@ async fn run_forwards_constraint_ids_to_knowledge_query() {
         embedding_model: None,
         nats_client: None,
         task_id: "",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
 
     run(input).await;
@@ -385,6 +389,8 @@ async fn run_with_two_iterations_covers_convergence_check() {
         embedding_model: None,
         nats_client: None,
         task_id: "test-task",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
 
     let report = run(input).await;
@@ -435,6 +441,8 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
         embedding_model: None,
         nats_client: None,
         task_id: "",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
 
     let report = run(input).await;
@@ -469,6 +477,8 @@ async fn run_uses_fallback_archetype_on_parse_failure() {
         embedding_model: None,
         nats_client: None,
         task_id: "",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
 
     let report = run(input).await;

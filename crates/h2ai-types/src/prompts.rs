@@ -280,3 +280,37 @@ pub const H1_GRAFT_CONTEXT: &str = concat!(
     "  4. Output the complete updated draft, not a diff.\n",
     "--- END GRAFT STEP ---"
 );
+
+// ── CSPR (Constraint-Satisfying Prior Repair) prompts ─────────────────────────
+
+/// CSPR instruction-first repair header (wave with prior proposal available).
+/// Variables: `{retry_count}`, `{score_pct}` (integer, e.g. "75"), `{attempts_remaining}`.
+pub const CSPR_REPAIR_HEADER: &str = concat!(
+    "--- REPAIR INSTRUCTIONS (wave {retry_count}) ---\n",
+    "The prior proposal below scored {score_pct}%. ",
+    "Apply TARGETED repairs only — do NOT rewrite sections that already comply.\n",
+    "{attempts_remaining} attempt(s) remaining."
+);
+
+/// CSPR passing-constraints preservation block header, emitted before the pin list.
+/// The caller appends one `  ✓ <id>: <hint>` line per passing constraint.
+pub const CSPR_PASSING_PINS_HEADER: &str = concat!(
+    "PASSING CONSTRAINTS — satisfied in the prior proposal. ",
+    "Preserve their compliance exactly. Do NOT alter these sections:"
+);
+
+/// CSPR prior-proposal anchor block.
+/// Variables: `{retry_count}`, `{prior_proposal_text}`.
+pub const CSPR_PRIOR_PROPOSAL_BLOCK: &str = concat!(
+    "--- PRIOR PROPOSAL (wave {retry_count}, repair anchor) ---\n",
+    "{prior_proposal_text}\n",
+    "--- END PRIOR PROPOSAL ---"
+);
+
+/// CSPR constraint feedback header (no prior proposal available — first wave failure).
+/// Variables: `{retry_count}`, `{attempts_remaining}`.
+pub const CSPR_CONSTRAINT_FEEDBACK_HEADER: &str = concat!(
+    "--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n",
+    "The following constraints were violated. Fix ALL of these in your next response:\n\n",
+    "{attempts_remaining} retry attempt(s) remaining."
+);

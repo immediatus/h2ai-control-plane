@@ -1467,7 +1467,9 @@ name = "h2ai-adapters"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "h2ai-config",
+ "h2ai-test-utils",
  "h2ai-types",
  "rand",
  "regex",

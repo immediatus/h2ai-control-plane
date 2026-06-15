@@ -10,10 +10,13 @@
 //! immediately without calling the adapter.
 
 use futures::future::join_all;
+use h2ai_adapters::chain::{execute_chain, tournament_merge};
+use h2ai_types::chain::{ChainedRequest, ChainStep};
 use h2ai_config::prompts::{
-    THINKING_ARCHETYPE_SELECT_ITER1, THINKING_ARCHETYPE_SELECT_ITERN, THINKING_ARCHETYPE_SYSTEM,
+    THINKING_ARCHETYPE_MD_ITER1, THINKING_ARCHETYPE_MD_ITERN,
+    THINKING_ARCHETYPE_SYSTEM_MD,
     THINKING_BRAINSTORM_TASK, THINKING_QUALITY_GATE_SYSTEM, THINKING_QUALITY_GATE_TASK,
-    THINKING_SYNTHESIS_SYSTEM, THINKING_SYNTHESIS_TASK,
+    THINKING_SYNTHESIS_MD_PAIRWISE, THINKING_SYNTHESIS_MD_SYSTEM,
 };
 use h2ai_config::ThinkingLoopConfig;
 use h2ai_context::embedding::EmbeddingModel;
@@ -37,6 +40,9 @@ pub struct ThinkingLoopInput<'a> {
     pub constraint_ids: &'a [String],
     /// Domain tags used to focus knowledge retrieval (e.g. ["rtb", "latency"]).
     pub constraint_tags: &'a [String],
+    /// Full constraint docs injected into the archetype selection prompt so the LLM
+    /// can produce domain-scoped archetypes rather than generic personas.
+    pub constraint_corpus: &'a [h2ai_constraints::types::ConstraintDoc],
     /// Static fallback context used when no knowledge provider is configured.
     pub research_context: &'a str,
     /// Knowledge provider queried at each iteration. When present, domain articles
@@ -53,6 +59,9 @@ pub struct ThinkingLoopInput<'a> {
     pub nats_client: Option<async_nats::Client>,
     /// Task ID used in oracle gate payloads. May be empty when `nats_client` is `None`.
     pub task_id: &'a str,
+    /// Induction patterns from `InductionStore::load_patterns` for the current task's domain.
+    /// Pass `&[]` when no store is available — `format_induction_priors` returns empty string.
+    pub induction_patterns: &'a [h2ai_types::knowledge::KnowledgeNodePattern],
 }
 
 // ─── Pure helpers (pub for unit tests) ───────────────────────────────────────
@@ -152,13 +161,26 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
             &iteration_knowledge
         };
 
-        let archetypes =
+        let raw_archetypes =
             select_archetypes(&input, research_context, &report, iteration, n_this_iter).await;
-        let archetypes = if archetypes.is_empty() {
+        let used_fallback = raw_archetypes.is_empty();
+        let archetypes = if used_fallback {
             fallback_archetypes()
         } else {
-            archetypes
+            raw_archetypes
         };
+        {
+            let names: Vec<&str> = archetypes.iter().map(|a| a.name.as_str()).collect();
+            let scopes: Vec<&str> = archetypes.iter().map(|a| a.scope.as_str()).collect();
+            tracing::info!(
+                target: "h2ai.thinking",
+                iteration,
+                fallback = used_fallback,
+                ?names,
+                ?scopes,
+                "archetypes selected"
+            );
+        }
 
         let iteration_tau = scheduled_tau(
             iteration,
@@ -264,6 +286,29 @@ async fn fetch_iteration_knowledge(
 
 // ─── Archetype selection ──────────────────────────────────────────────────────
 
+/// Build a compact constraint spec block injected into the archetype selection prompt.
+/// Returns empty string when the corpus is empty (graceful no-op).
+/// Format per constraint:
+///   CONSTRAINT-004 — <description>
+///     [1] <binary_check_text>
+///     [2] …
+pub fn format_constraint_context(corpus: &[h2ai_constraints::types::ConstraintDoc]) -> String {
+    if corpus.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("CONSTRAINT SPECIFICATIONS (read these carefully to choose domain-matched archetypes):\n");
+    for doc in corpus {
+        out.push_str(&format!("\n{}", doc.id));
+        if !doc.description.is_empty() {
+            out.push_str(&format!(" — {}", doc.description));
+        }
+        for (i, check) in doc.binary_checks.iter().enumerate() {
+            out.push_str(&format!("\n  [{}] {}", i + 1, check));
+        }
+    }
+    out
+}
+
 /// Single pragmatic archetype used when LLM archetype selection fails to parse.
 /// Keeps the thinking loop alive for at least one brainstorm iteration.
 fn fallback_archetypes() -> Vec<ArchetypeSpec> {
@@ -308,54 +353,78 @@ async fn select_archetypes(
     let n = n_this_iter.to_string();
     let constraints = input.constraint_ids.join(", ");
 
+    // Build constraint-spec context from the corpus so the archetype selection LLM
+    // knows what each constraint ID actually demands — enabling domain-specific
+    // archetypes (e.g. "redis-atomicity-specialist") rather than generic personas.
+    let corpus_context = format_constraint_context(input.constraint_corpus);
+    let combined_context = match (corpus_context.is_empty(), research_context.is_empty()) {
+        (true, _) => research_context.to_string(),
+        (false, true) => corpus_context,
+        (false, false) => format!("{}\n\n{}", corpus_context, research_context),
+    };
+
     let task = if iteration == 0 {
-        THINKING_ARCHETYPE_SELECT_ITER1.render(&[
+        THINKING_ARCHETYPE_MD_ITER1.render(&[
             ("description", input.task_description),
             ("constraints", &constraints),
-            ("research_context", research_context),
+            ("research_context", &combined_context),
             ("n", &n),
         ])
     } else {
         let tensions_joined = report.tensions.join("; ");
-        let base_task = THINKING_ARCHETYPE_SELECT_ITERN.render(&[
+        THINKING_ARCHETYPE_MD_ITERN.render(&[
             ("description", input.task_description),
             ("understanding", &report.shared_understanding),
             ("tensions", &tensions_joined),
             ("n", &n),
-        ]);
-        if report.tensions.is_empty() {
-            base_task
-        } else {
-            let gaps = report
-                .tensions
-                .iter()
-                .enumerate()
-                .map(|(i, t)| format!("{}. {}", i + 1, t))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(
-                "{base_task}\n\nUnresolved tensions from the previous pass:\n{gaps}\n\
-                 Generate archetypes that specifically address these gaps. \
-                 Do not repeat perspectives already covered."
-            )
-        }
+        ])
     };
 
-    let req = ComputeRequest {
-        system_context: THINKING_ARCHETYPE_SYSTEM.into(),
-        task,
-        tau: TauValue::new(0.2).unwrap(),
-        max_tokens: input.cfg.archetype_select_max_tokens,
+    let priors = format_induction_priors(input.induction_patterns);
+    let system_context = if priors.is_empty() {
+        THINKING_ARCHETYPE_SYSTEM_MD.to_string()
+    } else {
+        format!("{}\n\n{}", THINKING_ARCHETYPE_SYSTEM_MD, priors)
     };
 
-    match input.adapter.execute(req).await {
-        Ok(resp) => parse_archetypes(&resp.output).unwrap_or_else(|| {
-            tracing::warn!(
+    match execute_chain(
+        input.adapter,
+        ChainedRequest {
+            initial_system_context: system_context,
+            steps: vec![ChainStep {
+                template: task,
+                tau: TauValue::new(0.2).unwrap(),
+                max_tokens: input.cfg.archetype_select_max_tokens,
+            }],
+        },
+    )
+    .await
+    {
+        Ok(filled) => {
+            tracing::debug!(
                 target: "h2ai.thinking",
-                "select_archetypes: failed to parse archetype JSON from LLM output (iteration {iteration})"
+                iteration,
+                raw = %filled,
+                "select_archetypes: raw LLM output"
             );
-            vec![]
-        }),
+            match parse_archetypes_from_markdown(&filled) {
+                Ok(specs) if !specs.is_empty() => specs,
+                Ok(_) => {
+                    tracing::warn!(
+                        target: "h2ai.thinking",
+                        "select_archetypes: markdown parser returned empty vec (iteration {iteration})"
+                    );
+                    vec![]
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "h2ai.thinking",
+                        "select_archetypes: failed to parse archetype markdown (iteration {iteration}): {e}"
+                    );
+                    vec![]
+                }
+            }
+        }
         Err(e) => {
             tracing::warn!(
                 target: "h2ai.thinking",
@@ -519,10 +588,29 @@ async fn synthesize(
     outputs: &[ArchetypeOutput],
     prior: &ThinkingReport,
 ) -> ThinkingReport {
-    let perspectives = outputs
+    if outputs.is_empty() {
+        return ThinkingReport::default();
+    }
+
+    // Sort by Krum-adjusted confidence (highest first) so proposals[0] is the Krum leader.
+    let mut sorted_outputs = outputs.to_vec();
+    sorted_outputs.sort_by(|a, b| {
+        let ja = if a.oracle_result.as_ref().is_some_and(|r| r.gate_passed) {
+            (a.confidence + input.cfg.oracle_confidence_bonus).min(1.0)
+        } else {
+            a.confidence
+        };
+        let jb = if b.oracle_result.as_ref().is_some_and(|r| r.gate_passed) {
+            (b.confidence + input.cfg.oracle_confidence_bonus).min(1.0)
+        } else {
+            b.confidence
+        };
+        jb.partial_cmp(&ja).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let proposals: Vec<String> = sorted_outputs
         .iter()
         .map(|o| {
-            // Apply oracle confidence bonus if oracle passed
             let j_eff = if o.oracle_result.as_ref().is_some_and(|r| r.gate_passed) {
                 (o.confidence + input.cfg.oracle_confidence_bonus).min(1.0)
             } else {
@@ -533,23 +621,25 @@ async fn synthesize(
                 o.archetype.name, j_eff, o.problem_analysis, o.solution_sketch
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
+        .collect();
 
-    let task = THINKING_SYNTHESIS_TASK.render(&[
-        ("perspectives", &perspectives),
-        ("prior_understanding", &prior.shared_understanding),
-    ]);
+    let system_context = format!(
+        "{}\n\nPRIOR UNDERSTANDING (from previous iteration — empty on first pass):\n{}",
+        THINKING_SYNTHESIS_MD_SYSTEM,
+        prior.shared_understanding,
+    );
 
-    let req = ComputeRequest {
-        system_context: THINKING_SYNTHESIS_SYSTEM.into(),
-        task,
-        tau: TauValue::new(0.3).unwrap(),
-        max_tokens: input.cfg.brainstorm_max_tokens,
-    };
-
-    match input.adapter.execute(req).await {
-        Ok(resp) => parse_thinking_report(&resp.output),
+    match tournament_merge(
+        input.adapter,
+        &system_context,
+        proposals,
+        THINKING_SYNTHESIS_MD_PAIRWISE,
+        TauValue::new(0.3).unwrap(),
+        input.cfg.synthesis_tournament_max_round_tokens,
+    )
+    .await
+    {
+        Ok(merged) => parse_synthesis_from_markdown(&merged),
         Err(e) => {
             tracing::warn!(
                 target: "h2ai.thinking",
@@ -627,6 +717,114 @@ pub fn parse_archetypes(text: &str) -> Option<Vec<ArchetypeSpec>> {
     }
 }
 
+/// Parse a markdown-filled archetype document into a `Vec<ArchetypeSpec>`.
+///
+/// Blocks split on `## Archetype` headers; each block extracts labelled fields.
+///
+/// # Errors
+/// Returns `Err(String)` when no blocks are found or a block is missing `**Persona:**`.
+pub fn parse_archetypes_from_markdown(text: &str) -> Result<Vec<ArchetypeSpec>, String> {
+    let chunks: Vec<&str> = text.split("## Archetype").skip(1).collect();
+    if chunks.is_empty() {
+        return Err("no '## Archetype' headers found in model output".to_string());
+    }
+    chunks
+        .iter()
+        .map(|block| parse_archetype_block(block))
+        .collect()
+}
+
+fn parse_archetype_block(block: &str) -> Result<ArchetypeSpec, String> {
+    // First non-empty line: "N: name-in-kebab-case" or just "name-in-kebab-case"
+    let name_line = block.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let name = name_line
+        .split_once(':')
+        .map_or(name_line, |(_prefix, rest)| rest.trim())
+        .to_string();
+
+    let persona = extract_md_field(block, "Persona")
+        .ok_or_else(|| format!("archetype '{name}': missing **Persona:** field"))?;
+    let scope = extract_md_field(block, "Scope").unwrap_or_default();
+    let confidence = extract_md_field(block, "Confidence")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.7);
+    let tau = extract_md_field(block, "Tau")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.5);
+    let model_tier = match extract_md_field(block, "Model tier")
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
+        "fast" => ModelTier::Fast,
+        "capable" => ModelTier::Capable,
+        _ => ModelTier::Standard,
+    };
+    let cot_style = match extract_md_field(block, "CoT style")
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
+        "step_by_step" => CotStyle::StepByStep,
+        "backward_chaining" => CotStyle::BackwardChaining,
+        "first_principles" => CotStyle::FirstPrinciples,
+        "devil_s_advocate" | "devils_advocate" | "devil's_advocate" => CotStyle::DevilsAdvocate,
+        _ => CotStyle::None,
+    };
+
+    Ok(ArchetypeSpec {
+        name,
+        persona,
+        scope,
+        confidence,
+        tau,
+        model_tier,
+        cot_style,
+    })
+}
+
+/// Extract the value of a `**Field:**` line from a markdown block.
+/// Returns the text after the marker, trimmed. Returns `None` if the field is absent.
+pub(crate) fn extract_md_field(block: &str, field: &str) -> Option<String> {
+    let marker = format!("**{field}:**");
+    for line in block.lines() {
+        if let Some(idx) = line.find(&marker) {
+            let after = &line[idx + marker.len()..];
+            return Some(after.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Format `InductionStore` node patterns as a markdown prior-context block.
+///
+/// Prepended to the archetype-selection `system_context` so the model can
+/// bias archetype selection toward high-hit-rate knowledge patterns.
+/// Returns an empty string when `patterns` is empty (cold start / store unavailable).
+#[must_use]
+pub fn format_induction_priors(patterns: &[h2ai_types::knowledge::KnowledgeNodePattern]) -> String {
+    if patterns.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "## Prior Knowledge: High-Impact Retrieval Patterns\n\
+         The following patterns were most effective for this domain in past tasks. \
+         Prefer archetypes whose scope aligns with these signals.\n\n",
+    );
+    for p in patterns.iter().take(5) {
+        let tags = p.domain_tags.join(", ");
+        out.push_str(&format!(
+            "- {} (hit_rate: {:.1}, domains: [{}])\n",
+            p.node_id, p.hit_rate, tags
+        ));
+    }
+    out
+}
+
 /// Parse a `ThinkingReport` from LLM synthesis output.
 /// Falls back to treating the entire text as `shared_understanding` with `coverage_score = 0.5`.
 #[must_use]
@@ -667,6 +865,72 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
         retrieved_node_ids: vec![],
         skill_nodes_used: 0,
     }
+}
+
+/// Parse a markdown synthesis document produced by `tournament_merge` into a `ThinkingReport`.
+///
+/// Sections:
+/// - `## Shared Understanding` — everything until the next `##` header.
+/// - `## Unresolved Tensions` — each `- ` bullet as a tension string.
+/// - `## Coverage Assessment` — the float on the `**Score:** ` line.
+///
+/// Falls back to treating the whole text as `shared_understanding` with `coverage_score = 0.5`
+/// when no section headers are found.
+#[must_use]
+pub fn parse_synthesis_from_markdown(text: &str) -> ThinkingReport {
+    let shared_understanding = extract_section(text, "## Shared Understanding");
+    let tensions_section = extract_section(text, "## Unresolved Tensions");
+    let coverage_section = extract_section(text, "## Coverage Assessment");
+
+    // If no sections found at all, plain-text fallback
+    if shared_understanding.is_empty() && tensions_section.is_empty() && coverage_section.is_empty() {
+        return ThinkingReport {
+            shared_understanding: text.to_string(),
+            tensions: vec![],
+            coverage_score: 0.5,
+            iteration: 0,
+            prev_similarity: 0.0,
+            retrieved_node_ids: vec![],
+            skill_nodes_used: 0,
+        };
+    }
+
+    let tensions: Vec<String> = tensions_section
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- "))
+        .map(|l| l.trim_start_matches("- ").trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let coverage_score = coverage_section
+        .lines()
+        .find(|l| l.contains("**Score:**"))
+        .and_then(|l| {
+            let marker = "**Score:**";
+            l.find(marker).map(|idx| l[idx + marker.len()..].trim())
+        })
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.5);
+
+    ThinkingReport {
+        shared_understanding,
+        tensions,
+        coverage_score,
+        iteration: 0,
+        prev_similarity: 0.0,
+        retrieved_node_ids: vec![],
+        skill_nodes_used: 0,
+    }
+}
+
+/// Extract the text content of a markdown section up to the next `##` header.
+fn extract_section(text: &str, header: &str) -> String {
+    let Some(start) = text.find(header) else {
+        return String::new();
+    };
+    let after = &text[start + header.len()..];
+    let end = after.find("\n## ").unwrap_or(after.len());
+    after[..end].trim().to_string()
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -756,6 +1020,8 @@ mod tests {
             embedding_model: None,
             nats_client: None,
             task_id: "test-task-id",
+            induction_patterns: &[],
+            constraint_corpus: &[],
         };
         let report = run(input).await;
         assert_eq!(
@@ -766,5 +1032,28 @@ mod tests {
             report.coverage_score, 0.0,
             "adapter failure must produce zero coverage_score"
         );
+    }
+
+    #[test]
+    fn format_induction_priors_empty_returns_empty_string() {
+        let result = format_induction_priors(&[]);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn format_induction_priors_formats_top_5() {
+        use h2ai_types::knowledge::KnowledgeNodePattern;
+        use h2ai_types::config::AgentRole;
+        let patterns: Vec<KnowledgeNodePattern> = (0..7)
+            .map(|i| KnowledgeNodePattern {
+                node_id: format!("node-{i}"),
+                role: AgentRole::Executor,
+                domain_tags: vec!["billing".to_string()],
+                hit_rate: i as f32,
+            })
+            .collect();
+        let result = format_induction_priors(&patterns);
+        // Only top 5 shown even though 7 provided
+        assert_eq!(result.matches("node-").count(), 5);
     }
 }

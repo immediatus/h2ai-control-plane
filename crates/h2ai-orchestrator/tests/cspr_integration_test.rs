@@ -140,6 +140,7 @@ fn cspr_repair_context_for_competing_constraints() {
         prior_best_score: None,
         domain_syntheses: &[],
         coupled_constraint_hints: &[],
+        passing_constraint_pins: &[],
     });
 
     assert!(
@@ -204,6 +205,7 @@ fn cspr_repair_context_non_conflicting_constraints_no_meta_repair() {
         prior_best_score: None,
         domain_syntheses: &[],
         coupled_constraint_hints: &[],
+        passing_constraint_pins: &[],
     });
 
     assert!(

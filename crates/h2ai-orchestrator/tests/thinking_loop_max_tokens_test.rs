@@ -38,8 +38,8 @@ impl IComputeAdapter for CapturingAdapter {
             // For archetype selection, return a JSON array of archetypes
             r#"[{"name":"test","persona":"test persona","scope":"test scope","confidence":0.8,"tau":0.3,"model_tier":"standard","cot_style":"step_by_step"}]"#.to_string()
         } else if req.system_context.contains("synthesis") || req.system_context.contains("Synthesis") {
-            // For synthesis, return a JSON object with shared_understanding
-            r#"{"shared_understanding":"test understanding","tensions":[],"coverage_score":0.9}"#.to_string()
+            // For synthesis (tournament_merge), return markdown that parse_synthesis_from_markdown can parse.
+            "## Shared Understanding\ntest understanding\n## Unresolved Tensions\n## Coverage Assessment\n**Score:** 0.9".to_string()
         } else {
             // For gate or other calls, return a simple YES/NO
             "YES".to_string()
@@ -82,6 +82,8 @@ async fn archetype_select_uses_config_max_tokens() {
         embedding_model: None,
         nats_client: None,
         task_id: "test-task-id",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
 
     let _ = run(input).await;
@@ -118,6 +120,8 @@ async fn quality_gate_uses_config_max_tokens() {
         embedding_model: None,
         nats_client: None,
         task_id: "test-task-id",
+        induction_patterns: &[],
+        constraint_corpus: &[],
     };
 
     let _ = run(input).await;

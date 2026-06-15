@@ -18,6 +18,9 @@ tokio       = { workspace = true }
 regex       = { workspace = true }
 rand        = { workspace = true }
 tracing     = { workspace = true }
+futures     = { workspace = true }
 
 [dev-dependencies]
-wiremock = { workspace = true }
+wiremock        = { workspace = true }
+h2ai-test-utils = { path = "../h2ai-test-utils" }
+tokio           = { workspace = true, features = ["macros", "rt-multi-thread"] }

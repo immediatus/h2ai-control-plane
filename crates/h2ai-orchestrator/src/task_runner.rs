@@ -31,6 +31,10 @@ pub struct ThinkingLoopArgs {
     pub task_description: String,
     pub constraint_ids: Vec<String>,
     pub constraint_tags: Vec<String>,
+    /// Full constraint docs for the active task. Injected into the archetype selection
+    /// prompt so the LLM can produce domain-scoped archetypes (one per constraint
+    /// domain) rather than generic "distributed-systems-engineer" personas.
+    pub constraint_corpus: Vec<ConstraintDoc>,
     pub knowledge_provider: Option<Arc<dyn KnowledgeProvider>>,
     pub n_archetypes: usize,
     pub cfg: ThinkingLoopConfig,
@@ -139,6 +143,7 @@ impl ThinkingLoopRunner for DefaultThinkingLoopRunner {
             task_description: &effective_description,
             constraint_ids: &args.constraint_ids,
             constraint_tags: &args.constraint_tags,
+            constraint_corpus: &args.constraint_corpus,
             research_context: "",
             knowledge_provider: args.knowledge_provider,
             n_archetypes: args.n_archetypes,
@@ -147,6 +152,7 @@ impl ThinkingLoopRunner for DefaultThinkingLoopRunner {
             embedding_model: args.embedding_model.as_deref(),
             nats_client: args.nats_client,
             task_id: &args.task_id,
+            induction_patterns: &[],
         })
         .await
     }
@@ -326,6 +332,7 @@ mod awareness_hints_tests {
             nats_client: None,
             task_id: "t1".to_string(),
             awareness_hints,
+            constraint_corpus: vec![],
         }
     }
 

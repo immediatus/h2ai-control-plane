@@ -923,6 +923,39 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `tao.per_turn_timeout_secs` | `120` | Per-turn adapter call timeout in seconds. Increase for slow local models. Cloud models typically need 30s; 11B local models generating 1024-token responses need ≥120s. |
 | `tao.repetition_threshold` | `0.92` | Token-overlap similarity threshold above which two consecutive responses are considered stuck (loop detected). Range [0.0, 1.0]. |
 
+### Thinking Loop and Awareness Probe
+
+`[thinking_loop]` is absent by default (opt-in). `thinking_loop.enabled = false` unless explicitly set.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `[thinking_loop]` | absent | Section absent = thinking loop disabled. |
+| `thinking_loop.enabled` | `false` | Enable the Phase −1 multi-archetype brainstorm. |
+| `thinking_loop.max_iterations` | `5` | Maximum brainstorm iterations before the loop terminates. |
+| `thinking_loop.max_archetypes` | `4` | Maximum archetype count on iteration 0; contracts on subsequent iterations by coverage deficit. |
+| `thinking_loop.coverage_threshold` | `0.75` | Loop terminates early when `coverage_score ≥ threshold`. |
+| `thinking_loop.convergence_threshold` | `0.90` | Coverage score above which synthesis is considered converged (loop exits immediately). |
+| `thinking_loop.tau_max` | `0.85` | Starting temperature — broad exploration on iteration 0. |
+| `thinking_loop.tau_min` | `0.20` | Ending temperature — exploitation on the final iteration. |
+| `thinking_loop.expansion_quality_floor` | `0.30` | Archetype count does not contract if fewer than this fraction pass the selection filter. |
+| `thinking_loop.archetype_select_max_tokens` | `32768` | Token budget for each archetype-selection LLM call (ITER1 and ITERN). |
+| `thinking_loop.brainstorm_max_tokens` | `32768` | Token budget per archetype brainstorm call. |
+| `thinking_loop.quality_gate_max_tokens` | `64` | Token budget for the YES/NO quality gate. |
+| `thinking_loop.synthesis_tournament_max_round_tokens` | `32768` | Token budget per pairwise tournament merge call. |
+| `thinking_loop.oracle_timeout_secs` | `20` | Timeout for inline oracle check per archetype. |
+| `thinking_loop.oracle_confidence_bonus` | `0.1` | `j_eff` boost applied when oracle passes. |
+
+`[awareness_probe]` is absent by default. All fields require `enabled = true` to have any effect.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `[awareness_probe]` | absent | Section absent = probe disabled. |
+| `awareness_probe.enabled` | `false` | Enable the Plan-Awareness Probe (GAP-F6). Requires `thinking_loop.enabled = true`. |
+| `awareness_probe.mode` | `"shadow"` | `"shadow"` — emit `AwarenessProbeCompletedEvent` only; `"active"` — re-iterate thinking loop on Hard non-gated `CONTRADICTED` verdicts. |
+| `awareness_probe.judge_max_tokens` | `1024` | Token budget for the batched constraint judge (~100 tokens/constraint). |
+
+`knowledge_domain_scoping = false` (top-level `H2AIConfig` field, GAP-F4 Phase 1b). When `true`, `CompositeProvider` pre-filters knowledge candidates to nodes whose `domains` intersect the task's domain tags before the BM25 query. Separate from the awareness probe.
+
 ### Token budgets and concurrency
 
 | Field | Default | Purpose |

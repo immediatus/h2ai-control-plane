@@ -26,6 +26,12 @@ fn thinking_loop_quality_gate_max_tokens_has_fixed_default() {
 }
 
 #[test]
+fn thinking_loop_synthesis_tournament_max_round_tokens_cascades_from_model() {
+    let cfg = cfg_with_model_max_tokens(4096);
+    assert_eq!(cfg.thinking_loop.synthesis_tournament_max_round_tokens, 4096);
+}
+
+#[test]
 fn srani_researcher_max_tokens_cascades_from_model() {
     let cfg = cfg_with_model_max_tokens(4096);
     assert_eq!(cfg.srani.researcher_max_tokens, 4096);
@@ -96,6 +102,7 @@ fn default_config_has_expected_fallback_values() {
     assert_eq!(cfg.thinking_loop.archetype_select_max_tokens, 32_768);
     assert_eq!(cfg.thinking_loop.brainstorm_max_tokens, 32_768);
     assert_eq!(cfg.thinking_loop.quality_gate_max_tokens, 64);
+    assert_eq!(cfg.thinking_loop.synthesis_tournament_max_round_tokens, 32_768);
     assert_eq!(cfg.srani.researcher_max_tokens, 32_768);
     assert_eq!(cfg.srani.distill_max_tokens, 32_768);
     assert_eq!(cfg.srani.gap_synthesis_max_tokens, 32_768);

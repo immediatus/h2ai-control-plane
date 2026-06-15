@@ -794,6 +794,9 @@ pub struct ThinkingLoopConfig {
     /// Max tokens for the LLM quality gate (YES/NO response). Fixed small budget. Default: 64.
     #[serde(default = "default_tl_quality_gate_max_tokens")]
     pub quality_gate_max_tokens: u64,
+    /// Max tokens **per pairwise call** in the tournament synthesis merge. Default: 32768.
+    #[serde(default = "default_tl_synthesis_tournament_max_round_tokens")]
+    pub synthesis_tournament_max_round_tokens: u64,
 }
 
 const fn default_oracle_timeout_secs() -> u64 {
@@ -832,6 +835,9 @@ const fn default_tl_brainstorm_max_tokens() -> u64 {
 const fn default_tl_quality_gate_max_tokens() -> u64 {
     64
 }
+const fn default_tl_synthesis_tournament_max_round_tokens() -> u64 {
+    32_768
+}
 
 impl Default for ThinkingLoopConfig {
     fn default() -> Self {
@@ -850,6 +856,7 @@ impl Default for ThinkingLoopConfig {
             archetype_select_max_tokens: default_tl_archetype_select_max_tokens(),
             brainstorm_max_tokens: default_tl_brainstorm_max_tokens(),
             quality_gate_max_tokens: default_tl_quality_gate_max_tokens(),
+            synthesis_tournament_max_round_tokens: default_tl_synthesis_tournament_max_round_tokens(),
         }
     }
 }
@@ -2082,6 +2089,9 @@ impl H2AIConfig {
         }
         if self.thinking_loop.brainstorm_max_tokens == REF {
             self.thinking_loop.brainstorm_max_tokens = d;
+        }
+        if self.thinking_loop.synthesis_tournament_max_round_tokens == REF {
+            self.thinking_loop.synthesis_tournament_max_round_tokens = d;
         }
         // SraniConfig
         if self.srani.researcher_max_tokens == REF {

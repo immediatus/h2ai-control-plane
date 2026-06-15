@@ -23,6 +23,7 @@ fn make_repair_input_with_syntheses<'a>(
         prior_best_score: None,
         domain_syntheses: syntheses,
         coupled_constraint_hints: &[],
+        passing_constraint_pins: &[],
     }
 }
 

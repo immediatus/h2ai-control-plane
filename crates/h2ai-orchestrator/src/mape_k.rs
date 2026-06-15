@@ -1237,6 +1237,18 @@ impl MapeKController {
                             (id.to_owned(), hint)
                         })
                         .collect();
+                    // All constraints that passed in the global-best proposal —
+                    // complement of the failing targets. Used as preservation pins.
+                    let passing_pins: Vec<(String, Option<String>)> = self
+                        .constraint_check_offsets
+                        .iter()
+                        .map(|(id, _, _)| id.as_str())
+                        .filter(|id| !failing_ids.contains(*id))
+                        .map(|id| {
+                            let hint = self.corpus_pass_hint_for(id);
+                            (id.to_owned(), hint)
+                        })
+                        .collect();
                     self.retry_context = Some(h2ai_autonomic::repair::build_repair_context(
                         h2ai_autonomic::repair::RepairInput {
                             prior_proposal_text: prior_text,
@@ -1254,6 +1266,7 @@ impl MapeKController {
                                 .map(|(score, _)| *score),
                             domain_syntheses: &syntheses,
                             coupled_constraint_hints: &coupled_hints,
+                            passing_constraint_pins: &passing_pins,
                         },
                     ));
                 }
@@ -1732,10 +1745,12 @@ impl MapeKController {
                 &check_text,
                 &adapter,
                 gap_chain.as_deref(),
-                self.cfg_ref.gap_i1.synthesis_min_confidence,
-                self.cfg_ref.gap_i1.researcher_timeout_secs,
-                corpus_hint.as_deref(),
-                self.cfg_ref.srani.gap_synthesis_max_tokens,
+                crate::srani_grounding::GapResearcherOpts {
+                    min_confidence: self.cfg_ref.gap_i1.synthesis_min_confidence,
+                    timeout_secs: self.cfg_ref.gap_i1.researcher_timeout_secs,
+                    corpus_pass_hint: corpus_hint.as_deref(),
+                    synthesis_max_tokens: self.cfg_ref.srani.gap_synthesis_max_tokens,
+                },
             )
             .await
             {

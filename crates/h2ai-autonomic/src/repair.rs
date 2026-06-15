@@ -250,6 +250,11 @@ pub struct RepairInput<'a> {
     /// no additional guidance is available. These are injected as a guardrail block so
     /// the LLM cannot silently break them while repairing the failing targets.
     pub coupled_constraint_hints: &'a [(String, Option<String>)],
+    /// ALL constraints that passed in the global-best proposal — the complement of the
+    /// failing targets. Injected as a "preserve these" block in the repair instructions
+    /// so the LLM cannot silently regress previously-satisfied constraints while fixing
+    /// the targets. Superset of `coupled_constraint_hints`.
+    pub passing_constraint_pins: &'a [(String, Option<String>)],
 }
 
 /// Build the CSPR-v2 repair context string.
@@ -274,6 +279,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
         prior_best_score,
         domain_syntheses,
         coupled_constraint_hints,
+        passing_constraint_pins,
     } = input;
 
     // Build semantic correction block, prepended before all other content.
@@ -297,63 +303,66 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
 
     let mut out = String::with_capacity(2048);
     if !correction_block.is_empty() {
-        out.push_str(&correction_block);
-        out.push('\n');
+        write!(out, "{correction_block}\n").unwrap();
     }
-    out.push_str(system_context_with_rubric);
+    write!(out, "{system_context_with_rubric}").unwrap();
 
     // B1: compliance checklist at retry >= 1 when binary checks are defined.
     if retry_count >= 1 && !checks.is_empty() {
-        out.push_str("\n\n");
-        out.push_str(
-            &h2ai_types::prompts::F1_COMPLIANCE_CHECKLIST.replace(
-                "{checklist_items}",
-                &checks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| format!("{}. {}", i + 1, c))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
+        let checklist = h2ai_types::prompts::F1_COMPLIANCE_CHECKLIST.replace(
+            "{checklist_items}",
+            &checks
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{}. {}", i + 1, c))
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
-    }
-
-    if !prior_proposal_text.is_empty() {
-        write!(
-            out,
-            "\n\n--- PRIOR PROPOSAL (wave {retry_count}, use as repair anchor) ---\n\
-            {prior_proposal_text}\n\
-            --- END PRIOR PROPOSAL ---"
-        )
-        .unwrap();
+        write!(out, "\n\n{checklist}").unwrap();
     }
 
     if prior_proposal_text.is_empty() {
-        write!(
-            out,
-            "\n\n--- CONSTRAINT FEEDBACK (iteration {retry_count}) ---\n\
-            The following constraints were violated. Fix ALL of these in your next response:\n\n\
-            {attempts_remaining} retry attempt(s) remaining."
-        )
-        .unwrap();
+        let feedback = h2ai_types::prompts::CSPR_CONSTRAINT_FEEDBACK_HEADER
+            .replace("{retry_count}", &retry_count.to_string())
+            .replace("{attempts_remaining}", &attempts_remaining.to_string());
+        write!(out, "\n\n{feedback}").unwrap();
     } else {
-        write!(
-            out,
-            "\n\n--- CONSTRAINT REPAIR INSTRUCTIONS (iteration {retry_count}) ---\n\
-            The proposal above violates the following constraints. Apply TARGETED repairs only.\n\
-            Do NOT change sections that comply with other constraints.\n\
-            {attempts_remaining} attempt(s) remaining."
-        )
-        .unwrap();
-        if let Some(best) = prior_best_score {
+        // Repair framing comes BEFORE the anchor so the model reads the constraints
+        // and preservation rules before it encounters the prior proposal text.
+        let score_pct = prior_best_score.map(|s| s * 100.0).unwrap_or(0.0);
+        let header = h2ai_types::prompts::CSPR_REPAIR_HEADER
+            .replace("{retry_count}", &retry_count.to_string())
+            .replace("{score_pct}", &format!("{score_pct:.0}"))
+            .replace("{attempts_remaining}", &attempts_remaining.to_string());
+        write!(out, "\n\n{header}").unwrap();
+        // Emit the full set of passing constraints as a preservation block.
+        let pins = if !passing_constraint_pins.is_empty() {
+            passing_constraint_pins
+        } else {
+            coupled_constraint_hints
+        };
+        if !pins.is_empty() {
             write!(
                 out,
-                "\n[Global best compliance score across all waves: {:.0}%. \
-                Proposals must improve on this.]",
-                best * 100.0,
+                "\n\n{}\n",
+                h2ai_types::prompts::CSPR_PASSING_PINS_HEADER
             )
             .unwrap();
+            for (pin_id, hint) in pins {
+                match hint {
+                    Some(h) if !h.is_empty() => {
+                        write!(out, "  \u{2713} {pin_id}: {h}\n").unwrap();
+                    }
+                    _ => {
+                        write!(out, "  \u{2713} {pin_id}\n").unwrap();
+                    }
+                }
+            }
         }
+        let anchor = h2ai_types::prompts::CSPR_PRIOR_PROPOSAL_BLOCK
+            .replace("{retry_count}", &retry_count.to_string())
+            .replace("{prior_proposal_text}", prior_proposal_text);
+        write!(out, "\n{anchor}").unwrap();
     }
 
     // Detect conflicting constraint pairs and warn once.
@@ -441,7 +450,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
 
     // Coupled constraint guardrail: passing constraints the LLM must not break.
     if !coupled_constraint_hints.is_empty() {
-        out.push_str("\n\n[RELATED CONSTRAINTS THAT MUST NOT BE BROKEN WHILE REPAIRING THE TARGETS ABOVE:");
+        write!(out, "\n\n[RELATED CONSTRAINTS THAT MUST NOT BE BROKEN WHILE REPAIRING THE TARGETS ABOVE:").unwrap();
         for (coupled_id, hint) in coupled_constraint_hints {
             match hint {
                 Some(h) if !h.is_empty() => {
@@ -452,7 +461,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
                 }
             }
         }
-        out.push_str("\nFix the REPAIR TARGET(s) above without violating these related constraints.]");
+        write!(out, "\nFix the REPAIR TARGET(s) above without violating these related constraints.]").unwrap();
     }
 
     // Zone-3 OSP audit text appended after all REPAIR TARGET blocks.
@@ -509,7 +518,7 @@ pub fn build_repair_context(input: RepairInput<'_>) -> String {
         .unwrap();
     }
 
-    out.push_str("\n\n--- END REPAIR INSTRUCTIONS ---");
+    write!(out, "\n\n--- END REPAIR INSTRUCTIONS ---").unwrap();
     out
 }
 
@@ -540,6 +549,7 @@ mod tests {
             coupled_constraint_hints: &[
                 ("CONSTRAINT-TAU-2".to_string(), Some("quota audit must use PostgreSQL INSERT-only".to_string())),
             ],
+            passing_constraint_pins: &[],
         };
         let ctx = build_repair_context(input);
         assert!(ctx.contains("CONSTRAINT-TAU-2"), "repair context must include coupled constraint id");
@@ -573,24 +583,20 @@ pub fn build_synthesis_context(input: SynthesisInput<'_>) -> String {
     } = input;
 
     let mut out = String::with_capacity(4096);
-    out.push_str(system_context_with_rubric);
-
-    out.push_str("\n\n");
-    out.push_str(h2ai_types::prompts::F1_SYNTHESIS_WAVE_HEADER);
+    write!(out, "{system_context_with_rubric}").unwrap();
+    write!(out, "\n\n{}", h2ai_types::prompts::F1_SYNTHESIS_WAVE_HEADER).unwrap();
 
     if !checks.is_empty() {
-        out.push_str("\n\n");
-        out.push_str(
-            &h2ai_types::prompts::F1_COMPLIANCE_CHECKLIST.replace(
-                "{checklist_items}",
-                &checks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| format!("{}. {}", i + 1, c))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
+        let checklist = h2ai_types::prompts::F1_COMPLIANCE_CHECKLIST.replace(
+            "{checklist_items}",
+            &checks
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{}. {}", i + 1, c))
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
+        write!(out, "\n\n{checklist}").unwrap();
     }
 
     for (n, partial) in partial_passes.iter().take(3).enumerate() {

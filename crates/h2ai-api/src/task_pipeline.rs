@@ -122,6 +122,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             task_description: probe_task_description.clone(),
             constraint_ids: probe_constraint_ids.clone(),
             constraint_tags: probe_constraint_tags.clone(),
+            constraint_corpus: input.corpus.clone(),
             knowledge_provider: probe_knowledge_provider.clone(),
             n_archetypes: probe_n_archetypes,
             cfg: probe_cfg.clone(),
@@ -169,6 +170,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                         task_description: probe_task_description.clone(),
                         constraint_ids: probe_constraint_ids.clone(),
                         constraint_tags: probe_constraint_tags.clone(),
+                        constraint_corpus: input.corpus.clone(),
                         knowledge_provider: probe_knowledge_provider.clone(),
                         n_archetypes: probe_n_archetypes,
                         cfg: probe_cfg.clone(),
@@ -554,7 +556,8 @@ pub(crate) async fn post_run(
 ) {
     use crate::routes::tasks::compute_j_eff;
     use h2ai_types::events::{
-        CoherenceIncompleteEvent, H2AIEvent, MergeResolvedEvent, TaskAttributionEvent,
+        CoherenceIncompleteEvent, GenerationKnowledgeEvent, H2AIEvent, MergeResolvedEvent,
+        TaskAttributionEvent,
     };
     use h2ai_types::sizing::TaskQuadrant;
 
@@ -805,6 +808,17 @@ pub(crate) async fn post_run(
             }
         }
         Err(e) => tracing::warn!("failed to publish TaskAttributionEvent: {e}"),
+    }
+
+    let knowledge_ev = H2AIEvent::GenerationKnowledge(GenerationKnowledgeEvent {
+        task_id: task_id.clone(),
+        knowledge_injected: thinking_report.skill_nodes_used > 0,
+        skill_nodes_count: thinking_report.skill_nodes_used,
+        q_confidence: output.attribution.q_confidence,
+        timestamp: chrono::Utc::now(),
+    });
+    if let Err(e) = nats.publish_event_seq(task_id, &knowledge_ev).await {
+        tracing::warn!("failed to publish GenerationKnowledgeEvent: {e}");
     }
 
     for comp_ev in &output.comparison_events {

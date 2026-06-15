@@ -22,4 +22,4 @@ criteria:
   checks:
     - Are all shared-infrastructure keys (Redis, queues, caches) namespaced with the tenant_id derived from the authenticated token?
     - Is the tenant_id used for access control sourced exclusively from the authenticated JWT — not from user-supplied request parameters?
-    - Is it structurally impossible for one tenant's traffic to consume another tenant's rate limit budget?
+    - Are all per-tenant shared-infrastructure counters (balance keys, idempotency keys, and rate limit counters) namespaced with the JWT-derived tenant_id — making it structurally impossible for one tenant's traffic to consume another tenant's quota or rate limit budget?

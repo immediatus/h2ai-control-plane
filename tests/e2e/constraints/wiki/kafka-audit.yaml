@@ -4,21 +4,26 @@ domains:
   - billing
   - audit
 synthesis: >
-  C-005 (Immutable Financial Audit Log): Every budget debit event MUST be published to the
-  Kafka topic "financial-events" (compacted, append-only) BEFORE the HTTP 200 response is
-  returned. Do not write directly to CockroachDB or log files — all billing events go to
-  Kafka first, then downstream consumers update CockroachDB. The Kafka publish must use
-  synchronous acknowledgement (acks=all) to guarantee durability. During Kafka unavailability
-  (0.01% SLA), charges must still be processable: buffer debit events locally (in-process
-  queue or Redis List) and flush to Kafka when connectivity restores. Never silently drop
-  audit events. The audit record must include: campaign_id, request_id, amount_debited,
-  timestamp_ms, node_id. Use a local retry queue with exponential backoff for Kafka errors.
+  C-005 (Dual-Ledger Architecture — Immutable Financial Audit Log): The required dual-ledger
+  architecture uses TWO separate storage systems: (1) CockroachDB for operational state
+  (quota balances, tenant configuration, current budget counters — not the hot charge path);
+  (2) ClickHouse for the immutable append-only audit trail. Redis handles the HOT PATH only
+  (atomic Lua idempotency + budget deduction) but Redis is NOT the operational state store.
+  Event flow: Redis Lua debit → Kafka "financial-events" (acks=all, debit-before-publish) →
+  Kafka consumer updates CockroachDB operational state → ClickHouse materialized view for
+  immutable audit. The 7-year retention policy applies to ClickHouse (append-only, no UPDATE
+  or DELETE mutations). Required binary checks: (a) debit-before-Kafka-publish ordering;
+  (b) ClickHouse append-only with no mutations; (c) 7-year retention; (d) dual-ledger:
+  CockroachDB operational state + ClickHouse immutable audit. Do NOT use Redis as the
+  operational state store for quota balances — Redis is the hot-path cache only.
 invariants:
-  - "Kafka publish before HTTP 200 response"
+  - "CockroachDB = operational state (quota balances updated via Kafka consumer)"
+  - "ClickHouse = immutable audit (append-only, no UPDATE/DELETE, 7-year retention)"
+  - "Redis = hot-path idempotency cache only — NOT the operational state store"
+  - "Kafka publish before HTTP 200 response (debit-before-publish ordering)"
   - "acks=all for Kafka producer"
   - "Local buffer during Kafka unavailability"
   - "Audit record includes campaign_id, request_id, amount, timestamp"
-  - "No direct CockroachDB writes from charge path"
 failure_modes_covered:
   - FM-005-1
 tensions:

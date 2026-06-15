@@ -122,6 +122,11 @@ pub struct AppState {
     pub engine_runner: Arc<dyn EngineRunner>,
     /// Live skill node store, populated by post_run after each resolved task.
     pub skill_provider: Arc<SkillProvider>,
+    /// Constraint IDs whose binary checks crossed the ambiguity threshold at corpus load time.
+    /// Empty when `ambiguity_detection.enabled = false` (the default).
+    /// The engine treats verdicts for these constraints as non-trustable: no auto-repair is
+    /// attempted and compliance scores are flagged in events.
+    pub ambiguous_constraint_ids: Arc<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -151,9 +156,10 @@ impl AppState {
         let drift_monitor = std::sync::Arc::new(tokio::sync::Mutex::new(
             h2ai_autonomic::drift::DriftMonitor::from_config(&cfg),
         ));
-        let constraint_resolver = {
+        let (constraint_resolver, ambiguous_constraint_ids) = {
+            use h2ai_constraints::ambiguity::seed_scorecards;
             use h2ai_config::ConstraintWikiConfig;
-            Arc::new(match &cfg.constraint_wiki {
+            let (resolver, flagged) = match &cfg.constraint_wiki {
                 ConstraintWikiConfig::Fs { corpus_path, .. } => {
                     let (index, store) = FsConstraintStore::load(corpus_path).unwrap_or_else(|e| {
                         tracing::warn!(
@@ -166,13 +172,57 @@ impl AppState {
                             FsConstraintStore::from_docs(vec![]),
                         )
                     });
-                    ConstraintResolver::new(Arc::new(index), Arc::new(store))
+                    // Pre-validate corpus for static ambiguity at startup so operators see
+                    // issues before the first task runs, not buried inside a MAPE-K wave.
+                    let flagged = if cfg.ambiguity_detection.enabled {
+                        let docs = store.all_docs_sorted();
+                        let cards = seed_scorecards(&docs, &cfg.ambiguity_detection);
+                        let mut ids = std::collections::HashSet::new();
+                        for ((cid, check_idx), card) in &cards {
+                            let evidence_str = card
+                                .evidence
+                                .iter()
+                                .map(|e| e.to_string())
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            if card.score >= cfg.ambiguity_detection.score_threshold {
+                                tracing::error!(
+                                    target: "h2ai.constraints",
+                                    constraint_id = %cid,
+                                    check_idx = %check_idx,
+                                    score = card.score,
+                                    evidence = %evidence_str,
+                                    "CONSTRAINT NON-TRUSTABLE: ambiguity score crossed threshold \
+                                     at corpus load — verdicts for this check are unreliable \
+                                     and auto-repair is suppressed"
+                                );
+                                ids.insert(cid.clone());
+                            } else {
+                                tracing::warn!(
+                                    target: "h2ai.constraints",
+                                    constraint_id = %cid,
+                                    check_idx = %check_idx,
+                                    score = card.score,
+                                    evidence = %evidence_str,
+                                    "constraint ambiguity evidence detected at corpus load"
+                                );
+                            }
+                        }
+                        ids
+                    } else {
+                        std::collections::HashSet::new()
+                    };
+                    (ConstraintResolver::new(Arc::new(index), Arc::new(store)), flagged)
                 }
-                ConstraintWikiConfig::Disabled => ConstraintResolver::new(
-                    Arc::new(FsConstraintIndex::from_docs(&[])),
-                    Arc::new(FsConstraintStore::from_docs(vec![])),
+                ConstraintWikiConfig::Disabled => (
+                    ConstraintResolver::new(
+                        Arc::new(FsConstraintIndex::from_docs(&[])),
+                        Arc::new(FsConstraintStore::from_docs(vec![])),
+                    ),
+                    std::collections::HashSet::new(),
                 ),
-            })
+            };
+            (Arc::new(resolver), Arc::new(flagged))
         };
         // Build skill_provider before the struct literal so we can Arc::clone it into the
         // composite.  main.rs replaces knowledge_provider with a real wiki+skill composite.
@@ -226,6 +276,7 @@ impl AppState {
             thinking_loop_runner: Arc::new(DefaultThinkingLoopRunner),
             decomposer: Arc::new(DefaultDecomposer),
             engine_runner: Arc::new(DefaultEngineRunner),
+            ambiguous_constraint_ids,
         }
     }
 
@@ -296,6 +347,7 @@ impl AppState {
             thinking_loop_runner: Arc::new(DefaultThinkingLoopRunner),
             decomposer: Arc::new(DefaultDecomposer),
             engine_runner: Arc::new(DefaultEngineRunner),
+            ambiguous_constraint_ids: Arc::new(std::collections::HashSet::new()),
         }
     }
 
