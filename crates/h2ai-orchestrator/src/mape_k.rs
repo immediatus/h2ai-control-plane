@@ -766,7 +766,7 @@ impl MapeKController {
     }
 
     /// Take and reset the budget_exhausted flag.
-    pub(crate) fn take_budget_exhausted(&mut self) -> bool {
+    pub fn take_budget_exhausted(&mut self) -> bool {
         std::mem::replace(&mut self.budget_exhausted, false)
     }
 

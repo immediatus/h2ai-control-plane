@@ -59,10 +59,12 @@ async fn spec_repair_uses_config_repair_max_tokens() {
         requests: Mutex::new(vec![]),
         kind: cloud_kind(),
     };
-    let mut cfg = GapK1Config::default();
-    cfg.repair_max_tokens = 777;
-    cfg.repair_candidates = 1;
-    cfg.repair_acceptance_threshold = 0.0;
+    let cfg = GapK1Config {
+        repair_max_tokens: 777,
+        repair_candidates: 1,
+        repair_acceptance_threshold: 0.0,
+        ..Default::default()
+    };
 
     let inner = InMemorySource {
         specs: vec![make_spec("C-001", "the check text")],
@@ -85,7 +87,7 @@ async fn spec_repair_uses_config_repair_max_tokens() {
 
     let reqs = adapter.requests.lock().unwrap();
     assert!(
-        reqs.iter().any(|&t| t == 777),
+        reqs.contains(&777),
         "expected max_tokens=777 from cfg.repair_max_tokens, got: {:?}",
         *reqs
     );

@@ -68,11 +68,13 @@ async fn archetype_select_uses_config_max_tokens() {
         requests: Mutex::new(vec![]),
         kind: cloud_kind(),
     });
-    let mut cfg = ThinkingLoopConfig::default();
-    cfg.enabled = true;
-    cfg.max_iterations = 1;
-    cfg.max_archetypes = 1;
-    cfg.archetype_select_max_tokens = 999;
+    let cfg = ThinkingLoopConfig {
+        enabled: true,
+        max_iterations: 1,
+        max_archetypes: 1,
+        archetype_select_max_tokens: 999,
+        ..Default::default()
+    };
 
     let input = ThinkingLoopInput {
         task_description: "test task",
@@ -94,7 +96,7 @@ async fn archetype_select_uses_config_max_tokens() {
 
     let reqs = adapter.requests.lock().unwrap();
     assert!(
-        reqs.iter().any(|&t| t == 999),
+        reqs.contains(&999),
         "expected max_tokens=999 from cfg, got: {:?}",
         *reqs
     );
@@ -106,11 +108,13 @@ async fn quality_gate_uses_config_max_tokens() {
         requests: Mutex::new(vec![]),
         kind: cloud_kind(),
     });
-    let mut cfg = ThinkingLoopConfig::default();
-    cfg.enabled = true;
-    cfg.max_iterations = 2;
-    cfg.max_archetypes = 1;
-    cfg.quality_gate_max_tokens = 77;
+    let cfg = ThinkingLoopConfig {
+        enabled: true,
+        max_iterations: 2,
+        max_archetypes: 1,
+        quality_gate_max_tokens: 77,
+        ..Default::default()
+    };
 
     let input = ThinkingLoopInput {
         task_description: "test task",
@@ -132,7 +136,7 @@ async fn quality_gate_uses_config_max_tokens() {
 
     let reqs = adapter.requests.lock().unwrap();
     assert!(
-        reqs.iter().any(|&t| t == 77),
+        reqs.contains(&77),
         "expected max_tokens=77 from cfg, got: {:?}",
         *reqs
     );

@@ -1027,3 +1027,128 @@ fn compute_role_diversity_none_model_returns_one() {
     let diversity = compute_role_diversity(&slots, None);
     assert!((diversity - 1.0).abs() < 1e-9, "None model must return 1.0");
 }
+
+// ── Line 154: prune_by_orthogonality n==1 else branch ────────────────────────
+// When n_max=0, a single-slot vec enters the while loop (1 > 0).
+// Inside, n=1 so the `if n > 1` guard is false → the `else { 0.0 }` on line 154
+// executes. The single slot is then dropped, leaving an empty result.
+
+#[test]
+fn prune_single_slot_below_n_max_zero_executes_else_branch() {
+    // n_max=0 forces while-entry even with 1 slot.
+    // The n==1 path produces mean_sim[0]=0.0 from the else branch,
+    // then drops the only slot (highest sim wins the drop).
+    let slots = vec![make_slot("security engineer")];
+    let model = IdenticalModel;
+    let pruned = prune_by_orthogonality(slots, 0, &model);
+    // n_max.max(1) == 1 inside run_decomposition_agent but prune_by_orthogonality
+    // takes n_max directly, so the result is empty here.
+    assert_eq!(
+        pruned.len(),
+        0,
+        "single slot pruned below n_max=0 must produce empty vec"
+    );
+}
+
+// ── Lines 532-539: domain-coverage fallback injection ────────────────────────
+// When the LLM response omits a corpus domain from both role_frame and
+// focus_mandate, run_decomposition_agent must inject a domain_to_slot fallback.
+
+#[tokio::test]
+async fn run_decomposition_agent_injects_fallback_slot_for_missing_domain() {
+    // The JSON response covers "security" but NOT "compliance".
+    // The coverage check (lines 523-540) must detect the gap and inject a fallback
+    // slot via domain_to_slot("compliance", ...).
+    let json_slots = r#"[
+        {
+            "role_frame": "You are a security engineer.",
+            "cot_style": "devil_s_advocate",
+            "focus_mandate": "security constraints",
+            "rejection_criteria": "Token forgery."
+        }
+    ]"#;
+
+    let (adapter, _captured) = capturing_adapter(vec![
+        "Step 1 analysis: security OK; compliance missing audit retention.",
+        "Step 2 roles: security engineer only.",
+        json_slots,
+    ]);
+
+    let corpus = vec![
+        make_constraint("C-001", vec!["security"]),
+        make_constraint("C-002", vec!["compliance"]),
+    ];
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+
+    let slots = run_decomposition_agent(
+        "design a compliant auth service",
+        &corpus,
+        &weights,
+        2,
+        10,
+        &adapter,
+        None,
+        2048,
+        8192,
+        "",
+    )
+    .await
+    .unwrap();
+
+    // After fallback injection, at least one slot must mention compliance.
+    let has_compliance = slots.iter().any(|s| {
+        s.role_frame.to_lowercase().contains("compliance")
+            || s.focus_mandate.to_lowercase().contains("compliance")
+            || s.constraint_domains.iter().any(|d| d == "compliance")
+    });
+    assert!(
+        has_compliance,
+        "fallback slot for 'compliance' domain must be injected when LLM omits it; slots={slots:?}"
+    );
+}
+
+// ── Line 545: prune_by_orthogonality called with embedding_model in pipeline ─
+// Passes a non-None embedding_model so the `Some(model)` branch at line 544 executes.
+
+#[tokio::test]
+async fn run_decomposition_agent_prunes_with_embedding_model_when_provided() {
+    // Return 4 slots from the LLM; n_max=2 with an embedding model forces
+    // prune_by_orthogonality (line 545) rather than truncate.
+    let json_slots = r#"[
+        {"role_frame": "You are a security engineer.", "cot_style": "none",
+         "focus_mandate": "security", "rejection_criteria": "breach."},
+        {"role_frame": "You are a performance engineer.", "cot_style": "none",
+         "focus_mandate": "performance", "rejection_criteria": "latency."},
+        {"role_frame": "You are a correctness engineer.", "cot_style": "none",
+         "focus_mandate": "correctness", "rejection_criteria": "invariant."},
+        {"role_frame": "You are a compliance analyst.", "cot_style": "none",
+         "focus_mandate": "compliance", "rejection_criteria": "audit."}
+    ]"#;
+
+    let (adapter, _captured) =
+        capturing_adapter(vec!["Step 1: analysis.", "Step 2: four roles.", json_slots]);
+
+    let weights = ParetoWeights::new(0.33, 0.34, 0.33).unwrap();
+    let model = OrthogonalModel;
+
+    let slots = run_decomposition_agent(
+        "design a multi-concern system",
+        &[],
+        &weights,
+        2,
+        2,
+        &adapter,
+        Some(&model as &dyn h2ai_context::embedding::EmbeddingModel),
+        2048,
+        8192,
+        "",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        slots.len(),
+        2,
+        "embedding-model pruner must reduce 4 slots to n_max=2"
+    );
+}

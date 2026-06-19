@@ -17,7 +17,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) fn compute_j_eff_raw(
+pub fn compute_j_eff_raw(
     n_valid: usize,
     n_agents: usize,
     p_mean: f64,
@@ -38,7 +38,7 @@ pub(crate) fn compute_j_eff_raw(
     }
 }
 
-pub(crate) fn compute_j_eff(
+pub fn compute_j_eff(
     n_valid: usize,
     n_agents: usize,
     calibration: &h2ai_types::events::CalibrationCompletedEvent,

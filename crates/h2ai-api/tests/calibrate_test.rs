@@ -254,3 +254,451 @@ fn calibration_theta_coord_bounded() {
     assert!(theta.value() <= 0.3);
     assert!(theta.value() >= 0.0);
 }
+
+// ── start_calibration: FamilyConstraint branches ──────────────────────────────
+
+#[tokio::test]
+async fn start_calibration_single_family_ok_returns_202() {
+    // FamilyConstraint::SingleFamilyOk (default) with a single-adapter pool must still
+    // return 202 — it emits a warning but does not reject the request.
+    let adapter = Arc::new(mock_adapter("mock"));
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.family_constraint = FamilyConstraint::SingleFamilyOk;
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "accepted");
+}
+
+#[tokio::test]
+async fn start_calibration_disabled_family_constraint_returns_202() {
+    // FamilyConstraint::Disabled with a single-adapter pool: no family gate at all.
+    let adapter = Arc::new(mock_adapter("mock"));
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.family_constraint = FamilyConstraint::Disabled;
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn start_calibration_require_diverse_returns_error_with_family_field() {
+    // RequireDiverse with a single-family pool must return a 400 body with "family" field.
+    let adapter = Arc::new(mock_adapter("mock"));
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.family_constraint = FamilyConstraint::RequireDiverse;
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "SingleFamilyPool");
+    assert!(
+        body["family"].is_string(),
+        "response must include 'family' field"
+    );
+}
+
+// ── start_calibration: adapter_count in response ──────────────────────────────
+
+#[tokio::test]
+async fn start_calibration_response_includes_adapter_count() {
+    // calibration_adapter_count > 0 → adapter_count field must match.
+    let adapter = Arc::new(decomposition_adapter("mock response"));
+    let cfg = H2AIConfig {
+        calibration_adapter_count: 2,
+        ..Default::default()
+    };
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    assert_eq!(body["adapter_count"], 2);
+    assert!(body["events_url"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("/calibrate/"));
+}
+
+#[tokio::test]
+async fn start_calibration_zero_adapter_count_clamped_to_one() {
+    // calibration_adapter_count=0 is clamped to max(1) → adapter_count must be 1.
+    let adapter = Arc::new(decomposition_adapter("mock response"));
+    let cfg = H2AIConfig {
+        calibration_adapter_count: 0,
+        ..Default::default()
+    };
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    assert_eq!(body["adapter_count"], 1);
+}
+
+// ── start_calibration: min_explorer_families gate ────────────────────────────
+
+#[tokio::test]
+async fn start_calibration_min_families_gate_satisfied_returns_202() {
+    // min_explorer_families=1 with a 1-family pool: gate satisfied, request accepted.
+    let adapter = Arc::new(decomposition_adapter("mock response"));
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.min_explorer_families = 1;
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn start_calibration_min_families_gate_degraded_returns_202() {
+    // min_explorer_families=2 with a 1-family pool: gate logs a warning but still
+    // returns 202 (the gate is advisory, not blocking at the HTTP level).
+    let adapter = Arc::new(decomposition_adapter("mock response"));
+    let mut cfg = H2AIConfig::default();
+    cfg.safety.min_explorer_families = 2;
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/calibrate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+// ── current_calibration: full JSON field coverage ─────────────────────────────
+
+#[tokio::test]
+async fn current_calibration_returns_all_expected_fields() {
+    let state = make_state();
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    *ts.calibration.write().await = Some(synthetic_calibration());
+
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/calibrate/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    // Verify all JSON keys present in current_calibration handler are present and typed.
+    assert!(body["calibration_id"].is_string());
+    assert!(body["alpha"].is_number());
+    assert!(body["beta_base"].is_number());
+    assert!(body["beta_eff"].is_number());
+    assert!(body["n_max"].is_number());
+    assert!(body["theta_coord"].is_number());
+    assert!(body["cg_mean"].is_number());
+    assert!(body["cg_std_dev"].is_number());
+    assert!(body["n_eff_cosine_prior"].is_number());
+}
+
+#[tokio::test]
+async fn current_calibration_503_body_has_error_field() {
+    // When no calibration exists, the response body must contain an "error" key.
+    let state = make_state();
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/calibrate/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(resp).await;
+    assert!(body["error"].is_string(), "missing 'error' key in 503 body");
+}
+
+// ── run_calibration_core: notify_cal_id = Some ───────────────────────────────
+
+#[tokio::test]
+async fn run_calibration_core_with_notify_cal_id_stores_calibration() {
+    use h2ai_api::routes::calibrate::run_calibration_core;
+    use h2ai_types::identity::TaskId;
+
+    let adapter = Arc::new(mock_adapter("calibration response"));
+    let cfg = H2AIConfig {
+        calibration_adapter_count: 1,
+        ..H2AIConfig::default()
+    };
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let ts = state.tenant_state(&TenantId::default_tenant());
+
+    let cal_id = TaskId::new();
+    run_calibration_core(
+        state.clone(),
+        false,
+        false,
+        vec!["Mock".into()],
+        Some(cal_id),
+    )
+    .await;
+
+    // Even without NATS, the calibration result is stored in state.
+    assert!(
+        ts.calibration.read().await.is_some(),
+        "calibration must be stored when notify_cal_id is Some"
+    );
+}
+
+// ── run_calibration_core: flags propagated to stored event ────────────────────
+
+#[tokio::test]
+async fn run_calibration_core_propagates_flags_to_stored_event() {
+    use h2ai_api::routes::calibrate::run_calibration_core;
+
+    let adapter = Arc::new(mock_adapter("calibration response"));
+    let cfg = H2AIConfig {
+        calibration_adapter_count: 1,
+        ..H2AIConfig::default()
+    };
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let ts = state.tenant_state(&TenantId::default_tenant());
+
+    run_calibration_core(
+        state.clone(),
+        true, // single_family_warning
+        true, // explorer_verification_family_match
+        vec!["FamilyA".into(), "FamilyB".into()],
+        None,
+    )
+    .await;
+
+    let cal = ts.calibration.read().await;
+    let event = cal.as_ref().expect("calibration must be stored");
+    assert!(
+        event.single_family_warning,
+        "single_family_warning must propagate"
+    );
+    assert!(
+        event.explorer_verification_family_match,
+        "explorer_verification_family_match must propagate"
+    );
+    assert_eq!(
+        event.adapter_families,
+        vec!["FamilyA".to_string(), "FamilyB".to_string()]
+    );
+}
+
+// ── run_calibration_core: failing adapter (network error) no cached cal ───────
+
+#[tokio::test]
+async fn run_calibration_core_network_error_no_cached_leaves_state_empty() {
+    use h2ai_api::routes::calibrate::run_calibration_core;
+    use h2ai_test_utils::failing_adapter;
+
+    let adapter = Arc::new(failing_adapter());
+    let cfg = H2AIConfig {
+        calibration_adapter_count: 1,
+        ..H2AIConfig::default()
+    };
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let ts = state.tenant_state(&TenantId::default_tenant());
+
+    // No pre-seeded calibration; adapter will fail with a network error.
+    run_calibration_core(state.clone(), false, false, vec![], None).await;
+
+    // With no cached calibration to re-emit, state must remain empty.
+    assert!(
+        ts.calibration.read().await.is_none(),
+        "state must remain empty when network error and no cached calibration"
+    );
+}
+
+// ── run_calibration_core: failing adapter (network error) with cached cal ─────
+
+#[tokio::test]
+async fn run_calibration_core_network_error_with_cache_updates_cal_id() {
+    use h2ai_api::routes::calibrate::run_calibration_core;
+    use h2ai_test_utils::failing_adapter;
+    use h2ai_types::identity::TaskId;
+
+    let adapter = Arc::new(failing_adapter());
+    let cfg = H2AIConfig {
+        calibration_adapter_count: 1,
+        ..H2AIConfig::default()
+    };
+    let state = AppState::new_for_tests(
+        cfg,
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    );
+    let ts = state.tenant_state(&TenantId::default_tenant());
+
+    // Pre-seed a cached calibration so the network-error recovery path can re-emit it.
+    let old_cal = synthetic_calibration();
+    let old_id = old_cal.calibration_id.clone();
+    *ts.calibration.write().await = Some(old_cal);
+
+    let new_cal_id = TaskId::new();
+    run_calibration_core(
+        state.clone(),
+        false,
+        false,
+        vec![],
+        Some(new_cal_id.clone()),
+    )
+    .await;
+
+    // The cached calibration's ID must be replaced with the new cal_id.
+    let cal = ts.calibration.read().await;
+    let stored = cal
+        .as_ref()
+        .expect("cached calibration must still be stored");
+    assert_ne!(
+        stored.calibration_id, old_id,
+        "calibration_id must be updated to the new cal_id"
+    );
+    assert_eq!(
+        stored.calibration_id, new_cal_id,
+        "calibration_id must match the new cal_id passed to run_calibration_core"
+    );
+}
+
+// ── calibrate_events: SSE endpoint ───────────────────────────────────────────
+
+#[tokio::test]
+async fn calibrate_events_returns_200_sse_content_type() {
+    // The SSE endpoint must return 200 with text/event-stream content-type.
+    // We seed a calibration so the stream yields immediately without indefinite polling.
+    let state = make_state();
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    *ts.calibration.write().await = Some(synthetic_calibration());
+
+    let app = make_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/calibrate/test-cal-id/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("text/event-stream"),
+        "expected text/event-stream, got: {content_type}"
+    );
+}

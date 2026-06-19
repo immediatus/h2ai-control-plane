@@ -374,8 +374,16 @@ async fn oracle_observations_overwrite_replaces_all() {
     client.put_oracle_observations(&obs1).await.expect("put 1");
     client.put_oracle_observations(&obs2).await.expect("put 2");
     let got = client.get_oracle_observations().await.expect("get");
-    assert_eq!(got.len(), 1);
-    assert_eq!(got[0].task_id, "new");
+    // Parallel tests share the bucket, so the count may be > 1; verify the
+    // replacement invariant directly: the old task_id must be gone and the new one present.
+    assert!(
+        got.iter().any(|o| o.task_id == "new"),
+        "new observation must be present after overwrite"
+    );
+    assert!(
+        !got.iter().any(|o| o.task_id == "old"),
+        "old observation must be absent after overwrite replaced it"
+    );
 }
 
 // ── prompt variants ──────────────────────────────────────────────────────────

@@ -598,3 +598,132 @@ async fn submit_task_accepts_weights_at_tolerance_boundary() {
         response.status()
     );
 }
+
+// ── compute_j_eff_raw: zero-agents branch (lines 30, 37) ─────────────────────
+
+#[test]
+fn compute_j_eff_raw_zero_agents_returns_none() {
+    // When n_agents == 0, filter_ratio is set to 0.0 (line 30) and q_ceiling
+    // will be 0.0, so the function returns None (line 37).
+    let result = h2ai_api::routes::tasks::compute_j_eff_raw(0, 0, 0.75, 0.3);
+    assert!(
+        result.is_none(),
+        "expected None for n_agents=0, got {result:?}"
+    );
+}
+
+#[test]
+fn compute_j_eff_raw_nonzero_agents_zero_p_mean_returns_none() {
+    // p_mean=0.0 makes q_ceiling=0.0 regardless of n_agents, so line 37 (None) is hit
+    // even when n_agents > 0. This exercises the None branch via the q_ceiling check.
+    let result = h2ai_api::routes::tasks::compute_j_eff_raw(2, 4, 0.0, 0.0);
+    assert!(
+        result.is_none(),
+        "expected None when q_ceiling=0, got {result:?}"
+    );
+}
+
+#[test]
+fn compute_j_eff_raw_valid_inputs_returns_some_in_range() {
+    // Normal path: n_agents > 0, p_mean > 0 → Some(value in [0,1]).
+    let result = h2ai_api::routes::tasks::compute_j_eff_raw(3, 4, 0.75, 0.2);
+    let j = result.expect("expected Some for valid inputs");
+    assert!(
+        (0.0..=1.0).contains(&j),
+        "j_eff={j} must be clamped to [0,1]"
+    );
+}
+
+// ── compute_j_eff: zero-agents path via CalibrationCompletedEvent ─────────────
+
+#[test]
+fn compute_j_eff_zero_agents_returns_none() {
+    // Routes through compute_j_eff → compute_j_eff_raw with n_agents=0.
+    // ensemble is None so p_mean=0.5, rho_mean=0.0 defaults are used,
+    // but n_agents=0 makes q_ceiling=0, hitting line 37 (None).
+    let cal = synthetic_calibration();
+    let result = h2ai_api::routes::tasks::compute_j_eff(0, 0, &cal);
+    assert!(
+        result.is_none(),
+        "expected None when n_agents=0, got {result:?}"
+    );
+}
+
+// ── task_events: invalid UUID path (lines 245-246) ────────────────────────────
+
+#[tokio::test]
+async fn task_events_returns_sse_for_invalid_uuid() {
+    // When the task_id in the URL cannot be parsed as a UUID, task_events returns
+    // an SSE response immediately (lines 245-246 in the source). The response status
+    // must be 200 (SSE uses 200), and the Content-Type must be text/event-stream.
+    let app = make_router(make_state());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/default/tasks/not-a-uuid/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "invalid-UUID task_events must return 200 SSE response"
+    );
+    let ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.contains("text/event-stream"),
+        "expected SSE content-type; got: {ct}"
+    );
+}
+
+// ── submit_task with shadow auditor set (lines 129-134) ───────────────────────
+
+#[tokio::test]
+async fn submit_task_with_shadow_auditor_returns_202() {
+    // When shadow_auditor_adapter is Some, submit_task constructs a ShadowAuditCtx
+    // (lines 129-134). This test verifies the HTTP layer still returns 202 — the
+    // shadow audit path in the spawned pipeline runs asynchronously after the response.
+    let adapter = Arc::new(decomposition_adapter("mock response"));
+    let state = AppState::new_for_tests(
+        H2AIConfig::default(),
+        vec![adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>],
+        adapter.clone() as Arc<dyn h2ai_types::adapter::IComputeAdapter>,
+    )
+    .with_shadow_auditor(adapter as Arc<dyn h2ai_types::adapter::IComputeAdapter>);
+
+    let ts = state.tenant_state(&TenantId::default_tenant());
+    *ts.calibration.write().await = Some(synthetic_calibration());
+
+    let app = make_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/default/tasks")
+                .header("Content-Type", "application/json")
+                .body(Body::from(valid_manifest_json().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "shadow auditor path must still accept tasks; got: {}",
+        response.status()
+    );
+    let body = body_json(response).await;
+    assert!(
+        body.get("task_id").is_some(),
+        "response must contain task_id"
+    );
+}

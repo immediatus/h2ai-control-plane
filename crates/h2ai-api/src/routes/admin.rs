@@ -45,7 +45,7 @@ pub async fn reset_experiment_state(
     Json(reset_response_body_value(&tenant_id))
 }
 
-fn reset_response_body_value(tenant_id: &str) -> serde_json::Value {
+pub fn reset_response_body_value(tenant_id: &str) -> serde_json::Value {
     serde_json::json!({
         "tenant_id": tenant_id,
         "reset": true,

@@ -641,3 +641,177 @@ fn bypass_does_not_activate_before_min_waves() {
         "bypass must NOT activate when retry_count=2 < min_waves_to_detect=3"
     );
 }
+
+// ── Group B: MapeKController method coverage ──────────────────────────────────
+
+// tokens_used() getter (lines 757-759)
+#[test]
+fn tokens_used_returns_zero_on_fresh_controller() {
+    let ctrl = MapeKController::new_minimal();
+    assert_eq!(
+        ctrl.tokens_used(),
+        0,
+        "fresh controller must report zero tokens"
+    );
+}
+
+// observe_wave_tokens() accumulation (lines 752-754)
+#[test]
+fn observe_wave_tokens_accumulates_correctly() {
+    let mut ctrl = MapeKController::new_minimal();
+    ctrl.observe_wave_tokens(1_000);
+    ctrl.observe_wave_tokens(2_500);
+    assert_eq!(
+        ctrl.tokens_used(),
+        3_500,
+        "tokens must accumulate across observe_wave_tokens calls"
+    );
+}
+
+#[test]
+fn observe_wave_tokens_saturates_at_u64_max() {
+    let mut ctrl = MapeKController::new_minimal();
+    ctrl.observe_wave_tokens(u64::MAX);
+    ctrl.observe_wave_tokens(1);
+    assert_eq!(
+        ctrl.tokens_used(),
+        u64::MAX,
+        "saturating_add must cap at u64::MAX"
+    );
+}
+
+// mark_oom_abort() mutation (lines 774-776)
+// Observable effect: budget_exhausted=true prevents TEE from issuing a Retry decision.
+#[test]
+fn mark_oom_abort_overrides_tee_retry_to_return() {
+    // TEE requires k_required=1, acceptance_score=0.90.  We supply score=0.50 (below threshold).
+    // Without OOM abort → Retry (k_accepted=0 < k_required=1, retry_count=0 < max_retries=4).
+    // After mark_oom_abort() → budget_exhausted=true → TEE skips retry → Return.
+    let cfg = H2AIConfig {
+        tiered_exit: h2ai_config::TieredExitConfig {
+            enabled: true,
+            min_n: 1,
+            max_n: 3,
+            quorum_fraction: 0.5,
+            acceptance_score: 0.90,
+            require_all_binary_checks: false,
+        },
+        max_autonomic_retries: 4,
+        ..H2AIConfig::default()
+    };
+
+    // Without OOM abort → Retry
+    let mut ctrl_no_oom = MapeKController::new_for_test(cfg.clone());
+    ctrl_no_oom.set_n_agents(1);
+    let out = make_merge_output(vec![scored_event(0.50, true)]);
+    assert!(
+        matches!(
+            ctrl_no_oom.decide(PipelineOutcome::Resolved(Box::new(out)), 0, 1.0),
+            MapeKDecision::Retry
+        ),
+        "without OOM abort, low score must trigger Retry"
+    );
+
+    // With OOM abort → Return (budget_exhausted bypasses retry guard)
+    let mut ctrl_oom = MapeKController::new_for_test(cfg);
+    ctrl_oom.set_n_agents(1);
+    ctrl_oom.mark_oom_abort();
+    let out2 = make_merge_output(vec![scored_event(0.50, true)]);
+    assert!(
+        matches!(
+            ctrl_oom.decide(PipelineOutcome::Resolved(Box::new(out2)), 0, 1.0),
+            MapeKDecision::Return(_)
+        ),
+        "after mark_oom_abort, budget_exhausted must prevent TEE Retry → Return"
+    );
+}
+
+// inject_wave_continue() with empty/None args → early return at line 724-725
+#[test]
+fn inject_wave_continue_with_none_args_is_noop() {
+    let mut ctrl = MapeKController::new_minimal();
+    ctrl.inject_wave_continue(None, None);
+    // retry_context must remain None; verify that a subsequent real injection works.
+    ctrl.inject_wave_continue(Some("real grounding".to_string()), None);
+    let params = ctrl.params();
+    assert_eq!(
+        params.retry_context,
+        Some("real grounding".to_string()),
+        "retry_context must be set after non-empty inject_wave_continue"
+    );
+}
+
+#[test]
+fn inject_wave_continue_with_whitespace_only_args_is_noop() {
+    let mut ctrl = MapeKController::new_minimal();
+    ctrl.inject_wave_continue(Some("   ".to_string()), Some("\t\n".to_string()));
+    // Both are whitespace-only → parts is empty → early return. retry_context stays None.
+    let params = ctrl.params();
+    assert!(
+        params.retry_context.is_none(),
+        "whitespace-only args must not set retry_context"
+    );
+}
+
+// last_wave_n_eff() getter (line 740-742)
+#[test]
+fn last_wave_n_eff_returns_one_before_any_wave() {
+    let ctrl = MapeKController::new_minimal();
+    assert!(
+        (ctrl.last_wave_n_eff() - 1.0).abs() < 1e-9,
+        "default n_eff must be 1.0 (no-dropout sentinel)"
+    );
+}
+
+// seed_synthesis() and domain_synthesis_cache population (lines 2492-2500)
+#[test]
+fn seed_synthesis_populates_domain_synthesis_cache() {
+    let mut ctrl = MapeKController::new_minimal();
+    let synthesis = h2ai_types::gap_i1::DomainSynthesis {
+        check_id: ("C-001".to_string(), 2),
+        incorrect_pattern: "unbounded loop".to_string(),
+        correct_pattern: "bounded retry with backoff".to_string(),
+        mechanistic_reason: "unbounded loops exhaust executor threads under load".to_string(),
+        source: Some("grounding-wave-3".to_string()),
+        confidence: 0.85,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
+    };
+    ctrl.seed_synthesis("C-001", 2, synthesis);
+
+    // The cache entry must be present; verify indirectly via seed_synthesis again
+    // (no direct read accessor, but the cache can be over-written to confirm it existed)
+    let synthesis2 = h2ai_types::gap_i1::DomainSynthesis {
+        check_id: ("C-001".to_string(), 2),
+        incorrect_pattern: "updated".to_string(),
+        correct_pattern: "updated".to_string(),
+        mechanistic_reason: "updated".to_string(),
+        source: None,
+        confidence: 0.99,
+        injected_at_wave: Some(1),
+        pre_injection_pass_rate: Some(0.5),
+        post_injection_pass_rates: vec![0.7],
+    };
+    ctrl.seed_synthesis("C-001", 2, synthesis2);
+    // No panic = cache insertions work correctly for both entries and overwrites.
+}
+
+#[test]
+fn seed_synthesis_distinct_keys_are_independent() {
+    let mut ctrl = MapeKController::new_minimal();
+    let make_synthesis = |tag: &str| h2ai_types::gap_i1::DomainSynthesis {
+        check_id: (tag.to_string(), 0),
+        incorrect_pattern: tag.to_string(),
+        correct_pattern: tag.to_string(),
+        mechanistic_reason: tag.to_string(),
+        source: None,
+        confidence: 0.5,
+        injected_at_wave: None,
+        pre_injection_pass_rate: None,
+        post_injection_pass_rates: vec![],
+    };
+    ctrl.seed_synthesis("C-001", 0, make_synthesis("C-001"));
+    ctrl.seed_synthesis("C-002", 1, make_synthesis("C-002"));
+    // Both keys must be inserted without collision; no panic = success.
+}

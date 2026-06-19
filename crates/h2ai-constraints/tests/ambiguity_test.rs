@@ -2,7 +2,9 @@ use h2ai_constraints::ambiguity::{
     scan_constraint, score_evidence, seed_scorecards, AmbiguityDetectionConfig, AmbiguityEvidence,
     AmbiguityScorecard, PatchMode, DYNAMIC_ONLY_CHECK_IDX,
 };
-use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
+use h2ai_constraints::types::{
+    CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
+};
 
 fn cfg() -> AmbiguityDetectionConfig {
     AmbiguityDetectionConfig {
@@ -402,4 +404,144 @@ fn seed_scorecards_accumulates_per_check() {
     assert!(card.evidence.len() >= 2);
     assert!(card.score > 0.0);
     assert_eq!(card.patch_mode(), PatchMode::Precise { check_idx: 0 });
+}
+
+// ── weight() for remaining AmbiguityEvidence variants ────────────────────────
+// Lines 92-94, 96: RemediationContradiction, CrossCheckNegation,
+//                  LlmMetaValidated, PositiveExampleConflict weights.
+
+#[test]
+fn weight_remediation_contradiction_returns_config_value() {
+    let c = cfg();
+    let ev = AmbiguityEvidence::RemediationContradiction {
+        check_system: "cockroachdb".into(),
+        hint_system: "redis".into(),
+    };
+    assert!((ev.weight(&c) - c.weight_remediation_conflict).abs() < f32::EPSILON);
+}
+
+#[test]
+fn weight_cross_check_negation_returns_config_value() {
+    let c = cfg();
+    let ev = AmbiguityEvidence::CrossCheckNegation {
+        this_term: "redis".into(),
+        negating_check_idx: 2,
+    };
+    assert!((ev.weight(&c) - c.weight_cross_check_negation).abs() < f32::EPSILON);
+}
+
+#[test]
+fn weight_llm_meta_validated_returns_config_value() {
+    let c = cfg();
+    let ev = AmbiguityEvidence::LlmMetaValidated {
+        reason: "ambiguous scope".into(),
+    };
+    assert!((ev.weight(&c) - c.weight_llm_confirmed).abs() < f32::EPSILON);
+}
+
+#[test]
+fn weight_positive_example_conflict_returns_config_value() {
+    let c = cfg();
+    let ev = AmbiguityEvidence::PositiveExampleConflict {
+        term: "kafka".into(),
+        example_snippet: "kafka.produce(...)".into(),
+    };
+    assert!((ev.weight(&c) - c.weight_positive_example_conflict).abs() < f32::EPSILON);
+}
+
+// ── rubric_text() Composite branch (lines 333-339) ───────────────────────────
+// scan_constraint uses rubric_text internally; give it a Composite predicate
+// with two LlmJudge children so both the Composite arm and the filter(non-empty)
+// path are exercised.
+
+#[test]
+fn scan_constraint_with_composite_predicate_extracts_rubric_from_both_children() {
+    let predicate = ConstraintPredicate::Composite {
+        op: CompositeOp::And,
+        children: vec![
+            ConstraintPredicate::LlmJudge {
+                rubric: "Does the proposal use Redis for the ledger?".into(),
+            },
+            ConstraintPredicate::LlmJudge {
+                rubric: "FM-1: Avoid Redis on the hot path.".into(),
+            },
+        ],
+    };
+    let d = ConstraintDoc {
+        id: "C-COMP".into(),
+        source_file: "test.md".into(),
+        description: "composite test".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate,
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+        binary_checks: vec!["Does the proposal use Redis for the ledger?".into()],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
+    };
+    // The scan must detect FmTermNegation from the second child rubric ("Avoid Redis").
+    let evidence = scan_constraint(&d);
+    assert!(
+        evidence.iter().any(
+            |(_, e)| matches!(e, AmbiguityEvidence::FmTermNegation { term, .. } if term == "redis")
+        ),
+        "Composite rubric must surface FmTermNegation from child rubrics; got {evidence:?}"
+    );
+}
+
+// ── extract_positive_code_blocks unclosed fence (line 365) ───────────────────
+// Provide a rubric whose positive-examples section has an opening ``` with no
+// closing ```. The `else { break; }` on line 365 must execute.
+
+#[test]
+fn scan_positive_example_conflict_unclosed_fence_does_not_panic() {
+    // Rubric has a positive-examples section with an unclosed fence — must not
+    // panic or produce PositiveExampleConflict (no block is completed).
+    let rubric_with_unclosed_fence = "\n\n--- Positive Examples (generate patterns like these) ---\
+        \n```python\
+        \nkafka.produce('events', event)\
+        \n-- fence intentionally never closed";
+    let d = doc(
+        vec!["Does every billing event get published to Kafka before acknowledging?"],
+        rubric_with_unclosed_fence,
+        None,
+    );
+    // The unclosed fence means extract_positive_code_blocks returns no blocks,
+    // so no PositiveExampleConflict can be emitted.
+    let evidence = scan_constraint(&d);
+    assert!(
+        !evidence
+            .iter()
+            .any(|(_, e)| matches!(e, AmbiguityEvidence::PositiveExampleConflict { .. })),
+        "unclosed fence must not produce PositiveExampleConflict; got {evidence:?}"
+    );
+}
+
+// ── inner `if has_term && has_fallback` false branch (line 488) ──────────────
+// Code block in positive examples contains the storage term but NO except/catch —
+// the condition is false, so the closing `}` on line 488 is reached without break.
+
+#[test]
+fn scan_positive_example_no_fallback_keyword_does_not_fire_conflict() {
+    // Block has "kafka" but no "except" or "catch" — has_fallback is false.
+    let rubric_term_no_fallback = "\n\n--- Positive Examples (generate patterns like these) ---\
+        \n```python\
+        \nkafka.produce('events', event, timeout_ms=50)\
+        \nresult = db.commit()\
+        \n```";
+    let d = doc(
+        vec!["Does every billing event get published to Kafka before acknowledging?"],
+        rubric_term_no_fallback,
+        None,
+    );
+    let evidence = scan_constraint(&d);
+    assert!(
+        !evidence
+            .iter()
+            .any(|(_, e)| matches!(e, AmbiguityEvidence::PositiveExampleConflict { .. })),
+        "block with term but no except/catch must not fire PositiveExampleConflict; got {evidence:?}"
+    );
 }

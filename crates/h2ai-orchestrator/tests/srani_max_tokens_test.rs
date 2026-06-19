@@ -52,8 +52,10 @@ async fn llm_researcher_grounder_uses_config_max_tokens() {
         requests: Mutex::new(vec![]),
         kind: cloud_kind(),
     });
-    let mut srani_cfg = SraniConfig::default();
-    srani_cfg.researcher_max_tokens = 888;
+    let srani_cfg = SraniConfig {
+        researcher_max_tokens: 888,
+        ..Default::default()
+    };
 
     let grounder = LlmResearcherGrounder::new(adapter.clone(), srani_cfg.researcher_max_tokens);
     let ctx = GroundingContext {
@@ -64,7 +66,7 @@ async fn llm_researcher_grounder_uses_config_max_tokens() {
 
     let reqs = adapter.requests.lock().unwrap();
     assert!(
-        reqs.iter().any(|&t| t == 888),
+        reqs.contains(&888),
         "expected max_tokens=888, got: {:?}",
         *reqs
     );

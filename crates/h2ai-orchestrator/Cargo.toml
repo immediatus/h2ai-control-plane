@@ -62,3 +62,5 @@ async-nats       = { workspace = true }
 async-trait      = { workspace = true }
 uuid             = { workspace = true }
 zstd             = { workspace = true }
+axum             = { workspace = true }
+wiremock         = { workspace = true }

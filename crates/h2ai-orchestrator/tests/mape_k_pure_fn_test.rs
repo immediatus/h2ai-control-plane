@@ -236,8 +236,10 @@ fn oom_signal_some_above_threshold() {
 fn oom_signal_none_when_disabled() {
     use h2ai_autonomic::repair::oom_signal;
     use h2ai_config::OomGuardConfig;
-    let mut cfg = OomGuardConfig::default();
-    cfg.enabled = false;
+    let cfg = OomGuardConfig {
+        enabled: false,
+        ..Default::default()
+    };
     assert!(oom_signal(99999, &cfg).is_none());
 }
 
@@ -247,8 +249,10 @@ fn oom_signal_none_when_disabled() {
 fn oom_guard_disabled_never_fires() {
     use h2ai_autonomic::repair::oom_signal;
     use h2ai_config::OomGuardConfig;
-    let mut cfg = OomGuardConfig::default();
-    cfg.enabled = false;
+    let cfg = OomGuardConfig {
+        enabled: false,
+        ..Default::default()
+    };
     assert!(oom_signal(100_000, &cfg).is_none());
 }
 
@@ -324,6 +328,225 @@ fn extract_incorrect_concept_returns_reason_when_check_idx_known_failed() {
     assert!(
         concept.contains("WATCH"),
         "expected reason for check 3, got: {concept:?}"
+    );
+}
+
+// ── additional branch coverage ───────────────────────────────────────────────
+
+// constraint_reasons_jaccard: empty-list sentinel
+
+#[test]
+fn jaccard_returns_one_when_reasons_a_empty() {
+    let score = constraint_reasons_jaccard(&[], &["some word".to_owned()]);
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "expected 1.0 for empty a, got {score}"
+    );
+}
+
+#[test]
+fn jaccard_returns_one_when_reasons_b_empty() {
+    let score = constraint_reasons_jaccard(&["some word".to_owned()], &[]);
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "expected 1.0 for empty b, got {score}"
+    );
+}
+
+#[test]
+fn jaccard_returns_one_when_both_empty() {
+    let score = constraint_reasons_jaccard(&[], &[]);
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "expected 1.0 for both empty, got {score}"
+    );
+}
+
+#[test]
+fn jaccard_exact_value_for_known_overlap() {
+    // bag_a = {alpha, beta, gamma}, bag_b = {beta, gamma, delta}
+    // intersection = {beta, gamma} = 2, union = {alpha, beta, gamma, delta} = 4
+    // jaccard = 0.5
+    let a = vec!["alpha beta gamma".to_owned()];
+    let b = vec!["beta gamma delta".to_owned()];
+    let score = constraint_reasons_jaccard(&a, &b);
+    assert!((score - 0.5).abs() < 1e-9, "expected 0.5, got {score}");
+}
+
+#[test]
+fn jaccard_zero_for_fully_disjoint_bags() {
+    let a = vec!["alpha".to_owned()];
+    let b = vec!["beta".to_owned()];
+    let score = constraint_reasons_jaccard(&a, &b);
+    assert!(
+        (score - 0.0).abs() < 1e-9,
+        "expected 0.0 for disjoint, got {score}"
+    );
+}
+
+// is_compliance_plateau: short history branch
+
+#[test]
+fn plateau_not_detected_when_history_too_short() {
+    // retry_count >= 2 but only one history entry
+    assert!(!is_compliance_plateau(&[0.77], 3, 0.02));
+}
+
+#[test]
+fn plateau_not_detected_when_history_empty() {
+    assert!(!is_compliance_plateau(&[], 5, 0.02));
+}
+
+// has_isolation_evidence: edge cases
+
+#[test]
+fn isolation_evidence_absent_when_fewer_than_two_partials() {
+    let partial = PartialPass {
+        proposal_text: "only one".to_owned(),
+        check_results: vec![(0, "c".to_owned(), true), (1, "c".to_owned(), true)],
+        score: 1.0,
+    };
+    assert!(!has_isolation_evidence(&[partial], 2));
+}
+
+#[test]
+fn isolation_evidence_absent_when_total_checks_zero() {
+    let partial_a = PartialPass {
+        proposal_text: "A".to_owned(),
+        check_results: vec![(0, "c".to_owned(), true)],
+        score: 1.0,
+    };
+    let partial_b = PartialPass {
+        proposal_text: "B".to_owned(),
+        check_results: vec![(1, "c".to_owned(), true)],
+        score: 1.0,
+    };
+    assert!(!has_isolation_evidence(&[partial_a, partial_b], 0));
+}
+
+// build_budget_hint_if_needed: disabled branches
+
+#[test]
+fn budget_hint_none_when_cost_guard_disabled() {
+    let cg = CostGuardConfig {
+        enabled: false,
+        budget_prompt_injection_enabled: true,
+        budget_tokens_per_task: 100_000,
+        budget_injection_warn_fraction: 0.50,
+        budget_injection_max_complexity: 3,
+        ..CostGuardConfig::default()
+    };
+    assert!(build_budget_hint_if_needed(&cg, 60_000, 2).is_none());
+}
+
+#[test]
+fn budget_hint_none_when_injection_disabled() {
+    // enabled=true but budget_prompt_injection_enabled=false
+    let cg = CostGuardConfig {
+        enabled: true,
+        budget_prompt_injection_enabled: false,
+        budget_tokens_per_task: 100_000,
+        budget_injection_warn_fraction: 0.50,
+        budget_injection_max_complexity: 3,
+        ..CostGuardConfig::default()
+    };
+    assert!(build_budget_hint_if_needed(&cg, 60_000, 2).is_none());
+}
+
+#[test]
+fn budget_hint_none_below_warn_fraction() {
+    // fraction_used = 0.30 < warn_fraction 0.50
+    let cg = CostGuardConfig {
+        enabled: true,
+        budget_prompt_injection_enabled: true,
+        budget_tokens_per_task: 100_000,
+        budget_injection_warn_fraction: 0.50,
+        budget_injection_max_complexity: 3,
+        ..CostGuardConfig::default()
+    };
+    assert!(build_budget_hint_if_needed(&cg, 30_000, 2).is_none());
+}
+
+// check_convergence_gate: remaining uncovered branches
+
+#[test]
+fn convergence_gate_skipped_when_disabled() {
+    let gate = ConvergenceGateConfig {
+        enabled: false,
+        ..ConvergenceGateConfig::default()
+    };
+    assert!(!check_convergence_gate(&gate, Some(0.95), 0.85, 1, 2, 0.50));
+}
+
+#[test]
+fn convergence_gate_skipped_when_n_live_zero() {
+    let gate = ConvergenceGateConfig {
+        enabled: true,
+        ..ConvergenceGateConfig::default()
+    };
+    assert!(!check_convergence_gate(&gate, Some(0.95), 0.85, 1, 0, 0.50));
+}
+
+#[test]
+fn convergence_gate_skipped_when_cosine_mean_none() {
+    let gate = ConvergenceGateConfig {
+        enabled: true,
+        ..ConvergenceGateConfig::default()
+    };
+    assert!(!check_convergence_gate(&gate, None, 0.85, 1, 2, 0.50));
+}
+
+#[test]
+fn convergence_gate_skipped_when_cosine_below_theta() {
+    // cosine_mean = 0.50 < theta_converge default 0.87
+    let gate = ConvergenceGateConfig {
+        enabled: true,
+        ..ConvergenceGateConfig::default()
+    };
+    assert!(!check_convergence_gate(&gate, Some(0.50), 0.85, 1, 2, 0.50));
+}
+
+// ── Group A: missing branches ─────────────────────────────────────────────────
+
+// Line 401: has_isolation_evidence — 2+ partials exist but ONE covers ALL checks → false
+#[test]
+fn isolation_evidence_absent_when_one_partial_covers_all_checks() {
+    // partial_a covers all 3 checks, partial_b only covers 2.
+    // Because one partial covers everything, condition 3 fails → returns false.
+    let partial_a = PartialPass {
+        proposal_text: "A covers all".to_owned(),
+        check_results: vec![
+            (0, "c".to_owned(), true),
+            (1, "c".to_owned(), true),
+            (2, "c".to_owned(), true),
+        ],
+        score: 1.0,
+    };
+    let partial_b = PartialPass {
+        proposal_text: "B covers two".to_owned(),
+        check_results: vec![
+            (0, "c".to_owned(), true),
+            (1, "c".to_owned(), true),
+            (2, "c".to_owned(), false),
+        ],
+        score: 0.67,
+    };
+    assert!(
+        !has_isolation_evidence(&[partial_a, partial_b], 3),
+        "must return false when one partial already covers all checks"
+    );
+}
+
+// Line 423: constraint_reasons_jaccard — union == 0 branch (only whitespace tokens)
+#[test]
+fn jaccard_returns_one_when_both_strings_are_whitespace_only() {
+    // split_whitespace on a pure-whitespace string yields no tokens → union = 0 → return 1.0
+    let a = vec!["   ".to_owned()];
+    let b = vec!["\t\n ".to_owned()];
+    let score = constraint_reasons_jaccard(&a, &b);
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "expected 1.0 for whitespace-only bags (union=0), got {score}"
     );
 }
 

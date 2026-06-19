@@ -384,3 +384,68 @@ fn repair_context_includes_coupled_constraint_hints() {
         "repair context must frame coupled hints as a non-break constraint"
     );
 }
+
+#[test]
+fn passing_constraint_pins_with_hint_emits_checkmark_with_hint_text() {
+    let graph = ConstraintConflictGraph::build(&[]);
+    let targets = vec![target("FAIL-1", None, &[])];
+    let domain_syntheses: Vec<DomainSynthesis> = vec![];
+    let partial_passes: Vec<PartialPass> = vec![];
+
+    let ctx = build_repair_context(RepairInput {
+        prior_proposal_text: "prior proposal text",
+        targets: &targets,
+        zone3_hints: None,
+        conflict_graph: &graph,
+        retry_count: 1,
+        attempts_remaining: 2,
+        system_context_with_rubric: "CTX",
+        checks: &[],
+        partial_passes: &partial_passes,
+        prior_best_score: None,
+        domain_syntheses: &domain_syntheses,
+        coupled_constraint_hints: &[],
+        passing_constraint_pins: &[(
+            "CONSTRAINT-X".to_string(),
+            Some("non-empty hint text".to_string()),
+        )],
+    });
+    assert!(ctx.contains("✓ CONSTRAINT-X: non-empty hint text"));
+}
+
+#[test]
+fn alternative_diagnosis_emitted_for_additional_verifier_reasons() {
+    let targets = vec![target(
+        "C-MULTI",
+        None,
+        &[(0.9, "primary reason"), (0.6, "secondary reason")],
+    )];
+    let ctx = repair("prior", &targets, None, &empty_graph());
+    assert!(ctx.contains("ALTERNATIVE DIAGNOSIS"));
+    assert!(ctx.contains("secondary reason"));
+}
+
+#[test]
+fn coupled_constraint_with_no_hint_emits_no_additional_guidance() {
+    let graph = ConstraintConflictGraph::build(&[]);
+    let targets = vec![target("FAIL-1", None, &[])];
+    let domain_syntheses: Vec<DomainSynthesis> = vec![];
+    let partial_passes: Vec<PartialPass> = vec![];
+
+    let ctx = build_repair_context(RepairInput {
+        prior_proposal_text: "",
+        targets: &targets,
+        zone3_hints: None,
+        conflict_graph: &graph,
+        retry_count: 1,
+        attempts_remaining: 2,
+        system_context_with_rubric: "CTX",
+        checks: &[],
+        partial_passes: &partial_passes,
+        prior_best_score: None,
+        domain_syntheses: &domain_syntheses,
+        coupled_constraint_hints: &[("CONSTRAINT-TAU-3".to_string(), None)],
+        passing_constraint_pins: &[],
+    });
+    assert!(ctx.contains("(no additional guidance"));
+}

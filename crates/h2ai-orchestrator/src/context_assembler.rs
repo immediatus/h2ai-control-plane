@@ -233,7 +233,7 @@ impl ContextAssembler {
 }
 
 /// Join non-empty sections into a single text string, separated by double newlines.
-pub(crate) fn sections_to_text(sections: &[Section]) -> String {
+pub fn sections_to_text(sections: &[Section]) -> String {
     sections
         .iter()
         .filter(|s| !s.text.is_empty())
@@ -309,7 +309,7 @@ pub fn assemble_raw(input: &ContextAssemblerInput<'_>) -> String {
 
 /// Content-type-aware token estimate. YAML/code is denser (~3 chars/token);
 /// prose is sparser (~4.5 chars/token).
-pub(crate) fn estimate_tokens(text: &str) -> usize {
+pub fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         return 0;
     }

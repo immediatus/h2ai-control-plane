@@ -371,7 +371,7 @@ fn same_local_model_same_key() {
 
 #[test]
 fn monoculture_pool_has_one_distinct_lineage_key() {
-    let adapters = vec![
+    let adapters = [
         cloud("http://host.docker.internal:8080/v1", "local"),
         cloud("http://host.docker.internal:8080/v1", "local"),
         cloud("http://host.docker.internal:8080/v1", "local"),
@@ -387,7 +387,7 @@ fn monoculture_pool_has_one_distinct_lineage_key() {
 
 #[test]
 fn diverse_pool_has_multiple_lineage_keys() {
-    let adapters = vec![
+    let adapters = [
         cloud("https://api.openai.com/v1", "gpt-4o"),
         cloud("https://api.anthropic.com/v1", "claude-sonnet-4-6"),
     ];

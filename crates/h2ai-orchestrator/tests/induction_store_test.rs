@@ -9,6 +9,19 @@ use h2ai_types::config::AgentRole;
 use h2ai_types::sizing::TauValue;
 use std::sync::Arc;
 
+// ── NATS connection helper ────────────────────────────────────────────────────
+
+async fn connect_nats() -> Option<async_nats::Client> {
+    let url = h2ai_config::H2AIConfig::default().nats_url;
+    match async_nats::connect(&url).await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("NATS unavailable at {url} — skipping: {e}");
+            None
+        }
+    }
+}
+
 fn mock_store() -> InductionStore {
     InductionStore::from_backend(Arc::new(InMemoryKvBackend::default()))
 }
@@ -277,4 +290,122 @@ async fn load_patterns_returns_at_most_ten_sorted_by_hit_rate() {
     for w in patterns.windows(2) {
         assert!(w[0].hit_rate >= w[1].hit_rate, "must be sorted desc");
     }
+}
+
+// ── NATS JetStream KV backend ─────────────────────────────────────────────────
+// These tests exercise InductionStore::create (which wraps NatsKvBackend) and
+// the NatsKvBackend::put / get / all_keys methods. They are skipped automatically
+// when NATS is not available.
+
+/// InductionStore::create connects to NATS JetStream and returns a live store.
+#[tokio::test]
+async fn nats_induction_store_create_returns_ok() {
+    let Some(nats) = connect_nats().await else {
+        return;
+    };
+    // Use a unique bucket per test to avoid cross-test pollution.
+    let bucket = format!("test-induction-{}", uuid::Uuid::new_v4().simple());
+    let result = InductionStore::create(&nats, &bucket).await;
+    assert!(result.is_ok(), "create must succeed");
+}
+
+/// record() through NatsKvBackend + load_patterns round-trip over real NATS KV.
+#[tokio::test]
+async fn nats_induction_store_record_and_load_round_trip() {
+    let Some(nats) = connect_nats().await else {
+        return;
+    };
+    let bucket = format!("test-induction-{}", uuid::Uuid::new_v4().simple());
+    let store = InductionStore::create(&nats, &bucket)
+        .await
+        .expect("create");
+
+    store
+        .record(
+            &["nats-node-a".to_string()],
+            &AgentRole::Executor,
+            &["nats-domain".to_string()],
+        )
+        .await
+        .expect("record");
+
+    let patterns = store
+        .load_patterns(&["nats-domain".to_string()], &AgentRole::Executor)
+        .await
+        .expect("load_patterns");
+
+    assert!(
+        patterns.iter().any(|p| p.node_id == "nats-node-a"),
+        "recorded node must be found via NATS KV"
+    );
+}
+
+/// NatsKvBackend::put followed by get returns the stored bytes.
+#[tokio::test]
+async fn nats_induction_store_hit_rate_accumulates() {
+    let Some(nats) = connect_nats().await else {
+        return;
+    };
+    let bucket = format!("test-induction-{}", uuid::Uuid::new_v4().simple());
+    let store = InductionStore::create(&nats, &bucket)
+        .await
+        .expect("create");
+
+    for _ in 0..3 {
+        store
+            .record(
+                &["nats-acc-node".to_string()],
+                &AgentRole::Evaluator,
+                &["acc-domain".to_string()],
+            )
+            .await
+            .expect("record");
+    }
+
+    let patterns = store
+        .load_patterns(&["acc-domain".to_string()], &AgentRole::Evaluator)
+        .await
+        .expect("load_patterns");
+
+    let node = patterns
+        .iter()
+        .find(|p| p.node_id == "nats-acc-node")
+        .expect("node must exist");
+    assert!(
+        node.hit_rate >= 3.0,
+        "hit_rate must accumulate to at least 3.0, got {}",
+        node.hit_rate
+    );
+}
+
+/// all_keys on NatsKvBackend returns the key that was put.
+#[tokio::test]
+async fn nats_induction_store_all_keys_includes_recorded_nodes() {
+    let Some(nats) = connect_nats().await else {
+        return;
+    };
+    let bucket = format!("test-induction-{}", uuid::Uuid::new_v4().simple());
+    let store = InductionStore::create(&nats, &bucket)
+        .await
+        .expect("create");
+
+    store
+        .record(
+            &["keys-node".to_string()],
+            &AgentRole::Synthesizer,
+            &["keys-domain".to_string()],
+        )
+        .await
+        .expect("record");
+
+    // load_patterns exercises all_keys() internally — verify it finds the entry.
+    let patterns = store
+        .load_patterns(&["keys-domain".to_string()], &AgentRole::Synthesizer)
+        .await
+        .expect("load_patterns");
+
+    assert!(
+        patterns.iter().any(|p| p.node_id == "keys-node"),
+        "synthesizer node must be found via all_keys()"
+    );
 }
