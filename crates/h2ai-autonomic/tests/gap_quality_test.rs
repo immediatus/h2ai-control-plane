@@ -1,5 +1,5 @@
-use h2ai_autonomic::repair::{assess_gap_quality, GapQualityVerdict};
-use h2ai_config::GapQualityConfig;
+use h2ai_autonomic::repair::{assess_gap_quality, oom_signal, read_rss_mb, GapQualityVerdict};
+use h2ai_config::{GapQualityConfig, OomGuardConfig};
 use h2ai_types::gap_i1::DomainSynthesis;
 
 fn ds(pre: f64, post: Vec<f64>, injected_at: u32) -> DomainSynthesis {
@@ -62,4 +62,56 @@ fn ineffective_verdict_used_for_eviction() {
     let d = ds(0.3, vec![0.3, 0.3], 1); // 0.0 delta
     let v = assess_gap_quality(&d, &cfg());
     assert!(matches!(v, GapQualityVerdict::Ineffective));
+}
+
+// ── read_rss_mb / oom_signal ──────────────────────────────────────────────────
+
+#[test]
+fn read_rss_mb_succeeds_on_linux() {
+    // On Linux reads /proc/self/status; on other platforms always returns Ok(0).
+    let result = read_rss_mb();
+    assert!(
+        result.is_ok(),
+        "read_rss_mb must not error on this platform"
+    );
+}
+
+#[test]
+fn oom_signal_returns_none_when_disabled() {
+    let cfg = OomGuardConfig {
+        enabled: false,
+        rss_abort_mb: 1,
+        ..OomGuardConfig::default()
+    };
+    assert!(
+        oom_signal(1000, &cfg).is_none(),
+        "disabled guard must always return None"
+    );
+}
+
+#[test]
+fn oom_signal_returns_signal_when_rss_exceeds_limit() {
+    let cfg = OomGuardConfig {
+        enabled: true,
+        rss_abort_mb: 512,
+        ..OomGuardConfig::default()
+    };
+    let signal = oom_signal(1024, &cfg);
+    assert!(signal.is_some(), "rss_mb >= rss_abort_mb must return Some");
+    let s = signal.unwrap();
+    assert_eq!(s.rss_mb, 1024);
+    assert_eq!(s.limit_mb, 512);
+}
+
+#[test]
+fn oom_signal_returns_none_when_rss_below_limit() {
+    let cfg = OomGuardConfig {
+        enabled: true,
+        rss_abort_mb: 4096,
+        ..OomGuardConfig::default()
+    };
+    assert!(
+        oom_signal(256, &cfg).is_none(),
+        "rss_mb < rss_abort_mb must return None"
+    );
 }

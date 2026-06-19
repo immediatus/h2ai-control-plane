@@ -320,6 +320,20 @@ fn yaml_hard_severity_with_two_binary_checks_computes_fractional_threshold() {
     }
 }
 
+// ── yaml.rs:391: pass_criteria = None when criteria.pass is empty ────────────
+
+#[test]
+fn yaml_into_constraint_doc_empty_criteria_pass_yields_none_pass_criteria() {
+    // criteria.pass set to "" explicitly → into_constraint_doc line 391: None branch
+    let yaml = "id: C-NO-PASS\ntitle: No Pass Criteria\nseverity: hard\ncriteria:\n  pass: \"\"\n  fail: bad\n";
+    let parsed: ConstraintYaml = serde_yaml::from_str(yaml).expect("must parse");
+    let doc = parsed.into_constraint_doc();
+    assert!(
+        doc.pass_criteria.is_none(),
+        "empty criteria.pass must produce None pass_criteria"
+    );
+}
+
 #[test]
 fn yaml_hard_severity_with_three_binary_checks_computes_fractional_threshold() {
     // 3 checks → threshold = (3-1)/3 ≈ 0.667

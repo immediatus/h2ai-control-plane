@@ -1,7 +1,7 @@
 #![allow(clippy::doc_markdown, clippy::cast_precision_loss)]
 use h2ai_autonomic::epistemic::{
-    classify_failure_mode, compute_n_eff_cosine, mean_pairwise_cosine, synthesize_repair_plan,
-    synthesize_tombstone, talagrand_kl_delta_tau,
+    classify_failure_mode, compute_n_eff_cosine, detect_frozen_verifier, mean_pairwise_cosine,
+    synthesize_repair_plan, synthesize_tombstone, talagrand_kl_delta_tau,
 };
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_types::events::{ConstraintViolation, FailureMode};
@@ -433,6 +433,130 @@ fn talagrand_kl_delta_tau_lambda_shaped_negative_delta() {
     );
 }
 
+// ── detect_frozen_verifier ────────────────────────────────────────────────────
+
+fn freeze_cfg(min_waves: u32) -> h2ai_config::VerifierFreezeConfig {
+    h2ai_config::VerifierFreezeConfig {
+        enabled: true,
+        min_waves_to_detect: min_waves,
+        score_variance_threshold: 0.05,
+        reason_jaccard_threshold: 0.7,
+        reason_window_size: 10,
+        other_constraint_success_threshold: 0.5,
+        bypass_hard_gate_on_freeze: true,
+        emit_event_only: false,
+    }
+}
+
+#[test]
+fn detect_frozen_verifier_returns_none_when_reason_history_too_short() {
+    // Conditions 1-4 all pass, but reason_history has only 1 entry (< 2 required).
+    // This exercises line 247-249 (`if reason_history.len() < 2 { return None; }`).
+    // Also exercises `mean_last_n` with `scores.len() <= n` (else branch, line 293-294).
+    let cfg = freeze_cfg(3);
+    let wave_scores = [0.3_f64, 0.3, 0.3]; // range=0.0 < 0.05 ✓, len=3 >= 3 ✓
+    let other_trend = [0.5_f64, 0.9]; // monotonically improving; mean_last_n=0.7 > 0.5 ✓
+    let signal = detect_frozen_verifier(
+        "C-001",
+        &wave_scores,
+        &["only one reason".to_string()],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(
+        signal.is_none(),
+        "reason_history.len() < 2 must return None"
+    );
+}
+
+#[test]
+fn detect_frozen_verifier_returns_signal_when_all_conditions_met() {
+    // Positive path: all 5 conditions pass → Some(FrozenVerifierSignal).
+    // Exercises the main success path including `mean_pairwise_jaccard_str` with n >= 2.
+    let cfg = freeze_cfg(3);
+    let wave_scores = [0.3_f64, 0.3, 0.3];
+    let other_trend = [0.5_f64, 0.8, 0.9];
+    let signal = detect_frozen_verifier(
+        "C-001",
+        &wave_scores,
+        &[
+            "auth token missing".to_string(),
+            "auth token missing again".to_string(),
+        ],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(signal.is_some(), "all conditions met → must return Some");
+    let s = signal.unwrap();
+    assert_eq!(s.constraint_id, "C-001");
+}
+
+#[test]
+fn detect_frozen_verifier_returns_none_when_score_range_too_high() {
+    // range = 0.9 - 0.1 = 0.8 > score_variance_threshold=0.05 → return None.
+    let cfg = freeze_cfg(2);
+    let wave_scores = [0.1_f64, 0.9];
+    let other_trend = [0.5_f64, 0.9];
+    let signal = detect_frozen_verifier(
+        "C-002",
+        &wave_scores,
+        &["reason a".to_string(), "reason b".to_string()],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(signal.is_none(), "high score range must return None");
+}
+
+#[test]
+fn detect_frozen_verifier_short_wave_scores_hits_score_range_early_return() {
+    // min_waves_to_detect = 1 so wave_scores=[0.3] passes condition 1.
+    // score_range([0.3]) → scores.len() < 2 → return 0.0 (line 267).
+    // then other_trend=[0.8, 0.9] → is_monotonically_improving=true → mean_last_n=0.85>0.5
+    // → any_other_succeeding = true → reason_history=[] → len<2 → return None
+    let cfg = freeze_cfg(1);
+    let wave_scores = [0.3_f64];
+    let other_trend = [0.8_f64, 0.9];
+    let signal = detect_frozen_verifier("C-003", &wave_scores, &[], &[&other_trend[..]], &cfg);
+    assert!(signal.is_none());
+}
+
+#[test]
+fn detect_frozen_verifier_monotone_check_with_decreasing_trend_not_succeeding() {
+    // other_trend has a decreasing step → is_monotonically_improving returns false (line 281).
+    // any_other_succeeding = false → return None at line 244.
+    let cfg = freeze_cfg(2);
+    let wave_scores = [0.3_f64, 0.3];
+    let other_trend = [0.9_f64, 0.5]; // 0.5 < 0.9 → decreasing → return false (line 281)
+    let signal = detect_frozen_verifier(
+        "C-004",
+        &wave_scores,
+        &["r1".to_string(), "r2".to_string()],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(signal.is_none(), "decreasing other trend must not succeed");
+}
+
+#[test]
+fn detect_frozen_verifier_monotone_check_single_element_not_succeeding() {
+    // other_trend has only 1 element → is_monotonically_improving returns false (line 276).
+    // any_other_succeeding = false → return None at line 244.
+    let cfg = freeze_cfg(3);
+    let wave_scores = [0.3_f64, 0.3, 0.3];
+    let other_trend = [0.9_f64]; // len=1 < 2 → return false (line 276)
+    let signal = detect_frozen_verifier(
+        "C-005",
+        &wave_scores,
+        &["r1".to_string(), "r2".to_string()],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(
+        signal.is_none(),
+        "single-element other trend must not succeed"
+    );
+}
+
 #[test]
 fn talagrand_kl_delta_tau_innovation5_scores_detected_as_lambda() {
     // INNOVATION-5 evidence (from gaps.md): scores (0.18,0.23,0.29,0.38,0.39,0.39,0.43,0.43,0.49)
@@ -443,5 +567,78 @@ fn talagrand_kl_delta_tau_innovation5_scores_detected_as_lambda() {
     assert!(
         delta < 0.0,
         "INNOVATION-5 Λ-shaped scores should produce negative Δτ, got {delta}"
+    );
+}
+
+#[test]
+fn talagrand_kl_delta_tau_zero_edge_bins_covers_else_branch() {
+    // histogram=[0.0, 1.0, 0.0]: total=1.0 (not zero), but both edges are 0.0.
+    // After normalisation h_edges_mean = 0.0 ≤ 1e-10 → lambda_score = 0.0 (line 361).
+    let h = vec![0.0_f64, 1.0, 0.0];
+    let delta = talagrand_kl_delta_tau(&h, 0.1);
+    // u_score = var_h / mean_h = (2/9) / (1/3) = 2/3; lambda_score = 0.0
+    // delta = 0.1 × (2/3 − 0) = 2/30 ≈ 0.0667
+    assert!(
+        delta > 0.0,
+        "zero-edge histogram must produce positive delta (u_score > 0, lambda_score = 0), got {delta}"
+    );
+}
+
+#[test]
+fn detect_frozen_verifier_returns_none_when_too_few_wave_scores() {
+    // wave_scores.len() = 2 < min_waves_to_detect = 3 → return None at line 230.
+    let cfg = freeze_cfg(3);
+    let wave_scores = [0.3_f64, 0.3]; // len=2 < 3
+    let other_trend = [0.5_f64, 0.9];
+    let signal = detect_frozen_verifier(
+        "C-SHORT",
+        &wave_scores,
+        &["r1".to_string(), "r2".to_string()],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(signal.is_none(), "too few wave scores must return None");
+}
+
+#[test]
+fn detect_frozen_verifier_returns_none_when_no_other_trends() {
+    // wave_scores passes condition 1 (len=3 >= 3), but other_constraint_trends is empty
+    // → return None at line 233.
+    let cfg = freeze_cfg(3);
+    let wave_scores = [0.3_f64, 0.3, 0.3];
+    let signal = detect_frozen_verifier(
+        "C-NOTREND",
+        &wave_scores,
+        &["r1".to_string(), "r2".to_string()],
+        &[], // empty other_constraint_trends
+        &cfg,
+    );
+    assert!(
+        signal.is_none(),
+        "empty other_constraint_trends must return None"
+    );
+}
+
+#[test]
+fn detect_frozen_verifier_returns_none_when_reasons_divergent() {
+    // All conditions 1-4 pass, but reasons are completely different → mean Jaccard ≈ 0 ≤ 0.7
+    // → return None at line 252.
+    let cfg = freeze_cfg(3);
+    let wave_scores = [0.3_f64, 0.3, 0.3];
+    let other_trend = [0.5_f64, 0.8, 0.9];
+    // Divergent reasons: no token overlap → Jaccard ≈ 0.0 ≤ threshold=0.7
+    let signal = detect_frozen_verifier(
+        "C-DIV",
+        &wave_scores,
+        &[
+            "alpha beta gamma delta".to_string(),
+            "epsilon zeta eta theta".to_string(),
+        ],
+        &[&other_trend[..]],
+        &cfg,
+    );
+    assert!(
+        signal.is_none(),
+        "divergent reasons (low Jaccard) must return None"
     );
 }

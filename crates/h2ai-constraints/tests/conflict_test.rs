@@ -312,3 +312,36 @@ fn composite_or_does_not_propagate_conflict() {
         "Or-composite must not produce false conflict"
     );
 }
+
+// ── ConstraintDoc serde defaults ──────────────────────────────────────────────
+
+#[test]
+fn constraint_doc_version_defaults_to_one_when_absent() {
+    let json = serde_json::json!({
+        "id": "TEST-001",
+        "source_file": "test.yaml",
+        "description": "Test constraint",
+        "severity": {"Hard": {"threshold": 0.5}},
+        "predicate": {"LlmJudge": {"rubric": "pass if correct"}},
+        "remediation_hint": null
+    });
+    let doc: ConstraintDoc = serde_json::from_value(json).unwrap();
+    assert_eq!(doc.version, 1, "missing version field must default to 1");
+}
+
+#[test]
+fn oracle_execution_timeout_defaults_to_thirty_when_absent() {
+    let json = serde_json::json!({
+        "OracleExecution": {
+            "test_runner_uri": "http://localhost:9000/run",
+            "test_suite": "suite_a"
+        }
+    });
+    let pred: ConstraintPredicate = serde_json::from_value(json).unwrap();
+    match pred {
+        ConstraintPredicate::OracleExecution { timeout_secs, .. } => {
+            assert_eq!(timeout_secs, 30, "missing timeout_secs must default to 30");
+        }
+        _ => panic!("expected OracleExecution"),
+    }
+}

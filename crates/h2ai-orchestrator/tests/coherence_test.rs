@@ -686,3 +686,27 @@ fn full_chain_subtract_does_not_clear_active_contradictions() {
     // Contradiction is still present → not closed
     assert!(!final_state.is_closed());
 }
+
+#[test]
+fn with_contradictions_returns_unchanged_when_no_domain_mappings() {
+    // corpus has a constraint with a domain, but we pass constraint_ids that don't
+    // match anything in the corpus → domain_to_indices stays empty → early return
+    let corpus = vec![make_constraint("C-X", &["billing"])];
+    let state = CoherenceState::from_pruned(&corpus, &[]);
+    let e1 = ExplorerId::new();
+    let e2 = ExplorerId::new();
+    let satisfaction_matrix = vec![vec![0.9_f64], vec![0.1_f64]];
+
+    // "C-UNKNOWN" is not in corpus, so no domain mapping is built
+    let after = state.with_contradictions(
+        &corpus,
+        &[e1, e2],
+        &satisfaction_matrix,
+        &["C-UNKNOWN".to_string()],
+    );
+
+    assert!(
+        after.active_contradictions.is_empty(),
+        "no contradictions should be added when constraint_ids have no domain mappings"
+    );
+}

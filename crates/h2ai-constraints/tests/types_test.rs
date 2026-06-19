@@ -434,6 +434,46 @@ fn fractional_compliance_score_all_zero_stays_zero() {
     );
 }
 
+// ── Lines 328-333: hard_passes_scaled ───────────────────────────────────────
+
+#[test]
+fn compliance_result_hard_passes_scaled_with_relaxed_threshold() {
+    // threshold=0.8, scale=0.9 → effective threshold 0.72; score 0.75 passes
+    let r = ComplianceResult {
+        constraint_id: "ADR-SCL".into(),
+        score: 0.75,
+        severity: ConstraintSeverity::Hard { threshold: 0.8 },
+        remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
+        check_reasons: vec![],
+    };
+    assert!(r.hard_passes_scaled(0.9), "0.75 >= 0.8*0.9=0.72 must pass");
+    assert!(
+        !r.hard_passes_scaled(1.0),
+        "0.75 < 0.8*1.0=0.80 must fail at full scale"
+    );
+}
+
+#[test]
+fn compliance_result_soft_hard_passes_scaled_always_true() {
+    // Soft severity: hard_passes_scaled always returns true regardless of scale
+    let r = ComplianceResult {
+        constraint_id: "S-SCL".into(),
+        score: 0.0,
+        severity: ConstraintSeverity::Soft { weight: 1.0 },
+        remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: vec![],
+        criteria_pass: None,
+        check_reasons: vec![],
+    };
+    assert!(r.hard_passes_scaled(0.5));
+}
+
 // ── Line 365: ConstraintMeta::from_doc with empty description ────────────────
 
 #[test]

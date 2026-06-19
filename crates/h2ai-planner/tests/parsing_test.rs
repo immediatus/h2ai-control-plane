@@ -30,3 +30,10 @@ fn extract_json_no_object_returns_input() {
     let s = "no json here";
     assert_eq!(extract_json(s), s);
 }
+
+#[test]
+fn extract_json_invalid_json_after_brace_returns_tail() {
+    // `{` found but the text is not valid JSON → serde_json returns Some(Err(_)) → `_ => tail`
+    let s = "prefix { invalid json";
+    assert_eq!(extract_json(s), "{ invalid json");
+}

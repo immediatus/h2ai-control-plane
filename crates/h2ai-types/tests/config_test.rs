@@ -399,3 +399,67 @@ fn diverse_pool_has_multiple_lineage_keys() {
         "diverse pool must have 2 distinct lineage keys"
     );
 }
+
+// ── AdapterKind::model_lineage_key — non-CloudGeneric arms ───────────────────
+
+#[test]
+fn model_lineage_key_openai_includes_model() {
+    let k = AdapterKind::OpenAI {
+        api_key_env: "KEY".into(),
+        model: "gpt-4o-mini".into(),
+    };
+    assert_eq!(k.model_lineage_key(), "openai::gpt-4o-mini");
+}
+
+#[test]
+fn model_lineage_key_anthropic_includes_model() {
+    let k = AdapterKind::Anthropic {
+        api_key_env: "KEY".into(),
+        model: "claude-sonnet-4-6".into(),
+    };
+    assert_eq!(k.model_lineage_key(), "anthropic::claude-sonnet-4-6");
+}
+
+#[test]
+fn model_lineage_key_ollama_includes_endpoint_and_model() {
+    let k = AdapterKind::Ollama {
+        endpoint: "http://localhost:11434".into(),
+        model: "llama3.2".into(),
+    };
+    assert_eq!(
+        k.model_lineage_key(),
+        "ollama::http://localhost:11434::llama3.2"
+    );
+}
+
+#[test]
+fn model_lineage_key_a2a_includes_endpoint() {
+    let k = AdapterKind::A2a {
+        endpoint: "https://agent.example.com".into(),
+        auth_scheme: "bearer".into(),
+        auth_token_env: "TOK".into(),
+        timeout_minutes: 5,
+        poll_interval_ms: 500,
+        max_poll_interval_ms: 5000,
+        agent_card_cache_ttl_s: 300,
+    };
+    assert_eq!(k.model_lineage_key(), "a2a::https://agent.example.com");
+}
+
+// ── VerificationConfig — constraint_threshold_scale serde default ─────────────
+
+#[test]
+fn verification_config_constraint_threshold_scale_defaults_to_one() {
+    use h2ai_types::config::VerificationConfig;
+    let json = serde_json::json!({
+        "threshold": 0.45,
+        "rubric": "rubric text",
+        "evaluator_system_prompt": "system prompt",
+        "evaluator_tau": 0.1,
+        "evaluator_max_tokens": 32768,
+        "evaluator_timeout_secs": 600,
+        "record_adversarial_comparison": false
+    });
+    let cfg: VerificationConfig = serde_json::from_value(json).unwrap();
+    assert!((cfg.constraint_threshold_scale - 1.0).abs() < 1e-12);
+}

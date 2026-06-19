@@ -545,3 +545,33 @@ fn scan_positive_example_no_fallback_keyword_does_not_fire_conflict() {
         "block with term but no except/catch must not fire PositiveExampleConflict; got {evidence:?}"
     );
 }
+
+// ── ambiguity.rs:339: rubric_text(_ => String::new()) for static predicates ──
+
+#[test]
+fn scan_constraint_with_vocabulary_predicate_exercises_rubric_text_wildcard_arm() {
+    // ConstraintPredicate::VocabularyPresence is neither LlmJudge nor Composite
+    // → rubric_text(predicate) hits the `_ => String::new()` arm (line 339)
+    let d = ConstraintDoc {
+        id: "C-VOCAB-ARB".into(),
+        source_file: "vocab.yaml".into(),
+        description: "Vocabulary ambiguity check".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::VocabularyPresence {
+            mode: h2ai_constraints::types::VocabularyMode::AllOf,
+            terms: vec!["redis".into()],
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+        binary_checks: vec!["The design uses redis".into()],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
+    };
+    let evidence = scan_constraint(&d);
+    // VocabularyPresence → rubric_text returns "" → no guidance lines → no
+    // FmTermNegation/RemediationConflict evidence; single storage, no negation → empty
+    assert!(evidence.is_empty());
+}

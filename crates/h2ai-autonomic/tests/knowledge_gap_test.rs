@@ -63,3 +63,24 @@ fn build_gap_queries_contains_incorrect_concept_context() {
         "queries should be domain-specific: {joined}"
     );
 }
+
+#[test]
+fn build_gap_queries_with_all_lowercase_text_uses_fallback_keywords() {
+    // extract_domain_keywords: none of the words start with uppercase or are all-caps
+    // AND all have length > 3 (would be eligible by length but fail the uppercase filter)
+    // → words.is_empty() → fallback returns first 5 split tokens from check_text
+    let check_text = "check ordering constraint here only";
+    let queries = build_gap_queries(check_text, "some incorrect concept");
+    assert_eq!(queries.len(), 3);
+    // The fallback joins the first 5 tokens, so check_text appears verbatim in queries 1 and 3
+    assert!(
+        queries[0].contains(check_text),
+        "fallback must embed raw token slice in query 1: {}",
+        queries[0]
+    );
+    assert!(
+        queries[2].contains(check_text),
+        "fallback must embed raw token slice in query 3: {}",
+        queries[2]
+    );
+}

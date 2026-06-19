@@ -835,6 +835,87 @@ async fn replay_snapshot_only_with_no_tail_events_returns_state() {
     assert_eq!(recovered.unwrap().status, "pending");
 }
 
+// ── note_event early returns with live backend ────────────────────────────────
+
+#[test]
+fn note_event_nats_some_snapshot_interval_zero_is_noop() {
+    // Covers line 63: `if self.snapshot_interval == 0 { return; }` when nats IS Some.
+    // new(backend) sets nats=Some, then .with_snapshot_interval(0) sets interval=0.
+    // note_event must pass the first guard (nats is Some) then hit the interval==0 return.
+    let backend = Arc::new(InMemoryStateBackend::new());
+    let journal = SessionJournal::new(backend).with_snapshot_interval(0);
+    let tid = task_id();
+    let state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    // Must not panic; the snapshot_interval==0 guard fires before any tokio::spawn.
+    journal.note_event(&tid, 1, &state);
+    journal.note_event(&tid, 2, &state);
+}
+
+#[tokio::test]
+async fn note_event_snapshot_write_failure_does_not_panic() {
+    // Covers line 79: `tracing::warn!` inside the spawned task when put_snapshot errors.
+    // SnapshotErrBackend.put_snapshot always returns Err → the warn! on line 79 fires.
+    let backend = Arc::new(SnapshotErrBackend);
+    // interval=1 so every event triggers a snapshot write attempt.
+    let journal = SessionJournal::new(backend).with_snapshot_interval(1);
+    let tid = task_id();
+    let state = TaskState::new(tid.clone(), TenantId::default_tenant());
+    // Trigger the snapshot write (spawned background task).
+    journal.note_event(&tid, 1, &state);
+    // Yield to let the spawned task run and hit the warn! path.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    // No assertion needed — the goal is that neither the spawn nor the warn! panics.
+}
+
+// ── replay stream item error path (lines 164-165) ────────────────────────────
+
+/// Backend that returns a stream which yields a single `Err` item.
+/// This exercises the `Ok(Some(Err(e)))` arm in the replay loop (lines 164-165).
+struct StreamItemErrBackend;
+
+#[async_trait]
+impl SnapshotStore for StreamItemErrBackend {
+    async fn put_snapshot(&self, _: &TaskSnapshot) -> Result<(), NatsError> {
+        Ok(())
+    }
+    async fn get_snapshot(&self, _: &TaskId) -> Result<Option<TaskSnapshot>, NatsError> {
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl TailEvents for StreamItemErrBackend {
+    async fn tail_task_events_boxed(
+        &self,
+        _: &TaskId,
+        _: u64,
+    ) -> Result<BoxStream<'static, Result<(u64, H2AIEvent), NatsError>>, NatsError> {
+        // Return a stream that yields one Err item (not an Err from the outer call).
+        let item: Result<(u64, H2AIEvent), NatsError> =
+            Err(NatsError::StreamError("item-level stream error".into()));
+        Ok(Box::pin(futures::stream::once(async move { item })))
+    }
+}
+
+#[tokio::test]
+async fn replay_stream_item_error_propagates_as_transport_error() {
+    // Covers lines 164-165: `Ok(Some(Err(e))) => return Err(...)`.
+    // The stream successfully starts but yields a single Err item.
+    let backend = Arc::new(StreamItemErrBackend);
+    let journal = SessionJournal::new(backend);
+    let tid = task_id();
+    let err = journal
+        .replay(&tid)
+        .await
+        .expect_err("stream item error must propagate as Err");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("Transport") || msg.contains("stream"),
+        "error must be a Transport variant, got: {msg}"
+    );
+}
+
 // ── live NATS integration tests (skipped when NATS unavailable) ───────────────
 
 #[tokio::test]

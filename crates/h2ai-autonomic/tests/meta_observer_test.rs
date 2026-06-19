@@ -145,6 +145,28 @@ fn balancing_instruction_contains_diverged_constraint_id() {
 }
 
 #[test]
+fn divergence_events_from_pruned_all_same_wave_returns_empty() {
+    // all events at wave 0 → after dedup all_waves.len() = 1 < 2 → return vec![] (line 41)
+    let events = vec![pruned(&["C-001"], 0), pruned(&["C-002"], 0)];
+    let divergences = divergence_events_from_pruned(&events);
+    assert!(
+        divergences.is_empty(),
+        "single distinct wave → no divergence"
+    );
+}
+
+#[test]
+fn sharpen_balancing_instruction_empty_cluster_ids_returns_empty() {
+    // cluster_ids.is_empty() → return String::new() (line 133)
+    let prior = "OSCILLATION: C-001 and C-002 conflict";
+    let sharpened = sharpen_balancing_instruction(prior, &[]);
+    assert!(
+        sharpened.is_empty(),
+        "empty cluster_ids must return empty string"
+    );
+}
+
+#[test]
 fn sharpen_returns_empty_when_no_cluster_ids_mentioned() {
     let prior = "OSCILLATION: C-001 and C-002 conflict";
     let sharpened = sharpen_balancing_instruction(prior, &["C-999".to_owned()]);

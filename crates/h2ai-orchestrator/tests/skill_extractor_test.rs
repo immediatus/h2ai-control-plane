@@ -801,3 +801,136 @@ fn failure_path_high_scoring_events_do_not_produce_reason_leaves() {
         "events with score >= 0.5 must not produce skill nodes"
     );
 }
+
+// ── Branch-coverage completeness ─────────────────────────────────────────────
+
+#[test]
+fn parse_constraint_id_uppercase_block_without_dash_returns_none() {
+    // "HELLO" is all uppercase but not followed by '-' → inner `if bytes[i] == b'-'` is
+    // false, falling through to the outer `} else {` arm without returning anything.
+    assert_eq!(parse_constraint_id("HELLO world"), None);
+}
+
+#[test]
+fn parse_constraint_id_dash_followed_by_no_digits_returns_none() {
+    // "C- x" matches uppercase then '-' but has no digit after the dash → digit_start == i
+    // → `if i > digit_start` is false → continues without returning.
+    assert_eq!(parse_constraint_id("C- x"), None);
+}
+
+#[test]
+fn jaccard_dedup_treats_two_empty_reasons_as_duplicates() {
+    use h2ai_knowledge::types::NodeDepth;
+    let task_id = TaskId::new();
+    // Two failing events both with empty reason strings:
+    // jaccard_similarity("", "") → union=0 → returns 1.0 (the ≥0.85 guard fires) → second is deduped.
+    // We need domain_failures or has_verifier_failures true so the early-return guard at line 183
+    // doesn't fire. One topology retry (retry_count=1) creates domain_failures.
+    let output = make_output(
+        task_id.clone(),
+        1,
+        vec![retry_event(
+            task_id.clone(),
+            1,
+            Some("generic tombstone".into()),
+        )],
+        closed_coherence(),
+        vec![],
+        vec![
+            verification_event(task_id.clone(), 0.2, ""),
+            verification_event(task_id.clone(), 0.3, ""),
+        ],
+    );
+    let corpus = stub_corpus(&["auth"]);
+    let nodes = skill_from_output(&output, &corpus, &task_id);
+    let reason_leaves: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.depth == NodeDepth::Leaf && n.id.contains(":reason:"))
+        .collect();
+    // Both reasons are empty; Jaccard(∅, ∅) = 1.0 ≥ 0.85 → second is a dup → only 1 reason leaf.
+    assert_eq!(
+        reason_leaves.len(),
+        1,
+        "two empty reasons must collapse to one Reason-keyed Leaf (Jaccard=1.0)"
+    );
+}
+
+#[test]
+fn topology_retry_event_with_retry_count_zero_does_not_add_failure_mode() {
+    use h2ai_knowledge::types::NodeDepth;
+    let task_id = TaskId::new();
+    // retry_count=0 → `if ev.retry_count > 0` is false → tombstone text is NOT added to
+    // domain_failures. We pair it with an uncovered domain to keep the early-return guard
+    // from firing (domain_failures gets an entry from the uncovered_domain loop).
+    let output = make_output(
+        task_id.clone(),
+        1,
+        vec![retry_event(
+            task_id.clone(),
+            0,
+            Some("should not appear".into()),
+        )],
+        CoherenceState {
+            uncovered_domains: vec!["auth".into()],
+            active_contradictions: vec![],
+        },
+        vec![],
+        vec![],
+    );
+    let corpus = stub_corpus(&["auth"]);
+    let nodes = skill_from_output(&output, &corpus, &task_id);
+    let topic = nodes.iter().find(|n| n.depth == NodeDepth::Topic);
+    assert!(
+        topic.is_some(),
+        "must still emit a Topic node for the uncovered domain"
+    );
+    let failure_modes = &topic.unwrap().failure_modes;
+    assert!(
+        failure_modes
+            .iter()
+            .all(|f| !f.contains("should not appear")),
+        "retry_count=0 tombstone must NOT appear in failure_modes"
+    );
+}
+
+#[test]
+fn srani_event_with_hint_not_injected_does_not_add_failure_mode() {
+    use h2ai_types::events::CorrelatedFabricationEvent;
+    let task_id = TaskId::new();
+    // hint_injected=false → inner if-body is skipped; entities present but not injected.
+    // Pair with an uncovered domain so domain_failures is non-empty (avoids early return).
+    let srani_ev = CorrelatedFabricationEvent {
+        task_id: task_id.clone(),
+        cfi: 0.6,
+        injection_pressure: 0.55,
+        shared_ungrounded_entities: vec!["SomeEntity".into()],
+        proposal_count: 2,
+        hint_injected: false,
+        timestamp: chrono::Utc::now(),
+    };
+    let output = make_output(
+        task_id.clone(),
+        1,
+        vec![],
+        CoherenceState {
+            uncovered_domains: vec!["auth".into()],
+            active_contradictions: vec![],
+        },
+        vec![srani_ev],
+        vec![],
+    );
+    let corpus = stub_corpus(&["auth"]);
+    let nodes = skill_from_output(&output, &corpus, &task_id);
+    assert!(
+        !nodes.is_empty(),
+        "uncovered domain must still produce a Topic node"
+    );
+    let all_failures: Vec<String> = nodes
+        .iter()
+        .flat_map(|n| n.failure_modes.iter().cloned())
+        .collect();
+    assert!(
+        all_failures.iter().all(|f| !f.contains("SomeEntity")),
+        "hint_injected=false must not add ungrounded entities to failure_modes"
+    );
+}

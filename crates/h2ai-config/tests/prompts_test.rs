@@ -46,6 +46,12 @@ fn prompt_template_display_returns_raw_text() {
 }
 
 #[test]
+fn prompt_template_as_str_returns_raw_template() {
+    const T: PromptTemplate = PromptTemplate("raw {template}");
+    assert_eq!(T.as_str(), "raw {template}");
+}
+
+#[test]
 fn synthesis_md_system_does_not_instruct_json_output() {
     // THINKING_SYNTHESIS_MD_SYSTEM is used with tournament_merge + THINKING_SYNTHESIS_MD_PAIRWISE,
     // which expects markdown sections. Verifying it does NOT say "JSON" prevents the conflict

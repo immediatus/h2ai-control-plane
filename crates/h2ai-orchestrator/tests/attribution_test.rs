@@ -654,6 +654,39 @@ fn q_confidence_at_least_baseline_after_rho_correction() {
 }
 
 #[test]
+fn bootstrap_interval_empirical_basis_uses_fixed_p_and_rho() {
+    // PredictionBasis::Empirical → p_boot = base_input.p_mean, rho_boot = base_input.rho_mean
+    // regardless of cg_boot. Exercises lines 192 and 196 in attribution.rs.
+    let input = AttributionInput {
+        p_mean: 0.7,
+        rho_mean: 0.3,
+        n_agents: 3,
+        verification_filter_ratio: 1.0,
+        tao_turns_mean: 1.0,
+        tao_per_turn_factor: 0.6,
+        prediction_basis: PredictionBasis::Empirical,
+        talagrand_state: None,
+        eigen_calibration: None,
+    };
+    let cg_samples = vec![0.5_f64, 0.7, 0.6, 0.8, 0.4];
+    let iv = bootstrap_interval(&input, &cg_samples, 500);
+    assert!(
+        matches!(
+            iv.interval_basis,
+            IntervalBasis::Bootstrap { n_cg_samples: 5 }
+        ),
+        "expected Bootstrap{{n_cg_samples:5}}, got {:?}",
+        iv.interval_basis
+    );
+    assert!(
+        iv.q_confidence_lo <= iv.q_confidence_hi,
+        "CI must be non-inverted: lo={:.4} hi={:.4}",
+        iv.q_confidence_lo,
+        iv.q_confidence_hi
+    );
+}
+
+#[test]
 fn synthesis_gain_defaults_to_zero() {
     let input = AttributionInput {
         p_mean: 0.7,

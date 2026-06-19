@@ -58,6 +58,26 @@ fn test_orthogonal_empty_input() {
 }
 
 #[test]
+fn test_orthogonal_empty_checks_returns_empty() {
+    // checks.is_empty() → return vec![] (line 158)
+    let result = select_orthogonal_partials(&[], &[], &[], 2, usize::MAX);
+    assert!(result.is_empty(), "empty checks must return empty");
+}
+
+#[test]
+fn test_orthogonal_zero_max_k_returns_empty() {
+    // max_k == 0 → return vec![] (line 158)
+    let result = select_orthogonal_partials(
+        &[],
+        &checks(&["check A"]),
+        &offsets_for(&["check A"]),
+        0,
+        usize::MAX,
+    );
+    assert!(result.is_empty(), "max_k=0 must return empty");
+}
+
+#[test]
 fn test_orthogonal_all_failed_excluded() {
     // All checks violated = no partial passes.
     let pruned = vec![make_pruned_with_violations(vec![

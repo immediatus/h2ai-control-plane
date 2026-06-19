@@ -86,6 +86,87 @@ async fn alternating_adapter_produces_low_consistency() {
     assert_eq!(result.mode, ProbeMode::ExampleBased);
 }
 
+fn make_text_response(text: &str) -> ComputeResponse {
+    ComputeResponse {
+        output: text.to_owned(),
+        token_cost: 0,
+        adapter_kind: mock_kind(),
+        tokens_used: None,
+        reasoning_trace: None,
+    }
+}
+
+fn make_json_verdict_only_response(verdict: &str) -> ComputeResponse {
+    // JSON with "verdict" but NO "score" key → exercises lines 97-100 in parse_verdict
+    ComputeResponse {
+        output: format!(r#"{{"verdict":"{verdict}"}}"#),
+        token_cost: 0,
+        adapter_kind: mock_kind(),
+        tokens_used: None,
+        reasoning_trace: None,
+    }
+}
+
+#[tokio::test]
+async fn verdict_only_json_without_score_key_is_parsed() {
+    // Exercises lines 97-100: JSON has "verdict" but no "score" key
+    let mut m = MockCoherenceAdapter::new();
+    m.expect_execute()
+        .returning(|_| Ok(make_json_verdict_only_response("pass")));
+    m.expect_kind().return_const(mock_kind()).times(0..);
+    let adapter: Arc<dyn IComputeAdapter> = Arc::new(m);
+    let cfg = GapK1Config {
+        probe_runs: 2,
+        ..Default::default()
+    };
+    let probe = CoherenceProbe::new(cfg);
+    let result = probe.run("check", "example", &*adapter).await;
+    assert!(
+        (result.consistency - 1.0).abs() < 0.01,
+        "verdict-only JSON must parse as pass"
+    );
+}
+
+#[tokio::test]
+async fn plain_text_pass_response_parsed() {
+    // Exercises line 105: text fallback containing "pass"
+    let mut m = MockCoherenceAdapter::new();
+    m.expect_execute()
+        .returning(|_| Ok(make_text_response("PASS")));
+    m.expect_kind().return_const(mock_kind()).times(0..);
+    let adapter: Arc<dyn IComputeAdapter> = Arc::new(m);
+    let cfg = GapK1Config {
+        probe_runs: 2,
+        ..Default::default()
+    };
+    let probe = CoherenceProbe::new(cfg);
+    let result = probe.run("check", "example", &*adapter).await;
+    assert!(
+        (result.consistency - 1.0).abs() < 0.01,
+        "plain 'PASS' text must parse as pass"
+    );
+}
+
+#[tokio::test]
+async fn plain_text_fail_response_parsed() {
+    // Exercises line 107: text fallback containing "fail"
+    let mut m = MockCoherenceAdapter::new();
+    m.expect_execute()
+        .returning(|_| Ok(make_text_response("FAIL")));
+    m.expect_kind().return_const(mock_kind()).times(0..);
+    let adapter: Arc<dyn IComputeAdapter> = Arc::new(m);
+    let cfg = GapK1Config {
+        probe_runs: 2,
+        ..Default::default()
+    };
+    let probe = CoherenceProbe::new(cfg);
+    let result = probe.run("check", "example", &*adapter).await;
+    assert!(
+        (result.consistency - 0.0).abs() < 0.01,
+        "plain 'FAIL' text must parse as fail"
+    );
+}
+
 #[tokio::test]
 async fn always_pass_adapter_produces_high_consistency() {
     let adapter: Arc<dyn IComputeAdapter> = Arc::new(always_pass_adapter());

@@ -107,6 +107,72 @@ fn beta_base_default_loads_from_kappa_eff_factor_alias() {
     );
 }
 
+// ── CostGuardConfig ───────────────────────────────────────────────────────────
+
+#[test]
+fn cost_guard_fraction_used_disabled_returns_zero() {
+    let cfg = CostGuardConfig {
+        enabled: false,
+        budget_tokens_per_task: 1000,
+        ..CostGuardConfig::default()
+    };
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(cfg.fraction_used(500), 0.0, "disabled → always 0.0");
+    }
+}
+
+#[test]
+fn cost_guard_fraction_used_zero_budget_returns_zero() {
+    let cfg = CostGuardConfig {
+        enabled: true,
+        budget_tokens_per_task: 0,
+        ..CostGuardConfig::default()
+    };
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(cfg.fraction_used(999), 0.0, "zero budget → 0.0");
+    }
+}
+
+#[test]
+fn cost_guard_fraction_used_returns_ratio() {
+    let cfg = CostGuardConfig {
+        enabled: true,
+        budget_tokens_per_task: 1000,
+        ..CostGuardConfig::default()
+    };
+    let frac = cfg.fraction_used(250);
+    assert!(
+        (frac - 0.25).abs() < 1e-9,
+        "250/1000 must be 0.25, got {frac}"
+    );
+}
+
+// ── serde default functions ───────────────────────────────────────────────────
+
+#[test]
+fn talagrand_eta_and_tau_min_default_via_serde() {
+    // Serialize H2AIConfig::default() to JSON, remove the two talagrand fields,
+    // deserialize back → default_talagrand_eta() and default_talagrand_tau_min() called.
+    let cfg = H2AIConfig::default();
+    let mut json: serde_json::Value = serde_json::to_value(&cfg).unwrap();
+    let obj = json.as_object_mut().unwrap();
+    obj.remove("talagrand_eta");
+    obj.remove("talagrand_tau_min");
+    let deser: H2AIConfig = serde_json::from_value(json).unwrap();
+    assert!(
+        (deser.talagrand_eta - 0.1).abs() < 1e-9,
+        "default_talagrand_eta must be 0.1, got {}",
+        deser.talagrand_eta
+    );
+    assert!(
+        (deser.talagrand_tau_min - 0.5).abs() < 1e-9,
+        "default_talagrand_tau_min must be 0.5, got {}",
+        deser.talagrand_tau_min
+    );
+}
+
 // ── file load ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -2214,6 +2280,45 @@ fn h2ai_config_has_awareness_probe_field() {
 }
 
 #[test]
+fn cost_guard_remaining_unlimited_when_budget_zero() {
+    let cfg = CostGuardConfig {
+        budget_tokens_per_task: 0,
+        ..CostGuardConfig::default()
+    };
+    assert_eq!(cfg.remaining(999_999), i64::MAX);
+}
+
+#[test]
+fn cost_guard_remaining_with_positive_budget() {
+    let cfg = CostGuardConfig {
+        budget_tokens_per_task: 10_000,
+        ..CostGuardConfig::default()
+    };
+    assert_eq!(cfg.remaining(3_000), 7_000);
+}
+
+#[test]
+fn convergence_gate_supermajority_for_n_zero_to_two() {
+    let cfg = ConvergenceGateConfig::default();
+    assert!((cfg.supermajority_for_n(0) - 1.0).abs() < 1e-9);
+    assert!((cfg.supermajority_for_n(1) - 1.0).abs() < 1e-9);
+    assert!((cfg.supermajority_for_n(2) - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn convergence_gate_supermajority_for_n_three() {
+    let cfg = ConvergenceGateConfig::default();
+    assert!((cfg.supermajority_for_n(3) - cfg.supermajority_fraction_n3).abs() < 1e-9);
+}
+
+#[test]
+fn convergence_gate_supermajority_for_n_four_plus() {
+    let cfg = ConvergenceGateConfig::default();
+    assert!((cfg.supermajority_for_n(4) - cfg.supermajority_fraction_n4plus).abs() < 1e-9);
+    assert!((cfg.supermajority_for_n(10) - cfg.supermajority_fraction_n4plus).abs() < 1e-9);
+}
+
+#[test]
 fn awareness_probe_parses_from_toml() {
     let toml = r#"
 knowledge_domain_scoping = true
@@ -2450,4 +2555,39 @@ fn audit_gate_loads_from_reference_toml() {
         cfg.audit_gate.fail_open_on_parse_error,
         "reference.toml must set fail_open_on_parse_error=true"
     );
+}
+
+// ── validate_shell_allowlist_subset — contradiction warn path ─────────────────
+
+#[test]
+fn validate_shell_allowlist_subset_skips_when_allowlist_empty() {
+    let cfg = H2AIConfig {
+        shell_allowlist: vec![],
+        shell_hardened_allowlist: vec!["rm".to_string()],
+        ..H2AIConfig::default()
+    };
+    // early-return path: shell_allowlist is empty, no warn emitted
+    cfg.validate_shell_allowlist_subset();
+}
+
+#[test]
+fn validate_shell_allowlist_subset_contradiction_does_not_panic() {
+    let cfg = H2AIConfig {
+        shell_allowlist: vec!["echo".to_string()],
+        shell_hardened_allowlist: vec!["rm".to_string()],
+        ..H2AIConfig::default()
+    };
+    // "rm" is in shell_hardened_allowlist but NOT in shell_allowlist → warn path
+    cfg.validate_shell_allowlist_subset();
+}
+
+#[test]
+fn validate_shell_allowlist_subset_no_warn_when_subset() {
+    let cfg = H2AIConfig {
+        shell_allowlist: vec!["echo".to_string(), "ls".to_string()],
+        shell_hardened_allowlist: vec!["echo".to_string()],
+        ..H2AIConfig::default()
+    };
+    // "echo" is in both lists — no contradiction
+    cfg.validate_shell_allowlist_subset();
 }

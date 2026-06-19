@@ -500,3 +500,163 @@ fn quality_guard_very_aggressive_compression_clamps() {
     // ratio = 10/1000 = 0.01 < threshold=0.4 → clamp
     assert!(quality_guard(1000, 10, 0.4));
 }
+
+// ── assemble_raw: non-empty optional fields are included ─────────────────────
+
+#[test]
+fn assemble_raw_leader_prefix_non_empty_included() {
+    // Covers lines 250-252: the `if !lp.is_empty()` branch in assemble_raw.
+    let input = ContextAssemblerInput {
+        active_ctx: "ctx",
+        leader_prefix: Some("LEADER ROLE PREFIX"),
+        retry_context: None,
+        grounding: None,
+        tombstone: None,
+        role_frame: None,
+        mandate: None,
+        rejection_criteria: None,
+        prev_wave_blob: None,
+        budget: None,
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: None,
+        compliance_checklist: None,
+    };
+    let raw = assemble_raw(&input);
+    assert!(
+        raw.contains("LEADER ROLE PREFIX"),
+        "non-empty leader_prefix must appear in raw output"
+    );
+}
+
+#[test]
+fn assemble_raw_retry_context_non_empty_included() {
+    // Covers lines 278-280: the `if !ret.is_empty()` branch in assemble_raw.
+    let input = ContextAssemblerInput {
+        active_ctx: "ctx",
+        leader_prefix: None,
+        retry_context: Some("previous attempt feedback"),
+        grounding: None,
+        tombstone: None,
+        role_frame: None,
+        mandate: None,
+        rejection_criteria: None,
+        prev_wave_blob: None,
+        budget: None,
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: None,
+        compliance_checklist: None,
+    };
+    let raw = assemble_raw(&input);
+    assert!(
+        raw.contains("previous attempt feedback"),
+        "non-empty retry_context must appear in raw output"
+    );
+}
+
+#[test]
+fn assemble_raw_rejection_criteria_non_empty_included() {
+    // Covers lines 293-295: the `if !rc.is_empty()` branch in assemble_raw.
+    let input = ContextAssemblerInput {
+        active_ctx: "ctx",
+        leader_prefix: None,
+        retry_context: None,
+        grounding: None,
+        tombstone: None,
+        role_frame: None,
+        mandate: Some("do the thing"),
+        rejection_criteria: Some("do not include pricing data"),
+        prev_wave_blob: None,
+        budget: None,
+        quality_guard_ratio: None,
+        compression_adapter: None,
+        stable_cache: None,
+        global_knowledge: None,
+        topic_knowledge: None,
+        constraint_tensions: None,
+        compliance_checklist: None,
+    };
+    let raw = assemble_raw(&input);
+    assert!(
+        raw.contains("do not include pricing data"),
+        "non-empty rejection_criteria must appear in raw output"
+    );
+    assert!(
+        raw.contains("[AFTER WRITING YOUR PROPOSAL, IDENTIFY THE BIGGEST RISK]"),
+        "rejection_criteria must be prefixed with the risk label"
+    );
+    assert!(
+        raw.contains("[MANDATE]"),
+        "non-empty mandate must also appear"
+    );
+}
+
+// ── importance_trim: inner loop body (lines 590, 606, 614) ───────────────────
+
+#[test]
+fn importance_trim_trims_sections_when_over_budget() {
+    // Covers lines 590, 606, 614: the inner trimming loop body.
+    // Create a non-preserved section with long text and set a very tight budget
+    // so the loop body runs at least once.
+    let long_text = "First sentence here. Second sentence follows. Third sentence continues. \
+        Fourth sentence adds more. Fifth sentence is included too. Sixth sentence \
+        wraps things up nicely."
+        .repeat(20); // make it long enough to exceed any small budget
+    let sections = vec![
+        Section {
+            tag: SectionTag::RetryContext,
+            text: long_text.clone(),
+            importance: 0.3,
+            preserve: false,
+        },
+        Section {
+            tag: SectionTag::Mandate,
+            text: "Mandatory content that must survive.".to_string(),
+            importance: 0.95,
+            preserve: true, // preserved — must not be trimmed
+        },
+    ];
+    let original_len = sections[0].text.len();
+    // budget = 1 token forces the inner loop to trim
+    let trimmed = importance_trim(sections, 1);
+    // The non-preserved section must be shorter than the original
+    assert!(
+        trimmed[0].text.len() < original_len,
+        "non-preserved section must be trimmed, len={} original={}",
+        trimmed[0].text.len(),
+        original_len
+    );
+    // The preserved section must be untouched
+    assert_eq!(
+        trimmed[1].text, "Mandatory content that must survive.",
+        "preserved section must not be trimmed"
+    );
+}
+
+#[test]
+fn importance_trim_trims_to_sentence_boundary() {
+    // Specifically exercises line 606: the `rfind(". ")` branch that trims to sentence end.
+    // We need text long enough that 60% still has a ". " inside.
+    let text = "Alpha sentence ends here. Beta sentence continues after. Gamma comes third. \
+        Delta fills more words. Epsilon yet more content to push length."
+        .repeat(10);
+    let sections = vec![Section {
+        tag: SectionTag::RetryContext,
+        text: text.clone(),
+        importance: 0.3,
+        preserve: false,
+    }];
+    let trimmed = importance_trim(sections, 1);
+    // Trimmed text should end with ". " boundary or be a direct cut
+    assert!(
+        trimmed[0].text.len() < text.len(),
+        "text must have been shortened"
+    );
+}

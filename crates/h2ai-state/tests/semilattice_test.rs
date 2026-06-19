@@ -370,6 +370,13 @@ fn join_semilattice_idempotent_via_join_method() {
 }
 
 #[test]
+fn proposal_set_default_is_empty() {
+    let set = ProposalSet::default();
+    assert!(set.is_empty());
+    assert_eq!(set.len(), 0);
+}
+
+#[test]
 fn crdt_same_generation_higher_score_wins() {
     let tid = TaskId::new();
     let eid = ExplorerId::new();

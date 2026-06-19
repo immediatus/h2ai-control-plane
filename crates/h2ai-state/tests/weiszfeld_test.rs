@@ -88,3 +88,10 @@ fn weiszfeld_empty_returns_zero() {
     let embs: Vec<Vec<f32>> = vec![];
     assert_eq!(weiszfeld_select(&embs, 20), 0);
 }
+
+#[test]
+fn weiszfeld_zero_dim_embeddings_returns_zero() {
+    // dim == 0 guard: all inner vectors are empty → return 0 immediately
+    let embs: Vec<Vec<f32>> = vec![vec![], vec![]];
+    assert_eq!(weiszfeld_select(&embs, 20), 0);
+}

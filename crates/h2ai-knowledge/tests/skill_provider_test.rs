@@ -596,3 +596,135 @@ fn skill_nodes_filtered_by_same_rule() {
     );
     assert_eq!(result[0].0.id, "skill:t1:billing:topic");
 }
+
+// ---------------------------------------------------------------------------
+// SkillProvider structural method tests (lines 42-54, 89-97)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn skill_provider_push_all_and_len() {
+    // Covers lines 42-47: `len()` method body.
+    let provider = SkillProvider::new();
+    assert_eq!(provider.len(), 0, "new provider must have zero nodes");
+    provider.push_all(vec![
+        skill_node("a", &["auth"], "auth node one"),
+        skill_node("b", &["billing"], "billing node two"),
+    ]);
+    assert_eq!(provider.len(), 2, "len must reflect pushed nodes");
+}
+
+#[test]
+fn skill_provider_is_empty_before_and_after_push() {
+    // Covers lines 49-54: `is_empty()` method body.
+    let provider = SkillProvider::new();
+    assert!(provider.is_empty(), "new provider must be empty");
+    provider.push_all(vec![skill_node("x", &["auth"], "auth synthesis")]);
+    assert!(
+        !provider.is_empty(),
+        "provider must not be empty after push"
+    );
+}
+
+#[tokio::test]
+async fn skill_provider_global_summary_returns_none() {
+    // Covers lines 89-91: `global_summary()` on SkillProvider returns None.
+    let provider = SkillProvider::new();
+    // Call through a trait object to exercise the trait dispatch path.
+    let provider_dyn: Arc<dyn KnowledgeProvider> = provider;
+    let result = provider_dyn.global_summary().await;
+    assert!(
+        result.is_none(),
+        "SkillProvider global_summary must be None"
+    );
+}
+
+#[test]
+fn skill_provider_is_ready_returns_true() {
+    // Covers lines 92-94: `is_ready()` on SkillProvider always returns true.
+    let provider = SkillProvider::new();
+    let provider_dyn: Arc<dyn KnowledgeProvider> = provider;
+    assert!(
+        provider_dyn.is_ready(),
+        "SkillProvider must always be ready"
+    );
+}
+
+#[test]
+fn skill_provider_kind_returns_skill() {
+    // Covers lines 95-97: `kind()` on SkillProvider returns ProviderKind::Skill.
+    let provider = SkillProvider::new();
+    let provider_dyn: Arc<dyn KnowledgeProvider> = provider;
+    assert_eq!(
+        provider_dyn.kind(),
+        &ProviderKind::Skill,
+        "SkillProvider kind must be Skill"
+    );
+}
+
+#[tokio::test]
+async fn word_overlap_score_empty_query_returns_zero() {
+    // Covers line 17: early return in `word_overlap_score` when query words are empty.
+    // Calling query() with a text string that has no words >2 chars triggers qw.is_empty().
+    let provider = SkillProvider::new();
+    provider.push_all(vec![skill_node("s1", &["auth"], "auth synthesis text")]);
+    // Query text "ab" has no words longer than 2 chars → qw.is_empty() → score = 0.0
+    // The domain check uses query.text.contains(d.as_str()), so "ab" won't match "auth"
+    // but we can use a domain tag match to get past domain filtering, then hit the
+    // word_overlap path. Use a query text of "ab" (too short → qw empty → returns 0.0).
+    // The raw score = (0.4 + 0.0).min(1.0) * importance=0.8 = 0.32 > 0.1 → node returned.
+    let tags: Vec<String> = vec!["auth".into()];
+    static LEAF: &[NodeDepth] = &[NodeDepth::Leaf];
+    let query = KnowledgeQuery {
+        text: "ab", // no words > 2 chars → qw.is_empty() fires
+        tags: &tags,
+        explicit_ids: &[],
+        top_k: 10,
+        depths: LEAF,
+        mode: RetrievalMode::CollapsedTree,
+        scope: SearchScope::Auto,
+        expand_hops: 0,
+    };
+    let result = provider.query(&query).await;
+    // score = (0.4 + 0.0) * 0.8 = 0.32 > 0.1 → node is returned
+    assert_eq!(
+        result.nodes.len(),
+        1,
+        "node must be returned via domain match"
+    );
+    // score must equal exactly (0.4 + 0.0) * 0.8 = 0.32 (no word overlap bonus)
+    let score = result.nodes[0].1;
+    assert!(
+        (score - 0.32).abs() < 1e-5,
+        "empty-query word_overlap_score must return 0.0, giving base score 0.32, got {score}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CompositeProvider trait method tests (lines 249-257)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn composite_global_summary_returns_none() {
+    // Covers lines 249-251: `global_summary()` on CompositeProvider returns None.
+    let provider = SkillProvider::new();
+    let composite = CompositeProvider::new(vec![provider as Arc<dyn KnowledgeProvider>], false);
+    let composite_dyn: Arc<dyn KnowledgeProvider> = composite;
+    let result = composite_dyn.global_summary().await;
+    assert!(
+        result.is_none(),
+        "CompositeProvider global_summary must be None"
+    );
+}
+
+#[test]
+fn composite_kind_returns_composite() {
+    // Covers lines 255-257: `kind()` on CompositeProvider returns ProviderKind::Composite.
+    let provider = SkillProvider::new();
+    let composite = CompositeProvider::new(vec![provider as Arc<dyn KnowledgeProvider>], false);
+    let composite_dyn: Arc<dyn KnowledgeProvider> = composite;
+    assert_eq!(
+        composite_dyn.kind(),
+        &ProviderKind::Composite,
+        "CompositeProvider kind must be Composite"
+    );
+}

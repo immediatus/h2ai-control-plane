@@ -61,3 +61,35 @@ fn talagrand_histogram_length_equals_n_adapters_plus_one() {
         "histogram length should be N+1=5"
     );
 }
+
+#[test]
+fn talagrand_skips_run_with_mismatched_length() {
+    // First run establishes n=3; second run has len=2 → `continue` at line 102.
+    let scores: Vec<Vec<f64>> = vec![vec![0.9, 0.8, 0.7], vec![0.5, 0.4]];
+    let d = TalagrandDiagnostic::from_verification_scores(&scores).unwrap();
+    // t=2 < 20 → Insufficient; only 1 run contributed to histogram.
+    assert_eq!(d.calibration_state, CalibrationState::Insufficient);
+    assert_eq!(d.rank_histogram.iter().sum::<u32>(), 1);
+}
+
+#[test]
+fn talagrand_rank_n_half_when_only_one_finite_score() {
+    // [1.0, NEG_INF]: second stays NEG_INF → rank = n/2 = 1.
+    let run = vec![1.0_f64, f64::NEG_INFINITY];
+    let scores: Vec<Vec<f64>> = std::iter::repeat_n(run, 5).collect();
+    let d = TalagrandDiagnostic::from_verification_scores(&scores).unwrap();
+    assert_eq!(d.calibration_state, CalibrationState::Insufficient);
+    assert_eq!(
+        d.rank_histogram[1], 5,
+        "all 5 runs should land in rank=n/2=1"
+    );
+}
+
+#[test]
+fn talagrand_underdispersed_when_all_scores_equal() {
+    // With all-equal scores, rank=0 always → tail bins empty → UnderDispersed.
+    let run = vec![0.5_f64, 0.5, 0.5];
+    let scores: Vec<Vec<f64>> = std::iter::repeat_n(run, 30).collect();
+    let d = TalagrandDiagnostic::from_verification_scores(&scores).unwrap();
+    assert_eq!(d.calibration_state, CalibrationState::UnderDispersed);
+}

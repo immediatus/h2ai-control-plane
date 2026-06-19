@@ -11,6 +11,23 @@ fn make_partial(proposal: &str, check_results: Vec<(usize, String, bool)>) -> Pa
 }
 
 #[test]
+fn test_build_synthesis_context_empty_checks_skips_checklist() {
+    // checks.is_empty() → the `if !checks.is_empty()` block is skipped (line 569 else branch)
+    let partial = make_partial("p", vec![]);
+    let input = SynthesisInput {
+        partial_passes: &[partial],
+        checks: &[],
+        system_context_with_rubric: "CTX",
+    };
+    let output = build_synthesis_context(input);
+    assert!(output.contains("CTX"));
+    assert!(
+        !output.contains("COMPLIANCE CHECKLIST"),
+        "empty checks must skip checklist block"
+    );
+}
+
+#[test]
 fn test_build_synthesis_context_contains_system_context() {
     let partial = make_partial("p", vec![(0, "C".to_string(), true)]);
     let input = SynthesisInput {

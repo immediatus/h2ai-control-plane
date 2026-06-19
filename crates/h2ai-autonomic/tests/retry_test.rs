@@ -430,4 +430,34 @@ mod verifier_reason_aggregation {
             panic!("expected RetryWithTargets");
         }
     }
+
+    #[test]
+    fn three_divergent_reasons_exercises_structural_divergence_log_path() {
+        // Three pruned events all violating "BFT-002" with structurally divergent reasons.
+        // Computed Jaccard pairs:
+        //   (a,b): shared={request} → 1/13 ≈ 0.077
+        //   (a,c): shared={}       → 0/15 = 0.0
+        //   (b,c): shared={}       → 0/13 = 0.0
+        // min_j=0.0, mean_j≈0.026 → min_j < mean_j*0.5 → tracing::warn! branch entered.
+        let e1 = pruned_with_violations(vec![hard_violation_with_reason(
+            "BFT-002",
+            0.2,
+            "missing required auth header in the API request",
+        )]);
+        let e2 = pruned_with_violations(vec![hard_violation_with_reason(
+            "BFT-002",
+            0.3,
+            "request lacks proper authentication token validation",
+        )]);
+        let e3 = pruned_with_violations(vec![hard_violation_with_reason(
+            "BFT-002",
+            0.4,
+            "completely unrelated byzantine fault tolerance failure mode",
+        )]);
+        let action = RetryPolicy::decide(&zero_event(), &[], vec![e1, e2, e3], vec![], None);
+        assert!(
+            matches!(action, RetryAction::RetryWithTargets { .. }),
+            "divergent reasons must still produce RetryWithTargets"
+        );
+    }
 }

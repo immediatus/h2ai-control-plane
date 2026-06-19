@@ -307,6 +307,34 @@ fn builder_mandatory_for_tag_appends() {
     assert_eq!(spec.mandatory_for_tags, vec!["billing", "audit"]);
 }
 
+// ── spec.rs:25-27: default_spec_version via serde ────────────────────────────
+
+#[test]
+fn semantic_spec_default_version_via_serde() {
+    // Serialize a spec, remove "version", deserialize → default_spec_version() called
+    let spec = SemanticSpec::builder("C-DEFVER")
+        .rubric_pass("Pass.")
+        .rubric_fail("Fail.")
+        .build();
+    let mut json: serde_json::Value = serde_json::to_value(&spec).unwrap();
+    json.as_object_mut().unwrap().remove("version");
+    let deser: SemanticSpec = serde_json::from_value(json).unwrap();
+    assert_eq!(deser.version, 1, "default_spec_version must return 1");
+}
+
+// ── spec.rs:198: pass_criteria = None when rubric.pass is empty ──────────────
+
+#[test]
+fn into_constraint_doc_empty_pass_rubric_yields_none_pass_criteria() {
+    // Builder initializes rubric.pass to "" via QualityRubric::default().
+    // Building without rubric_pass() leaves pass empty → pass_criteria = None.
+    let spec = SemanticSpec::builder("C-NOPASS")
+        .rubric_fail("Fail.")
+        .build();
+    let doc = spec.into_constraint_doc();
+    assert!(doc.pass_criteria.is_none());
+}
+
 #[test]
 fn builder_related_to_appends() {
     let spec = SemanticSpec::builder("C-REL")

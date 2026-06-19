@@ -1,4 +1,7 @@
-use h2ai_autonomic::repair::{build_repair_context, PartialPass, RepairInput, RepairTarget};
+use h2ai_autonomic::repair::{
+    build_repair_context, graft_is_redundant, graft_token_projection_exceeds,
+    grafted_ids_cycle_detected, missing_constraint_ids, PartialPass, RepairInput, RepairTarget,
+};
 use h2ai_constraints::conflict::ConstraintConflictGraph;
 use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeverity};
 use h2ai_types::gap_i1::DomainSynthesis;
@@ -448,4 +451,172 @@ fn coupled_constraint_with_no_hint_emits_no_additional_guidance() {
         passing_constraint_pins: &[],
     });
     assert!(ctx.contains("(no additional guidance"));
+}
+
+#[test]
+fn passing_constraint_pins_with_none_hint_emits_checkmark_without_hint_text() {
+    // hint = None → `_ =>` arm → `writeln!(out, "  ✓ {pin_id}")` (no colon-separated hint)
+    let graph = ConstraintConflictGraph::build(&[]);
+    let targets = vec![target("FAIL-1", None, &[])];
+    let ctx = build_repair_context(RepairInput {
+        prior_proposal_text: "prior",
+        targets: &targets,
+        zone3_hints: None,
+        conflict_graph: &graph,
+        retry_count: 1,
+        attempts_remaining: 2,
+        system_context_with_rubric: "CTX",
+        checks: &[],
+        partial_passes: &[],
+        prior_best_score: None,
+        domain_syntheses: &[],
+        coupled_constraint_hints: &[],
+        passing_constraint_pins: &[("CONSTRAINT-Y".to_string(), None)],
+    });
+    assert!(ctx.contains("✓ CONSTRAINT-Y"));
+    assert!(
+        !ctx.contains("✓ CONSTRAINT-Y:"),
+        "None hint must not emit colon+hint"
+    );
+}
+
+#[test]
+fn passing_constraint_pins_with_empty_hint_emits_checkmark_without_hint_text() {
+    // hint = Some("") → `_ =>` arm (guard `!h.is_empty()` is false)
+    let graph = ConstraintConflictGraph::build(&[]);
+    let targets = vec![target("FAIL-1", None, &[])];
+    let ctx = build_repair_context(RepairInput {
+        prior_proposal_text: "prior",
+        targets: &targets,
+        zone3_hints: None,
+        conflict_graph: &graph,
+        retry_count: 1,
+        attempts_remaining: 2,
+        system_context_with_rubric: "CTX",
+        checks: &[],
+        partial_passes: &[],
+        prior_best_score: None,
+        domain_syntheses: &[],
+        coupled_constraint_hints: &[],
+        passing_constraint_pins: &[("CONSTRAINT-Z".to_string(), Some(String::new()))],
+    });
+    assert!(ctx.contains("✓ CONSTRAINT-Z"));
+    assert!(
+        !ctx.contains("✓ CONSTRAINT-Z:"),
+        "empty hint must not emit colon+hint"
+    );
+}
+
+// ── graft_is_redundant ────────────────────────────────────────────────────────
+
+fn partial(check_results: Vec<(usize, String, bool)>) -> PartialPass {
+    PartialPass {
+        proposal_text: String::new(),
+        check_results,
+        score: 0.5,
+    }
+}
+
+#[test]
+fn graft_is_redundant_returns_false_when_both_empty() {
+    // base_passing = {}, candidate_all = {} → union_count = 0 → return false
+    let base = partial(vec![]);
+    let candidate = partial(vec![]);
+    assert!(!graft_is_redundant(&base, &candidate, 0.6));
+}
+
+#[test]
+fn graft_is_redundant_returns_true_when_fully_overlapping() {
+    // base passing: {0, 1, 2}, candidate all: {0, 1, 2} → shared/union = 3/3 = 1.0 > 0.6
+    let base = partial(vec![
+        (0, "c0".into(), true),
+        (1, "c1".into(), true),
+        (2, "c2".into(), true),
+    ]);
+    let candidate = partial(vec![
+        (0, "c0".into(), true),
+        (1, "c1".into(), true),
+        (2, "c2".into(), false),
+    ]);
+    assert!(graft_is_redundant(&base, &candidate, 0.6));
+}
+
+#[test]
+fn graft_is_redundant_returns_false_when_low_overlap() {
+    // base passing: {0}, candidate all: {1, 2} → shared=0, union=3 → 0.0 ≤ 0.6
+    let base = partial(vec![(0, "c0".into(), true)]);
+    let candidate = partial(vec![(1, "c1".into(), true), (2, "c2".into(), true)]);
+    assert!(!graft_is_redundant(&base, &candidate, 0.6));
+}
+
+// ── grafted_ids_cycle_detected ────────────────────────────────────────────────
+
+#[test]
+fn grafted_ids_cycle_detected_true_when_all_missing_already_grafted() {
+    use std::collections::HashSet;
+    let already: HashSet<String> = ["A", "B"].iter().map(|s| s.to_string()).collect();
+    assert!(grafted_ids_cycle_detected(
+        &["A".into(), "B".into()],
+        &already
+    ));
+}
+
+#[test]
+fn grafted_ids_cycle_detected_false_when_missing_is_empty() {
+    use std::collections::HashSet;
+    let already: HashSet<String> = ["A".into()].iter().cloned().collect();
+    assert!(!grafted_ids_cycle_detected(&[], &already));
+}
+
+#[test]
+fn grafted_ids_cycle_detected_false_when_some_missing_not_grafted() {
+    use std::collections::HashSet;
+    let already: HashSet<String> = ["A".into()].iter().cloned().collect();
+    assert!(!grafted_ids_cycle_detected(
+        &["A".into(), "B".into()],
+        &already
+    ));
+}
+
+// ── graft_token_projection_exceeds ────────────────────────────────────────────
+
+#[test]
+fn graft_token_projection_exceeds_true_when_candidate_bloats() {
+    // base_text = 40 chars → base_tokens = 40/4+1 = 11
+    // projected = (40+200)/4 = 60 → 60 > 11*1.3=14.3 → true
+    let base = "a".repeat(40);
+    let candidate = "b".repeat(200);
+    assert!(graft_token_projection_exceeds(&base, &candidate, 1.3));
+}
+
+#[test]
+fn graft_token_projection_exceeds_false_when_candidate_small() {
+    // base_text = 400 chars → base_tokens = 400/4+1 = 101
+    // projected = (400+4)/4 = 101 → 101 ≤ 101*1.3=131.3 → false
+    let base = "a".repeat(400);
+    let candidate = "b".repeat(4);
+    assert!(!graft_token_projection_exceeds(&base, &candidate, 1.3));
+}
+
+// ── missing_constraint_ids ────────────────────────────────────────────────────
+
+#[test]
+fn missing_constraint_ids_returns_ids_candidate_covers_but_base_does_not() {
+    // base passes check 0 only; candidate passes checks 1,2
+    // offsets: ("A", 0, 1) → base covers it; ("B", 1, 2) → candidate covers, base doesn't
+    let base = partial(vec![(0, "c0".into(), true)]);
+    let candidate = partial(vec![(1, "c1".into(), true), (2, "c2".into(), true)]);
+    let offsets = vec![("A".to_string(), 0, 1), ("B".to_string(), 1, 2)];
+    let missing = missing_constraint_ids(&base, &candidate, &offsets);
+    assert_eq!(missing, vec!["B".to_string()]);
+}
+
+#[test]
+fn missing_constraint_ids_empty_when_candidate_covers_nothing_new() {
+    // base passes check 0; candidate also passes check 0
+    let base = partial(vec![(0, "c0".into(), true)]);
+    let candidate = partial(vec![(0, "c0".into(), true)]);
+    let offsets = vec![("A".to_string(), 0, 1)];
+    let missing = missing_constraint_ids(&base, &candidate, &offsets);
+    assert!(missing.is_empty());
 }
