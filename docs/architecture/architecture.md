@@ -73,6 +73,9 @@ Each row is an independently-observable failure mode in naive LLM orchestration,
 | Sequential synthesis merge is an O(n) serialised bottleneck | Accept latency; increase timeout | Tournament Merge — `tournament_merge` in `h2ai-adapters/src/chain.rs` runs a pairwise bracket via `join_all`; each round halves the proposal count with full parallelism; Krum winner sorted first in `proposals[0]` for attention primacy; `THINKING_SYNTHESIS_MD_PAIRWISE` template extracts shared understanding + tensions + score from each merge |
 | Retry loop re-runs even when first wave easily passes acceptance bar | Tune max_retries by hand | Tiered Early Exit — N escalates linearly wave-to-wave from `min_n` to `max_n`; wave exits immediately when `k_accepted ≥ ceil(n × quorum_fraction)` proposals score ≥ `acceptance_score` with all binary checks passing; `TieredExitEvent` signals fast-path resolution |
 | Generation budget depletes silently across retries; semantically-converged proposals keep triggering new waves | Add a retry cap | Cost Guard + Convergence Gate — `CostGuardConfig` tracks cumulative tokens, warns at `budget_warning_fraction`, aborts at `budget_abort_fraction`, and injects a remaining-token hint into the generation context in the [50 %, 85 %) window; `ConvergenceGateConfig` fires early acceptance when surviving proposals exceed `theta_converge` (0.87) mean pairwise cosine and `score_floor`, guarded by `budget_floor_fraction` to prevent mode-collapse false positives |
+| SRANI false-positive CFI spikes when proposals use provider-native APIs of a technology already in the spec (e.g. SETNX when Redis is grounded) | Raise threshold manually | `implied_by` suppression — `apply_implied_by_suppression(shared_ungrounded, implied_by_map, grounded_parents)` pure fn removes parent-technology sub-terms from `shared_ungrounded` before CFI; `SraniConfig.implied_by: HashMap<String, Vec<String>>` seeded for ClickHouse (20 sub-terms), Redis (7), Kafka (6) in `h2ai.toml` |
+| Task failures carry no structured diagnostic — impossible to triage which constraints or exit modes cause the most failures | Parse log text offline | `TerminalCause` diagnostic enrichment — 7-variant `TerminalCause` enum with `severity_rank()`; four `#[serde(default)]` fields on `TaskFailedEvent`: `primary_cause`, `contributing_causes`, `top_violated_constraints` (top-5 by frequency), `last_selection_valid_count`; engine accumulates `violation_freq` per constraint across all wave `BranchPrunedEvent`s and populates fields at every terminal exit path |
+| Each task starts cold — no memory of which hint texts resolved similar failures on prior tasks | Accept repeated failures on same constraint class | `NatsInductionScheduler` cross-task priming — `RetryHintPattern { trigger_tags, exit_reason_kind, hint_text, success_count, attempt_count }` persisted in tag-sharded `H2AI_MEMORY` KV (`{tenant_id}.tag.{tag}` → `TagPatternBucket`); two-round SAD retrieval with vocabulary bridge at task start (`load_priming_hints`); ZeroSurvival trigger spawns `run_retroactive` into `pending_induction` and injects matched hints into `retry_context`; `record_success` increments `success_count` at resolution; `format_retry_hint_priors` prepends top-5 priors to archetype selection system prompt; corpus-seeded `n_archetypes` |
 
 ---
 
@@ -169,7 +172,7 @@ C4Container
     Container(autonomic, "h2ai-autonomic", "Rust", "Calibration harness.\nEpistemic diagnostics.\nBandit (Thompson Sampling).")
     Container(agent, "h2ai-agent", "Rust / Tokio", "Edge agent binary.\nTaoAgent loop.\nDispatchLoop + HeartbeatTask.")
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
-    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CALIBRATION_RECORDS KV\nH2AI_AUDITOR_HEALTH KV\nH2AI_PROBE_LEASE KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
+    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CALIBRATION_RECORDS KV\nH2AI_AUDITOR_HEALTH KV\nH2AI_PROBE_LEASE KV\nH2AI_TASK_CHECKPOINTS KV\nH2AI_SKILLS KV\nH2AI_MEMORY KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
 
     Rel(client, api, "POST /:tenant_id/tasks\nGET /:tenant_id/tasks/:task_id/events", "HTTPS")
     Rel(api, orchestrator, "spawn ExecutionEngine", "in-process")
@@ -302,7 +305,9 @@ After the token-Jaccard CV check (Phase 3.1), the engine runs SRANI (Specificati
 
 **Spec boundary construction:** Before computing CFI, the engine constructs an `effective_spec` from three sources: `manifest.description`, `manifest.context` (the optional contextual background field in the task manifest — e.g. "We run Redis Cluster for caching"), and all constraint corpus text — specifically `ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, and `ConstraintDoc.pass_criteria` when present. This ensures constraint-mandated technologies (e.g., Redis, ClickHouse, Kafka named explicitly in constraint rubrics or declared in the task context) are treated as grounded and never flagged as correlated fabrications. The spec boundary matches the full authoritative knowledge used to evaluate proposals, not just the free-text task description. Implementation: `phases/srani.rs` constructs `effective_spec = format!("{}\n{}\n{}", manifest.description, manifest.context.unwrap_or(""), constraint_text)`.
 
-`SraniGroundingChain::compute_cfi(proposals, effective_spec)` extracts architectural noun entities from each proposal, intersects them with the set absent from the effective spec, and computes CFI = max pairwise overlap of per-proposal ungrounded entity sets. CFI ∈ [0, 1]; CFI = 1 means every entity in one proposal's ungrounded set is shared with another proposal — a strong cross-proposal fabrication signal at the entity level (distinct from token-level CV).
+**Implied-by suppression (2026-06-19):** Before computing CFI, `apply_implied_by_suppression(shared_ungrounded, implied_by_map, grounded_parents)` (pure fn in `specification_grounding.rs`) removes sub-terms that are implied by already-grounded parent technologies. `SraniConfig.implied_by: HashMap<String, Vec<String>>` maps parent names to their implied sub-terms; `grounded_parents` is the set of parent keys present in `effective_spec`. Example: if `effective_spec` contains "Redis", then `SETEX`, `SETNX`, `RedisCluster`, etc. are removed from `shared_ungrounded` before CFI — eliminating false-positive spikes when proposals correctly use Redis-native APIs. Seeded in `h2ai.toml`: ClickHouse (20 sub-terms), Redis (7 sub-terms), Kafka (6 sub-terms).
+
+`SraniGroundingChain::compute_cfi(proposals, effective_spec)` extracts architectural noun entities from each proposal, intersects them with the set absent from the effective spec (after `apply_implied_by_suppression`), and computes CFI = max pairwise overlap of per-proposal ungrounded entity sets. CFI ∈ [0, 1]; CFI = 1 means every entity in one proposal's ungrounded set is shared with another proposal — a strong cross-proposal fabrication signal at the entity level (distinct from token-level CV).
 
 **Adaptive sigmoid gate:** Rather than static warn/inject thresholds, injection pressure is computed as `injection_pressure = σ((CFI − μ) / T)` where:
 - `μ` = EMA of observed CFI values (`srani_ema_alpha`, default 0.20, ≈5-task memory horizon), cold-start value 0.45
@@ -1554,8 +1559,8 @@ H2AI previously discarded all per-task reasoning artifacts on resolution. Phase 
 |---|---|---|
 | 1a. TaskReasoningCheckpoint | ✅ Phase 1 | Progressive checkpoint at each engine phase gate |
 | 1b. TaskMetaState | ✅ Phase 1 | Immutable projection at resolution; feeds induction |
-| 2. InductionScheduler | Planned | Batch distillation of TaskMetaStates into TenantMemoryStore |
-| 3. Thinking loop integration | Planned | Warm priors at task start from TenantMemoryStore |
+| 2. InductionScheduler | ✅ Complete (2026-06-19) | `NatsInductionScheduler` — tag-sharded `H2AI_MEMORY` KV (`{tenant_id}.tag.{tag}` → `TagPatternBucket { patterns }`); two-round SAD retrieval with vocabulary bridge; CAS `attempt_count`/`success_count` update; `RetryKvBackend` abstraction for testability; `InductionScheduler` trait: `load_priming_hints`, `run_retroactive`, `record_success` |
+| 3. Thinking loop integration | ✅ Complete (2026-06-19) | `format_retry_hint_priors` prepends top-5 `RetryHintPattern` priors to archetype selection system prompt; `retry_hint_priors: &'a [RetryHintPattern]` on `ThinkingLoopInput`; corpus-seeded `n_archetypes = corpus.len().max(2).min(max_archetypes)`; `MapeKController` ZeroSurvival trigger spawns `run_retroactive` into `pending_induction`; `record_success` at Path A/B |
 | 4. Hybrid retrieval | Planned | Tag-gate + embedding rerank at scale |
 
 ### Tenant model
@@ -1581,7 +1586,7 @@ At `MapeKDecision::Return` (task resolution), `TaskReasoningCheckpoint::into_met
 - `retry_count`, `retry_context_that_resolved`, `tried_topologies`, `tau_values_that_converged` — retry history
 - `system_context_with_rubric_hash`, `constraint_corpus_fingerprint` — rubric fingerprints for retrieval
 
-`TaskMetaState` is written to `H2AI_META_{tenant_id}` (no TTL) and will be consumed by the `InductionScheduler` in Phase 2.
+`TaskMetaState` is written to `H2AI_META_{tenant_id}` (no TTL). `NatsInductionScheduler` (implemented 2026-06-19) queries cross-task patterns via two-round SAD retrieval from the tag-sharded `H2AI_MEMORY` KV bucket — see §10 Layer 2 and research-state.md §2 for the full induction loop description.
 
 ### Configuration
 

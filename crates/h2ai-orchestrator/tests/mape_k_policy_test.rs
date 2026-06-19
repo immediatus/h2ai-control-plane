@@ -536,11 +536,11 @@ fn make_wave_with_pruned_c008(score: f64) -> PipelineWaveResult {
     }
 }
 
-#[test]
-fn per_constraint_wave_scores_populated_from_pruned_events() {
+#[tokio::test]
+async fn per_constraint_wave_scores_populated_from_pruned_events() {
     let mut ctrl = MapeKController::new_minimal();
     let wave = make_wave_with_pruned_c008(0.0);
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
     let scores = ctrl.per_constraint_wave_scores();
     assert!(
         scores.contains_key("CONSTRAINT-008"),
@@ -607,8 +607,8 @@ fn make_wave_frozen_c008_improving_c004(wave_idx: u32) -> PipelineWaveResult {
     }
 }
 
-#[test]
-fn bypass_activates_after_min_waves_frozen() {
+#[tokio::test]
+async fn bypass_activates_after_min_waves_frozen() {
     // Simulate 4 waves (0..4) with min_waves_to_detect=3.
     // At wave_idx=3, retry_count=3 >= 3, so detection fires.
     // C-008: [0.0, 0.0, 0.0, 0.0] — frozen (score_range=0.0 < 0.05)
@@ -617,7 +617,7 @@ fn bypass_activates_after_min_waves_frozen() {
     let mut ctrl = MapeKController::new_minimal();
     for wave_idx in 0..4u32 {
         let wave = make_wave_frozen_c008_improving_c004(wave_idx);
-        ctrl.observe(&wave, wave_idx);
+        ctrl.observe(&wave, wave_idx).await;
         ctrl.decide(make_zero_survival_exit(), wave_idx, 1.0);
     }
     assert!(
@@ -626,14 +626,14 @@ fn bypass_activates_after_min_waves_frozen() {
     );
 }
 
-#[test]
-fn bypass_does_not_activate_before_min_waves() {
+#[tokio::test]
+async fn bypass_does_not_activate_before_min_waves() {
     // Only 3 iterations (0..3): at wave_idx=2, retry_count=2 < min_waves_to_detect=3.
     // Bypass must NOT activate yet.
     let mut ctrl = MapeKController::new_minimal();
     for wave_idx in 0..3u32 {
         let wave = make_wave_frozen_c008_improving_c004(wave_idx);
-        ctrl.observe(&wave, wave_idx);
+        ctrl.observe(&wave, wave_idx).await;
         ctrl.decide(make_zero_survival_exit(), wave_idx, 1.0);
     }
     assert!(
@@ -823,8 +823,8 @@ fn seed_synthesis_distinct_keys_are_independent() {
 /// and the score exceeds any prior best.
 ///
 /// Covers mape_k.rs lines 835-852.
-#[test]
-fn observe_global_best_proposal_updated_when_better_score() {
+#[tokio::test]
+async fn observe_global_best_proposal_updated_when_better_score() {
     let mut ctrl = MapeKController::new_minimal();
 
     let explorer_id = h2ai_types::identity::ExplorerId::new();
@@ -854,7 +854,7 @@ fn observe_global_best_proposal_updated_when_better_score() {
         events,
     };
 
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
 
     // global_best_proposal is pub(crate); verify indirectly via take_run_context().
     let ctx = ctrl.take_run_context();
@@ -867,8 +867,8 @@ fn observe_global_best_proposal_updated_when_better_score() {
 
 /// A second observe() with a higher score must replace the stored best.
 /// Covers the is_better branch at mape_k.rs line 847.
-#[test]
-fn observe_global_best_proposal_replaced_when_higher_score_arrives() {
+#[tokio::test]
+async fn observe_global_best_proposal_replaced_when_higher_score_arrives() {
     let mut ctrl = MapeKController::new_minimal();
 
     let make_wave = |text: &str, score: f64| {
@@ -896,8 +896,8 @@ fn observe_global_best_proposal_replaced_when_higher_score_arrives() {
         }
     };
 
-    ctrl.observe(&make_wave("first proposal", 0.70), 0);
-    ctrl.observe(&make_wave("better proposal", 0.85), 1);
+    ctrl.observe(&make_wave("first proposal", 0.70), 0).await;
+    ctrl.observe(&make_wave("better proposal", 0.85), 1).await;
 
     let ctx = ctrl.take_run_context();
     assert_eq!(
@@ -909,8 +909,8 @@ fn observe_global_best_proposal_replaced_when_higher_score_arrives() {
 
 /// An empty proposal text must be skipped even if there is a matching
 /// verification event (mape_k.rs line 836: `if text.is_empty() { continue }`).
-#[test]
-fn observe_empty_proposal_text_is_skipped() {
+#[tokio::test]
+async fn observe_empty_proposal_text_is_skipped() {
     let mut ctrl = MapeKController::new_minimal();
 
     let explorer_id = h2ai_types::identity::ExplorerId::new();
@@ -940,7 +940,7 @@ fn observe_empty_proposal_text_is_skipped() {
         events,
     };
 
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
 
     let ctx = ctrl.take_run_context();
     assert!(
@@ -957,8 +957,8 @@ fn observe_empty_proposal_text_is_skipped() {
 /// Covers mape_k.rs lines 853-859.
 /// We verify indirectly: after two waves with equal mean scores,
 /// is_compliance_plateau() (a public free function) should detect the plateau.
-#[test]
-fn observe_compliance_score_history_grows() {
+#[tokio::test]
+async fn observe_compliance_score_history_grows() {
     use h2ai_orchestrator::mape_k::is_compliance_plateau;
 
     let mut ctrl = MapeKController::new_minimal();
@@ -987,8 +987,8 @@ fn observe_compliance_score_history_grows() {
     };
 
     // Wave 0 and wave 1 both have mean 0.60 → plateau at retry_count=2.
-    ctrl.observe(&make_scored_wave(0.60), 0);
-    ctrl.observe(&make_scored_wave(0.60), 1);
+    ctrl.observe(&make_scored_wave(0.60), 0).await;
+    ctrl.observe(&make_scored_wave(0.60), 1).await;
 
     // The integration wave enabled flag triggers ComplexityOverflow when
     // is_compliance_plateau returns true. We test the pure function directly
@@ -1008,8 +1008,8 @@ fn observe_compliance_score_history_grows() {
 /// performance, observe() must evict it from domain_synthesis_cache.
 ///
 /// Covers mape_k.rs lines 896-930.
-#[test]
-fn observe_gap_i1_eviction_removes_ineffective_synthesis() {
+#[tokio::test]
+async fn observe_gap_i1_eviction_removes_ineffective_synthesis() {
     let cfg = H2AIConfig {
         gap_i1: h2ai_config::GapI1Config {
             enabled: true,
@@ -1081,7 +1081,7 @@ fn observe_gap_i1_eviction_removes_ineffective_synthesis() {
         events,
     };
 
-    ctrl.observe(&wave, 1);
+    ctrl.observe(&wave, 1).await;
 
     // After observe, the synthesis must have been evicted as Ineffective.
     assert!(
@@ -1092,8 +1092,8 @@ fn observe_gap_i1_eviction_removes_ineffective_synthesis() {
 
 /// A synthesis that improves sufficiently must be retained (Effective verdict).
 /// Covers the else branch of the eviction filter.
-#[test]
-fn observe_gap_i1_effective_synthesis_is_retained() {
+#[tokio::test]
+async fn observe_gap_i1_effective_synthesis_is_retained() {
     let cfg = H2AIConfig {
         gap_i1: h2ai_config::GapI1Config {
             enabled: true,
@@ -1152,7 +1152,7 @@ fn observe_gap_i1_effective_synthesis_is_retained() {
         outcome: make_zero_survival_exit(),
         events,
     };
-    ctrl.observe(&wave, 1);
+    ctrl.observe(&wave, 1).await;
 
     assert_eq!(
         ctrl.all_domain_syntheses().len(),
@@ -1276,8 +1276,8 @@ fn decide_early_exit_hallucination_detected_returns_retry() {
 /// ComplexityOverflow { graft_first: true }.
 ///
 /// Covers mape_k.rs lines 1281-1322.
-#[test]
-fn decide_integration_wave_fires_on_plateau() {
+#[tokio::test]
+async fn decide_integration_wave_fires_on_plateau() {
     let cfg = H2AIConfig {
         integration_wave: h2ai_config::IntegrationWaveConfig {
             enabled: true,
@@ -1313,8 +1313,8 @@ fn decide_integration_wave_fires_on_plateau() {
         }
     };
 
-    ctrl.observe(&make_scored_wave(0.55), 0);
-    ctrl.observe(&make_scored_wave(0.55), 1);
+    ctrl.observe(&make_scored_wave(0.55), 0).await;
+    ctrl.observe(&make_scored_wave(0.55), 1).await;
 
     // At retry_count=2, is_compliance_plateau([0.55, 0.55], 2, 0.05) = true.
     let decision = ctrl.decide(make_zero_survival_exit(), 2, 1.0);
@@ -1434,8 +1434,8 @@ fn decide_convergence_gate_triggers_on_high_cosine() {
 /// directly validates the side-effects on the constraint bypass set.
 ///
 /// Covers mape_k.rs lines 976-1038.
-#[test]
-fn decide_frozen_verifier_detected_bypasses_constraint() {
+#[tokio::test]
+async fn decide_frozen_verifier_detected_bypasses_constraint() {
     // new_minimal() uses H2AIConfig::default() which has verifier_freeze enabled with
     // default thresholds (min_waves_to_detect=3, score_range_threshold=0.05,
     // bypass_hard_gate_on_freeze=true, emit_event_only=false).
@@ -1483,7 +1483,7 @@ fn decide_frozen_verifier_detected_bypasses_constraint() {
             outcome: make_zero_survival_exit(),
             events,
         };
-        ctrl.observe(&wave, wave_idx);
+        ctrl.observe(&wave, wave_idx).await;
         ctrl.decide(make_zero_survival_exit(), wave_idx, 1.0);
     }
 
@@ -1500,8 +1500,8 @@ fn decide_frozen_verifier_detected_bypasses_constraint() {
 /// After frozen verifier fires, pending_frozen_verifier_events must be populated.
 ///
 /// Covers mape_k.rs lines 1019-1036.
-#[test]
-fn decide_frozen_verifier_queues_pending_event() {
+#[tokio::test]
+async fn decide_frozen_verifier_queues_pending_event() {
     let mut ctrl = MapeKController::new_minimal();
 
     for wave_idx in 0..4u32 {
@@ -1545,7 +1545,7 @@ fn decide_frozen_verifier_queues_pending_event() {
             outcome: make_zero_survival_exit(),
             events,
         };
-        ctrl.observe(&wave, wave_idx);
+        ctrl.observe(&wave, wave_idx).await;
         ctrl.decide(make_zero_survival_exit(), wave_idx, 1.0);
     }
 

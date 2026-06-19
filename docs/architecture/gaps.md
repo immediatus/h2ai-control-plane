@@ -35,10 +35,13 @@ is a falsifiable question with a concrete research or engineering path.
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🟡 PARTIAL | **High** | Online ρ_EMA live after 30 obs; cold-start prior 0.45 unvalidated |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit; HITL escalation on graft_first=false path open |
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1b closed; Phases 2–3 open |
-| **GAP-F5 Constraint violations don't reshape retrieval routing** | 🟡 PARTIAL | Medium | Steps 1–2 live; Step 3 unblocked; Step 4 deferred |
-| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Layer 3 partial; Phases 2–4 designed, pending |
+| **GAP-F5 Constraint violations don't reshape retrieval routing** | ✅ COMPLETE | Medium | Steps 1–3 live; NatsInductionScheduler wired into production via task_pipeline.rs; Step 4 deferred |
+| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Phase 2 partial (RetryHintPattern scheduler live; ArchetypePrior/TensionPattern/DecompositionTemplate pending); Phase 3 complete: thinking loop primed with RetryHintPattern via two-round SAD; format_retry_hint_priors injected into archetype selection system prompt; n_archetypes corpus-seeded; Phase 4 pending |
 | **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | Dirichlet-Categorical posterior + credible-interval circuit breaker |
-| **GAP-S1 SRANI fires for technology-specific impl details** | 🟡 PARTIAL | Low | Implied-by suppression table or CFI-gated hint emission |
+| **GAP-S1 SRANI fires for technology-specific impl details** | ✅ COMPLETE | Low | Implied-by suppression table live for ClickHouse/Redis/Kafka |
+| **GAP-D3 TaskFailed carries no diagnostic signal** | ✅ COMPLETE | Medium | TerminalCause enum + top violated constraints + engine populates all terminal exits |
+| **GAP-D4 Thinking loop no per-constraint archetype guarantee** | 🔴 OPEN | Medium | coverage_score near 1.0 yet individual constraints can have zero dedicated archetype |
+| **GAP-D5 MAPE-K repair oscillation — cross-constraint regression** | 🔴 OPEN | **High** | wave-1 repair context for failing constraints causes regression on previously-passing constraints |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
@@ -49,7 +52,10 @@ is a falsifiable question with a concrete research or engineering path.
 ### INNOVATION-5 — Structured Self-MoA Experiment Protocol
 
 **Closes:** GAP-A1 (comparative signal).
-**Status: COMPLETE (2026-06-18)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, avg=0.833), Tier 2 (4 constraints, avg=0.667), and Tier 3 (6 constraints, avg=0.667; 1/3 proposals 1.0 on all 6 constraints) with the full DPPM+SRANI+manifest.context stack.
+**Status: COMPLETE (2026-06-20)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, j_eff=1.000, 2026-06-20), Tier 2 (4 constraints, avg_score=0.750, SRANI events=0, 2026-06-20), and Tier 3 (6 constraints, j_eff=0.667 via one MAPE-K retry wave; 1/3 wave-1 proposals at score=1.00 on all 6 constraints, 2026-06-20).
+
+**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with SRANI suppression eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008; GAP-D5) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0; GAP-D4). SRANI CFI=1.000 in Tier-3 wave-0 with RocksDB not yet in implied_by table (GAP-S1 partial). Open blocking gaps: GAP-G1 Phase 2 (ArchetypePrior/TensionPattern/DecompositionTemplate pending), GAP-D4 (per-constraint archetype guarantee), GAP-D5 (repair oscillation anchoring).
+
 **Implementation:** `tests/e2e/scenarios/innovation-5/` — three e2e scenarios (Tier 1/2/3).
 
 **Experiment arms:**
@@ -290,6 +296,67 @@ to rate subtask complexity 1–5 before dispatching ensemble. Route 1–2 to sin
 
 ---
 
+### GAP-D3: TaskFailed Carries No Diagnostic Signal ✅ COMPLETE (2026-06-19) — Medium
+
+**Status: COMPLETE**
+
+`TaskFailedEvent` now carries machine-readable diagnostic signal. `TerminalCause` enum (7 variants:
+`LlmAdapterUnavailable`, `VerificationExhaustion`, `ComplexityOverflow`, `ContextExhaustion`,
+`OracleRejected`, `Timeout`, `Unknown`) with `severity_rank() -> u8` (0=highest severity,
+infrastructure > application). Four new `#[serde(default)]` fields on `TaskFailedEvent`:
+`primary_cause: TerminalCause`, `contributing_causes: Vec<TerminalCause>`,
+`top_violated_constraints: Vec<String>` (sorted descending by frequency across all `BranchPruned`
+waves, capped at 5), `last_selection_valid_count: Option<u32>`.
+
+Engine (`crates/h2ai-orchestrator/src/engine.rs`) accumulates `violation_freq: HashMap<String,
+u32>` per `BranchPrunedEvent.violated_constraints` and tracks `last_selection_valid_count` from
+`SelectionResolvedEvent`. All terminal exit paths populate the new fields with the appropriate
+`TerminalCause` variant; `h2ai-api` maps `EngineError` variants to causes. All new fields use
+`#[serde(default)]` — existing callers reading old JSON events see `Unknown` + empty vecs.
+
+**Falsification condition met.** Every `TaskFailed` event now has a non-`Unknown` `primary_cause`
+for all classified engine exit paths and a non-empty `top_violated_constraints` for
+verification-exhaustion failures. Automated replay can classify failure mode without server log
+access.
+
+**Config additions:** none.
+
+---
+
+### GAP-D4: Thinking Loop Has No Per-Constraint Archetype Guarantee 🔴 OPEN — Medium
+
+**Gap statement.**
+`ThinkingLoopEngine` achieves high aggregate coverage scores (coverage=0.98 in Tier-3 wave-0) yet individual constraints can have zero dedicated archetype assigned. In the Tier-3 wave-0 run, iteration 0 selected archetypes `[atomic-redis-engineer, immutable-audit-architect, zero-trust-isolation-specialist, additive-migration-strategist]` — none targeting CONSTRAINT-TAU-2 (active cache convergence within 60s TTL) or CONSTRAINT-BFT-1 (rollback script availability). Both constraints failed in every wave-0 proposal.
+
+The coverage score is aggregate: it measures how much of the task decomposition is collectively covered by the archetype set, not whether every constraint has at least one dedicated archetype. A minority constraint can register as "covered" while producing zero compliant proposals because no archetype specializes in it.
+
+**Root cause.** `select_archetypes()` optimizes for aggregate coverage score. With corpus-seeded N_eff archetypes, selection saturates on dominant constraints (C-004, C-005) while minority constraints (C-TAU-2, C-BFT-1) remain uncovered.
+
+**Falsification condition.**
+Add a `cache-convergence-specialist` and `bft-rollback-engineer` archetype to the Tier-3 corpus. If all 3 wave-0 proposals achieve score > 0.67 (vs. the observed maximum of 0.67 with the TAU/BFT constraints failing), per-constraint archetype coverage is the root cause.
+
+**Research approach.** Extend `select_archetypes()` to enforce: for each constraint in the task's constraint set, at least one selected archetype must have that constraint in its `focus_constraints` or `domain_tags`. This is a constraint satisfaction problem layered on top of the coverage objective. Fallback: synthesize an archetype on-the-fly from constraint corpus text when no existing archetype covers a constraint.
+
+---
+
+### GAP-D5: MAPE-K Repair Oscillation — Cross-Constraint Regression 🔴 OPEN — **High**
+
+**Gap statement.**
+When `MapeKController` generates repair context for constraints that failed in wave N, proposals in wave N+1 can regress on constraints that passed in wave N. Observed in Tier-3: wave-0 proposals violated CONSTRAINT-TAU-2 and CONSTRAINT-BFT-1; wave-1 repair context injected cache-convergence and rollback-script guidance, causing 2/3 wave-1 proposals to violate CONSTRAINT-004, CONSTRAINT-005, and CONSTRAINT-008 (which had partial compliance scores of 0.67 in wave 0). Only 1/3 wave-1 proposals maintained compliance across all 6 constraints (j_eff=0.667).
+
+**Mechanism.** Repair context is additive: it appends guidance for what *failed* but provides no anchor for what *passed*. An explorer receiving "add active cache convergence within 60s TTL and ensure rollback scripts are available" shifts generation toward the new requirements, potentially replacing or simplifying the idempotency and audit structures that satisfied CONSTRAINT-004/005/008 in wave 0. This is cross-constraint oscillation, not convergence.
+
+**Falsification condition.**
+Extend `build_repair_context()` to include a "preserve passing constraints" section stating what was correct in wave N. If cross-constraint regression drops from 2/3 to 0/3 in the Tier-3 scenario, repair context anchoring is the fix.
+
+**Research approach.** `MapeKController::build_repair_context()` should produce two sections:
+1. **Failing constraints with repair guidance** — what was wrong and how to fix it.
+2. **Passing constraints with compliance anchors** — what was correct and must not be changed.
+
+The compliance anchor text is derived from the passing proposal's verifier reasoning for each passed constraint check. This converts repair context from a diff (fix failures) into a full specification (fix failures without breaking passes).
+
+---
+
 ## Brainstorm Group F — Knowledge and Retrieval
 
 ---
@@ -325,22 +392,29 @@ Cold-start note: Phase 3 may be net-negative for tenants with fewer than ~200 ta
 
 ---
 
-### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing 🟡 PARTIAL (Steps 1–2) — Medium
+### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing ✅ COMPLETE — Medium
 
-**Status: PARTIAL** — Steps 1–2 live in-memory; Step 3 unblocked; Step 4 deferred.
+**Status: COMPLETE** — Steps 1–3 live; NatsInductionScheduler fully wired into production via task_pipeline.rs; Step 4 deferred.
 
 Steps 1–2 implemented: `CompositeProvider.violation_map: Arc<RwLock<HashMap<String, f32>>>`
 accumulates violation penalties for non-Synthetic nodes co-occurring with topology retries
 (delta=0.1, cap=0.9, applied before dedup/top_k in `query()`). Synthetic skill nodes permanently
 exempt. Penalty map is in-memory only — resets on restart; NATS persistence deferred.
 
-**Remaining open:**
+**Step 3 — Retroactive induction trigger. COMPLETE (2026-06-19).** When `ZeroSurvival` fires in
+`MapeKController.decide()`, the controller increments `zero_survival_count` and spawns
+`tokio::spawn(sched.run_retroactive(ctx))` into `pending_induction: Option<JoinHandle<...>>`
+when `induction_trigger.enabled && zero_survival_count >= min_prior_tasks`. At the next `observe()`
+call (now `async fn`), the handle is consumed with `tokio::time::timeout(grace_period_ms, handle)`
+— a bounded wait up to `grace_period_ms` (default 2000ms). If a compatible result arrives in time
+(`InductionResult::is_compatible_with` checks tag overlap), `apply_induction_result` appends the
+top `RetryHintPattern` hint to `self.retry_context`. The hint is applied *after* `srani_retry_context`
+updates so it appends on top of SRANI's output rather than being overwritten. `InductionScheduler`
+is injected as `Arc<dyn InductionScheduler>` via `with_induction_scheduler` builder for testability.
+Config: `[induction_trigger]` table with `enabled`, `min_prior_tasks`, `grace_period_ms`,
+`min_tag_jaccard` — all `#[serde(default)]` with `enabled = false` default.
 
-**Step 3 — Retroactive induction trigger.** When `ZeroSurvival` fires on a domain with ≥10 prior
-tasks, trigger an induction cycle immediately (don't wait for batch threshold). Unblocked:
-`post_injection_pass_rates` field on `DomainSynthesis` (pipeline-resilience spec) provides the
-per-injection quality signal Step 3's retroactive trigger needs to distinguish productive from
-noise injections.
+**Production wiring complete.** `build_induction_scheduler` called once per task in `task_pipeline.rs`; scheduler passed to both `ThinkingLoopArgs` (for priming hints) and `OwnedEngineInput` (for MAPE-K wiring). `n_archetypes` corpus-seeded: `corpus.len().max(2).min(max_archetypes)`. `tenant_id` propagated from `TaskPipelineInput` into both `ThinkingLoopArgs` constructions.
 
 **Step 4 — Constraint difficulty map (NATS-persisted). ⚠️ DEFERRED.** Track empirical constraint
 difficulty per `(constraint_id, model_lineage_key)` pair across all tasks. Deferred because: (a)
@@ -358,7 +432,7 @@ artifacts.
 
 ### GAP-G1: Reasoning Memory Phases 2–4 Unimplemented 🟡 PARTIAL — Medium
 
-**Status: PARTIAL** — Phase 1 live; Layer 3 partial path live; Phases 2–4 designed, pending implementation.
+**Status: PARTIAL** — Phase 1 live; Phase 2 partial (RetryHintPattern path live; ArchetypePrior/TensionPattern/DecompositionTemplate pending); Phase 3 complete: thinking loop primed with RetryHintPattern via two-round SAD, format_retry_hint_priors injected into archetype selection system prompt, n_archetypes corpus-seeded; Phase 4 pending.
 
 **Phase 1 (live).** `TaskReasoningCheckpoint` written at each engine phase gate; `TaskMetaState`
 projected at resolution; per-tenant NATS KV buckets (`H2AI_CHECKPOINT_{tenant}` 7d TTL,
@@ -371,41 +445,45 @@ partial path).
 
 **Remaining open — Phases 2–4:**
 
-**Phase 2 — Induction (Layer 2).** Two components with strict separation: `InductionWorker` trait
-(pure computation — no I/O, testable with `MockInductionWorker`) and `InductionScheduler` (owns
-JetStream subscription, NATS KV reads/writes, CAS swap).
+**Phase 2 — Induction (Layer 2). PARTIAL (2026-06-19).** Two components with strict separation:
+`InductionScheduler` async trait (pure I/O interface, in `crates/h2ai-orchestrator/src/induction/mod.rs`)
+and `AlgorithmicInductionWorker` (pure computation, no LLM calls, in `induction/algorithmic.rs`).
+`NatsInductionScheduler` (`induction/nats_scheduler.rs`) owns NATS KV reads/writes with CAS-swap
+(`kv.entry()` for revision, `kv.update()` for CAS); full-jitter backoff (base=5ms, cap=500ms, max 5
+retries); `without_nats()` fallback for tests.
 
-`InductionScheduler` triggers when ≥ `induction_batch_size` (10) resolved tasks accumulate, or
-`induction_max_interval_secs` (86400s) elapsed. Loads up to `induction_max_tasks_per_run` (50)
-`TaskMetaState` records, calls `worker.distill()`, writes to staging key, CAS-swaps `latest` only
-on full success — the previous snapshot is never touched on failure.
+**What is live:** `RetryHintPattern` G-Counter (`trigger_tags`, `exit_reason_kind`, `hint_text`,
+`success_count`/`attempt_count` u64, `success_rate()`, `merge_counts()`) in
+`crates/h2ai-types/src/memory.rs`. `TenantMemoryStore` (tenant_id, generated_at, task_count_seen,
+`retry_hint_patterns: Vec<RetryHintPattern>`). `AlgorithmicInductionWorker` filters stored patterns
+by tag overlap with `InductionContext.task_class_tags` (trigram-shingle Jaccard ≥ threshold), sorts
+by `success_rate()` descending, returns top patterns as `InductionResult`. Trigram shingling pure
+functions: `normalize_for_shingling`, `trigram_shingles`, `jaccard_shingles`, `cluster_by_similarity`.
 
-`AlgorithmicInductionWorker` — pure Rust, no LLM calls. Distillation steps:
-1. **ArchetypePrior** — group `ArchetypeResult` entries by `archetype_name + domain_tags`;
-   `net_confidence = weighted_mean(confidence, weight=2.0 if dominated_synthesis else 1.0)`;
-   `avoid_for_tags` = tags where `net_confidence < 0.4` across ≥ 3 tasks.
-2. **TensionPattern** — collect all tension strings; cluster by cosine similarity (threshold 0.85)
-   if `EmbeddingModel` available, exact dedup otherwise; store `frequency` + `resolution_hint`
-   from tasks that resolved the tension.
-3. **RetryHintPattern** — group `(trigger_tags, exit_reason_kind, retry_context_that_resolved)`
-   tuples; keep top hint per pair by `success_rate`.
-4. **DecompositionTemplate** — group `shared_understanding` strings by
-   `(quadrant, constraint_tags)`; select embedding centroid if model available, most recent
-   otherwise.
-
-`TenantMemoryStore` lives in `H2AI_MEMORY_{tenant_id}` KV bucket. Schema:
-`{tenant_id, generated_at, task_count_seen, archetype_priors[], tension_patterns[],
-retry_hint_patterns[], decomposition_templates[]}`. Published event:
-`InductionCycleCompletedEvent` to `h2ai.telemetry.induction`.
+**What remains pending in Phase 2:**
+- **ArchetypePrior** distillation step — group `ArchetypeResult` by `archetype_name + domain_tags`;
+  `net_confidence = weighted_mean`; `avoid_for_tags` where `net_confidence < 0.4` across ≥ 3 tasks
+- **TensionPattern** distillation step — cluster tension strings; store `frequency` + `resolution_hint`
+- **DecompositionTemplate** distillation step — group `shared_understanding` strings by `(quadrant, constraint_tags)`
+- Full `TenantMemoryStore` schema (`archetype_priors[]`, `tension_patterns[]`, `decomposition_templates[]` fields absent)
+- `InductionCycleCompletedEvent` to `h2ai.telemetry.induction`
+- Batch-threshold trigger (`induction_batch_size`, `induction_max_interval_secs`) — current trigger is retroactive only
 
 New files: `crates/h2ai-orchestrator/src/induction/mod.rs` (trait + mock),
 `induction/algorithmic.rs` (distillation), `induction/scheduler.rs` (I/O).
 New types: `crates/h2ai-types/src/memory.rs`.
 
-**Phase 3 — Thinking Loop Integration (Layer 3, full).** Before the thinking loop runs, load
-`TenantMemoryStore` from `NatsClient::get_tenant_memory(&tenant_id)`. Thread as
-`Option<TenantMemoryStore>` into `ThinkingLoopInput`.
+**Phase 3 — Thinking Loop Integration (Layer 3, full). COMPLETE (2026-06-19).**
+`NatsInductionScheduler` wired into `task_pipeline.rs`: constructed once per task via
+`build_induction_scheduler`, passed to both `ThinkingLoopArgs` constructions (initial and
+re-iteration) and to `OwnedEngineInput`. `n_archetypes` corpus-seeded:
+`corpus.len().max(2).min(max_archetypes)` — ensures archetype selection breadth scales with
+constraint load. `tenant_id` propagated from `TaskPipelineInput` rather than using the default
+placeholder. `format_retry_hint_priors` injected into archetype selection system prompt. Two-round
+SAD (Socratic Archetype Diagnosis) primes the thinking loop with `RetryHintPattern` hints matching
+the current task's constraint tags.
 
+Remaining (full Layer 3 completion):
 - **Archetype priors** — `select_archetypes()` gives +0.15 weight boost to archetypes with
   `net_confidence > 0.6` + matching domain tags; -0.20 penalty to archetypes in `avoid_for_tags`
   matching current task.
@@ -416,7 +494,7 @@ New types: `crates/h2ai-types/src/memory.rs`.
   task tags as `primed_retry_hints`. When `ZeroSurvival` or `HallucinationDetected` fires, checks
   `primed_retry_hints` before computing retry context from scratch.
 
-Full Layer 3 is blocked on Layer 2 (AlgorithmicInductionWorker) being live.
+Full archetype-prior and tension-seeding paths remain blocked on Layer 2 (AlgorithmicInductionWorker producing ArchetypePrior/TensionPattern records) being live.
 
 Config additions to `reference.toml`: `reasoning_memory_max_archetype_boost = 0.15`,
 `reasoning_memory_max_archetype_penalty = 0.20`.
@@ -432,6 +510,17 @@ task description; compute cosine similarity against stored `TensionPattern.embed
 
 Config additions: `reasoning_memory_tag_gate_threshold = 0.2`,
 `reasoning_memory_max_tension_candidates = 3`.
+
+**E2E run findings.** Across innovation-5 Tier-2 runs, j_eff is invariably 0.667 on every
+successful task (exactly 1-of-3 explorers passes stochastically on wave 1). No run shows j_eff
+improving across MAPE-K retry waves — when wave 1 fails entirely, subsequent waves fail at the
+same rate and the task terminates via `TaskFailed`. This is consistent with the absence of Phase
+2: without `AlgorithmicInductionWorker` distilling `RetryHintPattern` records from prior
+`BranchPruned` history, `MapeKController` has no primed hints and constructs retry context from
+scratch each wave using only the current wave's failure signal. Phase 2 is the mechanism that
+turns MAPE-K from random restarts into directed repair: `RetryHintPattern` entries for
+`(trigger_tags=["billing", "audit-log"], exit_reason_kind=ZeroSurvival)` would directly prime the
+retry context for the CONSTRAINT-005 failure pattern present in every failed Tier-2 run.
 
 ---
 
@@ -557,50 +646,64 @@ RMSE(MoM) for N ≤ 30 by at least 20%.
 
 ---
 
-### GAP-S1: SRANI Fires for Technology-Specific Implementation Details 🟡 PARTIAL — Low
+### GAP-S1: SRANI Fires for Technology-Specific Implementation Details ✅ COMPLETE (2026-06-19) — Low
 
-**Status: PARTIAL** — Core infrastructure false-positive (manifest.context exclusion) fixed.
-Residual: SRANI still fires for technology-specific sub-terms.
+**Status: COMPLETE** — Implied-by suppression table live for ClickHouse, Redis, and Kafka.
 
 `check_specification_grounding` receives an `effective_spec` built from
 `manifest.description + manifest.context + constraint corpus text`. Core infrastructure terms
 named in `manifest.context` (Redis, Kafka, ClickHouse, CockroachDB) are grounded; no harmful
 "avoid Redis/Kafka" hints are injected.
 
-**Observable trait.** SRANI still emits `shared_ungrounded` entries for technology-specific
-sub-terms implied by but not explicitly named in spec/constraints/context. Examples: `"MergeTree"`
-(ClickHouse table engine — strongly implied when ClickHouse is grounded in constraint binary
-checks), `"BillingEvent"` (proposal-introduced named event type). ResearcherGrounding hint at
-these sub-terms may redirect generation away from correct implementation choices: "use standard
-idempotency patterns with TTL-based caches" when MergeTree is the correct ClickHouse choice.
+**Implemented.** `apply_implied_by_suppression(nouns, implied_by, grounded_parents) -> Vec<String>`
+pure function in `crates/h2ai-orchestrator/src/specification_grounding.rs`. When a grounded parent
+technology implies a sub-term, the sub-term is removed from `shared_ungrounded` before
+`ResearcherGrounding` hints are emitted. Wired in `phases/srani.rs` before CFI computation:
+`grounded_parents` is built from `implied_by` keys present in `effective_spec`, then
+`apply_implied_by_suppression` filters `shared_ungrounded` before all downstream hint logic.
 
-**Cross-reference.** GAP-S1 residual is analogous to GAP-F5: constraint-mandated entities should
-reinforce grounding signal, not suppress it. See `phases/srani.rs:extract_arch_nouns`.
+`implied_by` table seeded in `SraniConfig` (`crates/h2ai-config/src/lib.rs`, `#[serde(default)]`)
+and in the Tier-2 TOML config (`tests/e2e/scenarios/innovation-5/.../h2ai-local-dppm.toml`):
+- `"ClickHouse"` → 20 sub-terms (MergeTree family, ReplacingMergeTree, SummingMergeTree,
+  AggregatingMergeTree, CollapsingMergeTree, VersionedCollapsingMergeTree, MergeTreeInsert,
+  MergeTreeEngine, ClickHouseSchema, ClickHouseTable, etc.)
+- `"Redis"` → 7 sub-terms (EVAL, Lua EVAL, SETEX, SETNX, ZADD, ZRANGEBYSCORE, EXPIRE)
+- `"Kafka"` → 6 sub-terms (KafkaConsumer, KafkaProducer, ConsumerGroup, OffsetCommit,
+  KafkaTopic, KafkaPartition)
 
-**Candidate fixes:**
-- **Implied-by suppression table:** Extend `extract_arch_nouns()` with a parent→sub-term map.
-  When a grounded parent technology implies a sub-term, suppress from the ungrounded set. Example:
-  `"ClickHouse"` grounded → suppress
-  `{"MergeTree", "ReplacingMergeTree", "SummingMergeTree", "AggregatingMergeTree"}`;
-  `"Redis"` grounded → suppress `{"EVAL", "Lua EVAL", "SETEX", "SETNX"}`. Requires maintaining
-  the suppression table as the lexicon grows.
-- **CFI-gated hint emission:** Suppress ResearcherGrounding hint when CFI < 0.4 (partial
-  fabrication with no shared consensus). Simpler but loses information — all sub-term fabrication
-  suppressed regardless of whether hints are harmful.
+The suppression table is extensible via TOML — no code change required to add new parent→sub-term
+mappings as the lexicon grows.
+
+**Tier-3 finding (2026-06-20).** The `implied_by` table does not yet include `RocksDB` as a standalone entry. In the Tier-3 wave-0 run, CFI=1.000 with `shared_entities=[MergeTree, RocksDB]`; MergeTree was correctly suppressed via the ClickHouse→MergeTree mapping, but RocksDB appeared as a free-standing hallucinated entity with no grounded parent in the effective spec. The successful wave-1 proposal used PostgreSQL/Redis (RocksDB present only as a WAL implementation detail, not spec-required), confirming the hint was misleading but non-fatal. Remaining work: add `RocksDB` to the `implied_by` table as a suppressible term when a parent storage technology (PostgreSQL, Redis, or ClickHouse) is already grounded.
 
 ---
 
 ## Gap Priority Matrix
 
+### Pipeline Success Priority (blocks reliable task completion)
+
+These four gaps are the direct cause of the j_eff = 0.667 stochastic ceiling and CONSTRAINT-005
+exhaustion pattern observed across all innovation-5 Tier-2 runs. Fixing them in order transforms
+MAPE-K from a random-restart loop into directed repair.
+
+| Gap | Pipeline impact | Status |
+|---|---|---|
+| **GAP-S1 implied-by suppression table** | Stops SRANI from redirecting generation away from MergeTree/append-only patterns — removes the dominant CONSTRAINT-005 failure cause at the source | ✅ COMPLETE (2026-06-19) |
+| **GAP-D3 TaskFailed diagnostic signal** | Enables machine-readable failure-mode classification from SSE stream; required to verify whether the other fixes are working | ✅ COMPLETE (2026-06-19) |
+| **GAP-F5 Step 3 retroactive induction trigger** | Injects corrective context (what failed and why) into wave N+1 on ZeroSurvival — the first mechanism giving MAPE-K anything beyond the original task framing | ✅ COMPLETE (2026-06-19) — Steps 1–3 live; NatsInductionScheduler wired into production via task_pipeline.rs; Step 4 deferred |
+| **GAP-G1 Phase 2 RetryHintPattern scheduler** | Converts BranchPruned history into RetryHintPattern records; NatsInductionScheduler with CAS-swap persistence; AlgorithmicInductionWorker filters/ranks patterns | 🟡 PARTIAL (2026-06-19) — RetryHintPattern path live; ArchetypePrior/TensionPattern/DecompositionTemplate pending; Phases 3–4 pending |
+
+### Research and Validation Priority (closes core thesis risks)
+
 | Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
 |---|---|---|---|---|
-| **GAP-F5 Step 3 retroactive induction trigger** | Medium | 3 days | GAP-I1 signal live | Week 2 (unblocked) |
-| **GAP-G1 Phase 2 induction (Layer 2)** | Medium | 1 week | None | Week 2 |
 | GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
 | GAP-A1 Full experiment (cross-family Coverage quadrant) | Critical | Timeline open | Second adapter family | Session 2+ |
 | GAP-A2 USL quality curve empirical validation | High | 2 weeks | Labeled multi-N benchmark | Session 2 |
 | **GAP-F4 Knowledge provider contrastive eval Phase 2** | High | 1 week | 50+ tasks per domain | Week 3 |
 | GAP-D2 Compound task HITL escalation | Low | 1 week | None | Any |
+| **GAP-D4 Per-constraint archetype guarantee** | Medium | 1 week | None | Week 2 |
+| **GAP-D5 MAPE-K repair oscillation anchoring** | High | 1 week | None | Week 2 |
 | **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
 
 ---

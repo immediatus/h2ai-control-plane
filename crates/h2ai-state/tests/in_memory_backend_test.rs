@@ -62,7 +62,7 @@ use h2ai_state::in_memory::InMemoryStateBackend;
 use h2ai_types::calibration::{AuditorCircuitState, CalibrationRecord, ProbeSource};
 use h2ai_types::events::{
     CalibrationCompletedEvent, CalibrationQuality, CalibrationSource, CgMode, H2AIEvent,
-    TaskSnapshot,
+    TaskSnapshot, TerminalCause,
 };
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::prompt_variant::{AdapterOproState, PromptVariant};
@@ -343,6 +343,10 @@ async fn tail_task_events_returns_events_after_seq() {
     let tid = TaskId::new();
     let event = H2AIEvent::TaskFailed(h2ai_types::events::TaskFailedEvent {
         task_id: tid.clone(),
+        primary_cause: TerminalCause::Unknown,
+        contributing_causes: vec![],
+        top_violated_constraints: vec![],
+        last_selection_valid_count: None,
         pruned_events: vec![],
         topologies_tried: vec![],
         tau_values_tried: vec![],
@@ -390,6 +394,10 @@ async fn publish_event_seq_returns_increasing_seq() {
     let tid = TaskId::new();
     let event = H2AIEvent::TaskFailed(h2ai_types::events::TaskFailedEvent {
         task_id: tid.clone(),
+        primary_cause: TerminalCause::Unknown,
+        contributing_causes: vec![],
+        top_violated_constraints: vec![],
+        last_selection_valid_count: None,
         pruned_events: vec![],
         topologies_tried: vec![],
         tau_values_tried: vec![],

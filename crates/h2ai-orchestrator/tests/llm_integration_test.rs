@@ -262,6 +262,7 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -409,6 +410,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -604,6 +606,7 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 

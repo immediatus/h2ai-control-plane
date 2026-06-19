@@ -363,6 +363,22 @@ pub struct MapeKController {
     pub(crate) budget_exhausted: bool,
     /// Populated by decide() when convergence gate fires; taken by engine.rs to publish.
     pub(crate) convergence_gate_event: Option<h2ai_types::events::ConvergenceGateEvent>,
+
+    // ── GAP-F5: Retroactive Induction Trigger ────────────────────────────────
+    /// Domain tags from the task manifest (constraint_tags). Stored at construction
+    /// for use in InductionContext without access to EngineInput inside decide().
+    pub(crate) task_class_tags: Vec<String>,
+    /// Optional retroactive induction scheduler — set when GAP-F5 is enabled.
+    pub(crate) induction_scheduler:
+        Option<std::sync::Arc<dyn crate::induction::InductionScheduler>>,
+    /// Handle to a running induction task spawned on ZeroSurvival.
+    pub(crate) pending_induction:
+        Option<tokio::task::JoinHandle<Option<crate::induction::InductionResult>>>,
+    /// Count of ZeroSurvival events on the current task class (for min_prior_tasks gate).
+    pub(crate) zero_survival_count: u32,
+    /// Hint texts that were injected into `retry_context` via `apply_induction_result`.
+    /// Used to call `record_success` on the scheduler when the task resolves successfully.
+    pub applied_hint_texts: Vec<String>,
 }
 
 // ── Cross-wave instability detection ──────────────────────────────────
@@ -662,6 +678,11 @@ impl MapeKController {
             tokens_used: 0,
             budget_exhausted: false,
             convergence_gate_event: None,
+            task_class_tags: input.manifest.constraint_tags.clone(),
+            induction_scheduler: None,
+            pending_induction: None,
+            zero_survival_count: 0,
+            applied_hint_texts: vec![],
         }
     }
 
@@ -695,6 +716,17 @@ impl MapeKController {
             },
             bypassed_constraint_ids: self.bypassed_verifier_constraints.clone(),
         }
+    }
+
+    // ── GAP-F5: Retroactive Induction Scheduler builder ──────────────────────
+
+    /// Attach a retroactive induction scheduler. Must be called after construction.
+    pub fn with_induction_scheduler(
+        mut self,
+        scheduler: std::sync::Arc<dyn crate::induction::InductionScheduler>,
+    ) -> Self {
+        self.induction_scheduler = Some(scheduler);
+        self
     }
 
     // ── WaveContinue signal injection ────────────────────────────────
@@ -786,7 +818,31 @@ impl MapeKController {
     // ── Observe ────────────────────────────────────────────────────────────────
 
     /// Aggregate events from a completed wave into the cross-wave accumulators.
-    pub fn observe(&mut self, wave: &PipelineWaveResult, wave_index: u32) {
+    pub async fn observe(&mut self, wave: &PipelineWaveResult, wave_index: u32) {
+        // GAP-F5: consume a completed induction task if one is pending.
+        // Awaits up to grace_period_ms before proceeding — spec-compliant bounded wait.
+        // If the induction hasn't finished within the grace period it is dropped.
+        // The result is applied *after* the SRANI retry_context update below so the
+        // induction hint appends on top of (rather than underneath) SRANI's output.
+        let pending_induction_result: Option<crate::induction::InductionResult> =
+            if let Some(handle) = self.pending_induction.take() {
+                let grace_ms = self.cfg_ref.induction_trigger.grace_period_ms;
+                if let Ok(Ok(Some(result))) =
+                    tokio::time::timeout(std::time::Duration::from_millis(grace_ms), handle).await
+                {
+                    let current_tags = self.task_class_tags.clone();
+                    if result.is_compatible_with(&current_tags) {
+                        Some(result)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         let e = &wave.events;
         self.all_verification_events
             .extend(e.verification_events.iter().cloned());
@@ -815,6 +871,10 @@ impl MapeKController {
         self.srani_count = e.srani_count_updated as u64;
         if let Some(ref rc) = e.srani_retry_context {
             self.retry_context = Some(rc.clone());
+        }
+        // GAP-F5: apply induction hint after SRANI so it appends on top.
+        if let Some(result) = pending_induction_result {
+            self.apply_induction_result(&result);
         }
         // Rotate: prev_wave_pruned ← last_wave_pruned before overwriting with new wave.
         self.prev_wave_pruned = std::mem::take(&mut self.last_wave_pruned);
@@ -1368,6 +1428,28 @@ impl MapeKController {
                 // Record N_eff for AgentDropout dropout decisions on the next wave.
                 self.last_wave_n_eff = zs_n_eff_cosine.unwrap_or(1.0);
 
+                // GAP-F5: Retroactive induction trigger.
+                self.zero_survival_count += 1;
+                if let Some(ref scheduler) = self.induction_scheduler {
+                    let cfg = &self.cfg_ref.induction_trigger;
+                    if cfg.enabled && self.zero_survival_count >= cfg.min_prior_tasks {
+                        let sched = std::sync::Arc::clone(scheduler);
+                        let ctx = crate::induction::InductionContext {
+                            tenant_id: self.task_id.to_string(),
+                            task_class_tags: self.task_class_tags.clone(),
+                            violated_constraint_ids: self
+                                .all_violated_constraint_ids()
+                                .into_iter()
+                                .take(5)
+                                .collect(),
+                        };
+                        self.pending_induction =
+                            Some(tokio::spawn(
+                                async move { sched.run_retroactive(&ctx).await },
+                            ));
+                    }
+                }
+
                 let zero_event = ZeroSurvivalEvent {
                     task_id: self.task_id.clone(),
                     retry_count,
@@ -1904,6 +1986,10 @@ impl MapeKController {
                 .global_best_proposal
                 .as_ref()
                 .map(|(_, text)| text.clone()),
+            // violation_freq and last_selection_valid_count are accumulated in engine.rs
+            // and injected into the context after take_run_context() returns.
+            violation_freq: std::collections::HashMap::new(),
+            last_selection_valid_count: None,
         }
     }
 
@@ -2376,6 +2462,36 @@ impl MapeKController {
         &self.ambiguity_scorecards
     }
 
+    // ── GAP-F5: Induction helpers ─────────────────────────────────────────────
+
+    /// Collect deduplicated constraint IDs from the full cross-wave pruned accumulator.
+    fn all_violated_constraint_ids(&self) -> Vec<String> {
+        self.all_pruned
+            .iter()
+            .flat_map(|e| {
+                e.violated_constraints
+                    .iter()
+                    .map(|v| v.constraint_id.clone())
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Inject the top induction hint into `self.retry_context`.
+    fn apply_induction_result(&mut self, result: &crate::induction::InductionResult) {
+        if let Some(top_hint) = result.patterns.first() {
+            let hint_text = format!(
+                "\n[INDUCTION HINT — success_rate={:.2}]: {}\n",
+                top_hint.success_rate(),
+                top_hint.hint_text
+            );
+            self.retry_context =
+                Some(self.retry_context.as_deref().unwrap_or("").to_string() + &hint_text);
+            self.applied_hint_texts.push(top_hint.hint_text.clone());
+        }
+    }
+
     #[must_use]
     pub fn new_for_test(cfg: h2ai_config::H2AIConfig) -> Self {
         use crate::tao_loop::TaoMultiplierEstimator;
@@ -2481,6 +2597,11 @@ impl MapeKController {
             tokens_used: 0,
             budget_exhausted: false,
             convergence_gate_event: None,
+            task_class_tags: Vec::new(),
+            induction_scheduler: None,
+            pending_induction: None,
+            zero_survival_count: 0,
+            applied_hint_texts: vec![],
         }
     }
 

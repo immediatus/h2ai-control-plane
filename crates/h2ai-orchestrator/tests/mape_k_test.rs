@@ -85,8 +85,8 @@ fn make_verification_event() -> VerificationScoredEvent {
     }
 }
 
-#[test]
-fn decide_retry_or_fail_on_multiplication_failed() {
+#[tokio::test]
+async fn decide_retry_or_fail_on_multiplication_failed() {
     let mut ctrl = default_controller();
     let wave = empty_wave(PipelineOutcome::EarlyExit(
         ExitReason::MultiplicationFailed {
@@ -98,7 +98,7 @@ fn decide_retry_or_fail_on_multiplication_failed() {
             },
         },
     ));
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
     let decision = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::MultiplicationFailed {
             msg: "test".into(),
@@ -123,8 +123,8 @@ fn decide_retry_or_fail_on_multiplication_failed() {
 /// Strategy: observe two waves each containing one verification event, then
 /// call decide(OracleBlocked) which returns Fail with `partial_verification_events`.
 /// Assert the partial events contain exactly the 2 events that were observed.
-#[test]
-fn observe_aggregates_verification_events_across_waves() {
+#[tokio::test]
+async fn observe_aggregates_verification_events_across_waves() {
     let mut ctrl = default_controller();
 
     let mut wave1_events = WaveEvents::default();
@@ -137,7 +137,8 @@ fn observe_aggregates_verification_events_across_waves() {
             events: wave1_events,
         },
         0,
-    );
+    )
+    .await;
 
     let mut wave2_events = WaveEvents::default();
     wave2_events
@@ -149,7 +150,8 @@ fn observe_aggregates_verification_events_across_waves() {
             events: wave2_events,
         },
         1,
-    );
+    )
+    .await;
 
     // OracleBlocked always returns Fail with all accumulated verification events.
     let decision = ctrl.decide(
@@ -180,14 +182,14 @@ fn leader_state_is_none_on_new_controller() {
     assert!(ctrl.leader.is_none());
 }
 
-#[test]
-fn decide_fail_on_oracle_blocked() {
+#[tokio::test]
+async fn decide_fail_on_oracle_blocked() {
     let mut ctrl = default_controller();
     let wave = PipelineWaveResult {
         outcome: PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
         events: WaveEvents::default(),
     };
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
     let decision = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::OracleBlocked),
         0,
@@ -204,8 +206,8 @@ fn last_wave_n_eff_initialises_to_one() {
     assert_eq!(ctrl.last_wave_n_eff(), 1.0);
 }
 
-#[test]
-fn last_wave_n_eff_updates_after_zero_survival() {
+#[tokio::test]
+async fn last_wave_n_eff_updates_after_zero_survival() {
     use h2ai_orchestrator::coherence::CoherenceState;
     let mut ctrl = default_controller();
     let wave = empty_wave(PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
@@ -215,7 +217,7 @@ fn last_wave_n_eff_updates_after_zero_survival() {
         filter_ratio: 1.0,
         tau_values: vec![],
     }));
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
     // Trigger decide so handle_exit_reason runs and sets last_wave_n_eff.
     let _ = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
@@ -231,8 +233,8 @@ fn last_wave_n_eff_updates_after_zero_survival() {
     assert_eq!(ctrl.last_wave_n_eff(), 0.3);
 }
 
-#[test]
-fn last_wave_n_eff_defaults_one_when_none() {
+#[tokio::test]
+async fn last_wave_n_eff_defaults_one_when_none() {
     use h2ai_orchestrator::coherence::CoherenceState;
     let mut ctrl = default_controller();
     let wave = empty_wave(PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
@@ -242,7 +244,7 @@ fn last_wave_n_eff_defaults_one_when_none() {
         filter_ratio: 1.0,
         tau_values: vec![],
     }));
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
     let _ = ctrl.decide(
         PipelineOutcome::EarlyExit(ExitReason::ZeroSurvival {
             failure_mode: None,

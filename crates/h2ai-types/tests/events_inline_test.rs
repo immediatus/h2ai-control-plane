@@ -435,3 +435,62 @@ fn constraint_violation_check_reasons_old_json_defaults() {
     let cv: ConstraintViolation = serde_json::from_str(json).expect("deserialize old json");
     assert!(cv.check_reasons.is_none());
 }
+
+// ── GAP-D3: TerminalCause and TaskFailedEvent diagnostic fields ───────────────
+
+#[test]
+fn terminal_cause_serializes_to_variant_name() {
+    let cause = TerminalCause::VerificationExhaustion;
+    let s = serde_json::to_string(&cause).unwrap();
+    assert_eq!(s, r#""VerificationExhaustion""#);
+}
+
+#[test]
+fn terminal_cause_severity_ordering() {
+    // LlmAdapterUnavailable (rank 0) < VerificationExhaustion (rank 1) in severity
+    // The severity_rank() method returns lower number = higher severity
+    assert!(
+        TerminalCause::LlmAdapterUnavailable.severity_rank()
+            < TerminalCause::VerificationExhaustion.severity_rank()
+    );
+    assert!(
+        TerminalCause::VerificationExhaustion.severity_rank()
+            < TerminalCause::Timeout.severity_rank()
+    );
+    assert!(TerminalCause::Timeout.severity_rank() < TerminalCause::Unknown.severity_rank());
+}
+
+#[test]
+fn task_failed_event_has_required_diagnostic_fields() {
+    let event = TaskFailedEvent {
+        task_id: TaskId::new(),
+        primary_cause: TerminalCause::VerificationExhaustion,
+        contributing_causes: vec![TerminalCause::Timeout],
+        top_violated_constraints: vec![("C-005".to_string(), 4), ("C-004".to_string(), 2)],
+        last_selection_valid_count: Some(0),
+        pruned_events: vec![],
+        topologies_tried: vec![],
+        tau_values_tried: vec![],
+        multiplication_condition_failure: None,
+        timestamp: Utc::now(),
+    };
+    assert_eq!(event.primary_cause, TerminalCause::VerificationExhaustion);
+    assert_eq!(event.top_violated_constraints.len(), 2);
+    assert_eq!(event.last_selection_valid_count, Some(0));
+}
+
+#[test]
+fn task_failed_event_old_json_defaults_new_fields() {
+    let old_json = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "pruned_events": [],
+        "topologies_tried": [],
+        "tau_values_tried": [],
+        "timestamp": "2026-01-01T00:00:00Z"
+    }"#;
+    let event: TaskFailedEvent = serde_json::from_str(old_json).expect("old json must deserialize");
+    assert_eq!(event.primary_cause, TerminalCause::Unknown);
+    assert!(event.contributing_causes.is_empty());
+    assert!(event.top_violated_constraints.is_empty());
+    assert!(event.last_selection_valid_count.is_none());
+}

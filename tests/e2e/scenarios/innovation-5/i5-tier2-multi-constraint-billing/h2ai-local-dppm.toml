@@ -126,3 +126,21 @@ meta_observer_enabled = true
 
 [generation_phase]
 timeout_secs = 3600
+
+[induction_trigger]
+enabled = true
+min_prior_tasks = 3
+grace_period_ms = 2000
+min_tag_jaccard = 0.3
+
+[srani.implied_by]
+ClickHouse = [
+  "MergeTree", "ReplacingMergeTree", "SummingMergeTree", "AggregatingMergeTree",
+  "CollapsingMergeTree", "VersionedCollapsingMergeTree", "GraphiteMergeTree",
+  "CoalescingMergeTree", "ReplicatedMergeTree", "ReplicatedReplacingMergeTree",
+  "ReplicatedSummingMergeTree", "ReplicatedAggregatingMergeTree",
+  "ReplicatedCollapsingMergeTree", "ReplicatedVersionedCollapsingMergeTree",
+  "Distributed", "TinyLog", "StripeLog", "Log", "Memory", "Buffer"
+]
+Redis = ["EVAL", "SETEX", "SETNX", "ZADD", "ZRANGEBYSCORE", "INCR", "EXPIRE"]
+Kafka = ["producer", "consumer", "topic", "partition", "offset", "consumer-group"]

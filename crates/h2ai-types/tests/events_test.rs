@@ -233,6 +233,10 @@ fn consensus_required_event_serde_round_trip() {
 fn task_failed_event_may_include_multiplication_failure() {
     let e = TaskFailedEvent {
         task_id: task_id(),
+        primary_cause: TerminalCause::Unknown,
+        contributing_causes: vec![],
+        top_violated_constraints: vec![],
+        last_selection_valid_count: None,
         pruned_events: vec![],
         topologies_tried: vec![TopologyKind::Ensemble],
         tau_values_tried: vec![vec![0.2, 0.6, 0.9]],
@@ -404,6 +408,10 @@ fn h2ai_event_enum_wraps_all_17_events() {
         }),
         H2AIEvent::TaskFailed(TaskFailedEvent {
             task_id: task_id(),
+            primary_cause: TerminalCause::Unknown,
+            contributing_causes: vec![],
+            top_violated_constraints: vec![],
+            last_selection_valid_count: None,
             pruned_events: vec![],
             topologies_tried: vec![],
             tau_values_tried: vec![],

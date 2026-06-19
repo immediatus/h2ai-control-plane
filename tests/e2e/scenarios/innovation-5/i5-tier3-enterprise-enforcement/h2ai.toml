@@ -92,3 +92,6 @@ entropy_threshold             = 0.6
 retry_slope_threshold         = 0.05
 n_eff_cg_product_threshold    = 0.3
 min_retry_count_for_detection = 2
+
+[generation_phase]
+timeout_secs = 900

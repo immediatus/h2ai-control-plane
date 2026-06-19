@@ -262,6 +262,7 @@ async fn system_solves_well_formed_problem() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -349,6 +350,7 @@ async fn system_detects_hallucinating_proposals_and_exhausts_retries() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -423,6 +425,7 @@ async fn system_survives_agent_loss_and_resolves_with_survivors() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -536,6 +539,7 @@ async fn system_resolves_conflict_via_bft_consensus() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -618,6 +622,7 @@ async fn system_shadow_mode_agreement_resolves_task() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -691,6 +696,7 @@ async fn system_shadow_disagreement_does_not_affect_shadow_mode_result() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -770,6 +776,7 @@ async fn system_and_vote_mode_rejects_when_shadow_disagrees() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -840,6 +847,7 @@ async fn system_c1_fires_and_records_warning_for_identical_proposals() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -926,6 +934,7 @@ async fn system_c3_no_degraded_event_when_domains_covered() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -1007,6 +1016,7 @@ async fn system_c3_degraded_event_when_domains_uncovered() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 

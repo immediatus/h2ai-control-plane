@@ -1585,6 +1585,23 @@ fn srani_config_serde_empty() {
     assert_eq!(c.grounding_compress_threshold, 800);
 }
 
+#[test]
+fn srani_implied_by_parses_from_toml() {
+    // Test that we can parse the implied_by map directly from SraniConfig TOML.
+    // Since SraniConfig has #[serde(default)] on implied_by, it should be optional.
+    let json = r#"{
+        "enabled": true,
+        "implied_by": {
+            "ClickHouse": ["MergeTree", "ReplacingMergeTree", "Distributed"],
+            "Redis": ["SETEX", "SETNX"]
+        }
+    }"#;
+    let srani: SraniConfig = serde_json::from_str(json).unwrap();
+    let ib = &srani.implied_by;
+    assert_eq!(ib.get("ClickHouse").map(|v| v.len()), Some(3));
+    assert!(ib.get("Redis").unwrap().contains(&"SETEX".to_string()));
+}
+
 // ── CsprConfig default ────────────────────────────────────────────────────────
 
 #[test]
@@ -1828,6 +1845,29 @@ fn load_layered_invalid_toml_returns_config_error() {
         matches!(result, Err(ConfigLoadError::Config(_))),
         "invalid TOML must return ConfigLoadError::Config"
     );
+}
+
+// ── InductionTriggerConfig ────────────────────────────────────────────────────
+
+#[test]
+fn induction_trigger_config_parses_from_toml() {
+    use std::io::Write;
+    let mut tmp = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    writeln!(
+        tmp,
+        r#"
+[induction_trigger]
+enabled = true
+min_prior_tasks = 3
+grace_period_ms = 2000
+min_tag_jaccard = 0.3
+"#
+    )
+    .unwrap();
+    let cfg = H2AIConfig::load_layered(Some(tmp.path())).unwrap();
+    assert!(cfg.induction_trigger.enabled);
+    assert_eq!(cfg.induction_trigger.min_prior_tasks, 3);
+    assert_eq!(cfg.induction_trigger.grace_period_ms, 2000);
 }
 
 #[test]

@@ -115,13 +115,13 @@ fn prepare_leader_election_returns_none_when_no_verification_scores() {
     assert!(plan.is_none());
 }
 
-#[test]
-fn prepare_leader_election_picks_highest_score_as_leader() {
+#[tokio::test]
+async fn prepare_leader_election_picks_highest_score_as_leader() {
     let mut ctrl = MapeKController::new_for_test(H2AIConfig::default());
     let id_a = ExplorerId::new();
     let id_b = ExplorerId::new();
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.3), (id_b.clone(), 0.7)]);
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
 
     let cfg = H2AIConfig {
         leader_enabled: true,
@@ -132,12 +132,12 @@ fn prepare_leader_election_picks_highest_score_as_leader() {
     assert_eq!(plan.runner_up_explorer_id, Some(id_a));
 }
 
-#[test]
-fn apply_leader_result_populates_leader_state() {
+#[tokio::test]
+async fn apply_leader_result_populates_leader_state() {
     let mut ctrl = MapeKController::new_for_test(H2AIConfig::default());
     let id_a = ExplorerId::new();
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.6)]);
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
 
     let cfg = H2AIConfig {
         leader_enabled: true,
@@ -153,12 +153,12 @@ fn apply_leader_result_populates_leader_state() {
     assert_eq!(ls.belief_buffer.len(), 1);
 }
 
-#[test]
-fn leader_events_buffered_after_apply() {
+#[tokio::test]
+async fn leader_events_buffered_after_apply() {
     let mut ctrl = MapeKController::new_for_test(H2AIConfig::default());
     let id_a = ExplorerId::new();
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.6)]);
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
 
     let cfg = H2AIConfig {
         leader_enabled: true,
@@ -173,8 +173,8 @@ fn leader_events_buffered_after_apply() {
     assert_eq!(diag_evs[0].question, "Socratic question?");
 }
 
-#[test]
-fn stagnation_count_increments_on_flat_confidence() {
+#[tokio::test]
+async fn stagnation_count_increments_on_flat_confidence() {
     let mut ctrl = MapeKController::new_for_test(H2AIConfig::default());
     let id_a = ExplorerId::new();
     let cfg = H2AIConfig {
@@ -184,13 +184,13 @@ fn stagnation_count_increments_on_flat_confidence() {
 
     // Wave 1
     let wave = failed_wave_with_scores(vec![(id_a.clone(), 0.5)]);
-    ctrl.observe(&wave, 0);
+    ctrl.observe(&wave, 0).await;
     let plan = ctrl.prepare_leader_election(&cfg).unwrap();
     ctrl.apply_leader_result(plan, "Q1?".into(), 1, 0, &cfg);
 
     // Wave 2 — same score (no improvement)
     let wave2 = failed_wave_with_scores(vec![(id_a.clone(), 0.5)]);
-    ctrl.observe(&wave2, 1);
+    ctrl.observe(&wave2, 1).await;
     let plan2 = ctrl.prepare_leader_election(&cfg).unwrap();
     ctrl.apply_leader_result(plan2, "Q2?".into(), 1, 0, &cfg);
 

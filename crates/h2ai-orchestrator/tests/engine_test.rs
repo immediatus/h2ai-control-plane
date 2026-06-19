@@ -183,6 +183,7 @@ async fn engine_runs_ensemble_to_semilattice() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -285,6 +286,7 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -381,6 +383,7 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -481,6 +484,7 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -571,6 +575,7 @@ async fn engine_output_contains_talagrand_diagnostic() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -693,6 +698,7 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -783,6 +789,7 @@ async fn engine_output_contains_suggested_next_params() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -958,6 +965,7 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -1086,6 +1094,7 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -1275,6 +1284,7 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -1377,6 +1387,7 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -1539,6 +1550,7 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -1676,6 +1688,7 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -1747,6 +1760,7 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -1823,6 +1837,7 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -1907,6 +1922,7 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -1981,6 +1997,7 @@ async fn strict_mode_rejects_when_shadow_disagrees_without_promoted_domains() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -2053,6 +2070,7 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -2156,6 +2174,7 @@ async fn c3_no_event_when_corpus_empty() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -2275,6 +2294,7 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -2393,6 +2413,7 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -2527,6 +2548,7 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -2641,6 +2663,7 @@ async fn c1_no_warning_for_diverse_proposals() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -2783,6 +2806,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -2906,6 +2930,7 @@ async fn srani_fires_when_proposals_share_ungrounded_entity() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -3039,6 +3064,7 @@ async fn srani_silent_when_entities_grounded_in_spec() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -3087,6 +3113,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
             researcher_max_tokens: 32_768,
             distill_max_tokens: 32_768,
             gap_synthesis_max_tokens: 32_768,
+            implied_by: Default::default(),
         },
         ..H2AIConfig::default()
     };
@@ -3163,6 +3190,7 @@ async fn srani_adaptive_fires_and_updates_ema() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3229,6 +3257,7 @@ async fn srani_cold_start_uses_config_midpoint() {
             researcher_max_tokens: 32_768,
             distill_max_tokens: 32_768,
             gap_synthesis_max_tokens: 32_768,
+            implied_by: Default::default(),
         },
         ..H2AIConfig::default()
     };
@@ -3305,6 +3334,7 @@ async fn srani_cold_start_uses_config_midpoint() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3421,6 +3451,7 @@ async fn srani_adaptive_false_uses_static_thresholds() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3460,6 +3491,7 @@ async fn srani_ema_formula_verified_numerically() {
             researcher_max_tokens: 32_768,
             distill_max_tokens: 32_768,
             gap_synthesis_max_tokens: 32_768,
+            implied_by: Default::default(),
         },
         ..H2AIConfig::default()
     };
@@ -3537,6 +3569,7 @@ async fn srani_ema_formula_verified_numerically() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let output = ExecutionEngine::run_offline(input).await.unwrap();
@@ -3670,6 +3703,7 @@ async fn srani_no_chain_falls_back_to_spec_anchor_only() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -3729,6 +3763,7 @@ async fn srani_spec_anchor_chain_records_grounding_event_source() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -3799,6 +3834,7 @@ async fn srani_llm_chain_records_llm_researcher_source() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -3867,6 +3903,7 @@ async fn srani_researcher_failure_falls_back_gracefully() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -4107,6 +4144,7 @@ async fn engine_complexity_routing_disabled_runs_normally() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -4213,6 +4251,7 @@ async fn engine_complexity_probe_stored_on_controller() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -4415,6 +4454,7 @@ fn make_engine_input<'a>(
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     }
 }
@@ -4708,6 +4748,7 @@ async fn engine_conformal_margin_reduces_threshold() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.5,
     };
     // We just need this not to panic — the threshold = 0.9 - 0.5 = 0.4 path was exercised.
@@ -4801,6 +4842,7 @@ async fn engine_conformal_margin_clamps_to_zero() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         // margin > threshold → max(0.9 - 1.5, 0.0) = 0.0 (clamp path)
         conformal_margin: 1.5,
     };
@@ -4892,6 +4934,7 @@ async fn engine_zero_deadline_returns_deadline_exceeded() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -4993,6 +5036,7 @@ async fn engine_failing_verifier_exhausts_retries() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -5100,6 +5144,7 @@ async fn engine_agent_dropout_path_with_retries() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     // The engine will exhaust retries; the path with retry_count >= 2 + agent_dropout enabled
@@ -5206,6 +5251,7 @@ async fn engine_complexity_overflow_routes_to_failure() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -5312,6 +5358,7 @@ async fn engine_run_offline_with_nats_event_publishing() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;
@@ -5425,6 +5472,7 @@ async fn engine_reasoning_checkpoint_non_strict_writes() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
     let result = ExecutionEngine::run_offline(input).await;

@@ -390,10 +390,58 @@ pub struct MergeResolvedEvent {
     pub zone3_hints: Option<String>,
 }
 
+/// Root cause classification for terminal task failures.
+/// Severity-ranked: lower rank = higher severity (infrastructure > application).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TerminalCause {
+    /// Adapter returned error or timeout after probe phase; zero retries possible.
+    LlmAdapterUnavailable,
+    /// All proposals failed verification across all MAPE-K retry waves.
+    VerificationExhaustion,
+    /// Task complexity exceeded ensemble capacity; no retry resolves without replanning.
+    ComplexityOverflow,
+    /// Token budget collapsed mid-task; recoverable by chunking.
+    ContextExhaustion,
+    /// External oracle returned passed=false.
+    OracleRejected,
+    /// Wall-clock timeout_s exceeded; recoverable with larger budget.
+    Timeout,
+    /// Unclassified terminal path.
+    #[default]
+    Unknown,
+}
+
+impl TerminalCause {
+    /// Severity rank: 0 = highest severity (use for dominance comparison).
+    pub fn severity_rank(&self) -> u8 {
+        match self {
+            Self::LlmAdapterUnavailable => 0,
+            Self::VerificationExhaustion => 1,
+            Self::ComplexityOverflow => 2,
+            Self::ContextExhaustion => 3,
+            Self::OracleRejected => 4,
+            Self::Timeout => 5,
+            Self::Unknown => 6,
+        }
+    }
+}
+
 /// Emitted when the MAPE-K loop exhausts all retries without producing a resolved output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskFailedEvent {
     pub task_id: TaskId,
+    /// Primary terminal cause — highest severity among all causes that fired.
+    #[serde(default)]
+    pub primary_cause: TerminalCause,
+    /// All other causes that fired concurrently.
+    #[serde(default)]
+    pub contributing_causes: Vec<TerminalCause>,
+    /// Top violated constraint IDs by frequency, sorted descending by count, capped at 5.
+    #[serde(default)]
+    pub top_violated_constraints: Vec<(String, u32)>,
+    /// Valid proposal count from the final SelectionResolved event. None if none occurred.
+    #[serde(default)]
+    pub last_selection_valid_count: Option<u32>,
     pub pruned_events: Vec<BranchPrunedEvent>,
     pub topologies_tried: Vec<TopologyKind>,
     pub tau_values_tried: Vec<Vec<f64>>,

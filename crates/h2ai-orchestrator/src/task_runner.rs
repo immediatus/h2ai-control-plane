@@ -20,6 +20,7 @@ use crate::decomposition::DecompositionError;
 use crate::engine::{
     EngineError, EngineOutput, EngineRunContext, NatsDispatchConfig, ShadowAuditCtx,
 };
+use crate::induction::InductionScheduler;
 use crate::induction_store::InductionStore;
 use crate::srani_grounding::SraniGroundingChain;
 use crate::tao_loop::TaoMultiplierEstimator;
@@ -46,6 +47,11 @@ pub struct ThinkingLoopArgs {
     /// When `Some`, appended to `task_description` before the thinking loop runs.
     /// `None` on every first run and in shadow mode (byte-identical behaviour to today).
     pub awareness_hints: Option<String>,
+    /// Tenant identifier passed to `load_priming_hints` to scope KV key lookups.
+    pub tenant_id: TenantId,
+    /// Optional induction scheduler. When `Some`, `DefaultThinkingLoopRunner` calls
+    /// `load_priming_hints` and passes the result into `ThinkingLoopInput.retry_hint_priors`.
+    pub induction_scheduler: Option<std::sync::Arc<dyn InductionScheduler>>,
 }
 
 pub struct DecompositionArgs {
@@ -99,6 +105,9 @@ pub struct OwnedEngineInput {
     pub stable_cache: Option<Arc<StableContextCache>>,
     pub knowledge_provider: Option<Arc<dyn KnowledgeProvider + Send + Sync>>,
     pub induction_store: Option<Arc<InductionStore>>,
+    /// Induction scheduler for MAPE-K retroactive trigger and `record_success` signalling.
+    /// Distinct from `induction_store` (which handles `KnowledgeNodePattern`).
+    pub induction_scheduler: Option<std::sync::Arc<dyn InductionScheduler>>,
     pub conformal_margin: f64,
 }
 
@@ -132,12 +141,26 @@ pub struct DefaultThinkingLoopRunner;
 #[async_trait]
 impl ThinkingLoopRunner for DefaultThinkingLoopRunner {
     async fn run(&self, args: ThinkingLoopArgs) -> ThinkingReport {
+        use crate::induction::InductionContext;
         use crate::thinking_loop::{self, ThinkingLoopInput};
+        use h2ai_types::memory::RetryHintPattern;
         // Append awareness hints to the task description when present.
         // No-op (None path) is byte-identical to the pre-probe behaviour.
         let effective_description = match &args.awareness_hints {
             Some(hints) => format!("{}\n\n{}", args.task_description, hints),
             None => args.task_description.clone(),
+        };
+        let retry_hint_priors: Vec<RetryHintPattern> = match &args.induction_scheduler {
+            Some(sched) => {
+                sched
+                    .load_priming_hints(&InductionContext {
+                        tenant_id: args.tenant_id.to_string(),
+                        task_class_tags: args.constraint_tags.clone(),
+                        violated_constraint_ids: vec![],
+                    })
+                    .await
+            }
+            None => vec![],
         };
         thinking_loop::run(ThinkingLoopInput {
             task_description: &effective_description,
@@ -153,6 +176,7 @@ impl ThinkingLoopRunner for DefaultThinkingLoopRunner {
             nats_client: args.nats_client,
             task_id: &args.task_id,
             induction_patterns: &[],
+            retry_hint_priors: &retry_hint_priors,
         })
         .await
     }
@@ -236,6 +260,7 @@ impl EngineRunner for DefaultEngineRunner {
             stable_cache,
             knowledge_provider,
             induction_store,
+            induction_scheduler,
             conformal_margin,
         } = input;
         let explorer_refs: Vec<&dyn IComputeAdapter> =
@@ -276,6 +301,7 @@ impl EngineRunner for DefaultEngineRunner {
             stable_cache,
             knowledge_provider,
             induction_store,
+            induction_scheduler,
             conformal_margin,
         })
         .await

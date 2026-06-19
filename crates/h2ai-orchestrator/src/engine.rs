@@ -50,6 +50,12 @@ pub struct EngineRunContext {
     pub topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent>,
     /// Highest-scoring partial proposal text, for HITL surfacing. `None` when none existed.
     pub best_partial_text: Option<String>,
+    /// Constraint violation frequency map: constraint_id → total count across all waves.
+    /// Used to populate `TaskFailedEvent::top_violated_constraints` on the failure path.
+    pub violation_freq: std::collections::HashMap<String, u32>,
+    /// Valid proposal count from the last `SelectionResolvedEvent` before failure.
+    /// `None` when no merge succeeded (all-pruned across all retries).
+    pub last_selection_valid_count: Option<u32>,
 }
 
 /// Errors that can abort an `ExecutionEngine::run_offline` call.
@@ -220,6 +226,10 @@ pub struct EngineInput<'a> {
     /// Optional induction store for cross-task knowledge boosting.
     /// When None, induction is skipped and pure BM25 is used.
     pub induction_store: Option<std::sync::Arc<crate::induction_store::InductionStore>>,
+    /// Induction scheduler for MAPE-K retroactive trigger wiring and `record_success` signalling.
+    /// Distinct from `induction_store` (which handles `KnowledgeNodePattern` cross-task boosting).
+    /// When `None`, induction scheduler is not wired — MAPE-K runs without retroactive priming.
+    pub induction_scheduler: Option<std::sync::Arc<dyn crate::induction::InductionScheduler>>,
     /// ORCA conformal margin from `DriftMonitor::active_conformal_margin()`.
     /// Subtracted from `verification_config.threshold` at engine start. Zero = no active drift.
     pub conformal_margin: f64,
@@ -545,6 +555,17 @@ impl ExecutionEngine {
         // Restart counter — capped at 1 to prevent infinite repair loops.
         let mut spec_ambiguous_restarts: u32 = 0;
 
+        // ── Violation frequency accumulator ────────────────────────────
+        // Tracks per-constraint violation counts across all waves and restarts.
+        // Populated from BranchPrunedEvent.violated_constraints in the 'wave loop.
+        // Carried into EngineRunContext on the failure path so TaskFailedEvent can
+        // report top_violated_constraints without re-scanning all pruned events.
+        let mut violation_freq: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+        // Valid proposal count from the most recent SelectionResolvedEvent (if any).
+        // None when no merge produced a resolved selection before failure.
+        let mut last_selection_valid_count: Option<u32> = None;
+
         // ── restart loop ───────────────────────────────────────────────
         // Each iteration builds a fresh pipeline + controller from the (possibly
         // repaired) `input.constraint_corpus`.  The loop exits via `return` on
@@ -574,6 +595,9 @@ impl ExecutionEngine {
                     conflict_graph,
                 )
                 .await;
+                if let Some(ref sched) = input.induction_scheduler {
+                    controller = controller.with_induction_scheduler(sched.clone());
+                }
                 // Wire diversity degraded event from domain coverage into the controller so it
                 // is included in the final EngineOutput via MapeKController::finalize().
                 controller.diversity_degraded_event = diversity_degraded_event.clone();
@@ -677,7 +701,25 @@ impl ExecutionEngine {
                             input.cfg.osp.as_ref(),
                         )
                         .await;
-                    controller.observe(&wave, retry_count);
+                    controller.observe(&wave, retry_count).await;
+
+                    // ── Violation frequency accumulation ──────────────────────────────
+                    // Increment per-constraint violation counts from this wave's pruned events.
+                    for pruned in &wave.events.pruned_events {
+                        for violation in &pruned.violated_constraints {
+                            *violation_freq
+                                .entry(violation.constraint_id.clone())
+                                .or_insert(0) += 1;
+                        }
+                    }
+                    // Track valid proposal count from the SelectionResolvedEvent when
+                    // the wave produced a partial-pass merge (unusual but possible on
+                    // the success branch that exits early via MapeKDecision::Return).
+                    // The failure paths never see a resolved selection, so this stays None.
+                    if let crate::mape_k::PipelineOutcome::Resolved(ref merge) = wave.outcome {
+                        last_selection_valid_count =
+                            Some(merge.selection_resolved_event.valid_proposals.len() as u32);
+                    }
 
                     // OOM guard: check wave-boundary RSS every check_interval_waves waves.
                     {
@@ -930,6 +972,25 @@ impl ExecutionEngine {
                                                 &domain_tags,
                                             )
                                             .await;
+                                    });
+                                }
+                            }
+
+                            // Signal induction success before HITL gate — consistent with
+                            // induction_store.record() which also fires pre-HITL. The MAPE-K
+                            // loop has already scored the output ≥ 1.0; HITL is a human
+                            // review layer, not a correctness signal.
+                            if !controller.applied_hint_texts.is_empty() {
+                                if let Some(ref sched) = input.induction_scheduler {
+                                    let texts = controller.applied_hint_texts.clone();
+                                    let ctx = crate::induction::InductionContext {
+                                        tenant_id: input.tenant_id.to_string(),
+                                        task_class_tags: input.manifest.constraint_tags.clone(),
+                                        violated_constraint_ids: vec![],
+                                    };
+                                    let sched = sched.clone();
+                                    tokio::spawn(async move {
+                                        sched.record_success(&texts, &ctx).await;
                                     });
                                 }
                             }
@@ -1338,10 +1399,10 @@ impl ExecutionEngine {
                                 break 'wave;
                             } else {
                                 input.store.mark_failed(&task_id);
-                                return Err((
-                                    EngineError::MaxRetriesExhausted,
-                                    controller.take_run_context(),
-                                ));
+                                let mut ctx = controller.take_run_context();
+                                ctx.violation_freq = violation_freq.clone();
+                                ctx.last_selection_valid_count = last_selection_valid_count;
+                                return Err((EngineError::MaxRetriesExhausted, ctx));
                             }
                         }
                     }
@@ -1437,10 +1498,10 @@ impl ExecutionEngine {
                                 .await;
                         }
                     }
-                    return Err((
-                        EngineError::MaxRetriesExhausted,
-                        controller.take_run_context(),
-                    ));
+                    let mut ctx = controller.take_run_context();
+                    ctx.violation_freq = violation_freq.clone();
+                    ctx.last_selection_valid_count = last_selection_valid_count;
+                    return Err((EngineError::MaxRetriesExhausted, ctx));
                 };
 
                 // Find the affected ConstraintDoc to extract check text and current version.
@@ -1457,10 +1518,10 @@ impl ExecutionEngine {
                         constraint_id = %constraint_id,
                         "SpecAmbiguous: constraint not found in corpus; failing task"
                     );
-                    return Err((
-                        EngineError::MaxRetriesExhausted,
-                        controller.take_run_context(),
-                    ));
+                    let mut ctx = controller.take_run_context();
+                    ctx.violation_freq = violation_freq.clone();
+                    ctx.last_selection_valid_count = last_selection_valid_count;
+                    return Err((EngineError::MaxRetriesExhausted, ctx));
                 };
 
                 let original_check_text = doc
@@ -2214,6 +2275,24 @@ impl ExecutionEngine {
                                         Some(consensus_agreement_rate_from_events(
                                             &out.verification_events,
                                         ));
+                                    // Signal induction success at synthesis wave exit (fire-and-forget).
+                                    if !controller.applied_hint_texts.is_empty() {
+                                        if let Some(ref sched) = input.induction_scheduler {
+                                            let texts = controller.applied_hint_texts.clone();
+                                            let ctx = crate::induction::InductionContext {
+                                                tenant_id: input.tenant_id.to_string(),
+                                                task_class_tags: input
+                                                    .manifest
+                                                    .constraint_tags
+                                                    .clone(),
+                                                violated_constraint_ids: vec![],
+                                            };
+                                            let sched = sched.clone();
+                                            tokio::spawn(async move {
+                                                sched.record_success(&texts, &ctx).await;
+                                            });
+                                        }
+                                    }
                                     return Ok(out);
                                 }
                             }
@@ -2242,6 +2321,8 @@ impl ExecutionEngine {
                             .map(|p| p.proposal_text);
                         let mut ctx = controller.take_run_context();
                         ctx.best_partial_text = best_partial_text;
+                        ctx.violation_freq = violation_freq.clone();
+                        ctx.last_selection_valid_count = last_selection_valid_count;
                         return Err((EngineError::MaxRetriesExhausted, ctx));
                     }
                 } else if complexity_overflow_graft_signal {
@@ -2257,10 +2338,10 @@ impl ExecutionEngine {
                 }
             }
 
-            return Err((
-                EngineError::MaxRetriesExhausted,
-                controller.take_run_context(),
-            ));
+            let mut ctx = controller.take_run_context();
+            ctx.violation_freq = violation_freq.clone();
+            ctx.last_selection_valid_count = last_selection_valid_count;
+            return Err((EngineError::MaxRetriesExhausted, ctx));
         } // end 'restart: loop
     }
 

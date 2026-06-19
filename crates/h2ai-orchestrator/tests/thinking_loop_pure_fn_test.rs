@@ -17,8 +17,8 @@
 )]
 
 use h2ai_orchestrator::thinking_loop::{
-    format_constraint_context, parse_archetypes_from_markdown, parse_synthesis_from_markdown,
-    scheduled_tau,
+    format_constraint_context, format_retry_hint_priors, parse_archetypes_from_markdown,
+    parse_synthesis_from_markdown, scheduled_tau,
 };
 
 // ── format_constraint_context ─────────────────────────────────────────────────
@@ -465,5 +465,59 @@ fn scheduled_tau_midpoint_is_average() {
     assert!(
         (t - 0.5).abs() < 1e-9,
         "midpoint iteration must yield average of tau_max/tau_min; got {t}"
+    );
+}
+
+// ── format_retry_hint_priors ─────────────────────────────────────────────────
+
+#[test]
+fn format_retry_hint_priors_empty_returns_empty_string() {
+    let result = format_retry_hint_priors(&[]);
+    assert_eq!(result, "", "empty patterns must produce empty string");
+}
+
+#[test]
+fn format_retry_hint_priors_contains_hint_text() {
+    use h2ai_types::memory::RetryHintPattern;
+
+    let patterns = vec![RetryHintPattern {
+        trigger_tags: vec!["http".to_string(), "timeout".to_string()],
+        exit_reason_kind: "ZeroSurvival".to_string(),
+        hint_text: "use idempotent retry with backoff".to_string(),
+        success_count: 5,
+        attempt_count: 7,
+    }];
+    let result = format_retry_hint_priors(&patterns);
+    assert!(
+        result.contains("use idempotent retry with backoff"),
+        "output must contain hint_text; got: {result}"
+    );
+    assert!(
+        result.contains("RETRY HISTORY"),
+        "output must contain section header; got: {result}"
+    );
+}
+
+#[test]
+fn format_retry_hint_priors_caps_at_five_patterns() {
+    use h2ai_types::memory::RetryHintPattern;
+
+    let patterns: Vec<RetryHintPattern> = (0..8)
+        .map(|i| RetryHintPattern {
+            trigger_tags: vec!["tag".to_string()],
+            exit_reason_kind: "ZeroSurvival".to_string(),
+            hint_text: format!("hint-{i}"),
+            success_count: i,
+            attempt_count: i + 2,
+        })
+        .collect();
+    let result = format_retry_hint_priors(&patterns);
+    // Only first 5 hints should appear — last 3 must not be in the output
+    let hint_5_present = result.contains("hint-5");
+    let hint_4_present = result.contains("hint-4");
+    assert!(hint_4_present, "hint-4 (5th) must be present");
+    assert!(
+        !hint_5_present,
+        "hint-5 (6th) must be excluded; only top-5 allowed"
     );
 }

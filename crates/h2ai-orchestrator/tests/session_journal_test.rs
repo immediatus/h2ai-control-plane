@@ -64,7 +64,7 @@ use h2ai_types::events::{
     BranchPrunedEvent, H2AIEvent, LeaderElectedEvent, MergeResolvedEvent,
     MultiplicationConditionFailedEvent, ProposalEvent, SelectionResolvedEvent,
     TaskBootstrappedEvent, TaskComplexityAssessedEvent, TaskFailedEvent, TaskSnapshot,
-    TopologyProvisionedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
+    TerminalCause, TopologyProvisionedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::{ExplorerId, TaskId, TenantId};
 use h2ai_types::sizing::{
@@ -325,6 +325,10 @@ fn apply_task_failed_sets_failed() {
         &mut state,
         H2AIEvent::TaskFailed(TaskFailedEvent {
             task_id: tid.clone(),
+            primary_cause: TerminalCause::Unknown,
+            contributing_causes: vec![],
+            top_violated_constraints: vec![],
+            last_selection_valid_count: None,
             pruned_events: vec![],
             topologies_tried: vec![TopologyKind::Ensemble],
             tau_values_tried: vec![],
@@ -637,6 +641,10 @@ async fn replay_stops_at_terminal_task_failed_event() {
             &tid,
             &H2AIEvent::TaskFailed(TaskFailedEvent {
                 task_id: tid.clone(),
+                primary_cause: TerminalCause::Unknown,
+                contributing_causes: vec![],
+                top_violated_constraints: vec![],
+                last_selection_valid_count: None,
                 pruned_events: vec![],
                 topologies_tried: vec![TopologyKind::Ensemble],
                 tau_values_tried: vec![],

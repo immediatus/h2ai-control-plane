@@ -26,6 +26,7 @@ use h2ai_types::config::AgentRole;
 use h2ai_types::events::OracleGateResultEvent;
 use h2ai_types::knowledge::{profile_for_role, RetrievalMode as TypesRetrievalMode};
 use h2ai_types::manifest::CotStyle;
+use h2ai_types::memory::RetryHintPattern;
 use h2ai_types::sizing::TauValue;
 use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ModelTier, ThinkingReport};
 use serde::Deserialize;
@@ -61,6 +62,10 @@ pub struct ThinkingLoopInput<'a> {
     /// Induction patterns from `InductionStore::load_patterns` for the current task's domain.
     /// Pass `&[]` when no store is available — `format_induction_priors` returns empty string.
     pub induction_patterns: &'a [h2ai_types::knowledge::KnowledgeNodePattern],
+    /// Retry hint priors loaded by `load_priming_hints` before the task starts.
+    /// Top patterns (by success_rate) are formatted into the archetype selection system prompt.
+    /// Pass `&[]` when no scheduler is available — `format_retry_hint_priors` returns empty string.
+    pub retry_hint_priors: &'a [RetryHintPattern],
 }
 
 // ─── Pure helpers (pub for unit tests) ───────────────────────────────────────
@@ -382,10 +387,15 @@ async fn select_archetypes(
     };
 
     let priors = format_induction_priors(input.induction_patterns);
-    let system_context = if priors.is_empty() {
-        THINKING_ARCHETYPE_SYSTEM_MD.to_string()
-    } else {
-        format!("{}\n\n{}", THINKING_ARCHETYPE_SYSTEM_MD, priors)
+    let retry_priors = format_retry_hint_priors(input.retry_hint_priors);
+    let system_context = match (priors.is_empty(), retry_priors.is_empty()) {
+        (true, true) => THINKING_ARCHETYPE_SYSTEM_MD.to_string(),
+        (false, true) => format!("{}\n\n{}", THINKING_ARCHETYPE_SYSTEM_MD, priors),
+        (true, false) => format!("{}\n\n{}", THINKING_ARCHETYPE_SYSTEM_MD, retry_priors),
+        (false, false) => format!(
+            "{}\n\n{}\n\n{}",
+            THINKING_ARCHETYPE_SYSTEM_MD, priors, retry_priors
+        ),
     };
 
     match execute_chain(
@@ -824,6 +834,31 @@ pub fn format_induction_priors(patterns: &[h2ai_types::knowledge::KnowledgeNodeP
         out.push_str(&format!(
             "- {} (hit_rate: {:.1}, domains: [{}])\n",
             p.node_id, p.hit_rate, tags
+        ));
+    }
+    out
+}
+
+/// Format top-5 `RetryHintPattern` records as a markdown prior-context block.
+///
+/// Injected into the archetype selection system prompt so the LLM knows which
+/// retry strategies have worked in the past for similar task domains.
+/// Returns empty string when `patterns` is empty — callers treat this as a no-op.
+pub fn format_retry_hint_priors(patterns: &[RetryHintPattern]) -> String {
+    if patterns.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("RETRY HISTORY (apply these learnings when selecting archetypes):\n");
+    for p in patterns.iter().take(5) {
+        let tags = p.trigger_tags.join(", ");
+        out.push_str(&format!(
+            "- [{}] {} → \"{}\" (rate={:.2}, n={})\n",
+            tags,
+            p.exit_reason_kind,
+            p.hint_text,
+            p.success_rate(),
+            p.attempt_count,
         ));
     }
     out

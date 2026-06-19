@@ -350,6 +350,10 @@ pub struct SraniConfig {
     /// Max tokens for the gap synthesis validation LLM call. Default: 32768.
     #[serde(default = "default_srani_gap_synthesis_max_tokens")]
     pub gap_synthesis_max_tokens: u64,
+    /// Parent→children suppression map: when a parent technology is grounded,
+    /// its implied sub-terms are suppressed from the ungrounded set before CFI is computed.
+    #[serde(default)]
+    pub implied_by: std::collections::HashMap<String, Vec<String>>,
 }
 
 const fn srani_default_enabled() -> bool {
@@ -580,6 +584,7 @@ impl Default for SraniConfig {
             researcher_max_tokens: default_srani_researcher_max_tokens(),
             distill_max_tokens: default_srani_distill_max_tokens(),
             gap_synthesis_max_tokens: default_srani_gap_synthesis_max_tokens(),
+            implied_by: std::collections::HashMap::new(),
         }
     }
 }
@@ -1110,6 +1115,39 @@ impl TieredExitConfig {
     /// `K = max(1, ceil(n × quorum_fraction))`.
     pub fn k_for_wave(&self, n: u32) -> u32 {
         ((n as f64 * self.quorum_fraction).ceil() as u32).max(1)
+    }
+}
+
+// ── GAP-F5: Retroactive Induction Trigger ─────────────────────────────────────
+
+/// Configuration for GAP-F5 retroactive induction trigger.
+///
+/// When enabled and a task class records >= `min_prior_tasks` ZeroSurvival events,
+/// the MapeKController spawns an async induction task to synthesise architectural
+/// patterns from prior executions. The induction result is awaited at the next retry
+/// wave boundary with a `tokio::time::timeout` of `grace_period_ms`. Compatibility
+/// with the current task is gated by Jaccard overlap on `tags` >= `min_tag_jaccard`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InductionTriggerConfig {
+    /// Enable retroactive induction triggering. Default: false.
+    pub enabled: bool,
+    /// Minimum prior ZeroSurvival events on matching task class before triggering induction.
+    pub min_prior_tasks: u32,
+    /// Milliseconds to wait for induction result before proceeding with retry wave.
+    pub grace_period_ms: u64,
+    /// Minimum Jaccard overlap between induction trigger tags and current failure tags.
+    pub min_tag_jaccard: f64,
+}
+
+impl Default for InductionTriggerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_prior_tasks: 3,
+            grace_period_ms: 2000,
+            min_tag_jaccard: 0.3,
+        }
     }
 }
 
@@ -1845,6 +1883,9 @@ pub struct H2AIConfig {
     /// GAP-L1 tiered early exit configuration.
     #[serde(default)]
     pub tiered_exit: TieredExitConfig,
+    /// GAP-F5 retroactive induction trigger configuration.
+    #[serde(default)]
+    pub induction_trigger: InductionTriggerConfig,
     /// GAP-H3 per-task token budget enforcement.
     #[serde(default)]
     pub cost_guard: CostGuardConfig,

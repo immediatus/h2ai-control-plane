@@ -32,6 +32,8 @@ pub fn local_node_id() -> String {
 ///   an optimistic compare-and-swap claim via `put_task_checkpoint`.
 ///   If the CAS fails another node won the race; skip silently.
 pub async fn recover_in_flight_tasks(state: Arc<AppState>) {
+    use futures::future::join_all;
+
     let my_node_id = local_node_id();
     let nats = state
         .nats
@@ -40,47 +42,60 @@ pub async fn recover_in_flight_tasks(state: Arc<AppState>) {
     let entries = nats.list_task_checkpoints().await;
     tracing::info!("recovery: found {} checkpoints to inspect", entries.len());
 
-    for checkpoint in entries {
-        if checkpoint.node_id == my_node_id {
-            tracing::info!(
-                task_id = %checkpoint.task_id,
-                phase  = %checkpoint.phase,
-                "recovery: resuming own task"
-            );
-            spawn_resume(state.clone(), checkpoint);
-        } else {
-            // Foreign-node task: apply jitter before racing for ownership.
-            let jitter_ms = rand::random::<u64>() % 1500;
-            tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
-
-            let mut claimed = checkpoint.clone();
-            claimed.node_id = my_node_id.clone();
-
-            match state
-                .nats
-                .as_ref()
-                .expect("NATS required for task recovery")
-                .put_task_checkpoint(&claimed, Some(checkpoint.lease_seq))
-                .await
-            {
-                Ok(new_seq) => {
+    // Run own-node resumptions immediately; fan out foreign-node jitter+claim
+    // in parallel so N checkpoints cost at most 1500ms regardless of N.
+    let futures: Vec<_> = entries
+        .into_iter()
+        .map(|checkpoint| {
+            let state = state.clone();
+            let my_node_id = my_node_id.clone();
+            async move {
+                if checkpoint.node_id == my_node_id {
                     tracing::info!(
                         task_id = %checkpoint.task_id,
-                        "recovery: claimed orphaned task"
+                        phase  = %checkpoint.phase,
+                        "recovery: resuming own task"
                     );
-                    let mut to_resume = claimed;
-                    to_resume.lease_seq = new_seq;
-                    spawn_resume(state.clone(), to_resume);
-                }
-                Err(_) => {
-                    tracing::debug!(
-                        task_id = %checkpoint.task_id,
-                        "recovery: lost claim race, skipping"
-                    );
+                    spawn_resume(state, checkpoint);
+                } else {
+                    // Foreign-node task: apply jitter before racing for ownership.
+                    // Jitter is per-checkpoint but all run concurrently, so total
+                    // wall time is bounded by max_jitter (1500 ms), not N * avg_jitter.
+                    let jitter_ms = rand::random::<u64>() % 1500;
+                    tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+
+                    let mut claimed = checkpoint.clone();
+                    claimed.node_id = my_node_id;
+
+                    match state
+                        .nats
+                        .as_ref()
+                        .expect("NATS required for task recovery")
+                        .put_task_checkpoint(&claimed, Some(checkpoint.lease_seq))
+                        .await
+                    {
+                        Ok(new_seq) => {
+                            tracing::info!(
+                                task_id = %checkpoint.task_id,
+                                "recovery: claimed orphaned task"
+                            );
+                            let mut to_resume = claimed;
+                            to_resume.lease_seq = new_seq;
+                            spawn_resume(state, to_resume);
+                        }
+                        Err(_) => {
+                            tracing::debug!(
+                                task_id = %checkpoint.task_id,
+                                "recovery: lost claim race, skipping"
+                            );
+                        }
+                    }
                 }
             }
-        }
-    }
+        })
+        .collect();
+
+    join_all(futures).await;
 }
 
 /// Deserialize the checkpoint manifest and re-run the task from where it left off.
@@ -247,6 +262,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             stable_cache: None,
             knowledge_provider: Some(state.knowledge_provider.clone()),
             induction_store: None,
+            induction_scheduler: None,
             conformal_margin: state.drift_monitor.lock().await.active_conformal_margin(),
         };
 

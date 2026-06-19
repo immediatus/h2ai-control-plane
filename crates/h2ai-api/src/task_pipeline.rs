@@ -6,6 +6,7 @@ use h2ai_context::embedding::EmbeddingModel;
 use h2ai_knowledge::provider::KnowledgeProvider;
 use h2ai_knowledge::skill_provider::{CompositeProvider, SkillProvider};
 use h2ai_orchestrator::engine::{EngineError, NatsDispatchConfig, ShadowAuditCtx};
+use h2ai_orchestrator::induction::nats_scheduler::build_induction_scheduler;
 use h2ai_orchestrator::session_journal::SessionJournal;
 use h2ai_orchestrator::skill_extractor::{skill_from_output, skill_from_retry_events};
 use h2ai_orchestrator::task_runner::{
@@ -15,7 +16,7 @@ use h2ai_orchestrator::task_runner::{
 use h2ai_orchestrator::task_store::TaskStore;
 use h2ai_state::backend::{NatsBackend, SkillStore};
 use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
-use h2ai_types::events::CalibrationCompletedEvent;
+use h2ai_types::events::{CalibrationCompletedEvent, TerminalCause};
 use h2ai_types::identity::{TaskId, TenantId};
 use h2ai_types::manifest::TaskManifest;
 use h2ai_types::sizing::OracleSpec;
@@ -103,13 +104,20 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         .into_iter()
         .collect();
 
+    let induction_scheduler =
+        build_induction_scheduler(input.nats_raw_client.as_ref(), &input.tenant_id).await;
+
     // Capture fields needed by both the initial and (optional) re-iteration calls.
     let probe_task_description = input.manifest.description.clone();
     let probe_constraint_ids: Vec<String> = input.corpus.iter().map(|c| c.id.clone()).collect();
     let probe_constraint_tags = thinking_constraint_tags.clone();
     let probe_knowledge_provider =
         Some(Arc::clone(&input.knowledge_provider) as Arc<dyn KnowledgeProvider>);
-    let probe_n_archetypes = input.cfg.thinking_loop.max_archetypes;
+    let probe_n_archetypes = input
+        .corpus
+        .len()
+        .max(2)
+        .min(input.cfg.thinking_loop.max_archetypes);
     let probe_cfg = input.cfg.thinking_loop.clone();
     let probe_adapter = input.adapter_pool[0].clone();
     let probe_embedding_model = input.embedding_model.clone();
@@ -131,6 +139,8 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             nats_client: probe_nats_client.clone(),
             task_id: probe_task_id.clone(),
             awareness_hints: None,
+            tenant_id: input.tenant_id.clone(),
+            induction_scheduler: induction_scheduler.clone(),
         })
         .await;
 
@@ -179,6 +189,8 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                         nats_client: probe_nats_client.clone(),
                         task_id: probe_task_id.clone(),
                         awareness_hints: Some(hints),
+                        tenant_id: input.tenant_id.clone(),
+                        induction_scheduler: induction_scheduler.clone(),
                     };
                     thinking_report = input.thinking_loop_runner.run(reiter_args).await;
                     re_iterated = true;
@@ -304,6 +316,10 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             tracing::error!(target: "h2ai.decomposition", error = %e, "decomposition failed");
             let failed_ev = H2AIEvent::TaskFailed(TaskFailedEvent {
                 task_id: task_id.clone(),
+                primary_cause: TerminalCause::LlmAdapterUnavailable,
+                contributing_causes: vec![],
+                top_violated_constraints: vec![],
+                last_selection_valid_count: None,
                 pruned_events: vec![],
                 topologies_tried: vec![],
                 tau_values_tried: vec![],
@@ -409,6 +425,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             Arc::clone(&input.knowledge_provider) as Arc<dyn KnowledgeProvider + Send + Sync>
         ),
         induction_store: None,
+        induction_scheduler,
         conformal_margin,
     };
 
@@ -489,9 +506,32 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                 }
             }
 
+            // Determine primary cause from the EngineError variant.
+            let primary_cause = match &e {
+                EngineError::MaxRetriesExhausted => TerminalCause::VerificationExhaustion,
+                EngineError::DeadlineExceeded { .. } => TerminalCause::Timeout,
+                EngineError::Adapter(_) => TerminalCause::LlmAdapterUnavailable,
+                EngineError::MultiplicationConditionFailed(_) => TerminalCause::ComplexityOverflow,
+                EngineError::InsufficientQuorum { .. } => TerminalCause::ComplexityOverflow,
+                EngineError::HitlRejected { .. } => TerminalCause::OracleRejected,
+                EngineError::Parse(_) | EngineError::CheckpointWriteFailed(_) => {
+                    TerminalCause::Unknown
+                }
+            };
+
+            // Build top_violated_constraints: sort by frequency descending, cap at 5.
+            let mut top_violated: Vec<(String, u32)> =
+                run_ctx.violation_freq.clone().into_iter().collect();
+            top_violated.sort_by(|a, b| b.1.cmp(&a.1));
+            top_violated.truncate(5);
+
             let failed_ev =
                 h2ai_types::events::H2AIEvent::TaskFailed(h2ai_types::events::TaskFailedEvent {
                     task_id: task_id.clone(),
+                    primary_cause,
+                    contributing_causes: vec![],
+                    top_violated_constraints: top_violated,
+                    last_selection_valid_count: run_ctx.last_selection_valid_count,
                     pruned_events: vec![],
                     topologies_tried: vec![],
                     tau_values_tried: vec![],

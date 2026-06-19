@@ -89,6 +89,7 @@ async fn archetype_select_uses_config_max_tokens() {
         nats_client: None,
         task_id: "test-task-id",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
 
@@ -129,6 +130,7 @@ async fn quality_gate_uses_config_max_tokens() {
         nats_client: None,
         task_id: "test-task-id",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
 

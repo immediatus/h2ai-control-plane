@@ -142,6 +142,7 @@ fn make_engine_input<'a>(
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     }
 }

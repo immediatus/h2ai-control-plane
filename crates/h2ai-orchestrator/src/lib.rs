@@ -71,6 +71,7 @@ pub mod domain_coverage;
 pub mod engine;
 pub mod error;
 pub mod error_class;
+pub mod induction;
 pub mod induction_store;
 pub mod judge_panel;
 pub mod leader;

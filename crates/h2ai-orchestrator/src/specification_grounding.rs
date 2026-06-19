@@ -102,6 +102,29 @@ pub fn extract_arch_nouns(text: &str) -> HashSet<String> {
     result
 }
 
+/// Pre-filter that removes technology sub-terms from `nouns` when their parent
+/// technology is present in `grounded_parents`.
+///
+/// Callers apply this BEFORE calling `check_specification_grounding` to prevent
+/// CFI inflation from parent-implied sub-terms that are valid implementation choices.
+pub fn apply_implied_by_suppression(
+    nouns: &[String],
+    implied_by: &std::collections::HashMap<String, Vec<String>>,
+    grounded_parents: &[String],
+) -> Vec<String> {
+    let suppressed: std::collections::HashSet<&str> = grounded_parents
+        .iter()
+        .filter_map(|parent| implied_by.get(parent))
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    nouns
+        .iter()
+        .filter(|n| !suppressed.contains(n.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Check all `proposals` against `spec` for correlated ungrounded architectural entities.
 ///
 /// Returns `None` when fewer than 2 proposals are provided.

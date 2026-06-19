@@ -142,6 +142,7 @@ async fn disabled_loop_returns_empty_report() {
         nats_client: None,
         task_id: "",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
     let report = run(input).await;
@@ -251,6 +252,7 @@ async fn run_forwards_constraint_ids_to_knowledge_query() {
         nats_client: None,
         task_id: "",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
 
@@ -390,6 +392,7 @@ async fn run_with_two_iterations_covers_convergence_check() {
         nats_client: None,
         task_id: "test-task",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
 
@@ -442,6 +445,7 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
         nats_client: None,
         task_id: "",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
 
@@ -478,6 +482,7 @@ async fn run_uses_fallback_archetype_on_parse_failure() {
         nats_client: None,
         task_id: "",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
 
@@ -580,6 +585,7 @@ async fn adapter_error_in_select_archetypes_produces_default_report() {
         nats_client: None,
         task_id: "test-task-id",
         induction_patterns: &[],
+        retry_hint_priors: &[],
         constraint_corpus: &[],
     };
     let report = run(input).await;

@@ -162,6 +162,7 @@ async fn system_chain_absent_task_completes_without_panic() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -218,6 +219,7 @@ async fn system_spec_anchor_chain_emits_spec_anchor_source() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 
@@ -912,6 +914,7 @@ async fn system_srani_force_fire_injects_grounding_in_pipeline() {
         stable_cache: None,
         knowledge_provider: None,
         induction_store: None,
+        induction_scheduler: None,
         conformal_margin: 0.0,
     };
 

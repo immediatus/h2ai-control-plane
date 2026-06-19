@@ -1,7 +1,7 @@
 use chrono::Utc;
 use h2ai_constraints::ambiguity::jaccard;
 use h2ai_types::config::TopologyKind;
-use h2ai_types::events::{BranchPrunedEvent, TaskFailedEvent, ZeroSurvivalEvent};
+use h2ai_types::events::{BranchPrunedEvent, TaskFailedEvent, TerminalCause, ZeroSurvivalEvent};
 use h2ai_types::sizing::MultiplicationConditionFailure;
 use std::collections::HashMap;
 
@@ -239,6 +239,10 @@ impl RetryPolicy {
 
         RetryAction::Fail(TaskFailedEvent {
             task_id: event.task_id.clone(),
+            primary_cause: TerminalCause::VerificationExhaustion,
+            contributing_causes: vec![],
+            top_violated_constraints: vec![],
+            last_selection_valid_count: None,
             pruned_events,
             topologies_tried: tried_topologies.to_vec(),
             tau_values_tried,

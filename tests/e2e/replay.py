@@ -38,6 +38,307 @@ import urllib.request
 
 from client import submit_task, stream_events, submit_signal, wait_for_health, trigger_calibration_and_wait, DEFAULT_TENANT
 
+
+# ── Per-event structured tracer ───────────────────────────────────────────────
+
+def _elapsed(start: float) -> str:
+    s = int(time.monotonic() - start)
+    return f"+{s // 60:02d}:{s % 60:02d}"
+
+
+def _shorten(s: str, n: int = 90) -> str:
+    if not s:
+        return ""
+    s = s.replace("\n", " ")
+    return s[:n] + "…" if len(s) > n else s
+
+
+def _trace_event(event: dict, start: float) -> None:
+    """Print a structured, annotated trace line (+ optional detail lines) for one SSE event."""
+    kind = event.get("kind", "unknown")
+    elapsed = _elapsed(start)
+    header = ""
+    details: list[str] = []
+
+    if kind == "AwarenessProbeCompleted":
+        verdicts = event.get("verdicts") or []
+        n_gated = sum(1 for v in verdicts if v.get("gated"))
+        flag = "⚠ " if n_gated else ""
+        header = f"{flag}mode={event.get('mode')}  n={len(verdicts)}  gated={n_gated}  re_iterated={event.get('re_iterated', False)}"
+        for v in verdicts:
+            verdict = v.get("verdict", "?")
+            cid = v.get("constraint_id", "?")
+            gated_tag = "  [GATED]" if v.get("gated") else ""
+            icon = "✓" if verdict == "ACKNOWLEDGED" else "✗"
+            details.append(f"    {icon} {cid}  {verdict}{gated_tag}")
+            if verdict != "ACKNOWLEDGED":
+                details.append(f"       {_shorten(v.get('rationale') or '', 100)}")
+
+    elif kind == "ThinkingLoopCompleted":
+        header = (
+            f"enabled={event.get('enabled')}  iterations={event.get('iterations_run')}"
+            f"  coverage={event.get('coverage_score', 0.0):.2f}"
+            f"  shared_len={event.get('shared_understanding_len', 0)}"
+        )
+        archetypes = event.get("archetypes") or []
+        if archetypes:
+            details.append(f"    archetypes: {', '.join(str(a) for a in archetypes[:4])}")
+
+    elif kind == "ComplexityProbe":
+        complexity = event.get("complexity", "?")
+        decompose = event.get("decompose_recommended", False)
+        latency_ms = event.get("probe_latency_ms", 0)
+        flag = "⚠ " if (isinstance(complexity, int) and complexity >= 4) else ""
+        header = f"{flag}complexity={complexity}/5  decompose={decompose}  latency={latency_ms}ms"
+        rationale = event.get("rationale") or ""
+        if rationale:
+            details.append(f"    {_shorten(rationale, 110)}")
+
+    elif kind == "TaskComplexityAssessed":
+        tcc = event.get("tcc_effective")
+        quadrant = event.get("task_quadrant", "?")
+        n_eff = event.get("n_eff_pool")
+        skip_reason = event.get("probe_skip_reason") or ""
+        tcc_str = f"{tcc:.3f}" if isinstance(tcc, float) else "—"
+        header = f"quadrant={quadrant}  tcc_eff={tcc_str}  n_eff={n_eff}" + (f"  skip={skip_reason}" if skip_reason else "")
+
+    elif kind == "VerificationScored":
+        score = event.get("score", 0.0)
+        passed = event.get("passed", False)
+        reason = (event.get("reason") or "").strip()
+        eid = str(event.get("explorer_id") or "")[:8]
+        icon = "✓" if passed else "✗"
+        header = f"{icon} explorer={eid}  score={score:.2f}  {'PASS' if passed else 'FAIL'}"
+        if reason:
+            details.append(f"    violated: {reason}")
+
+    elif kind == "BranchPruned":
+        constraints = [v.get("constraint_id", "?") for v in event.get("violated_constraints") or []]
+        wave = event.get("retry_count", "?")
+        eid = str(event.get("explorer_id") or "")[:8]
+        header = f"⚠ wave={wave}  explorer={eid}  constraints=[{', '.join(constraints)}]"
+        for v in (event.get("violated_constraints") or []):
+            cid = v.get("constraint_id", "?")
+            score = v.get("score", 0.0)
+            severity = v.get("severity_label", "?")
+            hint = _shorten(v.get("remediation_hint") or "", 80)
+            details.append(f"    ✗ {cid}  score={score:.2f}  severity={severity}" + (f"  hint: {hint}" if hint else ""))
+
+    elif kind == "ZeroSurvival":
+        wave = event.get("wave", "?")
+        reason = _shorten(event.get("reason") or "", 80)
+        header = f"⚠ wave={wave}  all proposals pruned — MAPE-K retry"
+        if reason:
+            details.append(f"    {reason}")
+
+    elif kind == "SelectionResolved":
+        valid = event.get("valid_proposals") or []
+        pruned = event.get("pruned_proposals") or []
+        n_in = event.get("n_input_proposals", 0)
+        n_failed = event.get("n_failed_proposals", 0)
+        strategy = event.get("merge_strategy", "?")
+        header = f"valid={len(valid)}/{n_in}  pruned={len(pruned)}  failed={n_failed}  strategy={strategy}"
+        for p in pruned:
+            eid = str(p[0])[:8] if isinstance(p, list) else str(p)[:8]
+            reason = p[1] if (isinstance(p, list) and len(p) > 1) else "?"
+            details.append(f"    pruned: {eid}  ({reason})")
+
+    elif kind == "MergeResolved":
+        j_eff = event.get("j_eff")
+        out_len = len(event.get("resolved_output") or event.get("output") or "")
+        j_str = f"{j_eff:.3f}" if j_eff is not None else "—"
+        header = f"j_eff={j_str}  output={out_len} chars"
+
+    elif kind == "TaskFailed":
+        reason = _shorten(event.get("reason") or "", 100)
+        header = f"⚠ {reason}"
+
+    elif kind == "CorrelatedFabrication":
+        cfi = event.get("cfi", 0.0)
+        pressure = event.get("injection_pressure", 0.0)
+        entities = event.get("shared_ungrounded_entities") or []
+        hint_injected = event.get("hint_injected", False)
+        flag = "⚠ " if cfi > 0.5 else ""
+        header = f"{flag}CFI={cfi:.3f}  pressure={pressure:.3f}  hint_injected={hint_injected}"
+        if entities:
+            details.append(f"    shared entities: {', '.join(str(e) for e in entities[:6])}")
+
+    elif kind == "ResearcherGrounding":
+        slot = event.get("slot") or "?"
+        source = event.get("source") or "?"
+        assumption = _shorten(event.get("shared_assumption") or "", 80)
+        lit = _shorten(event.get("literature_summary") or "", 110)
+        header = f"slot={slot}  source={source}"
+        if assumption:
+            details.append(f"    assumption: {assumption}")
+        if lit:
+            details.append(f"    verdict: {lit}")
+
+    elif kind == "GenerationKnowledge":
+        injected = event.get("knowledge_injected", False)
+        nodes = event.get("skill_nodes_count", 0)
+        q = event.get("q_confidence", 0.0)
+        header = f"injected={injected}  skill_nodes={nodes}  q_conf={q:.3f}"
+
+    elif kind == "TaskAttribution":
+        q = event.get("q_confidence", 0.0)
+        basis = event.get("prediction_basis") or "?"
+        waste = event.get("waste_ratio", 0.0)
+        tokens = event.get("tokens_used", 0)
+        skill_nodes = event.get("skill_nodes_injected", 0)
+        header = f"q_conf={q:.3f}  basis={basis}  waste={waste:.2f}  tokens={tokens}  skill_nodes={skill_nodes}"
+
+    elif kind == "OracleCalibrationPatched":
+        pass_rate = event.get("oracle_pass_rate", 0.0)
+        p_before = event.get("p_mean_before", 0.0)
+        p_after = event.get("p_mean_after", 0.0)
+        header = f"pass_rate={pass_rate:.2f}  p_mean {p_before:.3f}→{p_after:.3f}"
+
+    elif kind == "LeaderElected":
+        term = event.get("term")
+        leader = str(event.get("leader_explorer_id") or "")[:8]
+        cred = event.get("credibility_score", 0.0)
+        header = f"term={term}  leader={leader}  credibility={cred:.2f}"
+
+    elif kind == "SocraticDiagnosis":
+        term = event.get("term")
+        eig_rank = event.get("eig_rank")
+        question = _shorten(event.get("question") or "", 90)
+        header = f"term={term}  eig_rank={eig_rank}"
+        if question:
+            details.append(f"    Q: {question}")
+
+    elif kind == "PendingApproval":
+        header = "→ submitting auto-approval signal"
+
+    elif kind == "ApprovalResolved":
+        approved = event.get("approved", False)
+        op = event.get("operator_id") or "?"
+        note = _shorten(event.get("reviewer_note") or "", 60)
+        header = f"approved={approved}  operator={op!r}" + (f"  note={note!r}" if note else "")
+
+    elif kind == "VerifierFrozen":
+        cid = event.get("constraint_id") or "?"
+        reason = _shorten(event.get("reason") or "", 90)
+        header = f"⚠ {cid}  {reason}"
+
+    elif kind == "ConstraintAmbiguityDetected":
+        cid = event.get("constraint_id") or "?"
+        score = event.get("ambiguity_score") or 0.0
+        rewrite = _shorten(event.get("suggested_rewrite") or "", 80)
+        header = f"⚠ {cid}  ambiguity_score={score:.3f}"
+        if rewrite:
+            details.append(f"    suggested_rewrite: {rewrite}")
+
+    elif kind == "ConstraintAmbiguity":
+        cid = event.get("constraint_id") or "?"
+        score = event.get("disagreement_rate") or event.get("score") or 0.0
+        header = f"⚠ {cid}  disagreement_rate={score:.3f}"
+
+    elif kind == "VerifierInstability":
+        cid = event.get("constraint_id") or "?"
+        wave = event.get("wave") or "?"
+        header = f"⚠ {cid}  wave={wave}  verifier rejection reasons diverging"
+
+    elif kind == "VerifierReasonContradiction":
+        cid = event.get("constraint_id") or "?"
+        wave = event.get("wave") or "?"
+        header = f"⚠ {cid}  wave={wave}  contradictory verifier reasons detected"
+
+    elif kind == "ComplexityCeilingDetected":
+        wave = event.get("wave") or "?"
+        header = f"⚠ wave={wave}  intra-retry complexity ceiling fired"
+
+    elif kind == "BudgetExhausted":
+        header = "⚠ per-task budget exhausted — retries blocked"
+
+    elif kind == "CostThresholdWarning":
+        used = (event.get("used_fraction") or 0.0)
+        threshold = (event.get("threshold_fraction") or 0.0)
+        header = f"⚠ budget {used:.0%} used (threshold {threshold:.0%})"
+
+    elif kind == "TieredExit":
+        k_accepted = event.get("k_accepted") or 0
+        n_total = event.get("n_total") or 0
+        header = f"tiered exit: {k_accepted}/{n_total} proposals accepted early"
+
+    elif kind == "ConvergenceGate":
+        n = event.get("n_proposals") or 0
+        header = f"convergence gate: {n} proposals semantically equivalent"
+
+    elif kind == "CoherenceIncomplete":
+        domains = event.get("uncovered_domains") or []
+        header = f"⚠ uncovered_domains=[{', '.join(str(d) for d in domains[:6])}]"
+
+    elif kind == "EpistemicYield":
+        yield_score = event.get("yield_score") or 0.0
+        header = f"yield={yield_score:.3f}"
+
+    elif kind == "TopologyProvisioned":
+        n_exp = event.get("n_explorers") or event.get("explorer_count") or "?"
+        topology = event.get("topology_kind") or "?"
+        header = f"topology={topology}  n_explorers={n_exp}"
+
+    elif kind == "TaskBootstrapped":
+        n_constraints = event.get("n_constraints") or "?"
+        n_checks = event.get("n_checks") or "?"
+        header = f"n_constraints={n_constraints}  n_checks={n_checks}"
+
+    elif kind == "GenerationPhaseCompleted":
+        n_proposals = event.get("n_proposals") or "?"
+        n_failed = event.get("n_failed") or 0
+        header = f"n_proposals={n_proposals}  n_failed={n_failed}"
+
+    elif kind == "ProposalFailed":
+        eid = str(event.get("explorer_id") or "")[:8]
+        reason = _shorten(event.get("reason") or "", 80)
+        header = f"⚠ explorer={eid}  {reason}"
+
+    elif kind == "MultiplicationConditionFailed":
+        reason = _shorten(event.get("reason") or "", 90)
+        header = f"⚠ multiplication condition rejected topology — {reason}"
+
+    elif kind == "OproTriggered":
+        j_eff = event.get("j_eff_ema") or event.get("j_eff") or 0.0
+        header = f"j_eff_ema={j_eff:.3f}  OPRO optimization triggered"
+
+    elif kind == "PromptVariantPromoted":
+        variant = _shorten(event.get("variant_id") or "?", 24)
+        delta = event.get("j_eff_delta") or 0.0
+        header = f"variant={variant}  j_eff_delta={delta:.3f}"
+
+    elif kind == "OracleGateResult":
+        passed_count = len(event.get("passed_proposals") or [])
+        failed_count = len(event.get("failed_proposals") or [])
+        header = f"passed={passed_count}  failed={failed_count}"
+
+    elif kind == "ConsensusRequired":
+        header = f"⚠ BFT error costs exceeded threshold — switching to consensus merge"
+
+    elif kind == "ConstraintRepairAttempted":
+        cid = event.get("constraint_id") or "?"
+        header = f"constraint repair started: {cid}"
+
+    elif kind == "ConstraintVersionCreated":
+        cid = event.get("constraint_id") or "?"
+        version = event.get("version") or "?"
+        header = f"constraint version created: {cid}  v{version}"
+
+    elif kind == "ConstraintRepairFailed":
+        cid = event.get("constraint_id") or "?"
+        reason = _shorten(event.get("reason") or "", 80)
+        header = f"⚠ constraint repair failed: {cid}  {reason}"
+
+    else:
+        skip = {"kind", "task_id", "timestamp", "explorer_id", "tenant_id"}
+        interesting = {k: v for k, v in event.items() if k not in skip and v is not None}
+        if interesting:
+            header = "  ".join(f"{k}={v}" for k, v in list(interesting.items())[:5])
+
+    print(f"  [{elapsed}] {kind:<36} {header}", flush=True)
+    for dl in details:
+        print(dl, flush=True)
+
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 SCENARIOS_DIR = pathlib.Path(__file__).parent / "scenarios"
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
@@ -154,6 +455,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     print(f"  tenant_id: {tenant_id}  task_id: {task_id}")
 
     timeout_s = task.get("_timeout_s", 1800)
+    run_start = time.monotonic()
     events_raw: list[dict] = []
     verification_scores: list[float] = []
     srani_events: list[dict] = []
@@ -162,11 +464,9 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     merged_output = ""
     terminal_kind = ""
     terminal = False
-    # New feature signals
     thinking_loop_event: dict | None = None
     prediction_basis_final: str | None = None
     oracle_calibration_patched: dict | None = None
-
     hitl_gate_fired = False
     approval_signal_context: dict | None = None
     approval_resolved_event: dict | None = None
@@ -176,16 +476,14 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     for event in stream_events(task_id, tenant_id=tenant_id, timeout_s=timeout_s):
         kind = event.get("kind", "")
         events_raw.append(event)
-        suffix = ""
 
+        # ── state tracking (unchanged from before) ──
         if kind == "PendingApproval":
-            # Verify the event is for the task and tenant we submitted
             event_task_id = str(event.get("task_id", ""))
             if event_task_id != task_id:
                 raise AssertionError(
                     f"PendingApproval task_id mismatch: got {event_task_id!r}, expected {task_id!r}"
                 )
-
             operator_id = "e2e-harness"
             reviewer_note = "auto-approved by e2e harness"
             approval_signal_context = {
@@ -194,6 +492,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
                 "operator_id": operator_id,
                 "reviewer_note": reviewer_note,
             }
+            _trace_event(event, run_start)
             try:
                 resp = submit_signal(
                     task_id=task_id,
@@ -207,13 +506,12 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
                         },
                     },
                 )
-                suffix = f"  → signal queued (status={resp.get('status')})"
+                print(f"             → approval signal queued (status={resp.get('status')})", flush=True)
             except Exception as exc:
-                suffix = f"  → signal failed: {exc}"
+                print(f"             ⚠ approval signal failed: {exc}", flush=True)
             hitl_gate_fired = True
 
         elif kind == "ApprovalResolved":
-            # Verify the resolved event echoes back what we sent
             approval_resolved_event = event
             ev_task_id = str(event.get("task_id", ""))
             ev_op = event.get("operator_id", "")
@@ -231,67 +529,66 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
                 errors.append(f"approved={ev_approved!r}, expected True")
             if errors:
                 raise AssertionError("ApprovalResolved context mismatch: " + "; ".join(errors))
-            suffix = f"  approved={ev_approved}  operator={ev_op!r}"
+            _trace_event(event, run_start)
 
         elif kind == "VerificationScored":
             score = event.get("score", 0.0)
             verification_scores.append(score)
-            suffix = f"  score={score:.2f}"
+            _trace_event(event, run_start)
 
         elif kind == "BranchPruned":
             for v in event.get("violated_constraints", []):
                 cid = v.get("constraint_id", "")
                 if cid:
                     pruned_constraints.append(cid)
+            _trace_event(event, run_start)
 
         elif kind == "CorrelatedFabrication":
             srani_events.append(event)
-            suffix = f"  CFI={event.get('cfi', 0.0):.3f}"
+            _trace_event(event, run_start)
 
         elif kind == "ThinkingLoopCompleted":
             thinking_loop_event = event
-            suffix = (
-                f"  enabled={event.get('enabled')}  iterations={event.get('iterations_run')}"
-                f"  coverage={event.get('coverage_score', 0.0):.2f}"
-            )
+            _trace_event(event, run_start)
 
         elif kind == "TaskAttribution":
             prediction_basis_final = event.get("prediction_basis")
+            _trace_event(event, run_start)
 
         elif kind == "OracleCalibrationPatched":
             oracle_calibration_patched = event
-            suffix = (
-                f"  pass_rate={event.get('oracle_pass_rate', 0.0):.2f}"
-                f"  p_mean {event.get('p_mean_before', 0.0):.3f}→{event.get('p_mean_after', 0.0):.3f}"
-            )
+            _trace_event(event, run_start)
 
         elif kind == "LeaderElected":
             leader_elected = True
             leader_elected_events.append(event)
-            suffix = (
-                f"  term={event.get('term')}  leader={str(event.get('leader_explorer_id', ''))[:8]}"
-                f"  credibility={event.get('credibility_score', 0.0):.2f}"
-            )
-
-        elif kind == "SocraticDiagnosis":
-            suffix = f"  term={event.get('term')}  eig_rank={event.get('eig_rank')}"
+            _trace_event(event, run_start)
 
         elif kind == "MergeResolved":
             j_eff = event.get("j_eff")
             merged_output = event.get("resolved_output", event.get("output", ""))
             terminal = True
             terminal_kind = kind
+            _trace_event(event, run_start)
 
         elif kind == "TaskFailed":
             terminal = True
             terminal_kind = kind
+            _trace_event(event, run_start)
 
-        print(f"  event: {kind}{suffix}")
+        else:
+            _trace_event(event, run_start)
+
         if terminal:
             break
 
     avg_score = sum(verification_scores) / len(verification_scores) if verification_scores else 0.0
-    print(f"  terminal={terminal_kind}  verified={len(verification_scores)}  avg_score={avg_score:.3f}", end="")
+    elapsed_total = int(time.monotonic() - run_start)
+    print(
+        f"  ── run complete in {elapsed_total}s:"
+        f"  terminal={terminal_kind}  verified={len(verification_scores)}  avg_score={avg_score:.3f}",
+        end="",
+    )
     if j_eff is not None:
         print(f"  j_eff={j_eff:.3f}", end="")
     if thinking_loop_event:

@@ -33,6 +33,8 @@ fn make_args(task_description: &str, awareness_hints: Option<String>) -> Thinkin
         task_id: "t1".to_string(),
         awareness_hints,
         constraint_corpus: vec![],
+        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
+        induction_scheduler: None,
     }
 }
 

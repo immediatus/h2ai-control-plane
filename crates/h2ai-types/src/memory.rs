@@ -1,4 +1,5 @@
 use crate::sizing::n_it_optimal;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Consolidation tier of a context chunk in the Atkinson–Shiffrin memory hierarchy.
@@ -59,4 +60,56 @@ impl MemoryTier {
     pub fn n_it_optimal(self) -> usize {
         n_it_optimal(self.rho())
     }
+}
+
+// ── GAP-G1: Induction Worker types ───────────────────────────────────────────
+
+/// A single induction-derived retry hint with G-Counter success/attempt tracking.
+///
+/// G-Counter semantics: merge by addition (commutative, associative, idempotent on
+/// replica convergence). Success rate is derived on read using a Beta(2,8) prior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryHintPattern {
+    /// Domain tags that characterize the failure context this hint was distilled from.
+    pub trigger_tags: Vec<String>,
+    /// String representation of the exit reason kind (e.g. "ZeroSurvival").
+    pub exit_reason_kind: String,
+    /// Human-readable retry hint text to inject into the retry context.
+    pub hint_text: String,
+    /// G-Counter numerator: number of task attempts where this hint led to success.
+    pub success_count: u64,
+    /// G-Counter denominator: total task attempts where this hint was applied.
+    pub attempt_count: u64,
+}
+
+impl RetryHintPattern {
+    /// Bayesian success rate with Beta(2,8) prior (conservative ~20% base rate).
+    #[must_use]
+    pub fn success_rate(&self) -> f64 {
+        (self.success_count as f64 + 2.0) / (self.attempt_count as f64 + 10.0)
+    }
+
+    /// Merge G-Counter counts from another pattern (addition — commutative).
+    pub fn merge_counts(&mut self, other: &Self) {
+        self.success_count += other.success_count;
+        self.attempt_count += other.attempt_count;
+    }
+}
+
+/// Persisted memory store for a single tenant, holding all distilled retry hint patterns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantMemoryStore {
+    pub tenant_id: String,
+    pub generated_at: DateTime<Utc>,
+    pub task_count_seen: u64,
+    pub retry_hint_patterns: Vec<RetryHintPattern>,
+}
+
+/// Per-tag KV bucket value for tag-sharded `RetryHintPattern` storage.
+///
+/// Stored at key `{tenant_id}.tag.{normalized_tag}` in the `H2AI_MEMORY` NATS KV bucket.
+/// A pattern with N trigger_tags appears in N buckets (one per tag).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TagPatternBucket {
+    pub patterns: Vec<RetryHintPattern>,
 }
