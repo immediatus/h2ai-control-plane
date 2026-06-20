@@ -71,19 +71,15 @@ fn empty_implied_by_returns_nouns_unchanged() {
 
 #[test]
 fn srani_phase_suppresses_mergetree_when_clickhouse_grounded() {
-    // Verify that apply_implied_by_suppression is called before grounding
-    // by checking the suppression pure function directly (integration test of
-    // the pipe-and-filter composition, not a full engine test).
+    // Pure-fn path: apply_implied_by_suppression with a custom table.
     let nouns = vec![
         "MergeTree".to_string(),
         "BillingEvent".to_string(),
         "ClickHouse".to_string(),
     ];
     let table = clickhouse_table();
-    // Grounded parents extracted from effective_spec would include "ClickHouse"
     let grounded = vec!["ClickHouse".to_string()];
     let filtered = apply_implied_by_suppression(&nouns, &table, &grounded);
-    // MergeTree suppressed; BillingEvent and ClickHouse itself remain
     assert!(!filtered.contains(&"MergeTree".to_string()));
     assert!(filtered.contains(&"BillingEvent".to_string()));
 }

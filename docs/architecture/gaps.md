@@ -17,7 +17,6 @@ is a falsifiable question with a concrete research or engineering path.
 | [Group F — Knowledge and Retrieval](#brainstorm-group-f--knowledge-and-retrieval) | Does knowledge injection improve outputs, and do constraint signals reshape routing? |
 | [Group G — Reasoning Memory](#brainstorm-group-g--reasoning-memory) | Does the system learn across tasks? |
 | [Group H — Skeptical Audit Resilience](#brainstorm-group-h--skeptical-audit-resilience) | One open production gap: small-N human rating calibration |
-| [Group S — Signal Fidelity](#brainstorm-group-s--signal-fidelity) | Are internal signals accurate representations of reality? |
 | [Gap Priority Matrix](#gap-priority-matrix) | Suggested implementation order |
 | [Shared Infrastructure](#shared-infrastructure-required-for-group-a) | Pre-work that blocks Group A experiments |
 | [Foundational Framing](#foundational-framing--every-problem-is-a-team-epistemology-problem) | Epistemic framing of the H2AI problem space |
@@ -35,13 +34,8 @@ is a falsifiable question with a concrete research or engineering path.
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🟡 PARTIAL | **High** | Online ρ_EMA live after 30 obs; cold-start prior 0.45 unvalidated |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit; HITL escalation on graft_first=false path open |
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1b closed; Phases 2–3 open |
-| **GAP-F5 Constraint violations don't reshape retrieval routing** | ✅ COMPLETE | Medium | Steps 1–3 live; NatsInductionScheduler wired into production via task_pipeline.rs; Step 4 deferred |
 | **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Phase 2 partial (RetryHintPattern scheduler live; ArchetypePrior/TensionPattern/DecompositionTemplate pending); Phase 3 complete: thinking loop primed with RetryHintPattern via two-round SAD; format_retry_hint_priors injected into archetype selection system prompt; n_archetypes corpus-seeded; Phase 4 pending |
 | **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | Dirichlet-Categorical posterior + credible-interval circuit breaker |
-| **GAP-S1 SRANI fires for technology-specific impl details** | ✅ COMPLETE | Low | Implied-by suppression table live for ClickHouse/Redis/Kafka |
-| **GAP-D3 TaskFailed carries no diagnostic signal** | ✅ COMPLETE | Medium | TerminalCause enum + top violated constraints + engine populates all terminal exits |
-| **GAP-D4 Thinking loop no per-constraint archetype guarantee** | 🔴 OPEN | Medium | coverage_score near 1.0 yet individual constraints can have zero dedicated archetype |
-| **GAP-D5 MAPE-K repair oscillation — cross-constraint regression** | 🔴 OPEN | **High** | wave-1 repair context for failing constraints causes regression on previously-passing constraints |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
 
@@ -54,7 +48,7 @@ is a falsifiable question with a concrete research or engineering path.
 **Closes:** GAP-A1 (comparative signal).
 **Status: COMPLETE (2026-06-20)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, j_eff=1.000, 2026-06-20), Tier 2 (4 constraints, avg_score=0.750, SRANI events=0, 2026-06-20), and Tier 3 (6 constraints, j_eff=0.667 via one MAPE-K retry wave; 1/3 wave-1 proposals at score=1.00 on all 6 constraints, 2026-06-20).
 
-**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with SRANI suppression eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008; GAP-D5) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0; GAP-D4). SRANI CFI=1.000 in Tier-3 wave-0 with RocksDB not yet in implied_by table (GAP-S1 partial). Open blocking gaps: GAP-G1 Phase 2 (ArchetypePrior/TensionPattern/DecompositionTemplate pending), GAP-D4 (per-constraint archetype guarantee), GAP-D5 (repair oscillation anchoring).
+**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with SRANI LLM-driven implied entity classification eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0). Open work: cross-task ArchetypePrior/TensionPattern/DecompositionTemplate (reasoning memory Phase 2 pending).
 
 **Implementation:** `tests/e2e/scenarios/innovation-5/` — three e2e scenarios (Tier 1/2/3).
 
@@ -296,34 +290,7 @@ to rate subtask complexity 1–5 before dispatching ensemble. Route 1–2 to sin
 
 ---
 
-### GAP-D3: TaskFailed Carries No Diagnostic Signal ✅ COMPLETE (2026-06-19) — Medium
-
-**Status: COMPLETE**
-
-`TaskFailedEvent` now carries machine-readable diagnostic signal. `TerminalCause` enum (7 variants:
-`LlmAdapterUnavailable`, `VerificationExhaustion`, `ComplexityOverflow`, `ContextExhaustion`,
-`OracleRejected`, `Timeout`, `Unknown`) with `severity_rank() -> u8` (0=highest severity,
-infrastructure > application). Four new `#[serde(default)]` fields on `TaskFailedEvent`:
-`primary_cause: TerminalCause`, `contributing_causes: Vec<TerminalCause>`,
-`top_violated_constraints: Vec<String>` (sorted descending by frequency across all `BranchPruned`
-waves, capped at 5), `last_selection_valid_count: Option<u32>`.
-
-Engine (`crates/h2ai-orchestrator/src/engine.rs`) accumulates `violation_freq: HashMap<String,
-u32>` per `BranchPrunedEvent.violated_constraints` and tracks `last_selection_valid_count` from
-`SelectionResolvedEvent`. All terminal exit paths populate the new fields with the appropriate
-`TerminalCause` variant; `h2ai-api` maps `EngineError` variants to causes. All new fields use
-`#[serde(default)]` — existing callers reading old JSON events see `Unknown` + empty vecs.
-
-**Falsification condition met.** Every `TaskFailed` event now has a non-`Unknown` `primary_cause`
-for all classified engine exit paths and a non-empty `top_violated_constraints` for
-verification-exhaustion failures. Automated replay can classify failure mode without server log
-access.
-
-**Config additions:** none.
-
----
-
-### GAP-D4: Thinking Loop Has No Per-Constraint Archetype Guarantee 🔴 OPEN — Medium
+### GAP-D4: Thinking Loop Has No Per-Constraint Archetype Guarantee ✅ CLOSED — Medium (2026-06-20)
 
 **Gap statement.**
 `ThinkingLoopEngine` achieves high aggregate coverage scores (coverage=0.98 in Tier-3 wave-0) yet individual constraints can have zero dedicated archetype assigned. In the Tier-3 wave-0 run, iteration 0 selected archetypes `[atomic-redis-engineer, immutable-audit-architect, zero-trust-isolation-specialist, additive-migration-strategist]` — none targeting CONSTRAINT-TAU-2 (active cache convergence within 60s TTL) or CONSTRAINT-BFT-1 (rollback script availability). Both constraints failed in every wave-0 proposal.
@@ -335,11 +302,11 @@ The coverage score is aggregate: it measures how much of the task decomposition 
 **Falsification condition.**
 Add a `cache-convergence-specialist` and `bft-rollback-engineer` archetype to the Tier-3 corpus. If all 3 wave-0 proposals achieve score > 0.67 (vs. the observed maximum of 0.67 with the TAU/BFT constraints failing), per-constraint archetype coverage is the root cause.
 
-**Research approach.** Extend `select_archetypes()` to enforce: for each constraint in the task's constraint set, at least one selected archetype must have that constraint in its `focus_constraints` or `domain_tags`. This is a constraint satisfaction problem layered on top of the coverage objective. Fallback: synthesize an archetype on-the-fly from constraint corpus text when no existing archetype covers a constraint.
+**Implementation (2026-06-20).** `ArchetypeSpec` gained `focus_constraints: Vec<String>` (`#[serde(default)]`). `THINKING_ARCHETYPE_MD_ITER1` prompt requests `**Focus Constraints:**` from the LLM; `parse_archetype_block()` parses and populates the field (case-insensitive "all" → empty vec). `find_uncovered_constraints(archetypes, constraint_ids)` pure fn identifies constraints with no dedicated archetype. `synthesize_coverage_archetype(constraint_id, corpus)` synthesizes a specialist archetype from corpus description; falls back to generic text when description is absent. Both fns wired into `select_archetypes()`: after LLM archetypes are parsed, uncovered constraints are found and specialists synthesized and appended before exploration. Tests: `crates/h2ai-orchestrator/tests/thinking_loop_coverage_test.rs` (8 tests).
 
 ---
 
-### GAP-D5: MAPE-K Repair Oscillation — Cross-Constraint Regression 🔴 OPEN — **High**
+### GAP-D5: MAPE-K Repair Oscillation — Cross-Constraint Regression ✅ CLOSED — **High** (2026-06-20)
 
 **Gap statement.**
 When `MapeKController` generates repair context for constraints that failed in wave N, proposals in wave N+1 can regress on constraints that passed in wave N. Observed in Tier-3: wave-0 proposals violated CONSTRAINT-TAU-2 and CONSTRAINT-BFT-1; wave-1 repair context injected cache-convergence and rollback-script guidance, causing 2/3 wave-1 proposals to violate CONSTRAINT-004, CONSTRAINT-005, and CONSTRAINT-008 (which had partial compliance scores of 0.67 in wave 0). Only 1/3 wave-1 proposals maintained compliance across all 6 constraints (j_eff=0.667).
@@ -354,6 +321,8 @@ Extend `build_repair_context()` to include a "preserve passing constraints" sect
 2. **Passing constraints with compliance anchors** — what was correct and must not be changed.
 
 The compliance anchor text is derived from the passing proposal's verifier reasoning for each passed constraint check. This converts repair context from a diff (fix failures) into a full specification (fix failures without breaking passes).
+
+**Implementation (2026-06-20).** `phases::verify::run()` tracks the highest-scoring passing proposal's per-constraint `ComplianceResult.verifier_reason` values into `Output.best_passing_constraint_reasons: HashMap<String, String>` (non-empty reasons only; first-seen wins on ties via strict `>` score comparison). `WaveEvents.best_passing_constraint_reasons` carries this forward. `MapeKController.global_best_constraint_reasons` is updated in `observe()` when a new global-best passing proposal is found (guarded: only overwrites when the new map is non-empty, to preserve anchors from earlier waves). `build_best_passing_pin_hint(constraint_id, dynamic_reasons, corpus_hint)` pure fn prefers dynamic verifier reasoning over static corpus hints, falling back when the dynamic entry is absent or empty. Both `coupled_hints` and `passing_pins` computations in `apply_retry_action`'s `RetryWithTargets` arm use `build_best_passing_pin_hint` instead of raw `corpus_pass_hint_for`. Tests: `crates/h2ai-orchestrator/tests/mape_k_repair_anchor_test.rs` (3 tests).
 
 ---
 
@@ -389,40 +358,6 @@ high-hit-rate node on `MergeResolved`, record the verification score delta attri
 retrieval. Update node's edge weight proportional to the delta. Requires closing GAP-B3 (calibrated
 judge) first — REINFORCE gradients on biased soft rewards amplify judge bias into retrieval weights.
 Cold-start note: Phase 3 may be net-negative for tenants with fewer than ~200 tasks.
-
----
-
-### GAP-F5: Constraint Violations Don't Reshape Retrieval Routing ✅ COMPLETE — Medium
-
-**Status: COMPLETE** — Steps 1–3 live; NatsInductionScheduler fully wired into production via task_pipeline.rs; Step 4 deferred.
-
-Steps 1–2 implemented: `CompositeProvider.violation_map: Arc<RwLock<HashMap<String, f32>>>`
-accumulates violation penalties for non-Synthetic nodes co-occurring with topology retries
-(delta=0.1, cap=0.9, applied before dedup/top_k in `query()`). Synthetic skill nodes permanently
-exempt. Penalty map is in-memory only — resets on restart; NATS persistence deferred.
-
-**Step 3 — Retroactive induction trigger. COMPLETE (2026-06-19).** When `ZeroSurvival` fires in
-`MapeKController.decide()`, the controller increments `zero_survival_count` and spawns
-`tokio::spawn(sched.run_retroactive(ctx))` into `pending_induction: Option<JoinHandle<...>>`
-when `induction_trigger.enabled && zero_survival_count >= min_prior_tasks`. At the next `observe()`
-call (now `async fn`), the handle is consumed with `tokio::time::timeout(grace_period_ms, handle)`
-— a bounded wait up to `grace_period_ms` (default 2000ms). If a compatible result arrives in time
-(`InductionResult::is_compatible_with` checks tag overlap), `apply_induction_result` appends the
-top `RetryHintPattern` hint to `self.retry_context`. The hint is applied *after* `srani_retry_context`
-updates so it appends on top of SRANI's output rather than being overwritten. `InductionScheduler`
-is injected as `Arc<dyn InductionScheduler>` via `with_induction_scheduler` builder for testability.
-Config: `[induction_trigger]` table with `enabled`, `min_prior_tasks`, `grace_period_ms`,
-`min_tag_jaccard` — all `#[serde(default)]` with `enabled = false` default.
-
-**Production wiring complete.** `build_induction_scheduler` called once per task in `task_pipeline.rs`; scheduler passed to both `ThinkingLoopArgs` (for priming hints) and `OwnedEngineInput` (for MAPE-K wiring). `n_archetypes` corpus-seeded: `corpus.len().max(2).min(max_archetypes)`. `tenant_id` propagated from `TaskPipelineInput` into both `ThinkingLoopArgs` constructions.
-
-**Step 4 — Constraint difficulty map (NATS-persisted). ⚠️ DEFERRED.** Track empirical constraint
-difficulty per `(constraint_id, model_lineage_key)` pair across all tasks. Deferred because: (a)
-most historical failures are integration failures, not inherent constraint difficulty — the map
-would mislabel constraints as "hard" when they are individually solvable; (b) difficulty map must
-be stratified by `model_lineage_key` and use a decaying Beta posterior. Implement after
-DPPM-MetaRefine stabilizes and difficulty signal is no longer polluted by MUS oscillation
-artifacts.
 
 ---
 
@@ -642,56 +577,17 @@ RMSE(MoM) for N ≤ 30 by at least 20%.
 
 ---
 
-## Brainstorm Group S — Signal Fidelity
-
----
-
-### GAP-S1: SRANI Fires for Technology-Specific Implementation Details ✅ COMPLETE (2026-06-19) — Low
-
-**Status: COMPLETE** — Implied-by suppression table live for ClickHouse, Redis, and Kafka.
-
-`check_specification_grounding` receives an `effective_spec` built from
-`manifest.description + manifest.context + constraint corpus text`. Core infrastructure terms
-named in `manifest.context` (Redis, Kafka, ClickHouse, CockroachDB) are grounded; no harmful
-"avoid Redis/Kafka" hints are injected.
-
-**Implemented.** `apply_implied_by_suppression(nouns, implied_by, grounded_parents) -> Vec<String>`
-pure function in `crates/h2ai-orchestrator/src/specification_grounding.rs`. When a grounded parent
-technology implies a sub-term, the sub-term is removed from `shared_ungrounded` before
-`ResearcherGrounding` hints are emitted. Wired in `phases/srani.rs` before CFI computation:
-`grounded_parents` is built from `implied_by` keys present in `effective_spec`, then
-`apply_implied_by_suppression` filters `shared_ungrounded` before all downstream hint logic.
-
-`implied_by` table seeded in `SraniConfig` (`crates/h2ai-config/src/lib.rs`, `#[serde(default)]`)
-and in the Tier-2 TOML config (`tests/e2e/scenarios/innovation-5/.../h2ai-local-dppm.toml`):
-- `"ClickHouse"` → 20 sub-terms (MergeTree family, ReplacingMergeTree, SummingMergeTree,
-  AggregatingMergeTree, CollapsingMergeTree, VersionedCollapsingMergeTree, MergeTreeInsert,
-  MergeTreeEngine, ClickHouseSchema, ClickHouseTable, etc.)
-- `"Redis"` → 7 sub-terms (EVAL, Lua EVAL, SETEX, SETNX, ZADD, ZRANGEBYSCORE, EXPIRE)
-- `"Kafka"` → 6 sub-terms (KafkaConsumer, KafkaProducer, ConsumerGroup, OffsetCommit,
-  KafkaTopic, KafkaPartition)
-
-The suppression table is extensible via TOML — no code change required to add new parent→sub-term
-mappings as the lexicon grows.
-
-**Tier-3 finding (2026-06-20).** The `implied_by` table does not yet include `RocksDB` as a standalone entry. In the Tier-3 wave-0 run, CFI=1.000 with `shared_entities=[MergeTree, RocksDB]`; MergeTree was correctly suppressed via the ClickHouse→MergeTree mapping, but RocksDB appeared as a free-standing hallucinated entity with no grounded parent in the effective spec. The successful wave-1 proposal used PostgreSQL/Redis (RocksDB present only as a WAL implementation detail, not spec-required), confirming the hint was misleading but non-fatal. Remaining work: add `RocksDB` to the `implied_by` table as a suppressible term when a parent storage technology (PostgreSQL, Redis, or ClickHouse) is already grounded.
-
----
-
 ## Gap Priority Matrix
 
 ### Pipeline Success Priority (blocks reliable task completion)
 
-These four gaps are the direct cause of the j_eff = 0.667 stochastic ceiling and CONSTRAINT-005
-exhaustion pattern observed across all innovation-5 Tier-2 runs. Fixing them in order transforms
-MAPE-K from a random-restart loop into directed repair.
+These gaps are the direct cause of the j_eff = 0.667 stochastic ceiling and cross-constraint regression pattern observed in Tier-3. Fixing them in order transforms MAPE-K from a random-restart loop into directed repair.
 
 | Gap | Pipeline impact | Status |
 |---|---|---|
-| **GAP-S1 implied-by suppression table** | Stops SRANI from redirecting generation away from MergeTree/append-only patterns — removes the dominant CONSTRAINT-005 failure cause at the source | ✅ COMPLETE (2026-06-19) |
-| **GAP-D3 TaskFailed diagnostic signal** | Enables machine-readable failure-mode classification from SSE stream; required to verify whether the other fixes are working | ✅ COMPLETE (2026-06-19) |
-| **GAP-F5 Step 3 retroactive induction trigger** | Injects corrective context (what failed and why) into wave N+1 on ZeroSurvival — the first mechanism giving MAPE-K anything beyond the original task framing | ✅ COMPLETE (2026-06-19) — Steps 1–3 live; NatsInductionScheduler wired into production via task_pipeline.rs; Step 4 deferred |
 | **GAP-G1 Phase 2 RetryHintPattern scheduler** | Converts BranchPruned history into RetryHintPattern records; NatsInductionScheduler with CAS-swap persistence; AlgorithmicInductionWorker filters/ranks patterns | 🟡 PARTIAL (2026-06-19) — RetryHintPattern path live; ArchetypePrior/TensionPattern/DecompositionTemplate pending; Phases 3–4 pending |
+| **GAP-D4 Per-constraint archetype guarantee** | Ensures every constraint has at least one dedicated archetype — prevents minority constraints from scoring zero across all wave-0 proposals | ✅ CLOSED (2026-06-20) |
+| **GAP-D5 MAPE-K repair oscillation anchoring** | Adds passing-constraint compliance anchors to repair context — prevents wave-1 regression on constraints that passed in wave 0 | ✅ CLOSED (2026-06-20) |
 
 ### Research and Validation Priority (closes core thesis risks)
 
@@ -702,8 +598,8 @@ MAPE-K from a random-restart loop into directed repair.
 | GAP-A2 USL quality curve empirical validation | High | 2 weeks | Labeled multi-N benchmark | Session 2 |
 | **GAP-F4 Knowledge provider contrastive eval Phase 2** | High | 1 week | 50+ tasks per domain | Week 3 |
 | GAP-D2 Compound task HITL escalation | Low | 1 week | None | Any |
-| **GAP-D4 Per-constraint archetype guarantee** | Medium | 1 week | None | Week 2 |
-| **GAP-D5 MAPE-K repair oscillation anchoring** | High | 1 week | None | Week 2 |
+| **GAP-D4 Per-constraint archetype guarantee** | Medium | ✅ CLOSED (2026-06-20) | None | — |
+| **GAP-D5 MAPE-K repair oscillation anchoring** | High | ✅ CLOSED (2026-06-20) | None | — |
 | **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
 
 ---

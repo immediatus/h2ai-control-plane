@@ -24,6 +24,8 @@ Output per run:
 """
 
 import argparse
+import collections
+import dataclasses
 import datetime
 import json
 import os
@@ -329,6 +331,74 @@ def _trace_event(event: dict, start: float) -> None:
         reason = _shorten(event.get("reason") or "", 80)
         header = f"⚠ constraint repair failed: {cid}  {reason}"
 
+    elif kind == "CalibrationCompleted":
+        n_max = event.get("n_max") or event.get("n_max_computed")
+        n_it = event.get("n_it_optimal")
+        beta = event.get("beta_eff") or event.get("beta_effective")
+        source = event.get("calibration_source") or event.get("source") or "?"
+        flag = "⚠ " if (isinstance(n_max, (int, float)) and n_max < 3) else ""
+        parts: list[str] = []
+        if n_max is not None:
+            parts.append(f"N_max={n_max}")
+        if n_it is not None:
+            parts.append(f"n_it={n_it}")
+        if isinstance(beta, float):
+            parts.append(f"β_eff={beta:.4f}")
+        parts.append(f"source={source}")
+        header = flag + "  ".join(parts)
+
+    elif kind == "DiversityGuardDegraded":
+        reason = _shorten(event.get("reason") or "", 90)
+        header = f"⚠ {reason}"
+
+    elif kind == "InductionTriggered":
+        n_hints = event.get("n_hints") or event.get("hints_loaded") or "?"
+        wave = event.get("wave") or "?"
+        header = f"wave={wave}  n_hints={n_hints}  cross-task priming loaded"
+
+    elif kind == "KnowledgeGapDetected":
+        domains = event.get("domains") or []
+        n_cold = event.get("n_cold_checks") or "?"
+        header = f"n_cold_checks={n_cold}  domains=[{', '.join(str(d) for d in domains[:4])}]"
+
+    elif kind == "RepairContextBuilt":
+        n_targets = event.get("n_targets") or "?"
+        wave = event.get("wave") or "?"
+        best_score = event.get("global_best_score")
+        score_str = f"  best_score={best_score:.2f}" if isinstance(best_score, float) else ""
+        meta_repair = "  [MetaRepair]" if event.get("meta_repair_injected") else ""
+        header = f"wave={wave}  n_targets={n_targets}{score_str}{meta_repair}"
+
+    elif kind == "InductionResult":
+        n_patterns = event.get("n_patterns_matched") or "?"
+        hint_len = len(event.get("hint_text") or "")
+        header = f"n_patterns={n_patterns}  hint_len={hint_len}"
+
+    elif kind == "OomGuardFired":
+        rss_mb = event.get("rss_mb") or "?"
+        threshold_mb = event.get("threshold_mb") or "?"
+        header = f"⚠ RSS={rss_mb}MB ≥ threshold={threshold_mb}MB — retries blocked"
+
+    elif kind == "GenerationTimeout":
+        n_timed_out = event.get("n_timed_out") or "?"
+        n_completed = event.get("n_completed") or "?"
+        header = f"⚠ timed_out={n_timed_out}  completed={n_completed}"
+
+    elif kind == "VerifierFreezeBypass":
+        cid = event.get("constraint_id") or "?"
+        waves_frozen = event.get("waves_frozen") or "?"
+        header = f"⚠ {cid}  bypass active after {waves_frozen} frozen waves"
+
+    elif kind == "DppmClusterSolveCompleted":
+        n_clusters = event.get("n_clusters") or "?"
+        n_solved = event.get("n_solved") or "?"
+        header = f"clusters={n_clusters}  solved={n_solved}"
+
+    elif kind == "IntegrationWaveCompleted":
+        score = event.get("score")
+        score_str = f"{score:.2f}" if isinstance(score, float) else "—"
+        header = f"integration_score={score_str}"
+
     else:
         skip = {"kind", "task_id", "timestamp", "explorer_id", "tenant_id"}
         interesting = {k: v for k, v in event.items() if k not in skip and v is not None}
@@ -339,10 +409,199 @@ def _trace_event(event: dict, start: float) -> None:
     for dl in details:
         print(dl, flush=True)
 
+
+# ── Per-wave execution tracker ────────────────────────────────────────────────
+
+@dataclasses.dataclass
+class _WaveSummary:
+    wave: int
+    n_proposed: int = 0
+    n_passed: int = 0
+    n_pruned: int = 0
+    violated: list = dataclasses.field(default_factory=list)
+    scores: list = dataclasses.field(default_factory=list)
+    zero_survival: bool = False
+
+    @property
+    def avg_score(self) -> "float | None":
+        return sum(self.scores) / len(self.scores) if self.scores else None
+
+
+class ExecutionTracker:
+    """Accumulates cross-event state to produce wave-level summaries and anomaly diagnosis."""
+
+    def __init__(self, start: float) -> None:
+        self.start = start
+        self.waves: list[_WaveSummary] = [_WaveSummary(wave=0)]
+        self.phase_log: list[tuple[str, str]] = []  # (elapsed, label)
+        self.violation_counts: collections.Counter = collections.Counter()
+        self.srani_cfi_history: list[float] = []
+        self.calibration: "dict | None" = None
+
+    @property
+    def current_wave(self) -> _WaveSummary:
+        return self.waves[-1]
+
+    def observe(self, event: dict) -> None:
+        kind = event.get("kind", "")
+        if kind == "TaskBootstrapped":
+            self.phase_log.append((_elapsed(self.start), "Bootstrapped"))
+        elif kind == "ThinkingLoopCompleted":
+            self.phase_log.append((_elapsed(self.start), "ThinkingDone"))
+        elif kind == "TopologyProvisioned":
+            self.phase_log.append((_elapsed(self.start), "TopologyReady"))
+        elif kind == "GenerationPhaseCompleted":
+            self.phase_log.append((_elapsed(self.start), "GenerationDone"))
+            self.current_wave.n_proposed += event.get("n_proposals") or 0
+        elif kind == "VerificationScored":
+            score = event.get("score", 0.0)
+            self.current_wave.scores.append(score)
+            if event.get("passed", False):
+                self.current_wave.n_passed += 1
+        elif kind == "BranchPruned":
+            self.current_wave.n_pruned += 1
+            for v in event.get("violated_constraints") or []:
+                cid = v.get("constraint_id", "")
+                if cid:
+                    self.current_wave.violated.append(cid)
+                    self.violation_counts[cid] += 1
+        elif kind == "ZeroSurvival":
+            self.current_wave.zero_survival = True
+            nxt = len(self.waves)
+            self.waves.append(_WaveSummary(wave=nxt))
+            self.phase_log.append((_elapsed(self.start), f"ZeroSurvival→wave{nxt}"))
+        elif kind == "MergeResolved":
+            self.phase_log.append((_elapsed(self.start), "MergeResolved"))
+        elif kind == "TaskFailed":
+            self.phase_log.append((_elapsed(self.start), "TaskFailed"))
+        elif kind == "CorrelatedFabrication":
+            self.srani_cfi_history.append(event.get("cfi", 0.0))
+        elif kind == "CalibrationCompleted":
+            self.calibration = event
+
+
+def _print_wave_summary(tracker: ExecutionTracker) -> None:
+    active = [w for w in tracker.waves if w.n_proposed > 0 or w.scores or w.zero_survival]
+    if not active:
+        return
+    print("  ── wave breakdown ──────────────────────────────────────────────────────")
+    print(f"  {'wave':<5} {'prop':>5} {'pass':>5} {'prune':>6} {'avg_score':>10}  top violated constraints")
+    for w in active:
+        avg = f"{w.avg_score:.2f}" if w.avg_score is not None else "  —"
+        zs = " ← ZeroSurvival" if w.zero_survival else ""
+        seen: list[str] = []
+        for c in w.violated:
+            if c not in seen:
+                seen.append(c)
+            if len(seen) == 3:
+                break
+        top_v = ", ".join(seen)
+        print(f"  {w.wave:<5} {w.n_proposed:>5} {w.n_passed:>5} {w.n_pruned:>6} {avg:>10}  {top_v}{zs}")
+    if tracker.violation_counts:
+        top = tracker.violation_counts.most_common(6)
+        parts = "  ".join(f"{cid}×{cnt}" for cid, cnt in top)
+        print(f"  violation totals: {parts}")
+    print()
+
+
+def _print_phase_timeline(tracker: ExecutionTracker) -> None:
+    if not tracker.phase_log:
+        return
+    phases = "  →  ".join(f"{label}({t})" for t, label in tracker.phase_log)
+    print(f"  timeline: {phases}")
+    print()
+
+
+def _scan_server_log_issues(log_path: "pathlib.Path") -> list[str]:
+    """Return ERROR / WARN / PANIC lines from the server log."""
+    if not log_path.exists():
+        return []
+    issues: list[str] = []
+    try:
+        with open(log_path) as f:
+            for line in f:
+                lower = line.lower()
+                if any(m in lower for m in ("error", "panic", "thread 'main' panicked")):
+                    issues.append(line.rstrip())
+                elif " warn " in lower:
+                    issues.append(line.rstrip())
+    except OSError:
+        pass
+    return issues
+
+
+def _print_server_log_tail(log_path: "pathlib.Path", n: int = 40) -> None:
+    if not log_path.exists():
+        return
+    try:
+        lines = log_path.read_text().splitlines()
+        tail = lines[-n:] if len(lines) > n else lines
+        print(f"  ── server log tail ({log_path.name}) {'─'*40}")
+        for line in tail:
+            print(f"  {line}")
+        print()
+    except OSError:
+        pass
+
+
+def _diagnose_run(tracker: ExecutionTracker, terminal_kind: str, j_eff: "float | None") -> None:
+    issues: list[str] = []
+
+    # Constraints that keep failing across proposals / waves
+    for cid, cnt in tracker.violation_counts.most_common():
+        if cnt >= 2:
+            issues.append(
+                f"constraint {cid} violated {cnt} times total — "
+                "repair context may not be addressing the root cause"
+            )
+
+    # Wave 0 ZeroSurvival: nothing passed in the first wave
+    if tracker.waves and tracker.waves[0].zero_survival:
+        issues.append("wave 0 ended in ZeroSurvival — all initial proposals pruned before any passed")
+
+    # Flat compliance scores across waves: repair is not improving anything
+    avgs = [w.avg_score for w in tracker.waves if w.avg_score is not None]
+    if len(avgs) >= 2:
+        spread = max(avgs) - min(avgs)
+        if spread < 0.05:
+            avg_str = ", ".join(f"{a:.2f}" for a in avgs)
+            issues.append(
+                f"compliance scores flat across {len(avgs)} waves [{avg_str}] "
+                "— repair context is not improving constraint pass rate"
+            )
+
+    # SRANI CFI rising: grounding not working
+    hist = tracker.srani_cfi_history
+    if len(hist) >= 2 and hist[-1] > hist[0] + 0.10:
+        issues.append(
+            f"SRANI CFI rising across waves: {hist[0]:.2f} → {hist[-1]:.2f} "
+            "— grounding hints are not reducing correlated fabrication"
+        )
+
+    # TaskFailed: surface it as a diagnosis item too
+    if terminal_kind == "TaskFailed":
+        issues.append("task terminated with TaskFailed — check server log (shown above) for root cause")
+
+    # Low j_eff
+    if j_eff is not None and j_eff < 0.40:
+        issues.append(
+            f"j_eff={j_eff:.3f} below 0.40 — ensemble efficiency degraded "
+            "(low diversity, high pruning rate, or insufficient passing proposals)"
+        )
+
+    print("  ── diagnosis ───────────────────────────────────────────────────────────")
+    if issues:
+        for issue in issues:
+            print(f"  ⚠ {issue}")
+    else:
+        print("  ✓ no anomalies detected")
+    print()
+
+
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 SCENARIOS_DIR = pathlib.Path(__file__).parent / "scenarios"
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
-SERVER_BIN = REPO_ROOT / "target" / "release" / "h2ai-control-plane"
+SERVER_BIN = REPO_ROOT / "target2" / "release" / "h2ai-control-plane"
 
 
 def _git_sha() -> str:
@@ -456,6 +715,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
 
     timeout_s = task.get("_timeout_s", 1800)
     run_start = time.monotonic()
+    tracker = ExecutionTracker(run_start)
     events_raw: list[dict] = []
     verification_scores: list[float] = []
     srani_events: list[dict] = []
@@ -579,6 +839,8 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         else:
             _trace_event(event, run_start)
 
+        tracker.observe(event)
+
         if terminal:
             break
 
@@ -596,6 +858,10 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     if leader_elected:
         print(f"  leader_elections={len(leader_elected_events)}", end="")
     print()
+    print()
+    _print_phase_timeline(tracker)
+    _print_wave_summary(tracker)
+    _diagnose_run(tracker, terminal_kind, j_eff)
 
     return {
         "task_id": task_id,
@@ -616,6 +882,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         "approval_resolved_event": approval_resolved_event,
         "leader_elected": leader_elected,
         "leader_elected_events": leader_elected_events,
+        "tracker": tracker,
     }
 
 
@@ -1001,6 +1268,16 @@ def _run_h2ai_trials(
             results.append({"passed": False, "error": str(e)})
             print(f"  → ERROR: {e}")
             traceback.print_exc()
+            if proc:
+                log_path = getattr(proc, "_log_path", None)
+                if log_path:
+                    issues = _scan_server_log_issues(log_path)
+                    if issues:
+                        print(f"  ── server log issues ({len(issues)} lines) ─────────────────────────────────")
+                        for line in issues[-30:]:
+                            print(f"  {line}")
+                        print()
+                    _print_server_log_tail(log_path, n=30)
         finally:
             if proc:
                 stop_server(proc)

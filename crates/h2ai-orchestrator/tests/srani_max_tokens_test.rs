@@ -61,6 +61,7 @@ async fn llm_researcher_grounder_uses_config_max_tokens() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["entity".to_string()],
         task_description: "test".to_string(),
+        spec_technologies: vec![],
     };
     let _ = grounder.ground(&ctx).await;
 

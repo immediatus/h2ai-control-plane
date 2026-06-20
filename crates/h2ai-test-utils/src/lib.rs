@@ -369,14 +369,19 @@ mockall::mock! {
     }
 }
 
-mockall::mock! {
-    pub EngineRunner {}
+mod _engine_runner_mock {
+    #![allow(clippy::result_large_err)]
+    use super::*;
+    mockall::mock! {
+        pub EngineRunner {}
 
-    #[async_trait::async_trait]
-    impl EngineRunner for EngineRunner {
-        async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)>;
+        #[async_trait::async_trait]
+        impl EngineRunner for EngineRunner {
+            async fn run(&self, input: OwnedEngineInput) -> Result<EngineOutput, (EngineError, EngineRunContext)>;
+        }
     }
 }
+pub use _engine_runner_mock::MockEngineRunner;
 
 pub fn stub_thinking_report() -> ThinkingReport {
     ThinkingReport {

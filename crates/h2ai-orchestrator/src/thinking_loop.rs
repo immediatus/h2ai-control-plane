@@ -327,6 +327,7 @@ pub fn fallback_archetypes() -> Vec<ArchetypeSpec> {
             tau: 0.3,
             model_tier: ModelTier::Standard,
             cot_style: CotStyle::StepByStep,
+            focus_constraints: vec![],
         },
         ArchetypeSpec {
             name: "Failure Mode Analyst".to_string(),
@@ -336,6 +337,7 @@ pub fn fallback_archetypes() -> Vec<ArchetypeSpec> {
             tau: 0.5,
             model_tier: ModelTier::Standard,
             cot_style: CotStyle::DevilsAdvocate,
+            focus_constraints: vec![],
         },
         ArchetypeSpec {
             name: "Migration Safety Specialist".to_string(),
@@ -345,8 +347,62 @@ pub fn fallback_archetypes() -> Vec<ArchetypeSpec> {
             tau: 0.4,
             model_tier: ModelTier::Standard,
             cot_style: CotStyle::BackwardChaining,
+            focus_constraints: vec![],
         },
     ]
+}
+
+/// Returns constraint IDs from `constraint_ids` that have no dedicated archetype in `archetypes`.
+/// An archetype "covers" a constraint if that constraint ID appears in its `focus_constraints`.
+/// Archetypes with empty `focus_constraints` cover nothing specifically.
+#[must_use]
+pub fn find_uncovered_constraints(
+    archetypes: &[ArchetypeSpec],
+    constraint_ids: &[String],
+) -> Vec<String> {
+    constraint_ids
+        .iter()
+        .filter(|cid| {
+            !archetypes
+                .iter()
+                .any(|a| a.focus_constraints.iter().any(|f| f == *cid))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Synthesize a minimal coverage archetype targeting `constraint_id`.
+///
+/// Used when no existing archetype declares this constraint in `focus_constraints`.
+/// Looks up the constraint description from `corpus` for a richer persona; falls back
+/// to a generic description when the constraint is absent from the corpus.
+#[must_use]
+pub fn synthesize_coverage_archetype(
+    constraint_id: &str,
+    corpus: &[h2ai_constraints::types::ConstraintDoc],
+) -> ArchetypeSpec {
+    let description = corpus
+        .iter()
+        .find(|d| d.id == constraint_id)
+        .map(|d| d.description.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("the specified constraint");
+    ArchetypeSpec {
+        name: format!("{constraint_id}-specialist"),
+        persona: format!(
+            "You are a constraint compliance specialist who focuses exclusively on {constraint_id}: \
+             {description}. You read each binary check literally and build the minimal design that \
+             satisfies all sub-conditions simultaneously without regressing any other constraint."
+        ),
+        scope: format!(
+            "Complete and explicit satisfaction of {constraint_id} — every binary check must pass."
+        ),
+        confidence: 0.8,
+        tau: 0.3,
+        model_tier: ModelTier::Standard,
+        cot_style: CotStyle::StepByStep,
+        focus_constraints: vec![constraint_id.to_string()],
+    }
 }
 
 async fn select_archetypes(
@@ -398,7 +454,7 @@ async fn select_archetypes(
         ),
     };
 
-    match execute_chain(
+    let mut archetypes = match execute_chain(
         input.adapter,
         ChainedRequest {
             initial_system_context: system_context,
@@ -443,7 +499,22 @@ async fn select_archetypes(
             );
             vec![]
         }
+    };
+
+    // Guarantee per-constraint coverage: synthesize a specialist archetype for any
+    // constraint that has no dedicated archetype in focus_constraints.
+    let uncovered = find_uncovered_constraints(&archetypes, input.constraint_ids);
+    for cid in &uncovered {
+        tracing::info!(
+            target: "h2ai.thinking",
+            constraint_id = %cid,
+            iteration,
+            "no archetype covers constraint — synthesizing coverage archetype"
+        );
+        archetypes.push(synthesize_coverage_archetype(cid, input.constraint_corpus));
     }
+
+    archetypes
 }
 
 // ─── Brainstorm ───────────────────────────────────────────────────────────────
@@ -790,6 +861,15 @@ fn parse_archetype_block(block: &str) -> Result<ArchetypeSpec, String> {
         _ => CotStyle::None,
     };
 
+    let focus_constraints = extract_md_field(block, "Focus Constraints")
+        .map(|s| {
+            s.split(',')
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty() && !id.eq_ignore_ascii_case("all"))
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(ArchetypeSpec {
         name,
         persona,
@@ -798,6 +878,7 @@ fn parse_archetype_block(block: &str) -> Result<ArchetypeSpec, String> {
         tau,
         model_tier,
         cot_style,
+        focus_constraints,
     })
 }
 

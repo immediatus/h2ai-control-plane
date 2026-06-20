@@ -549,15 +549,16 @@ SRANI (Specification-Relative Architectural Noun Intersection) measures entity-l
 
 ### 10.1 CFI — Correlated Fabrication Index
 
-For each proposal `i`, extract the set of architectural noun entities `E_i` that appear in the proposal but are absent from the task specification. Before computing pairwise overlap, `apply_implied_by_suppression` removes sub-terms implied by already-grounded parent technologies (2026-06-19). The effective Correlated Fabrication Index is:
+For each proposal `i`, extract the set of architectural noun entities `E_i` that appear in the proposal but are absent from the task specification. The raw Correlated Fabrication Index is:
 
 ```
-raw_ungrounded_i   = E_i \ spec_entities
-ungrounded_i       = apply_implied_by_suppression(raw_ungrounded_i, implied_by_map, grounded_parents)
+ungrounded_i = E_i \ spec_entities
 CFI = max_{i ≠ j} |ungrounded_i ∩ ungrounded_j| / max(|ungrounded_i|, |ungrounded_j|)
 ```
 
-`implied_by_map` maps parent technology names (e.g. `"redis"`) to their implied sub-terms (e.g. `["SETEX", "SETNX", "RedisCluster", ...]`). `grounded_parents` is the intersection of `implied_by_map` keys with tokens present in `effective_spec`. A sub-term appearing in `raw_ungrounded_i` is removed when its parent is grounded — it is not a fabrication but an expected provider-specific implementation detail. This prevents false-positive CFI = 1.0 when all proposals correctly use Redis-native or ClickHouse-native APIs on a task that references those technologies. Config: `srani.implied_by` table in `h2ai.toml`, seeded for ClickHouse (20 sub-terms), Redis (7 sub-terms), Kafka (6 sub-terms).
+CFI ∈ [0, 1]. CFI = 0 means no two proposals share any fabricated entity. CFI = 1 means at least one pair of proposals shares all fabricated entities — strong cross-proposal correlated fabrication signal. The raw CFI (including any provider-specific sub-terms that might be implied by grounded technologies) drives the adaptive gate, so the gate fires conservatively.
+
+**LLM-driven implied entity classification (2026-06-21):** After the gate fires (`injection_pressure ≥ srani.gate_threshold`), `extract_arch_nouns(effective_spec)` collects all architectural nouns from the effective spec and populates `GroundingContext.spec_technologies`. The researcher LLM call (`LlmResearcherGrounder`) receives the shared ungrounded entities, `spec_technologies`, and the task description; it responds classifying each entity as `implied` (a standard sub-component of an in-scope technology — e.g. `RocksDB` when ClickHouse is in spec) or `novel` (introduces something not implied by any in-scope technology). Only `novel_entities` (= shared ungrounded entities minus `GroundingResult.implied_entities`) receive the "Avoid (not in spec)" repair hint. The `apply_implied_by_suppression` pure function in `specification_grounding.rs` remains available for tests and custom static overrides.
 
 CFI ∈ [0, 1]. CFI = 0 means no two proposals share any fabricated entity. CFI = 1 means at least one pair of proposals shares all fabricated entities — strong cross-proposal correlated fabrication signal.
 

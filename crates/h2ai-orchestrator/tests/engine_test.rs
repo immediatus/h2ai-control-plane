@@ -3113,7 +3113,6 @@ async fn srani_adaptive_fires_and_updates_ema() {
             researcher_max_tokens: 32_768,
             distill_max_tokens: 32_768,
             gap_synthesis_max_tokens: 32_768,
-            implied_by: Default::default(),
         },
         ..H2AIConfig::default()
     };
@@ -3257,7 +3256,6 @@ async fn srani_cold_start_uses_config_midpoint() {
             researcher_max_tokens: 32_768,
             distill_max_tokens: 32_768,
             gap_synthesis_max_tokens: 32_768,
-            implied_by: Default::default(),
         },
         ..H2AIConfig::default()
     };
@@ -3491,7 +3489,6 @@ async fn srani_ema_formula_verified_numerically() {
             researcher_max_tokens: 32_768,
             distill_max_tokens: 32_768,
             gap_synthesis_max_tokens: 32_768,
-            implied_by: Default::default(),
         },
         ..H2AIConfig::default()
     };
@@ -3636,6 +3633,7 @@ fn srani_grounding_hint_format_is_positive_not_prohibitive() {
         alternatives: vec!["Redis".into()],
         grounding_statement: "Use Redis TTL counters".into(),
         source: GroundingSource::LlmResearcher,
+        implied_entities: vec![],
     };
     let hint = format_grounding_hint(&result, &["CockroachDB".into(), "ClickHouse".into()]);
     assert!(
@@ -3934,6 +3932,7 @@ async fn srani_web_search_chain_resolves_at_tier1() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     // tier=1 must use WebSearch (index 2), not LlmResearcher (index 1).
     let result = chain.resolve(&ctx, 1).await.unwrap();

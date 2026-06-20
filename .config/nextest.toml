@@ -1,5 +1,12 @@
 # Nextest configuration for h2ai-control-plane.
 #
+# The devcontainer cgroup enforces a hard PID ceiling of 2048.  With ~1200
+# processes already present, running nextest at full parallelism exhausts the
+# budget and std::thread::scope panics with EAGAIN (code 11).  Cap the global
+# concurrency so the total process headroom stays within the cgroup limit.
+[profile.default]
+test-threads = 4
+
 # NATS integration tests share a live NATS server and must not run concurrently.
 # Parallel execution causes wildcard subscribers to steal messages across tests,
 # and shared KV keys (e.g., "promoted", "observations") to overwrite each other.

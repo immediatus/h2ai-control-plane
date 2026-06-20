@@ -40,6 +40,10 @@ pub struct Output {
     pub all_comparison_events: Vec<VerifierComparisonEvent>,
     /// Mean pairwise constraint-conflict rate computed from raw proposal texts.
     pub conflict_rate: Option<f64>,
+    /// Per-constraint verifier reasons from the best-scoring passing proposal this wave.
+    /// Key = constraint_id, Value = verifier_reason text (non-empty reasons only).
+    /// Empty when no proposals passed verification.
+    pub best_passing_constraint_reasons: std::collections::HashMap<String, String>,
 }
 
 /// Run Phase 3.5: Verification Loop (LLM-as-Judge).
@@ -137,9 +141,27 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         });
     }
 
+    let mut best_pass_score = -1.0_f64;
+    let mut best_passing_constraint_reasons: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
     let mut proposals: Vec<ProposalEvent> = Vec::new();
     for (prop, results, any_cache_hit) in ver_out.passed {
         let score = h2ai_constraints::types::aggregate_compliance_score(&results);
+        // Strict `>` means ties resolve to first-seen (common when all proposals share score 1.0
+        // on soft-constraint-only tasks). Deterministic but unordered within a tie.
+        if score > best_pass_score {
+            best_pass_score = score;
+            best_passing_constraint_reasons = results
+                .iter()
+                .filter_map(|r| {
+                    r.verifier_reason
+                        .as_ref()
+                        .filter(|s| !s.is_empty())
+                        .map(|reason| (r.constraint_id.clone(), reason.clone()))
+                })
+                .collect();
+        }
         iteration_verification_events.push(VerificationScoredEvent {
             task_id: task_id.clone(),
             explorer_id: prop.explorer_id.clone(),
@@ -230,5 +252,6 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         turn1_proposals_for_scoring,
         all_comparison_events,
         conflict_rate,
+        best_passing_constraint_reasons,
     })
 }

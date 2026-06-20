@@ -501,6 +501,7 @@ impl<'a> ExecutionPipeline<'a> {
             events
         );
 
+        events.best_passing_constraint_reasons = verify_out.best_passing_constraint_reasons.clone();
         let turn1_proposals_for_scoring = verify_out.turn1_proposals_for_scoring.clone();
         let conflict_rate_this_wave = verify_out.conflict_rate;
 

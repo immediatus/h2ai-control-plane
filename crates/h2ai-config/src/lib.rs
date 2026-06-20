@@ -350,10 +350,6 @@ pub struct SraniConfig {
     /// Max tokens for the gap synthesis validation LLM call. Default: 32768.
     #[serde(default = "default_srani_gap_synthesis_max_tokens")]
     pub gap_synthesis_max_tokens: u64,
-    /// Parent→children suppression map: when a parent technology is grounded,
-    /// its implied sub-terms are suppressed from the ungrounded set before CFI is computed.
-    #[serde(default)]
-    pub implied_by: std::collections::HashMap<String, Vec<String>>,
 }
 
 const fn srani_default_enabled() -> bool {
@@ -584,7 +580,6 @@ impl Default for SraniConfig {
             researcher_max_tokens: default_srani_researcher_max_tokens(),
             distill_max_tokens: default_srani_distill_max_tokens(),
             gap_synthesis_max_tokens: default_srani_gap_synthesis_max_tokens(),
-            implied_by: std::collections::HashMap::new(),
         }
     }
 }

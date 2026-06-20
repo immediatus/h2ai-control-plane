@@ -161,7 +161,8 @@ NATS is the authoritative event log and the KV backing store. The runtime expect
 | `H2AI_SNAPSHOTS` KV | — | History 1 | 1 | Per-task snapshots. |
 | `H2AI_CHECKPOINT_{tenant}` KV | — | TTL 7d | 1 | Reasoning Memory Phase 1: per-task `TaskReasoningCheckpoint` written at each engine phase gate; used by `run_from_checkpoint` for crash recovery. One bucket per tenant. |
 | `H2AI_META_{tenant}` KV | — | TTL 90d | 1 | Reasoning Memory Phase 1: `TaskMetaState` projected at task resolution; outcome record for induction. One bucket per tenant. |
-| `H2AI_INDUCTION_{tenant}` KV | — | — | 1 | InductionStore: constraint-node hit-rate patterns boosted on matching tasks. See §7. One bucket per tenant. |
+| `H2AI_MEMORY` KV | — | — | 1 | NatsInductionScheduler: `RetryHintPattern` cross-task priming data. Single shared bucket; tenant scoping is via key prefix `{tenant_id}.tag.{normalized_tag}`. |
+| `H2AI_SKILLS` KV | — | — | 1 | SkillStore: cross-task `SkillNode` graph persisted by `SessionJournal`; queried for warm-start knowledge injection into generation prompts. |
 | `H2AI_SIGNALS` (`h2ai.signals.>`) | File | Limits, MaxAge 24h | 1 | HITL signal delivery — `ResumeSignal` envelopes (`Approve`, `WaveContinue`, `Unknown`). Subject per task: `h2ai.signals.{tenant_bucket_safe}.{task_id}`. Durable push consumer per task, deleted at task resolution. |
 
 JetStream message size limit defaults to 1 MB. `payload_offload_threshold_bytes` (default 524 288) governs when `system_context` is written to a content-addressed blob and replaced with a hash reference (`ContextPayload::Ref`) so the NATS message stays well under the limit.
@@ -561,7 +562,7 @@ All fields are optional; omitting `[knowledge.scoring]` applies the defaults sho
 
 Once enabled, the provider is queried automatically during every task's Phase B1 generation. Each explorer slot's `agent_role` (Coordinator / Executor / Evaluator / Synthesizer — defaults to `Executor`) selects a different RAPTOR retrieval mode and PPR-hop depth. Results flow into the slot's context as `[KNOWLEDGE]` (global, all roles), `[DOMAIN KNOWLEDGE]` (domain-filtered, Executor/Evaluator only), and `[CONSTRAINT TENSIONS]` (cross-domain tensions, Synthesizer only).
 
-The `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`) automatically records which constraint node patterns appeared in accepted proposals and boosts retrieval on subsequent matching tasks — no configuration required. To reset induction history for a tenant, delete the bucket: `nats kv purge H2AI_INDUCTION_{tenant}`.
+The `InductionStore` (`crates/h2ai-orchestrator/src/induction_store.rs`) records which constraint node patterns appeared in accepted proposals and boosts retrieval on subsequent matching tasks. Note: `induction_store` is currently set to `None` in the default task pipeline (`task_pipeline.rs`) — this subsystem is implemented but not yet wired into production dispatch.
 
 `ExplorerSlotConfig.agent_role` (in `h2ai.toml` manifest `explorers.slot_configs[*].agent_role`) controls per-slot retrieval strategy. Valid values: `"Coordinator"`, `"Executor"`, `"Evaluator"`, `"Synthesizer"`. Defaults to `"Executor"` when absent.
 

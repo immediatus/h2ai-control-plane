@@ -772,7 +772,7 @@ budget_injection_max_complexity = 3
 | `cost_guard.budget_injection_warn_fraction` | `0.50` | Lower bound of the injection window (50 % budget consumed). |
 | `cost_guard.budget_injection_max_complexity` | `3` | Hint injection is skipped for tasks with probe complexity above this threshold (high-complexity tasks generate long outputs regardless). |
 
-Events: `CostThresholdWarningEvent` (at `budget_warning_fraction`), `CostBudgetExhaustedEvent` (at `budget_abort_fraction`, blocks retry). Both carry `tokens_used` and `budget_tokens_per_task`.
+Events: `CostThresholdWarningEvent` (at `budget_warning_fraction`), `BudgetExhaustedEvent` (at `budget_abort_fraction`, blocks retry). Both carry `tokens_used` and `budget_tokens`.
 
 ### Convergence Gate
 
@@ -827,7 +827,6 @@ budget_floor_fraction         = 0.30
 |---|---|---|
 | `correlated_hallucination_cv_threshold` | `0.30` | CV of pairwise Jaccard distances below which C1 fires. Set to `0.0` to disable C1 entirely. |
 | `correlated_hallucination_min_jaccard_floor` | `0.50` | Mean pairwise Jaccard distance must also be **below** this floor for C1 to fire. Joint AND condition prevents spurious retries on genuinely-diverse equidistant ensembles (CV=0 but all distances high). |
-| `correlated_hallucination_min_proposals` | `2` | Minimum proposals required before C1 check runs. |
 | `domain_coverage_threshold` | `0.40` | Minimum fraction of corpus domains that slot `constraint_domains` must cover. Below this, `DiversityGuardDegradedEvent` fires. |
 | `require_bivariate_cg` | `false` | When `true`, tasks fail rather than warn when domain coverage is below threshold. |
 | `[srani]` | — | SRANI correlated fabrication detection (entity-level cross-proposal overlap). |
@@ -838,13 +837,15 @@ budget_floor_fraction         = 0.30
 | `srani.gate_threshold` | `0.50` | Injection pressure above which grounding hint is injected. |
 | `srani.warn_threshold` | `0.30` | CFI above which `CorrelatedFabricationEvent` is emitted (adaptive=false only). Also the cold-start midpoint lower bound. |
 | `srani.inject_threshold` | `0.60` | CFI above which grounding hint is injected (adaptive=false only). Also the cold-start midpoint upper bound. |
-| `srani.grounding_raw_max_chars` | `4000` | Maximum characters of raw web-search text fed into the distillation step. |
-| `srani.grounding_hint_max_chars` | `1200` | Maximum characters of the grounding statement injected into the explorer hint block. |
+| `srani.grounding_compress_threshold` | `800` | Maximum characters of a single grounding source's text before it is compressed. Limits per-source token cost during distillation. |
 | `srani.grounding_distill` | `true` | When `true` and a researcher adapter is available, distill raw web-search results with the LLM before injection. |
+| `srani.researcher_max_tokens` | `32768` | Max tokens budget for the `LlmResearcherGrounder` call (entity classification + grounding statement). |
+| `srani.distill_max_tokens` | `32768` | Max tokens budget for the web-search distillation LLM call. |
+| `srani.gap_synthesis_max_tokens` | `32768` | Max tokens budget for GAP researcher synthesis calls. |
 
 **NATS KV state:** SRANI EMA state (`srani_ema_cfi`, `srani_count`) is persisted at key `"srani_adaptive_state"` in `H2AI_ESTIMATOR`. Cold start: μ = 0.45 (midpoint of default thresholds) until count ≥ 5.
 
-**Spec boundary construction:** The `effective_spec` passed to `check_specification_grounding` is built from `manifest.description` concatenated with all constraint corpus text: `ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, and `ConstraintDoc.pass_criteria` when present. This prevents constraint-mandated technologies (e.g., Redis, ClickHouse, Kafka named in rubric checks) from being classified as ungrounded and subsequently targeted for removal by the grounding chain.
+**Spec boundary construction:** The `effective_spec` passed to `check_specification_grounding` is built from three sources concatenated: `manifest.description`, `manifest.context` (the optional contextual background field — e.g. "We run Redis Cluster for caching"), and all constraint corpus text (`ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, `ConstraintDoc.pass_criteria` when present). This prevents technologies named in the task description, contextual background, or constraint rubrics from being classified as ungrounded and subsequently targeted for removal by the grounding chain.
 
 ### Pipeline Resilience
 
@@ -1072,11 +1073,12 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 | `H2AI_CONSTRAINT_PAYLOADS` | Object Store | `{id}@{version}` | — | Full predicate payloads for non-Static constraints (LlmJudge, Oracle). Fetched lazily at Phase 4. |
 | `H2AI_CHECKPOINT_{tenant_id}` | KV store | `task_id` string | 7 days | `TaskReasoningCheckpoint` (zstd-compressed). Per-tenant; bucket created on first task for each tenant. |
 | `H2AI_META_{tenant_id}` | KV store | `task_id` string | no TTL | `TaskMetaState` projections (uncompressed JSON). Per-tenant; consumed by InductionScheduler (Phase 2). |
-| `H2AI_MEMORY_{tenant_id}` | KV store | `"latest"` string | no TTL | `TenantMemoryStore` distilled from meta-state (Phase 2). Per-tenant; written by InductionScheduler. |
+| `H2AI_MEMORY` | KV store | `{tenant_id}.tag.{normalized_tag}` | no TTL | `TagPatternBucket` (vec of `RetryHintPattern`) for `NatsInductionScheduler` cross-task priming. Single shared bucket; tenant scoped via key prefix. A pattern with N trigger_tags appears in N tag buckets. |
 | `H2AI_CONFLICT_{tenant_id}` | KV store | `"accumulator"` string | no TTL | `ConflictRateAccumulator` — rolling per-task conflict rates for `beta_quality` derivation. |
 | `H2AI_CALIBRATION_RECORDS` | KV | `{adapter_profile}` | — | Global (not tenanted). `CalibrationRecord` per adapter profile — `n_useful_history` ring buffer `(N_useful: u8, N_max: u8, unix_minutes: u32)`. Written by the calibration harness; read by the epistemic β₀ `yield_from_history` path. Shared across all tenants because the adapter pool is shared infrastructure. |
 | `H2AI_AUDITOR_HEALTH` | KV | `{adapter_profile}` | — | Global (not tenanted). `AuditorHealth` circuit-breaker state per adapter profile. Tracks `AuditorCircuitState` (Closed/Open/HalfOpen), consecutive failures, and `tripped_at` (unix millis). HalfOpen uses NATS KV `create` (CAS) as a probe lease serialiser. |
 | `H2AI_PROBE_LEASE` | KV | `{adapter_profile}` | — | Global (not tenanted). Atomic probe-lease guards. `acquire_probe_lease` uses `kv.create()` (CAS, create-if-not-exists) with stale-lease eviction — only one caller wins per TTL window; `release_probe_lease` deletes the key. Serialises concurrent HalfOpen probe attempts across processes. |
+| `H2AI_SKILLS` | KV | `{tenant_id_bucket_safe}/skills` | — | Per-tenant skill nodes extracted from resolved task traces (serialised JSON). Read and written by the `SkillStore` implementation in `nats.rs`. |
 
 `TaskCheckpoint` schema (written after each phase boundary):
 
@@ -1125,11 +1127,12 @@ constraint_payloads_bucket     = "H2AI_CONSTRAINT_PAYLOADS"
 calibration_records_bucket     = "H2AI_CALIBRATION_RECORDS"
 auditor_health_bucket          = "H2AI_AUDITOR_HEALTH"
 probe_lease_bucket             = "H2AI_PROBE_LEASE"
+skills_bucket                  = "H2AI_SKILLS"
 
 # Per-tenant bucket prefixes — actual bucket: {prefix}_{tenant_id}
 reasoning_checkpoint_bucket_prefix = "H2AI_CHECKPOINT"  # TaskReasoningCheckpoint (7d TTL)
 task_meta_state_bucket_prefix      = "H2AI_META"         # TaskMetaState projections
-tenant_memory_bucket_prefix        = "H2AI_MEMORY"       # TenantMemoryStore (Phase 2)
+tenant_memory_bucket_prefix        = "H2AI_MEMORY"       # Defined but not consumed — NatsInductionScheduler uses hardcoded H2AI_MEMORY_BUCKET constant
 conflict_beta_bucket_prefix        = "H2AI_CONFLICT"     # ConflictRateAccumulator
 
 # JetStream stream names
@@ -1186,7 +1189,7 @@ Per-tenant NATS KV bucket name prefixes are configured under `[state]`:
 |---|---|---|
 | `state.reasoning_checkpoint_bucket_prefix` | `"H2AI_CHECKPOINT"` | Prefix for per-tenant reasoning checkpoint buckets (`{prefix}_{tenant_id}`). 7-day TTL. |
 | `state.task_meta_state_bucket_prefix` | `"H2AI_META"` | Prefix for per-tenant meta-state buckets (`{prefix}_{tenant_id}`). No TTL. |
-| `state.tenant_memory_bucket_prefix` | `"H2AI_MEMORY"` | Prefix for per-tenant distilled memory store (`{prefix}_{tenant_id}`). Phase 2. No TTL. |
+| `state.tenant_memory_bucket_prefix` | `"H2AI_MEMORY"` | Defined in config but not consumed by production code. `NatsInductionScheduler` uses the hardcoded `H2AI_MEMORY_BUCKET` constant directly. |
 | `state.conflict_beta_bucket_prefix` | `"H2AI_CONFLICT"` | Prefix for per-tenant conflict-rate accumulators (`{prefix}_{tenant_id}`). No TTL. |
 
 **`TaskReasoningCheckpoint` schema and phase lifecycle:**
@@ -1491,9 +1494,9 @@ The `[knowledge.source]` table is **externally-tagged**: the key (`YamlDir`) is 
 - `topic_knowledge` → `SectionTag::TopicKnowledge` (importance=0.8, preserve=false); only present when `domain_tag_boost=true` and matching domain nodes exist
 - `constraint_tensions` → `SectionTag::ConstraintTension` (importance=0.85, preserve=false); only present for Synthesizer slots when `SurfacedTension` entries are non-empty
 
-The `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`, key format `knowledge.{node_id}.{role}`) records `KnowledgeNodePattern{node_id, role, domain_tags, hit_rate}` after each accepted merge. On subsequent tasks with matching `domain_tags`, high-hit_rate `node_ids` are prepended as `explicit_ids` in the query — bypassing BM25+ scoring for known-good nodes. Phase 1 approximation: `record()` uses `domain_tags` as proxy node IDs until full node_id threading through `EngineOutput` is plumbed. Failures at any layer degrade silently to `None` — task execution never blocks on knowledge.
+The `InductionStore` (key format `knowledge.{node_id}.{role}`) records `KnowledgeNodePattern{node_id, role, domain_tags, hit_rate}` after each accepted merge. On subsequent tasks with matching `domain_tags`, high-hit_rate `node_ids` are prepended as `explicit_ids` in the query — bypassing BM25+ scoring for known-good nodes. Phase 1 approximation: `record()` uses `domain_tags` as proxy node IDs until full node_id threading through `EngineOutput` is plumbed. Failures at any layer degrade silently to `None` — task execution never blocks on knowledge. The bucket name is passed as a constructor parameter to `InductionStore::create()`; no default bucket name constant is defined in the codebase.
 
-**Partial wiring note (2026-05-18):** `InductionStore` is wired into `EngineInput.induction_store` in `engine.rs`. However, `tasks.rs` and `recovery.rs` currently pass `induction_store: None` when constructing `EngineInput` — induction boost is therefore only active for tasks that go through the engine's internal retry path, not for initial submissions or recoveries from checkpoint. Follow-up work: wire `AppState.induction_store` into both handlers.
+**Partial wiring note (2026-05-18):** `InductionStore` field exists on `EngineInput` in `engine.rs`. However, `task_pipeline.rs` and `recovery.rs` currently pass `induction_store: None` when constructing `EngineInput` — induction boost is not active for any submitted tasks. Follow-up work: define a bucket name constant and wire `AppState.induction_store` into both handlers.
 
 ### Scheduler
 

@@ -103,7 +103,7 @@ struct NatsRetryKvBackend {
 impl RetryKvBackend for NatsRetryKvBackend {
     async fn get_entry(&self, key: &str) -> Option<(bytes::Bytes, u64)> {
         match self.kv.entry(key).await {
-            Ok(Some(e)) => Some((e.value.into(), e.revision)),
+            Ok(Some(e)) => Some((e.value, e.revision)),
             _ => None,
         }
     }

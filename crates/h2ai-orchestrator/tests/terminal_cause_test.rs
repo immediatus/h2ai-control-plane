@@ -14,7 +14,7 @@ fn top_violated_constraints_sorted_capped_at_5() {
         freq.insert(id.to_string(), count);
     }
     let mut sorted: Vec<(String, u32)> = freq.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     sorted.truncate(5);
     assert_eq!(sorted.len(), 5);
     assert_eq!(sorted[0].1, 5); // highest count first
@@ -25,7 +25,7 @@ fn top_violated_constraints_sorted_capped_at_5() {
 
 #[test]
 fn severity_dominant_cause_selected() {
-    let causes = vec![
+    let causes = [
         TerminalCause::Timeout,
         TerminalCause::LlmAdapterUnavailable,
         TerminalCause::VerificationExhaustion,

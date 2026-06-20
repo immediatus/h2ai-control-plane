@@ -27,12 +27,22 @@ pub struct GapResearcherOpts<'a> {
 pub struct GroundingContext {
     pub fabricated_entities: Vec<String>,
     pub task_description: String,
+    /// Architectural nouns extracted from the effective spec (task description +
+    /// constraint corpus). The LLM researcher uses this to distinguish entities
+    /// that are standard implementation details of in-scope technologies from
+    /// genuinely novel fabrications.
+    pub spec_technologies: Vec<String>,
 }
 
 pub struct GroundingResult {
     pub alternatives: Vec<String>,
     pub grounding_statement: String,
     pub source: GroundingSource,
+    /// Entities from `fabricated_entities` that the researcher classified as
+    /// standard sub-components of spec-grounded technologies (not novel fabrications).
+    /// These are excluded from the grounding hint so the LLM is not incorrectly
+    /// steered away from valid implementation choices.
+    pub implied_entities: Vec<String>,
 }
 
 // ─── Trait ────────────────────────────────────────────────────────────────────
@@ -67,6 +77,7 @@ impl GroundingProvider for SpecAnchorGrounder {
             alternatives,
             grounding_statement,
             source: GroundingSource::SpecAnchor,
+            implied_entities: vec![],
         })
     }
 }
@@ -91,10 +102,16 @@ impl LlmResearcherGrounder {
 impl GroundingProvider for LlmResearcherGrounder {
     async fn ground(&self, ctx: &GroundingContext) -> Option<GroundingResult> {
         let fabricated = ctx.fabricated_entities.join(", ");
+        let spec_technologies = if ctx.spec_technologies.is_empty() {
+            "none identified".to_string()
+        } else {
+            ctx.spec_technologies.join(", ")
+        };
         let research_req = ComputeRequest {
             system_context: SRANI_RESEARCHER_SYSTEM.as_str().into(),
             task: SRANI_RESEARCHER_TASK.render(&[
                 ("fabricated", &fabricated),
+                ("spec_technologies", &spec_technologies),
                 ("task_description", &ctx.task_description),
             ]),
             tau: TauValue::new(0.3).unwrap(),
@@ -108,11 +125,20 @@ impl GroundingProvider for LlmResearcherGrounder {
             .filter_map(|a| a.as_str().map(String::from))
             .collect();
         let statement = v["statement"].as_str().unwrap_or("").to_string();
+        let implied_entities: Vec<String> = v["implied"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| a.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Some(GroundingResult {
             alternatives,
             grounding_statement: statement,
             source: GroundingSource::LlmResearcher,
+            implied_entities,
         })
     }
 }
@@ -227,6 +253,7 @@ impl GroundingProvider for WebSearchGrounder {
             alternatives: vec![],
             grounding_statement: sections.join("\n\n"),
             source: GroundingSource::WebSearch,
+            implied_entities: vec![],
         })
     }
 }
@@ -374,6 +401,12 @@ fn merge_grounding(
                     alternatives.push(alt.clone());
                 }
             }
+            let mut implied_entities = a.implied_entities.clone();
+            for e in &t.implied_entities {
+                if !implied_entities.contains(e) {
+                    implied_entities.push(e.clone());
+                }
+            }
             let statement = match (
                 a.grounding_statement.is_empty(),
                 t.grounding_statement.is_empty(),
@@ -386,6 +419,7 @@ fn merge_grounding(
                 alternatives,
                 grounding_statement: statement,
                 source: t.source,
+                implied_entities,
             })
         }
     }
@@ -466,6 +500,7 @@ pub async fn run_gap_researcher(
     let ctx = GroundingContext {
         fabricated_entities: queries,
         task_description: check_text.to_string(),
+        spec_technologies: vec![],
     };
 
     // Track whether we got real web grounding — if not, we skip the validator and

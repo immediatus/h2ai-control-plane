@@ -262,6 +262,7 @@ async fn system_web_search_chain_escalates_correctly_per_tier() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis sliding windows".into(),
+        spec_technologies: vec![],
     };
 
     let r0 = chain.resolve(&ctx, 0).await.unwrap();
@@ -287,6 +288,7 @@ fn grounder_build_queries_generates_targeted_queries() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis sliding windows".into(),
+        spec_technologies: vec![],
     };
     let queries = WebSearchGrounder::build_queries(&ctx);
 
@@ -379,6 +381,7 @@ async fn live_web_search_grounder_with_stackoverflow_aggregates_queries() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis sliding windows".into(),
+        spec_technologies: vec![],
     };
 
     match grounder.ground(&ctx).await {
@@ -491,6 +494,7 @@ async fn spec_anchor_extracts_spec_entities_as_alternatives() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let grounder = SpecAnchorGrounder;
     let result = grounder.ground(&ctx).await.unwrap();
@@ -511,6 +515,7 @@ async fn spec_anchor_excludes_fabricated_from_alternatives() {
         fabricated_entities: vec!["Redis".into(), "CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let grounder = SpecAnchorGrounder;
     let result = grounder.ground(&ctx).await.unwrap();
@@ -525,6 +530,7 @@ async fn spec_anchor_empty_spec_still_produces_result() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "do something simple".into(),
+        spec_technologies: vec![],
     };
     let grounder = SpecAnchorGrounder;
     let result = grounder.ground(&ctx).await;
@@ -538,6 +544,7 @@ async fn spec_anchor_source_tag_is_correct() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let grounder = SpecAnchorGrounder;
     let result = grounder.ground(&ctx).await.unwrap();
@@ -552,6 +559,7 @@ async fn llm_researcher_happy_path() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let adapter = Arc::new(mock_adapter(
         r#"{"alternatives": ["Redis TTL counters", "sliding window"], "statement": "Use Redis TTL + Lua for rate limiting"}"#,
@@ -567,6 +575,7 @@ async fn llm_researcher_invalid_json_returns_none() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     let adapter = Arc::new(mock_adapter("not json at all !!!"));
     let grounder = LlmResearcherGrounder::new(adapter, 512);
@@ -579,6 +588,7 @@ async fn llm_researcher_missing_alternatives_field_returns_none() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     let adapter = Arc::new(mock_adapter(r#"{"statement": "use Redis"}"#));
     let grounder = LlmResearcherGrounder::new(adapter, 512);
@@ -597,6 +607,7 @@ async fn web_search_produces_web_search_source() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let backend = Arc::new(mock_search(
         "Redis sliding-window counter is the standard approach for rate limiting".to_string(),
@@ -612,6 +623,7 @@ async fn web_search_empty_results_returns_none() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     let backend = Arc::new(mock_search("".to_string()));
     let grounder = WebSearchGrounder::new(backend, 3);
@@ -629,6 +641,7 @@ async fn web_search_error_returns_none() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate-limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     let grounder = WebSearchGrounder::new(Arc::new(backend), 3);
     let result = grounder.ground(&ctx).await;
@@ -645,6 +658,7 @@ fn format_grounding_hint_removes_urls_from_statement() {
         grounding_statement:
             "Redis https://redis.io/docs sliding window http://example.com counter".into(),
         source: GroundingSource::WebSearch,
+        implied_entities: vec![],
     };
     let hint = format_grounding_hint(&result, &["CockroachDB".into()]);
     assert!(!hint.contains("https://"), "https:// must be removed");
@@ -659,6 +673,7 @@ fn format_grounding_hint_preserves_non_url_statement() {
         alternatives: vec!["Redis".into()],
         grounding_statement: "rate limiting with Redis sliding window".into(),
         source: GroundingSource::LlmResearcher,
+        implied_entities: vec![],
     };
     let hint = format_grounding_hint(&result, &["CockroachDB".into()]);
     assert!(hint.contains("rate limiting with Redis sliding window"));
@@ -673,6 +688,7 @@ async fn chain_distillation_replaces_raw_web_text_with_distilled_output() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let raw_text = "Web result: use Redis. ".repeat(200); // > 4000 chars
     let distilled_output = "Redis sliding window is the standard rate-limiting approach.";
@@ -700,6 +716,7 @@ async fn chain_distill_disabled_preserves_raw_text_capped_at_hint_limit() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let raw_text = "Redis. ".repeat(300); // > 1200 chars
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
@@ -721,6 +738,7 @@ async fn chain_tier0_merges_spec_anchor_and_researcher() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
@@ -751,6 +769,7 @@ async fn chain_tier1_escalates_to_web_search_skips_researcher() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
@@ -778,6 +797,7 @@ async fn chain_tier_clamped_at_last_tier() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(SpecAnchorGrounder),
@@ -797,6 +817,7 @@ async fn chain_spec_anchor_only_still_produces_positive_result() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![Box::new(SpecAnchorGrounder)];
     let chain = SraniGroundingChain::new(providers);
@@ -815,6 +836,7 @@ async fn live_web_grounding_full_pipeline_aggregates_multi_source() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis sliding windows".into(),
+        spec_technologies: vec![],
     };
 
     println!(
@@ -1072,6 +1094,7 @@ async fn chain_empty_providers_returns_none() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate limiting service".into(),
+        spec_technologies: vec![],
     };
     let result = chain.resolve(&ctx, 0).await;
     assert!(result.is_none(), "empty chain must return None");
@@ -1082,6 +1105,7 @@ async fn web_search_grounder_returns_none_with_no_fabricated_entities() {
     let ctx = GroundingContext {
         fabricated_entities: vec![],
         task_description: "Build a rate limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     let backend = Arc::new(mock_search("some result".to_string()));
     let grounder = WebSearchGrounder::new(backend, 3);
@@ -1102,6 +1126,7 @@ async fn chain_none_anchor_some_tier_uses_tier_result() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate limiting service using Redis and counters".into(),
+        spec_technologies: vec![],
     };
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
         Box::new(NoneProvider),
@@ -1128,6 +1153,7 @@ async fn web_search_no_results_found_string_returns_none() {
     let ctx = GroundingContext {
         fabricated_entities: vec!["CockroachDB".into()],
         task_description: "Build a rate limiting service using Redis".into(),
+        spec_technologies: vec![],
     };
     let grounder = WebSearchGrounder::new(Arc::new(backend), 3);
     let result = grounder.ground(&ctx).await;
@@ -1140,6 +1166,7 @@ async fn chain_distillation_empty_output_falls_back_to_raw() {
         fabricated_entities: vec!["CockroachDB".into(), "ClickHouse".into()],
         task_description: "Build a rate-limiting service using Redis and in-process counters"
             .into(),
+        spec_technologies: vec![],
     };
     let raw_text = "Web result: use Redis. ".repeat(5);
     let providers: Vec<Box<dyn GroundingProvider>> = vec![
@@ -1162,6 +1189,7 @@ fn format_grounding_hint_empty_alternatives_and_empty_statement() {
         alternatives: vec![],
         grounding_statement: String::new(),
         source: GroundingSource::SpecAnchor,
+        implied_entities: vec![],
     };
     let hint = format_grounding_hint(&result, &["FakeLib".into()]);
     assert!(hint.contains("GROUNDING CONTEXT"));

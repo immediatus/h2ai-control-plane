@@ -522,7 +522,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             // Build top_violated_constraints: sort by frequency descending, cap at 5.
             let mut top_violated: Vec<(String, u32)> =
                 run_ctx.violation_freq.clone().into_iter().collect();
-            top_violated.sort_by(|a, b| b.1.cmp(&a.1));
+            top_violated.sort_by_key(|b| std::cmp::Reverse(b.1));
             top_violated.truncate(5);
 
             let failed_ev =

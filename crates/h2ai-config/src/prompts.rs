@@ -204,16 +204,25 @@ pub const VERIFICATION_TASK: PromptTemplate =
 
 /// System prompt for the LLM researcher grounder (tier-0 SRANI escalation).
 /// No variables.
-pub const SRANI_RESEARCHER_SYSTEM: PromptTemplate =
-    PromptTemplate("You are a technical grounding advisor. Respond with valid JSON only.");
+pub const SRANI_RESEARCHER_SYSTEM: PromptTemplate = PromptTemplate(
+    "You are a technical grounding advisor. \
+     Classify components as implied by in-scope technologies or genuinely novel. \
+     Respond with valid JSON only.",
+);
 
 /// Task prompt for the LLM researcher grounder.
-/// Variables: `{fabricated}`, `{task_description}`.
+/// Variables: `{fabricated}`, `{spec_technologies}`, `{task_description}`.
 pub const SRANI_RESEARCHER_TASK: PromptTemplate = PromptTemplate(concat!(
-    "These components were introduced but are NOT in the specification: {fabricated}.\n",
-    "Task context: {task_description}\n",
-    "Provide spec-compliant alternatives. Respond with JSON: ",
-    r#"{"alternatives": ["..."], "statement": "..."}"#,
+    "Components appearing in all proposals but NOT explicitly in the specification: {fabricated}\n",
+    "Technologies explicitly in scope (from spec and constraints): {spec_technologies}\n",
+    "Task context: {task_description}\n\n",
+    "For each component, classify it as:\n",
+    "  implied  — a standard sub-component or implementation detail of an in-scope technology\n",
+    "             (e.g. RocksDB is ClickHouse's storage engine; ReplacingMergeTree is a ClickHouse table type)\n",
+    "  novel    — introduces something not implied by any in-scope technology\n\n",
+    "Provide spec-compliant alternatives ONLY for novel components.\n",
+    "Respond with JSON:\n",
+    r#"{"implied": ["..."], "novel": ["..."], "alternatives": ["..."], "statement": "..."}"#,
 ));
 
 /// System prompt for the web-search distillation step.
@@ -307,7 +316,10 @@ pub const THINKING_ARCHETYPE_MD_ITER1: PromptTemplate = PromptTemplate(concat!(
     "**Confidence:** [0.0–1.0 — how reliably this archetype applies to this domain]\n",
     "**Tau:** [0.0–1.0 — reasoning temperature; lower for precision, higher for creative]\n",
     "**Model tier:** [fast | standard | capable]\n",
-    "**CoT style:** [step_by_step | devil_s_advocate | first_principles | backward_chaining | none]"
+    "**CoT style:** [step_by_step | devil_s_advocate | first_principles | backward_chaining | none]\n",
+    "**Focus Constraints:** [comma-separated IDs from ACTIVE CONSTRAINTS that this archetype \
+     specifically targets; e.g. \"C-TAU-2, C-BFT-1\"; write \"all\" if this archetype \
+     addresses all constraints equally]"
 ));
 
 /// Markdown-fill archetype selection template — iteration N > 1 (prior synthesis available).

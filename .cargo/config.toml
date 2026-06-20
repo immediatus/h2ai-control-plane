@@ -1,0 +1,19 @@
+# Cargo configuration for h2ai-control-plane devcontainer.
+#
+# The devcontainer cgroup enforces pids.max=2048.  On a 32-CPU host, cargo's
+# default parallelism (jobs=32) spawns 32 simultaneous rustc processes, each
+# launching several LLVM codegen threads, plus 32 parallel rust-lld invocations
+# (also multi-threaded).  Peak thread count easily exceeds the cgroup budget,
+# causing rustc's codegen coordinator and rust-lld to panic with EAGAIN
+# ("Resource temporarily unavailable", OS code 11).
+#
+# Limiting jobs to 4 keeps concurrent compiler+linker threads well under 2048.
+# codegen-units=1 eliminates LLVM's intra-crate parallel ThinLTO splitting so
+# each rustc invocation uses far fewer threads.
+
+[build]
+jobs = 4
+target-dir = "/workspaces/h2ai-control-plane/target2"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "codegen-units=1"]

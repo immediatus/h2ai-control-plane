@@ -6,6 +6,7 @@ tests/e2e/results/
 
 # Rust build artifacts
 /target/
+/target2/
 **/*.rs.bk
 
 # Environment secrets (Cargo.lock is intentionally tracked — reproducible Docker builds)

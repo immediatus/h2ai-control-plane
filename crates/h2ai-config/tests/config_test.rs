@@ -1585,23 +1585,6 @@ fn srani_config_serde_empty() {
     assert_eq!(c.grounding_compress_threshold, 800);
 }
 
-#[test]
-fn srani_implied_by_parses_from_toml() {
-    // Test that we can parse the implied_by map directly from SraniConfig TOML.
-    // Since SraniConfig has #[serde(default)] on implied_by, it should be optional.
-    let json = r#"{
-        "enabled": true,
-        "implied_by": {
-            "ClickHouse": ["MergeTree", "ReplacingMergeTree", "Distributed"],
-            "Redis": ["SETEX", "SETNX"]
-        }
-    }"#;
-    let srani: SraniConfig = serde_json::from_str(json).unwrap();
-    let ib = &srani.implied_by;
-    assert_eq!(ib.get("ClickHouse").map(|v| v.len()), Some(3));
-    assert!(ib.get("Redis").unwrap().contains(&"SETEX".to_string()));
-}
-
 // ── CsprConfig default ────────────────────────────────────────────────────────
 
 #[test]

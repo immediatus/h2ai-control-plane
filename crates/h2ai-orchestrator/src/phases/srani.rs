@@ -97,26 +97,6 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
             &effective_spec,
             &proposal_texts,
         ) {
-            // Build grounded parents list: keys in implied_by that appear in effective_spec
-            let grounded_parents: Vec<String> = engine_input
-                .cfg
-                .srani
-                .implied_by
-                .keys()
-                .filter(|k| effective_spec.contains(k.as_str()))
-                .cloned()
-                .collect();
-
-            let filtered_ungrounded = if grounded_parents.is_empty() {
-                grounding.shared_ungrounded.clone()
-            } else {
-                crate::specification_grounding::apply_implied_by_suppression(
-                    &grounding.shared_ungrounded,
-                    &engine_input.cfg.srani.implied_by,
-                    &grounded_parents,
-                )
-            };
-
             // Always update EMA regardless of whether the gate fires.
             let new_ema = crate::srani_gate::update_ema(
                 engine_input.srani_ema_cfi,
@@ -161,15 +141,24 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
                     task_id: task_id.clone(),
                     cfi: grounding.cfi,
                     injection_pressure: pressure,
-                    shared_ungrounded_entities: filtered_ungrounded.clone(),
+                    shared_ungrounded_entities: grounding.shared_ungrounded.clone(),
                     proposal_count: grounding.proposal_count,
                     hint_injected,
                     timestamp: Utc::now(),
                 });
                 if hint_injected {
+                    let spec_technologies = {
+                        let mut v: Vec<String> =
+                            crate::specification_grounding::extract_arch_nouns(&effective_spec)
+                                .into_iter()
+                                .collect();
+                        v.sort();
+                        v
+                    };
                     let grounding_ctx = crate::srani_grounding::GroundingContext {
-                        fabricated_entities: filtered_ungrounded.clone(),
+                        fabricated_entities: grounding.shared_ungrounded.clone(),
                         task_description: engine_input.manifest.description.clone(),
+                        spec_technologies,
                     };
                     let chain_result = if let Some(ref chain) = engine_input.srani_grounding_chain {
                         chain.resolve(&grounding_ctx, srani_tier).await
@@ -180,22 +169,33 @@ pub async fn run(generation: GenerationOutput, input: Input<'_>) -> StepResult<O
                             .await
                     };
                     if let Some(ref result) = chain_result {
-                        let hint = crate::srani_grounding::format_grounding_hint(
-                            result,
-                            &filtered_ungrounded,
-                        );
-                        retry_context = Some(retry_context.unwrap_or_default() + &hint);
+                        // Exclude entities the researcher classified as implied by
+                        // in-scope technologies — only novel fabrications get the
+                        // "avoid" hint. This is the per-task, per-tenant classification.
+                        let novel_entities: Vec<String> = grounding
+                            .shared_ungrounded
+                            .iter()
+                            .filter(|e| !result.implied_entities.contains(e))
+                            .cloned()
+                            .collect();
+                        if !novel_entities.is_empty() {
+                            let hint = crate::srani_grounding::format_grounding_hint(
+                                result,
+                                &novel_entities,
+                            );
+                            retry_context = Some(retry_context.unwrap_or_default() + &hint);
+                        }
                         let grounding_slot =
-                            crate::srani_grounding::classify_grounding_slot(&filtered_ungrounded);
+                            crate::srani_grounding::classify_grounding_slot(&novel_entities);
                         researcher_grounding_events.push(ResearcherGroundingEvent {
                             task_id: task_id.clone(),
-                            shared_assumption: filtered_ungrounded.join(", "),
+                            shared_assumption: novel_entities.join(", "),
                             literature_summary: result.grounding_statement.clone(),
                             slot: Some(grounding_slot),
                             source: result.source.clone(),
                         });
                     } else {
-                        let entities = filtered_ungrounded.join(", ");
+                        let entities = grounding.shared_ungrounded.join(", ");
                         retry_context = Some(
                             retry_context.unwrap_or_default()
                                 + &format!(

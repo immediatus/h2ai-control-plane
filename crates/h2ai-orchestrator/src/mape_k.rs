@@ -98,6 +98,10 @@ pub struct WaveEvents {
     /// Sum of `token_cost` from all ProposalEvents generated this wave.
     /// Zero for waves where no proposals were generated (e.g. EarlyExit).
     pub wave_token_cost: u64,
+    /// Per-constraint verifier reasons from the best-scoring passing proposal this wave.
+    /// Populated from `phases::verify::Output.best_passing_constraint_reasons` in pipeline.rs.
+    /// Empty on waves with no passing proposals.
+    pub best_passing_constraint_reasons: std::collections::HashMap<String, String>,
 }
 
 impl Default for WaveEvents {
@@ -125,6 +129,7 @@ impl Default for WaveEvents {
             wave_proposal_texts: std::collections::HashMap::new(),
             assembled_contexts: Vec::new(),
             wave_token_cost: 0,
+            best_passing_constraint_reasons: std::collections::HashMap::new(),
         }
     }
 }
@@ -296,6 +301,11 @@ pub struct MapeKController {
     /// Cross-wave global best proposal: (score, `proposal_text`).
     /// Updated by `observe()` each wave; used by CSPR-v2 repair context builder.
     pub(crate) global_best_proposal: Option<(f64, String)>,
+    /// Dynamic per-constraint verifier reasons from the global-best passing proposal.
+    /// Populated in `observe()` when a new best proposal score is recorded.
+    /// Used as `passing_constraint_pins` hints in CSPR repair context to anchor the
+    /// LLM on what the verifier accepted, not just what the corpus requires.
+    pub(crate) global_best_constraint_reasons: std::collections::HashMap<String, String>,
     /// Mean compliance scores from each wave, used for plateau detection.
     pub(crate) compliance_score_history: Vec<f64>,
     /// Static conflict graph built from the task's constraint corpus.
@@ -521,6 +531,25 @@ pub fn check_convergence_gate(
     mean >= cfg.theta_converge
 }
 
+/// Return the best available hint for a passing constraint's pin.
+///
+/// Prefers the dynamic verifier reason from the global-best proposal (grounded in
+/// what the verifier actually accepted) over the static corpus hint (which is generic).
+/// Falls back to corpus hint when no dynamic reason exists. Returns `None` when neither is available.
+#[must_use]
+pub fn build_best_passing_pin_hint(
+    constraint_id: &str,
+    dynamic_reasons: &std::collections::HashMap<String, String>,
+    corpus_hint: Option<String>,
+) -> Option<String> {
+    if let Some(dynamic) = dynamic_reasons.get(constraint_id) {
+        if !dynamic.is_empty() {
+            return Some(dynamic.clone());
+        }
+    }
+    corpus_hint.filter(|s| !s.is_empty())
+}
+
 impl MapeKController {
     // ── Constructor ────────────────────────────────────────────────────────────
 
@@ -629,6 +658,7 @@ impl MapeKController {
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
+            global_best_constraint_reasons: std::collections::HashMap::new(),
             compliance_score_history: Vec::new(),
             conflict_graph,
             binary_checks: input
@@ -891,7 +921,7 @@ impl MapeKController {
         // Epistemic leader: snapshot last-wave verification events and proposal texts.
         self.last_wave_verification_events = e.verification_events.clone();
         self.last_wave_proposal_texts = e.wave_proposal_texts.clone();
-        // CSPR-v2: update cross-wave global-best proposal.
+        // CSPR-v2: update cross-wave global-best proposal and dynamic per-constraint reasons.
         for (explorer_id, text) in &e.wave_proposal_texts {
             if text.is_empty() {
                 continue;
@@ -899,7 +929,7 @@ impl MapeKController {
             if let Some(ev) = e
                 .verification_events
                 .iter()
-                .find(|ev| &ev.explorer_id == explorer_id)
+                .find(|ev| &ev.explorer_id == explorer_id && ev.passed)
             {
                 let is_better = self
                     .global_best_proposal
@@ -907,6 +937,13 @@ impl MapeKController {
                     .is_none_or(|(best_score, _)| ev.score > *best_score);
                 if is_better {
                     self.global_best_proposal = Some((ev.score, text.clone()));
+                    // Update dynamic per-constraint reasons from this wave's best passing proposal.
+                    // The wave's best_passing_constraint_reasons approximates this proposal's
+                    // compliance evidence — both come from the highest-scoring passing proposal.
+                    if !e.best_passing_constraint_reasons.is_empty() {
+                        self.global_best_constraint_reasons =
+                            e.best_passing_constraint_reasons.clone();
+                    }
                 }
             }
         }
@@ -1600,7 +1637,11 @@ impl MapeKController {
                         .flat_map(|t| self.conflict_graph.conflicts_for(&t.constraint_id))
                         .filter(|id| !failing_ids.contains(*id))
                         .map(|id| {
-                            let hint = self.corpus_pass_hint_for(id);
+                            let hint = build_best_passing_pin_hint(
+                                id,
+                                &self.global_best_constraint_reasons,
+                                self.corpus_pass_hint_for(id),
+                            );
                             (id.to_owned(), hint)
                         })
                         .collect();
@@ -1612,7 +1653,11 @@ impl MapeKController {
                         .map(|(id, _, _)| id.as_str())
                         .filter(|id| !failing_ids.contains(*id))
                         .map(|id| {
-                            let hint = self.corpus_pass_hint_for(id);
+                            let hint = build_best_passing_pin_hint(
+                                id,
+                                &self.global_best_constraint_reasons,
+                                self.corpus_pass_hint_for(id),
+                            );
                             (id.to_owned(), hint)
                         })
                         .collect();
@@ -2578,6 +2623,7 @@ impl MapeKController {
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
+            global_best_constraint_reasons: std::collections::HashMap::new(),
             compliance_score_history: Vec::new(),
             conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph::build(&[]),
             binary_checks: Vec::new(),

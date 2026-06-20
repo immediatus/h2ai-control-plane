@@ -244,6 +244,32 @@ impl ConstraintDoc {
             pass_criteria: None,
         }
     }
+
+    /// Test-support constructor: build an `LlmJudge` constraint with a real description.
+    /// Used to exercise corpus-description lookup paths in tests.
+    #[must_use]
+    pub fn new_with_description(id: &str, description: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            source_file: format!("{id}.yaml"),
+            description: description.to_owned(),
+            severity: ConstraintSeverity::Hard { threshold: 0.5 },
+            predicate: ConstraintPredicate::Composite {
+                op: CompositeOp::And,
+                children: vec![ConstraintPredicate::LlmJudge {
+                    rubric: description.to_owned(),
+                }],
+            },
+            remediation_hint: None,
+            domains: vec![],
+            mandatory_for_tags: vec![],
+            related_to: vec![],
+            binary_checks: vec![],
+            version: 1,
+            repair_provenance: None,
+            pass_criteria: None,
+        }
+    }
 }
 
 fn predicate_tier(pred: &ConstraintPredicate) -> ConstraintTier {

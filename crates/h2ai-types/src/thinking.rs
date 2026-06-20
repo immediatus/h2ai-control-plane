@@ -21,6 +21,10 @@ pub struct ArchetypeSpec {
     pub tau: f64,
     pub model_tier: ModelTier,
     pub cot_style: CotStyle,
+    /// Constraint IDs this archetype specifically targets.
+    /// Empty = no focus declared (LLM said "all" or field was absent).
+    #[serde(default)]
+    pub focus_constraints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
