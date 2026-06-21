@@ -2,16 +2,28 @@ use crate::error::ProvisionError;
 use crate::provider::AgentProvider;
 use async_trait::async_trait;
 use h2ai_types::agent::{AgentDescriptor, TaskRequirements};
+use h2ai_nats::subjects::agent_terminate_subject;
 use h2ai_types::identity::AgentId;
 
 pub struct StaticProvider {
     pub max_task_load: usize,
+    nats: Option<async_nats::Client>,
 }
 
 impl StaticProvider {
     #[must_use]
     pub const fn new(max_task_load: usize) -> Self {
-        Self { max_task_load }
+        Self {
+            max_task_load,
+            nats: None,
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn with_nats(mut self, nats: async_nats::Client) -> Self {
+        self.nats = Some(nats);
+        self
     }
 }
 
@@ -32,8 +44,11 @@ impl AgentProvider for StaticProvider {
     }
 
     async fn terminate_agent(&self, agent_id: &AgentId) -> Result<(), ProvisionError> {
-        // TODO: publish soft-kill to NATS subject `h2ai.control.terminate.<agent_id>`
-        let _ = agent_id; // suppress unused warning until NATS is wired
+        if let Some(ref nats) = self.nats {
+            nats.publish(agent_terminate_subject(agent_id), bytes::Bytes::new())
+                .await
+                .map_err(|e| ProvisionError::Transport(e.to_string()))?;
+        }
         Ok(())
     }
 
