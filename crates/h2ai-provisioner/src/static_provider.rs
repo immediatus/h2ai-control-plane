@@ -1,8 +1,8 @@
 use crate::error::ProvisionError;
 use crate::provider::AgentProvider;
 use async_trait::async_trait;
-use h2ai_types::agent::{AgentDescriptor, TaskRequirements};
 use h2ai_nats::subjects::agent_terminate_subject;
+use h2ai_types::agent::{AgentDescriptor, TaskRequirements};
 use h2ai_types::identity::AgentId;
 
 pub struct StaticProvider {
