@@ -85,6 +85,7 @@ fn make_verification_event() -> VerificationScoredEvent {
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: Utc::now(),
     }
 }

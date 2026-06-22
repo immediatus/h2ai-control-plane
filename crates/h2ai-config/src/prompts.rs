@@ -208,11 +208,11 @@ pub const PROBE_TASK: PromptTemplate =
 pub const VERIFICATION_TASK: PromptTemplate =
     PromptTemplate("Criterion:\n{rubric}\n\nProposal:\n{output}");
 
-// ── SRANI grounding ───────────────────────────────────────────────────────────
+// ── Grounding ─────────────────────────────────────────────────────────────────
 
-/// System prompt for the LLM researcher grounder (tier-0 SRANI escalation).
+/// System prompt for the LLM researcher grounder (tier-0 grounding escalation).
 /// No variables.
-pub const SRANI_RESEARCHER_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+pub const GROUNDING_RESEARCHER_SYSTEM: PromptTemplate = PromptTemplate(concat!(
     "You are a technical grounding advisor. ",
     "Classify components as implied by in-scope technologies or genuinely novel. ",
     "Respond with valid JSON only.",
@@ -220,7 +220,7 @@ pub const SRANI_RESEARCHER_SYSTEM: PromptTemplate = PromptTemplate(concat!(
 
 /// Task prompt for the LLM researcher grounder.
 /// Variables: `{fabricated}`, `{spec_technologies}`, `{task_description}`.
-pub const SRANI_RESEARCHER_TASK: PromptTemplate = PromptTemplate(concat!(
+pub const GROUNDING_RESEARCHER_TASK: PromptTemplate = PromptTemplate(concat!(
     "Components appearing in all proposals but NOT explicitly in the specification: {fabricated}\n",
     "Technologies explicitly in scope (from spec and constraints): {spec_technologies}\n",
     "Task context: {task_description}\n\n",
@@ -236,7 +236,7 @@ pub const SRANI_RESEARCHER_TASK: PromptTemplate = PromptTemplate(concat!(
 /// System prompt for the web-search distillation step.
 /// Instructs the LLM to compress raw search results into concise factual prose.
 /// No variables.
-pub const SRANI_DISTILL_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+pub const GROUNDING_DISTILL_SYSTEM: PromptTemplate = PromptTemplate(concat!(
     "You are a technical fact extractor. ",
     "Given web search results, extract only the key factual technical statements ",
     "relevant to the task. Return 2-4 concise sentences. ",
@@ -245,7 +245,7 @@ pub const SRANI_DISTILL_SYSTEM: PromptTemplate = PromptTemplate(concat!(
 
 /// Task prompt for the web-search distillation step.
 /// Variables: `{task_description}`, `{raw_results}`.
-pub const SRANI_DISTILL_TASK: PromptTemplate = PromptTemplate(concat!(
+pub const GROUNDING_DISTILL_TASK: PromptTemplate = PromptTemplate(concat!(
     "Task: {task_description}\n\n",
     "Search results:\n{raw_results}\n\n",
     "Extract the most relevant technical facts for this task in 2-4 sentences.",
@@ -584,7 +584,71 @@ pub const I1_SEMANTIC_REPAIR_SLOT: &str = concat!(
 /// Placed after the binary check list so the judge provides structured per-check reasoning
 /// that `parse_check_reasons` can extract.
 pub const CHECK_EVIDENCE_FORMAT_INSTRUCTION: &str = concat!(
-    "For each CHECK, provide evidence from the proposal text. Format exactly as:\n",
+    "After your analysis, you MUST output a verdict block in your FINAL VISIBLE RESPONSE ",
+    "(not inside any thinking or reasoning section). Use this exact format:\n",
+    "CHECK VERDICTS:\n",
     "CHECK N: <one-sentence evidence from proposal> → PRESENT or MISSING\n",
-    "where N matches the check number. Include every check even if it passes.",
+    "Include every check number even if it passes. Never omit this block.",
 );
+
+/// System prompt for the CoherenceChecker LLM call.
+pub const COHERENCE_CHECK_SYSTEM: &str = concat!(
+    "You are an expert legal and technical document reviewer. ",
+    "Your task is to identify contradictions, inconsistencies, or ambiguities ",
+    "between provisions in a structured document. ",
+    "Respond ONLY with a JSON array of objects. Each object must have: ",
+    r#"{"provision_a": "...", "provision_b": "...", "risk": "...", "severity": "low"|"medium"|"high"}. "#,
+    "If no inter-provision conflicts exist, respond with an empty array [].",
+);
+
+/// Task prompt for the CoherenceChecker. Placeholder: {provisions}.
+pub const COHERENCE_CHECK_TASK: &str = concat!(
+    "Review the following provisions for inter-provision contradictions or risks.\n\n",
+    "PROVISIONS:\n{provisions}\n\n",
+    "Return ONLY a JSON array of conflict objects as specified. ",
+    "Empty array if no conflicts found.",
+);
+
+/// System prompt for MicroExplorerResolver recovery LLM calls.
+pub const RECOVERY_SYSTEM: &str = concat!(
+    "You are a precise technical writer specializing in legal and compliance documents. ",
+    "You will receive a full document and a specific gap that must be addressed. ",
+    "Your task is to produce the complete corrected document with the gap closed. ",
+    "Do NOT alter provisions that are already verified as compliant. ",
+    "Do NOT introduce new provisions not required by the gap. ",
+    "Return the COMPLETE corrected document, no preamble or explanation.",
+);
+
+/// Task prompt for MicroExplorerResolver. Placeholders: {gap_description},
+/// {constraint_text}, {verified_provision_list}, {draft_section}.
+pub const RECOVERY_TASK: &str = concat!(
+    "GAP TO CLOSE:\n{gap_description}\n\n",
+    "FULL CONSTRAINT REQUIREMENTS (all provisions must remain satisfied):\n",
+    "{constraint_text}\n\n",
+    "DO NOT TOUCH — already verified provisions:\n{verified_provision_list}\n\n",
+    "FULL DOCUMENT TO PATCH:\n{draft_section}\n\n",
+    "Rewrite the document to close the gap while keeping all verified provisions intact. ",
+    "Return the COMPLETE corrected document.",
+);
+
+// ── Grounding judge ───────────────────────────────────────────────────────────
+
+pub const GROUNDING_JUDGE_SYSTEM: &str =
+    "You are a grounding auditor. Respond only with valid JSON.";
+
+pub const GROUNDING_JUDGE_TASK: &str = "Given a task specification and an output document, \
+identify content in the output that is NOT grounded in the specification.\n\n\
+Rules:\n\
+- Well-known domain facts are ALLOWED: standard theorems, published algorithms, \
+standard complexity classes, established design patterns, canonical data structures. \
+Do NOT flag these.\n\
+- Flag named entities (technologies, systems, products, named algorithms) absent \
+from the specification and not universally standard.\n\
+- Flag factual claims that assert something beyond what the specification states \
+or universally accepted domain knowledge.\n\
+- Only include findings where confidence >= 0.5.\n\
+- If nothing is fabricated, return {\"findings\": []}.\n\n\
+Specification:\n{spec}\n\nOutput:\n{output}\n\n\
+Return JSON only:\n\
+{\"findings\": [{\"text\": \"...\", \"kind\": \"entity|claim\", \
+\"reason\": \"...\", \"confidence\": 0.0-1.0}]}";

@@ -57,4 +57,9 @@ pub struct ThinkingReport {
     /// Emitted in TaskAttributionEvent for contrastive offline analysis.
     #[serde(default)]
     pub skill_nodes_used: u32,
+    /// Names of the archetypes selected in the final thinking-loop iteration.
+    /// Empty when the thinking loop is disabled or produced no archetypes.
+    /// Carried through to ThinkingLoopCompletedEvent for observability.
+    #[serde(default)]
+    pub archetypes: Vec<String>,
 }

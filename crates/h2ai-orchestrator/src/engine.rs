@@ -191,17 +191,8 @@ pub struct EngineInput<'a> {
     /// Uses `Arc` so it can be called from async closures inside the MAPE-K loop.
     /// When `None`, search-enabled slots and C1 retries fall back to hint-only.
     pub researcher_adapter: Option<std::sync::Arc<dyn IComputeAdapter>>,
-    /// Current SRANI EMA midpoint (`ema_cfi`) loaded from NATS KV by tasks.rs.
-    /// When count < 5, the engine substitutes `cfg.srani.cold_start_midpoint()`.
-    pub srani_ema_cfi: f64,
-    /// Number of tasks that have contributed a CFI observation to the EMA.
-    pub srani_count: usize,
-    /// Optional SRANI grounding chain. When `Some`, replaces the old negative-only hint
-    /// with a positive grounding context (spec anchor + LLM researcher / web search).
-    /// When `None`, falls back to `SpecAnchorGrounder` inline (zero I/O).
-    pub srani_grounding_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
     /// Dedicated grounding chain gap researcher (DDG search + distiller).
-    pub gap_research_chain: Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+    pub gap_research_chain: Option<std::sync::Arc<crate::grounding_chain::GapResearchChain>>,
     /// Raw NATS client for oracle gate NATS request/reply. `None` = oracle gate skipped
     /// even when `cfg.oracle_gate.enabled = true`.
     pub nats_raw: Option<std::sync::Arc<async_nats::Client>>,
@@ -275,6 +266,9 @@ pub struct EngineOutput {
     pub mode_collapse_count: usize,
     /// Epistemic yield from the resolved wave (reserved for Task 9 metrics wiring).
     pub epistemic_yield: Option<f64>,
+    /// Epistemic provenance map for the resolved output.
+    /// `None` when `epistemic_quality.enabled = false`.
+    pub provenance_map: Option<crate::provenance::ProvenanceMap>,
     /// Routing quadrant assigned by Phase 1.5 task complexity assessment.
     /// In `shadow_mode` this is informational only — topology was not changed.
     /// `None` only when the engine path skips Phase 1.5 (should not happen in production).
@@ -304,13 +298,6 @@ pub struct EngineOutput {
     /// C3 domain coverage degradation event. `Some` when coverage < threshold.
     /// `None` when coverage is sufficient or corpus has no domain tags.
     pub diversity_degraded_event: Option<h2ai_types::events::DiversityGuardDegradedEvent>,
-    /// SRANI correlated fabrication events — fired when CFI > `warn_threshold`.
-    pub srani_events: Vec<h2ai_types::events::CorrelatedFabricationEvent>,
-    /// EMA midpoint updated after absorbing this task's CFI observation.
-    /// Zero when no CFI was computed this task (`proposals.len()` < 2 or srani disabled).
-    pub srani_ema_cfi_updated: f64,
-    /// Count after this task's CFI observation (`srani_count` + 1 if CFI was computed, else unchanged).
-    pub srani_count_updated: usize,
     /// Result of the oracle gate check before merge. `None` when gate was disabled or
     /// no NATS client was provided. `Some(true)` = passed, `Some(false)` = failed.
     pub oracle_gate_passed: Option<bool>,
@@ -351,6 +338,270 @@ async fn write_reasoning_checkpoint(
             }
         }
     }
+}
+
+/// Runs the epistemic quality stage when `epistemic_quality.enabled = true`.
+///
+/// Extracts gaps from pruned proposals, optionally runs coherence checking,
+/// attempts gap recovery via `MicroExplorerResolver`, builds the `ProvenanceMap`,
+/// and renders the output with a confidence annotation.
+///
+/// Returns `(rendered_output, Some(pmap))`. When `zero_valid_proposals_policy = "fail"`
+/// and no provisions are verified, the stage skips rendering and returns
+/// `(out.resolved_output.clone(), None)` to prevent delivery of annotated-but-unverified output.
+///
+/// TODO: Full task failure for `zero_valid_proposals_policy = "fail"` (emit `TaskFailedEvent`
+/// + abort the task early) requires surfacing a `Result` through the MAPE-K return path.
+///
+/// Current behaviour: skip annotation, leave `out.resolved_output` unchanged, return `None`
+/// provenance_map — the output is NOT annotated as high-confidence and `out.epistemic_yield`
+/// will remain `None`.
+pub async fn run_epistemic_stage(
+    out: &mut EngineOutput,
+    input: &EngineInput<'_>,
+) -> (String, Option<crate::provenance::ProvenanceMap>) {
+    let eq_cfg = &input.cfg.epistemic_quality;
+
+    // 1. Seed static gaps — pure fns, no I/O.
+    //
+    // SelectionPruning: extract gaps from pruned proposals.
+    let pruned_strings: Vec<(String, String)> = out
+        .selection_resolved
+        .pruned_proposals
+        .iter()
+        .map(|(eid, reason)| (eid.to_string(), reason.clone()))
+        .collect();
+    let mut static_gaps =
+        crate::gap_checkers::selection_pruning::extract_gaps_from_pruned(&pruned_strings);
+
+    // TaskContextSeeder: seed UncertainDomain gaps when the task context explicitly
+    // flags domains as unsettled. These are never resolved and always stay open so
+    // document_confidence reflects genuine uncertainty.
+    // NOTE: `slot_configs` are the decomposed ones (overwritten pre-engine); the
+    // original task context is the reliable source for author-declared uncertainty.
+    static_gaps.extend(
+        crate::gap_checkers::task_context_seeder::seed_uncertainty_gaps(
+            input.manifest.context.as_deref().unwrap_or(""),
+        ),
+    );
+
+    // 2. Shared context — used by CoherenceChecker, FabricationChecker, and MicroExplorerResolver.
+    let constraint_text = input
+        .constraint_corpus
+        .iter()
+        .map(|c| format!("{}: {}", c.id, c.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let constraint_ids: Vec<String> = input
+        .constraint_corpus
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    // Effective spec for fabrication grounding: task description + full constraint corpus.
+    let effective_spec = format!("{}\n{}", input.manifest.description, constraint_text);
+    // Per-check verdict text is more descriptive than explorer IDs for the
+    // "don't touch verified provisions" prompt used by the resolver.
+    let verified_provision_list: Vec<String> = out
+        .verification_events
+        .iter()
+        .filter(|e| e.passed)
+        .flat_map(|e| {
+            e.per_check_verdicts
+                .iter()
+                .filter(|v| matches!(v.kind, h2ai_types::events::CheckVerdictKind::Present))
+                .map(|v| v.text.clone())
+        })
+        .collect();
+
+    // GroundingChecker: seed UngroundedContent gaps for entities/claims in the merged output
+    // not grounded in the effective spec. Unresolvable — always surfaces in open_gaps.
+    let grounding_judge: std::sync::Arc<dyn crate::gap_checkers::grounding::GroundingJudge> =
+        if input.cfg.grounding.enabled {
+            std::sync::Arc::new(crate::gap_checkers::grounding::LlmGroundingJudge::new(
+                input
+                    .registry
+                    .resolve_arc(&h2ai_types::adapter::TaskProfile::Reasoning),
+                input.cfg.grounding.max_tokens,
+                input.cfg.grounding.tau,
+            ))
+        } else {
+            std::sync::Arc::new(crate::gap_checkers::grounding::HeuristicGroundingJudge)
+        };
+    let grounding_checker: std::sync::Arc<dyn crate::gap_checkers::GapChecker> =
+        std::sync::Arc::new(crate::gap_checkers::grounding::GroundingChecker::new(
+            grounding_judge,
+            effective_spec.clone(),
+            input.cfg.grounding.min_confidence,
+        ));
+    let grounding_gap_ctx = crate::gap_checkers::GapCheckContext {
+        verified_provision_list: verified_provision_list.clone(),
+        constraint_text: constraint_text.clone(),
+    };
+    static_gaps.extend(
+        grounding_checker
+            .check(&out.resolved_output, &grounding_gap_ctx)
+            .await,
+    );
+
+    // 3. Build CoherenceChecker (optional).
+    let coherence_checker: Option<std::sync::Arc<dyn crate::gap_checkers::GapChecker>> =
+        if eq_cfg.coherence_check_enabled {
+            let adapter_arc = input
+                .registry
+                .resolve_arc(&h2ai_types::adapter::TaskProfile::Reasoning);
+            Some(std::sync::Arc::new(
+                crate::gap_checkers::coherence::CoherenceChecker::new(
+                    adapter_arc,
+                    eq_cfg.coherence_min_severity.clone(),
+                ),
+            ))
+        } else {
+            None
+        };
+
+    // 4. Build resolver.
+    //    NullResolver when recovery is disabled: the feedback loop still runs
+    //    the CoherenceChecker per-pass but closes nothing.
+    let resolver: std::sync::Arc<dyn crate::gap_checkers::GapResolver> = if eq_cfg.recovery_enabled
+    {
+        let adapter_arc = input
+            .registry
+            .resolve_arc(&h2ai_types::adapter::TaskProfile::Reasoning);
+        std::sync::Arc::new(
+            crate::gap_resolvers::micro_explorer::MicroExplorerResolver::new(adapter_arc),
+        )
+    } else {
+        std::sync::Arc::new(crate::epistemic_feedback::NullResolver)
+    };
+
+    // 5. Feedback loop: CoherenceChecker re-runs on `current_output` each pass;
+    //    exits when no resolvable gaps remain or the resolver stalls.
+    let loop_result = crate::epistemic_feedback::run_epistemic_feedback_loop(
+        crate::epistemic_feedback::FeedbackLoopParams {
+            static_gaps: static_gaps.clone(),
+            initial_output: out.resolved_output.clone(),
+            coherence_checker,
+            resolver,
+            verified_provision_list,
+            constraint_text,
+            constraint_ids,
+            max_passes: eq_cfg.recovery_max_passes as usize,
+        },
+    )
+    .await;
+
+    let final_output = loop_result.final_output;
+    let closed_ids = loop_result.closed_ids;
+    let mut open_gaps = loop_result.open_gaps;
+
+    // Post-loop grounding check: if recovery changed the output, new entities/claims may have
+    // been introduced that were not in the merged output. Catch them here.
+    if !closed_ids.is_empty() {
+        let existing_fab_ids: std::collections::HashSet<String> = open_gaps
+            .iter()
+            .filter(|g| g.kind == crate::gap_checkers::GapKind::UngroundedContent)
+            .map(|g| g.id.clone())
+            .collect();
+        for gap in grounding_checker
+            .check(&final_output, &grounding_gap_ctx)
+            .await
+        {
+            if !existing_fab_ids.contains(&gap.id) {
+                open_gaps.push(gap);
+            }
+        }
+    }
+
+    // 6. Build ProvenanceMap.
+    let mut pmap = crate::provenance::ProvenanceMap::new();
+    for ev in &out.verification_events {
+        if ev.passed {
+            pmap.add_provision(crate::provenance::ProvisionProvenance {
+                provision_label: ev.explorer_id.to_string(),
+                confidence: crate::provenance::ProvisionConfidence::Verified,
+                verdicts: ev.per_check_verdicts.clone(),
+                gap_ids: vec![],
+            });
+        }
+    }
+    for gap_id in &closed_ids {
+        if let Some(gap) = static_gaps.iter().find(|g| &g.id == gap_id) {
+            pmap.add_provision(crate::provenance::ProvisionProvenance {
+                provision_label: gap.description.clone(),
+                confidence: crate::provenance::ProvisionConfidence::AutoCorrected,
+                verdicts: vec![],
+                gap_ids: vec![gap_id.clone()],
+            });
+        }
+    }
+    for gap in &open_gaps {
+        pmap.add_provision(crate::provenance::ProvisionProvenance {
+            provision_label: gap.description.clone(),
+            confidence: crate::provenance::ProvisionConfidence::RequiresReview,
+            verdicts: vec![],
+            gap_ids: vec![gap.id.clone()],
+        });
+    }
+
+    // 7. Final re-verification: confirm recovery actually fixed the closed gaps.
+    // Runs only when the resolver closed at least one gap so the verifier call is not
+    // redundant (unmodified output is already covered by the original verification events).
+    // If the final output passes all constraints, AutoCorrected provisions are promoted
+    // to Verified — reflecting that recovery was confirmed correct, not just assumed.
+    if !closed_ids.is_empty() {
+        let re_verify_proposal = h2ai_types::events::ProposalEvent {
+            task_id: input.task_id.clone(),
+            explorer_id: h2ai_types::identity::ExplorerId::new(),
+            tau: h2ai_types::sizing::TauValue::new(input.verification_config.evaluator_tau.value())
+                .unwrap_or(h2ai_types::sizing::TauValue::new(0.1).unwrap()),
+            generation: u64::MAX,
+            raw_output: final_output.clone(),
+            token_cost: 0,
+            adapter_kind: input.verification_adapter.kind().clone(),
+            timestamp: chrono::Utc::now(),
+        };
+        let ver_in = crate::verification::VerificationInput {
+            proposals: vec![re_verify_proposal],
+            constraint_corpus: &input.constraint_corpus,
+            evaluator: input.verification_adapter,
+            config: input.verification_config.clone(),
+            eval_cache: crate::verification::new_eval_cache(),
+            consensus_passes: 1,
+        };
+        let ver_out = crate::verification::VerificationPhase::run(ver_in).await;
+        if !ver_out.passed.is_empty() {
+            // Recovery confirmed: promote AutoCorrected provisions to Verified.
+            let provisions = pmap.provisions().to_vec();
+            let mut promoted_pmap = crate::provenance::ProvenanceMap::new();
+            for mut prov in provisions {
+                if prov.confidence == crate::provenance::ProvisionConfidence::AutoCorrected {
+                    prov.confidence = crate::provenance::ProvisionConfidence::Verified;
+                }
+                promoted_pmap.add_provision(prov);
+            }
+            pmap = promoted_pmap;
+        }
+    }
+
+    // 8. Enforce `zero_valid_proposals_policy = "fail"`.
+    //    Only fully-Verified provisions count; AutoCorrected is insufficient.
+    let verified_count = pmap
+        .provisions()
+        .iter()
+        .filter(|p| p.confidence == crate::provenance::ProvisionConfidence::Verified)
+        .count();
+    if verified_count == 0 && eq_cfg.zero_valid_proposals_policy == "fail" {
+        tracing::warn!(
+            target: "h2ai.engine",
+            "epistemic stage: zero verified provisions with zero_valid_proposals_policy=fail \
+             — suppressing annotation to prevent delivery of unverified output"
+        );
+        return (out.resolved_output.clone(), None);
+    }
+
+    // 9. Render output with confidence annotation.
+    let rendered = crate::output_renderer::render_output(&final_output, &pmap, &eq_cfg.output_mode);
+    (rendered, Some(pmap))
 }
 
 /// Stateless coordinator for the five-phase task execution pipeline.
@@ -1248,6 +1499,16 @@ impl ExecutionEngine {
                             out.consensus_agreement_rate = Some(
                                 consensus_agreement_rate_from_events(&out.verification_events),
                             );
+
+                            // ── Epistemic quality stage ──────────────────────────────
+                            // Runs only when enabled. Checks gaps, attempts recovery,
+                            // and annotates the resolved output with provenance metadata.
+                            if input.cfg.epistemic_quality.enabled {
+                                let (epistemic_resolved_output, provenance_map_opt) =
+                                    run_epistemic_stage(&mut out, &input).await;
+                                out.resolved_output = epistemic_resolved_output;
+                                out.provenance_map = provenance_map_opt;
+                            }
 
                             // Publish TieredExitEvent if TEE gate fired.
                             if let Some(tee_evt) = controller.take_tee_event() {
@@ -2483,6 +2744,7 @@ impl ExecutionEngine {
                 topology_retry_events: vec![],
                 mode_collapse_count: 0,
                 epistemic_yield: None,
+                provenance_map: None,
                 task_quadrant: Some(TaskQuadrant::Precision),
                 complexity_event: h2ai_types::events::TaskComplexityAssessedEvent {
                     task_id: input.task_id.clone(),
@@ -2507,9 +2769,6 @@ impl ExecutionEngine {
                 correlated_warnings: vec![],
                 researcher_grounding_events: vec![],
                 diversity_degraded_event: None,
-                srani_events: vec![],
-                srani_ema_cfi_updated: input.srani_ema_cfi,
-                srani_count_updated: input.srani_count,
                 oracle_gate_passed: None,
                 leader_elected_events: vec![],
                 socratic_diagnosis_events: vec![],

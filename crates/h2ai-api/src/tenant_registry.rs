@@ -6,6 +6,7 @@ use h2ai_orchestrator::self_optimizer::TauSpreadEstimator;
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_types::events::CalibrationCompletedEvent;
 use h2ai_types::identity::TenantId;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -18,9 +19,10 @@ pub struct TenantState {
     pub tao_multiplier_estimator: Arc<RwLock<TaoMultiplierEstimator>>,
     pub tau_spread_estimator: Arc<RwLock<TauSpreadEstimator>>,
     pub bandit_state: Arc<RwLock<BanditState>>,
-    /// `(ema_cfi, count)` — SRANI adaptive EMA: current EMA of CFI scores and observation count.
-    pub srani_state: Arc<RwLock<(f64, usize)>>,
     pub rho_ema: Arc<RwLock<RhoEmaState>>,
+    /// Count of successfully resolved tasks for this tenant. Used to trigger induction
+    /// distillation cycles at `induction_batch_size` intervals.
+    pub resolved_task_count: Arc<AtomicUsize>,
 }
 
 impl TenantState {
@@ -37,7 +39,6 @@ impl TenantState {
         let bandit_n_max_arms = cfg.bandit_n_max_arms;
         let bandit_prior_sigma = cfg.bandit_prior_sigma;
         let bandit_prior_strength = cfg.bandit_prior_strength;
-        let srani_midpoint = cfg.srani.cold_start_midpoint();
         Self {
             calibration: Arc::new(RwLock::new(None)),
             tao_multiplier_estimator: Arc::new(RwLock::new(
@@ -54,8 +55,8 @@ impl TenantState {
                 bandit_prior_sigma,
                 bandit_prior_strength,
             ))),
-            srani_state: Arc::new(RwLock::new((srani_midpoint, 0))),
             rho_ema: Arc::new(RwLock::new(RhoEmaState::default())),
+            resolved_task_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 }

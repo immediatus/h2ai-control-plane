@@ -171,9 +171,6 @@ async fn engine_runs_ensemble_to_semilattice() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -274,9 +271,6 @@ async fn engine_structured_auditor_approved_passes_proposal() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -371,9 +365,6 @@ async fn engine_structured_auditor_rejected_prunes_proposal() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -472,9 +463,6 @@ async fn engine_structured_auditor_non_json_fails_safe() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -563,9 +551,6 @@ async fn engine_output_contains_talagrand_diagnostic() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -686,9 +671,6 @@ async fn engine_rejects_krum_when_quorum_not_satisfied() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -777,9 +759,6 @@ async fn engine_output_contains_suggested_next_params() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -953,9 +932,6 @@ async fn engine_synthesis_phase_bypasses_merge_and_returns_synthesis_text() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1082,9 +1058,6 @@ async fn pool_diversity_guard_fires_when_n_eff_below_threshold() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1272,9 +1245,6 @@ async fn engine_rejects_verifier_explorer_family_conflict() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1375,9 +1345,6 @@ async fn engine_bypasses_family_conflict_gate_when_single_family_ok() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1538,9 +1505,6 @@ async fn engine_hint_injected_into_explorer_on_retry() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1676,9 +1640,6 @@ async fn shadow_mode_off_produces_no_shadow_events() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1748,9 +1709,6 @@ async fn shadow_mode_on_agreement_produces_events_with_disagreement_false() {
         bandit_state: None,
         shadow_audit_ctx: Some(ctx),
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1825,9 +1783,6 @@ async fn shadow_mode_on_disagreement_does_not_affect_pruning() {
         bandit_state: None,
         shadow_audit_ctx: Some(ctx),
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1910,9 +1865,6 @@ async fn majority_vote_mode_rejects_when_shadow_disagrees() {
         bandit_state: None,
         shadow_audit_ctx: Some(ctx),
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -1985,9 +1937,6 @@ async fn strict_mode_rejects_when_shadow_disagrees_without_promoted_domains() {
         bandit_state: None,
         shadow_audit_ctx: Some(ctx),
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2058,9 +2007,6 @@ async fn shadow_failure_falls_back_to_primary_decision() {
         bandit_state: None,
         shadow_audit_ctx: Some(ctx),
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2162,9 +2108,6 @@ async fn c3_no_event_when_corpus_empty() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2282,9 +2225,6 @@ async fn c3_fires_degraded_event_when_coverage_low() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2401,9 +2341,6 @@ async fn c3_require_bivariate_cg_fails_task_when_coverage_low() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2536,9 +2473,6 @@ async fn proactive_researcher_called_for_search_enabled_slot() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: Some(researcher as Arc<dyn IComputeAdapter>),
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2651,9 +2585,6 @@ async fn c1_no_warning_for_diverse_proposals() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2794,9 +2725,6 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -2825,1124 +2753,7 @@ async fn c1_fires_warning_and_retries_for_identical_proposals() {
     }
 }
 
-#[tokio::test]
-async fn srani_fires_when_proposals_share_ungrounded_entity() {
-    // Both explorers introduce "CockroachDB" — not in the task spec.
-    // SRANI should detect CFI=1.0 and push a CorrelatedFabricationEvent.
-    let explorer1 =
-        mock_adapter("Use Redis and Kafka. CockroachDB advisory locks prevent double-spend.");
-    let explorer2 = mock_adapter(
-        "Use Redis and Kafka. CockroachDB distributed transactions ensure consistency.",
-    );
-    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "compliant"}"#);
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
-    let cal = calibration().await;
-    let store = TaskStore::new();
-
-    // Low thresholds so CFI=1.0 always triggers both warn and inject.
-    let cfg = H2AIConfig {
-        srani: h2ai_config::SraniConfig {
-            grounding_distill: false,
-            grounding_compress_threshold: 800,
-            enabled: true,
-            warn_threshold: 0.1,
-            inject_threshold: 0.5,
-            ..Default::default()
-        },
-        ..H2AIConfig::default()
-    };
-
-    // Spec mentions Redis and Kafka — CockroachDB is NOT in the spec.
-    let manifest = TaskManifest {
-        description:
-            "Design a budget enforcement system using Redis for counters and Kafka for the spend event log. Include a crash recovery procedure."
-                .into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    };
-
-    let registry = AdapterRegistry::new(
-        Arc::new(mock_adapter("registry-default")) as Arc<dyn IComputeAdapter>
-    );
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![
-            &explorer1 as &dyn IComputeAdapter,
-            &explorer2 as &dyn IComputeAdapter,
-        ],
-        verification_adapter: &scorer as &dyn IComputeAdapter,
-        auditor_adapter: &auditor as &dyn IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-                provider: Default::default(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-
-    let result = ExecutionEngine::run_offline(input).await;
-    assert!(result.is_ok(), "engine failed: {:?}", result.err());
-    let output = result.unwrap();
-
-    assert!(
-        !output.srani_events.is_empty(),
-        "expected at least one CorrelatedFabricationEvent, got none"
-    );
-    let ev = &output.srani_events[0];
-    assert!(
-        ev.cfi > cfg.srani.warn_threshold,
-        "CFI {} must exceed warn_threshold {}",
-        ev.cfi,
-        cfg.srani.warn_threshold
-    );
-    assert!(
-        ev.shared_ungrounded_entities
-            .iter()
-            .any(|e| e == "CockroachDB"),
-        "CockroachDB must appear in shared_ungrounded_entities; got {:?}",
-        ev.shared_ungrounded_entities
-    );
-    assert!(
-        ev.hint_injected,
-        "hint must be injected when CFI {} > inject_threshold {}",
-        ev.cfi, cfg.srani.inject_threshold
-    );
-}
-
-#[tokio::test]
-async fn srani_silent_when_entities_grounded_in_spec() {
-    // Both explorers mention Redis — but Redis IS in the task spec.
-    // SRANI must NOT fire.
-    let explorer1 =
-        mock_adapter("Use Redis EVAL for atomic counter updates. Redis sorted sets track budgets.");
-    let explorer2 =
-        mock_adapter("Use Redis scripting for budget enforcement. Redis streams log spend events.");
-    let scorer = mock_adapter(r#"{"score": 0.9, "reason": "compliant"}"#);
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "compliant"}"#);
-    let cal = calibration().await;
-    let store = TaskStore::new();
-
-    let cfg = H2AIConfig {
-        srani: h2ai_config::SraniConfig {
-            grounding_distill: false,
-            grounding_compress_threshold: 800,
-            enabled: true,
-            warn_threshold: 0.1,
-            inject_threshold: 0.5,
-            ..Default::default()
-        },
-        ..H2AIConfig::default()
-    };
-
-    // Redis IS in the spec — must not be treated as ungrounded.
-    let manifest = TaskManifest {
-        description: "Design a rate-limiting system using Redis for counters and state.".into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    };
-
-    let registry = AdapterRegistry::new(
-        Arc::new(mock_adapter("registry-default")) as Arc<dyn IComputeAdapter>
-    );
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![
-            &explorer1 as &dyn IComputeAdapter,
-            &explorer2 as &dyn IComputeAdapter,
-        ],
-        verification_adapter: &scorer as &dyn IComputeAdapter,
-        auditor_adapter: &auditor as &dyn IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-                provider: Default::default(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-
-    let result = ExecutionEngine::run_offline(input).await;
-    assert!(result.is_ok(), "engine failed: {:?}", result.err());
-    let output = result.unwrap();
-
-    assert!(
-        output.srani_events.is_empty(),
-        "expected no CorrelatedFabricationEvents when all entities are spec-grounded; got {:?}",
-        output
-            .srani_events
-            .iter()
-            .map(|e| &e.shared_ungrounded_entities)
-            .collect::<Vec<_>>()
-    );
-}
-
-// ── SRANI adaptive gate integration tests ─────────────────────────────────────
-
-#[tokio::test]
-async fn srani_adaptive_fires_and_updates_ema() {
-    // Both explorers output "CockroachDB" — not in spec (Redis/Kafka only).
-    // With adaptive=true and warm EMA (count=10, ema=0.30), CFI=1.0 produces
-    // pressure > gate_threshold(0.50) → hint_injected=true, EMA updated.
-    let explorer1 =
-        mock_adapter("Use CockroachDB advisory locks to coordinate the Redis and Kafka recovery.");
-    let explorer2 = mock_adapter(
-        "CockroachDB distributed transactions ensure idempotent recovery for Redis and Kafka.",
-    );
-    let scorer = mock_adapter(r#"{"score": 0.8, "reason": "ok"}"#);
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let store = TaskStore::new();
-    let cfg = H2AIConfig {
-        srani: h2ai_config::SraniConfig {
-            grounding_distill: false,
-            grounding_compress_threshold: 800,
-            enabled: true,
-            adaptive: true,
-            ema_alpha: 0.20,
-            temperature: 0.15,
-            gate_threshold: 0.50,
-            warn_threshold: 0.30,
-            inject_threshold: 0.60,
-            researcher_max_tokens: 32_768,
-            distill_max_tokens: 32_768,
-            gap_synthesis_max_tokens: 32_768,
-        },
-        ..H2AIConfig::default()
-    };
-    let manifest = TaskManifest {
-        description: "Design a crash-recovery procedure for Redis and Kafka counters.".into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    };
-    let registry =
-        AdapterRegistry::new(Arc::new(mock_adapter("registry")) as Arc<dyn IComputeAdapter>);
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![
-            &explorer1 as &dyn IComputeAdapter,
-            &explorer2 as &dyn IComputeAdapter,
-        ],
-        verification_adapter: &scorer as &dyn IComputeAdapter,
-        auditor_adapter: &auditor as &dyn IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-                provider: Default::default(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.30, // warm EMA below CFI
-        srani_count: 10,     // past cold-start threshold
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-    let output = ExecutionEngine::run_offline(input).await.unwrap();
-
-    // SRANI must have fired
-    assert!(
-        !output.srani_events.is_empty(),
-        "srani_events must be non-empty when both explorers share CockroachDB"
-    );
-    let ev = &output.srani_events[0];
-    assert!(
-        ev.injection_pressure >= cfg.srani.gate_threshold,
-        "injection_pressure {:.3} must be >= gate_threshold {:.3}",
-        ev.injection_pressure,
-        cfg.srani.gate_threshold
-    );
-    assert!(
-        ev.hint_injected,
-        "hint_injected must be true when pressure >= gate_threshold"
-    );
-    assert!(
-        ev.shared_ungrounded_entities
-            .iter()
-            .any(|e| e.contains("CockroachDB") || e.contains("Cockroach")),
-        "CockroachDB must appear in shared_ungrounded_entities; got {:?}",
-        ev.shared_ungrounded_entities
-    );
-    // EMA must have been updated
-    assert!(
-        output.srani_count_updated > 10,
-        "srani_count_updated must exceed initial count"
-    );
-    assert!(
-        output.srani_ema_cfi_updated > 0.30,
-        "ema must shift upward after high-CFI task, got {}",
-        output.srani_ema_cfi_updated
-    );
-}
-
-#[tokio::test]
-async fn srani_cold_start_uses_config_midpoint() {
-    // count < 5 → cold_start_midpoint() (0.45) is used instead of ema_cfi.
-    // With mu=0.45 and CFI≈1.0, pressure should be very high (≈0.99) → hint injected.
-    let explorer1 =
-        mock_adapter("Use CockroachDB and ClickHouse for storage in the Redis and Kafka recovery.");
-    let explorer2 = mock_adapter(
-        "CockroachDB advisory locks and ClickHouse analytics fix Redis and Kafka state.",
-    );
-    let scorer = mock_adapter(r#"{"score": 0.8, "reason": "ok"}"#);
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let store = TaskStore::new();
-    let cfg = H2AIConfig {
-        srani: h2ai_config::SraniConfig {
-            grounding_distill: false,
-            grounding_compress_threshold: 800,
-            enabled: true,
-            adaptive: true,
-            ema_alpha: 0.20,
-            temperature: 0.15,
-            gate_threshold: 0.50,
-            warn_threshold: 0.30,
-            inject_threshold: 0.60,
-            researcher_max_tokens: 32_768,
-            distill_max_tokens: 32_768,
-            gap_synthesis_max_tokens: 32_768,
-        },
-        ..H2AIConfig::default()
-    };
-    let manifest = TaskManifest {
-        description: "Design a Redis and Kafka crash-recovery procedure.".into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    };
-    let registry =
-        AdapterRegistry::new(Arc::new(mock_adapter("registry")) as Arc<dyn IComputeAdapter>);
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![
-            &explorer1 as &dyn IComputeAdapter,
-            &explorer2 as &dyn IComputeAdapter,
-        ],
-        verification_adapter: &scorer as &dyn IComputeAdapter,
-        auditor_adapter: &auditor as &dyn IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-                provider: Default::default(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.99, // artificially high — should NOT be used (count < 5)
-        srani_count: 2,      // cold start: count < 5
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-    let output = ExecutionEngine::run_offline(input).await.unwrap();
-
-    if !output.srani_events.is_empty() {
-        let ev = &output.srani_events[0];
-        // With cold_start_midpoint=0.45 and CFI≈1.0, pressure ≈ 0.99 (very high).
-        // With ema_cfi=0.99 and CFI≈1.0, pressure ≈ 0.50 (barely above gate).
-        // Cold start must give higher pressure than EMA=0.99 path.
-        assert!(
-            ev.injection_pressure > 0.80,
-            "cold start pressure should be > 0.80 (using mu=0.45), got {:.3}",
-            ev.injection_pressure
-        );
-    }
-    assert_eq!(
-        output.srani_count_updated, 3,
-        "cold start count must advance by 1"
-    );
-}
-
-#[tokio::test]
-async fn srani_adaptive_false_uses_static_thresholds() {
-    // adaptive=false → old warn/inject threshold logic applies.
-    let explorer1 =
-        mock_adapter("Use CockroachDB advisory locks to coordinate the Redis recovery.");
-    let explorer2 = mock_adapter("CockroachDB transactions ensure idempotent Redis recovery.");
-    let scorer = mock_adapter(r#"{"score": 0.8, "reason": "ok"}"#);
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let store = TaskStore::new();
-    let cfg = H2AIConfig {
-        srani: h2ai_config::SraniConfig {
-            grounding_distill: false,
-            grounding_compress_threshold: 800,
-            enabled: true,
-            adaptive: false, // static path
-            warn_threshold: 0.10,
-            inject_threshold: 0.50,
-            ..Default::default()
-        },
-        ..H2AIConfig::default()
-    };
-    let manifest = TaskManifest {
-        description: "Design a Redis crash-recovery procedure.".into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    };
-    let registry =
-        AdapterRegistry::new(Arc::new(mock_adapter("registry")) as Arc<dyn IComputeAdapter>);
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![
-            &explorer1 as &dyn IComputeAdapter,
-            &explorer2 as &dyn IComputeAdapter,
-        ],
-        verification_adapter: &scorer as &dyn IComputeAdapter,
-        auditor_adapter: &auditor as &dyn IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-                provider: Default::default(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 10,
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-    let output = ExecutionEngine::run_offline(input).await.unwrap();
-
-    // When adaptive=false and CFI≈1.0 > inject_threshold(0.50), hint must be injected.
-    if !output.srani_events.is_empty() {
-        let ev = &output.srani_events[0];
-        assert!(
-            ev.hint_injected,
-            "adaptive=false: CFI {:.3} > inject_threshold 0.50 must inject hint",
-            ev.cfi
-        );
-    }
-}
-
-#[tokio::test]
-async fn srani_ema_formula_verified_numerically() {
-    // Single-task EMA update: ema_new = 0.20 * CFI + 0.80 * ema_old
-    // We inspect EngineOutput.srani_ema_cfi_updated directly.
-    let explorer1 = mock_adapter("Use CockroachDB for distributed Redis and Kafka recovery.");
-    let explorer2 = mock_adapter("CockroachDB advisory locks recover Redis and Kafka state.");
-    let scorer = mock_adapter(r#"{"score": 0.8, "reason": "ok"}"#);
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let store = TaskStore::new();
-    let cfg = H2AIConfig {
-        srani: h2ai_config::SraniConfig {
-            grounding_distill: false,
-            grounding_compress_threshold: 800,
-            enabled: true,
-            adaptive: true,
-            ema_alpha: 0.20,
-            temperature: 0.15,
-            gate_threshold: 0.50,
-            warn_threshold: 0.30,
-            inject_threshold: 0.60,
-            researcher_max_tokens: 32_768,
-            distill_max_tokens: 32_768,
-            gap_synthesis_max_tokens: 32_768,
-        },
-        ..H2AIConfig::default()
-    };
-    let initial_ema: f64 = 0.40;
-    let manifest = TaskManifest {
-        description: "Design a Redis and Kafka crash-recovery procedure.".into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    };
-    let registry =
-        AdapterRegistry::new(Arc::new(mock_adapter("registry")) as Arc<dyn IComputeAdapter>);
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest,
-        calibration: cal,
-        explorer_adapters: vec![
-            &explorer1 as &dyn IComputeAdapter,
-            &explorer2 as &dyn IComputeAdapter,
-        ],
-        verification_adapter: &scorer as &dyn IComputeAdapter,
-        auditor_adapter: &auditor as &dyn IComputeAdapter,
-        auditor_config: AuditorConfig {
-            adapter: AdapterKind::CloudGeneric {
-                endpoint: "mock".into(),
-                api_key_env: "NONE".into(),
-                model: None,
-                provider: Default::default(),
-            },
-            ..Default::default()
-        },
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: initial_ema,
-        srani_count: 10,
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-    let output = ExecutionEngine::run_offline(input).await.unwrap();
-
-    if output.srani_count_updated > 10 {
-        // CFI was computed; verify EMA formula:
-        // Both explorers share CockroachDB → CFI = 1.0
-        // ema_new = 0.20 * 1.0 + 0.80 * 0.40 = 0.52
-        let actual_cfi = (output.srani_ema_cfi_updated - (1.0 - 0.20) * initial_ema) / 0.20;
-        assert!(
-            actual_cfi > 0.0 && actual_cfi <= 1.0,
-            "implied CFI {:.3} must be in [0,1]",
-            actual_cfi
-        );
-        // ema_updated must strictly exceed initial_ema (since CFI > initial_ema)
-        assert!(
-            output.srani_ema_cfi_updated > initial_ema,
-            "EMA must increase after high-CFI task: {} → {}",
-            initial_ema,
-            output.srani_ema_cfi_updated
-        );
-    }
-}
-
-// ─── SRANI Grounding Escalation Tests ────────────────────────────────────────
-
-use h2ai_orchestrator::srani_grounding::{
-    GroundingSource, LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain,
-    WebSearchGrounder,
-};
-use h2ai_test_utils::mock_search;
-
-fn cockroachdb_manifest() -> TaskManifest {
-    TaskManifest {
-        description: "Build a rate-limiting service using Redis sliding windows".into(),
-        pareto_weights: ParetoWeights::new(0.2, 0.3, 0.5).unwrap(),
-        topology: TopologyRequest {
-            kind: "ensemble".into(),
-            branching_factor: None,
-        },
-        explorers: ExplorerRequest {
-            count: 2,
-            tau_min: Some(0.3),
-            tau_max: Some(0.8),
-            roles: vec![],
-            review_gates: vec![],
-            slot_configs: vec![],
-            diversity_ids: vec![],
-        },
-        constraints: vec![],
-        context: None,
-        oracle: None,
-        require_approval: false,
-        constraint_tags: vec![],
-        measure_verifier_ab: false,
-        tenant_id: h2ai_types::identity::TenantId::default_tenant(),
-    }
-}
-
-#[test]
-fn srani_grounding_hint_format_is_positive_not_prohibitive() {
-    use h2ai_orchestrator::srani_grounding::{format_grounding_hint, GroundingResult};
-    let result = GroundingResult {
-        alternatives: vec!["Redis".into()],
-        grounding_statement: "Use Redis TTL counters".into(),
-        source: GroundingSource::LlmResearcher,
-        implied_entities: vec![],
-    };
-    let hint = format_grounding_hint(&result, &["CockroachDB".into(), "ClickHouse".into()]);
-    assert!(
-        hint.contains("GROUNDING CONTEXT"),
-        "must use new positive header"
-    );
-    assert!(
-        !hint.contains("Do not introduce"),
-        "must not contain old prohibitive text"
-    );
-    assert!(
-        hint.contains("Avoid (not in spec)"),
-        "must retain Avoid line as secondary signal"
-    );
-    assert!(
-        hint.contains("Redis"),
-        "must mention spec-defined alternatives"
-    );
-}
-
-#[tokio::test]
-async fn srani_no_chain_falls_back_to_spec_anchor_only() {
-    let explorer = mock_adapter("I recommend CockroachDB for distributed rate-limiting state");
-    let scorer = verifier();
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let cfg = H2AIConfig::default();
-    let registry =
-        AdapterRegistry::new(Arc::new(engine_mock_adapter()) as Arc<dyn IComputeAdapter>);
-    let store = TaskStore::new();
-
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest: cockroachdb_manifest(),
-        calibration: cal,
-        explorer_adapters: vec![&explorer as _, &explorer as _],
-        verification_adapter: &scorer as _,
-        auditor_adapter: &auditor as _,
-        auditor_config: AuditorConfig::default(),
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-
-    let result = ExecutionEngine::run_offline(input).await;
-    assert!(
-        result.is_ok(),
-        "engine must succeed with no chain: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-async fn srani_spec_anchor_chain_records_grounding_event_source() {
-    let explorer = mock_adapter("I recommend CockroachDB for distributed rate-limiting state");
-    let scorer = verifier();
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let cfg = H2AIConfig::default();
-    let registry =
-        AdapterRegistry::new(Arc::new(engine_mock_adapter()) as Arc<dyn IComputeAdapter>);
-    let store = TaskStore::new();
-    let chain = Arc::new(SraniGroundingChain::new(vec![Box::new(SpecAnchorGrounder)]));
-
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest: cockroachdb_manifest(),
-        calibration: cal,
-        explorer_adapters: vec![&explorer as _, &explorer as _],
-        verification_adapter: &scorer as _,
-        auditor_adapter: &auditor as _,
-        auditor_config: AuditorConfig::default(),
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: Some(chain),
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-
-    let output = ExecutionEngine::run_offline(input).await.unwrap();
-    for ev in &output.researcher_grounding_events {
-        if ev.slot.is_none() && !ev.shared_assumption.is_empty() {
-            assert_eq!(
-                ev.source,
-                GroundingSource::SpecAnchor,
-                "SRANI event must carry SpecAnchor source"
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn srani_llm_chain_records_llm_researcher_source() {
-    let explorer = mock_adapter("I recommend CockroachDB for distributed rate-limiting state");
-    let scorer = verifier();
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let cfg = H2AIConfig::default();
-    let registry =
-        AdapterRegistry::new(Arc::new(engine_mock_adapter()) as Arc<dyn IComputeAdapter>);
-    let store = TaskStore::new();
-
-    let researcher_mock = Arc::new(mock_adapter(
-        r#"{"alternatives": ["Redis TTL counters"], "statement": "Use Redis TTL + Lua for rate limiting"}"#,
-    ));
-    let chain = Arc::new(SraniGroundingChain::new(vec![
-        Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(researcher_mock, 512)),
-    ]));
-
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest: cockroachdb_manifest(),
-        calibration: cal,
-        explorer_adapters: vec![&explorer as _, &explorer as _],
-        verification_adapter: &scorer as _,
-        auditor_adapter: &auditor as _,
-        auditor_config: AuditorConfig::default(),
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: Some(chain),
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-
-    let output = ExecutionEngine::run_offline(input).await.unwrap();
-    for ev in &output.researcher_grounding_events {
-        if ev.slot.is_none() && !ev.shared_assumption.is_empty() {
-            assert_eq!(
-                ev.source,
-                GroundingSource::LlmResearcher,
-                "SRANI event must carry LlmResearcher source"
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn srani_researcher_failure_falls_back_gracefully() {
-    let explorer = mock_adapter("I recommend CockroachDB for distributed rate-limiting state");
-    let scorer = verifier();
-    let auditor = mock_adapter(r#"{"approved": true, "reason": "ok"}"#);
-    let cal = calibration().await;
-    let cfg = H2AIConfig::default();
-    let registry =
-        AdapterRegistry::new(Arc::new(engine_mock_adapter()) as Arc<dyn IComputeAdapter>);
-    let store = TaskStore::new();
-
-    let bad_researcher = Arc::new(mock_adapter("THIS IS NOT JSON"));
-    let chain = Arc::new(SraniGroundingChain::new(vec![
-        Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(bad_researcher, 512)),
-    ]));
-
-    let input = EngineInput {
-        task_id: TaskId::new(),
-        manifest: cockroachdb_manifest(),
-        calibration: cal,
-        explorer_adapters: vec![&explorer as _, &explorer as _],
-        verification_adapter: &scorer as _,
-        auditor_adapter: &auditor as _,
-        auditor_config: AuditorConfig::default(),
-        tao_config: TaoConfig::default(),
-        verification_config: VerificationConfig::default(),
-        constraint_corpus: vec![],
-        embedding_model: None,
-        cfg: &cfg,
-        store: store.clone(),
-        nats_dispatch: None,
-        registry: &registry,
-        tao_multiplier: 0.6,
-        tao_estimator: Arc::new(tokio::sync::RwLock::new(
-            h2ai_orchestrator::tao_loop::TaoMultiplierEstimator::new_with_alpha(0.1),
-        )),
-        synthesis_adapter: None,
-        bandit_state: None,
-        shadow_audit_ctx: None,
-        researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: Some(chain),
-        gap_research_chain: None,
-        nats_raw: None,
-        tenant_id: TenantId::default_tenant(),
-        nats: None,
-        prev_assembled_contexts: Vec::new(),
-        compression_adapter: None,
-        stable_cache: None,
-        knowledge_provider: None,
-        induction_store: None,
-        induction_scheduler: None,
-        conformal_margin: 0.0,
-    };
-
-    let result = ExecutionEngine::run_offline(input).await;
-    assert!(
-        result.is_ok(),
-        "engine must not fail due to researcher error: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-async fn srani_web_search_chain_resolves_at_tier1() {
-    use h2ai_orchestrator::srani_grounding::GroundingContext;
-
-    let web_snippet = "Redis sliding-window counter is the standard for rate limiting";
-    let chain = SraniGroundingChain::new(vec![
-        Box::new(SpecAnchorGrounder),
-        Box::new(LlmResearcherGrounder::new(
-            Arc::new(mock_adapter("should not appear")),
-            512,
-        )),
-        Box::new(WebSearchGrounder::new(
-            Arc::new(mock_search(web_snippet.to_string())),
-            3,
-        )),
-    ]);
-    let ctx = GroundingContext {
-        fabricated_entities: vec!["CockroachDB".into()],
-        task_description: "Build a rate-limiting service using Redis".into(),
-        spec_technologies: vec![],
-    };
-    // tier=1 must use WebSearch (index 2), not LlmResearcher (index 1).
-    let result = chain.resolve(&ctx, 1).await.unwrap();
-    assert_eq!(
-        result.source,
-        GroundingSource::WebSearch,
-        "tier=1 must resolve to WebSearch"
-    );
-    assert!(result.grounding_statement.contains("Redis"));
-}
+// Tests removed — correlated-fabrication phase deleted from pipeline.
 
 #[test]
 fn precision_mode_max_slots_config_default_is_3() {
@@ -4131,9 +2942,6 @@ async fn engine_complexity_routing_disabled_runs_normally() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -4238,9 +3046,6 @@ async fn engine_complexity_probe_stored_on_controller() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: Some(researcher),
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -4287,6 +3092,7 @@ fn vse(passed: bool) -> VerificationScoredEvent {
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     }
 }
@@ -4445,9 +3251,6 @@ fn make_engine_input<'a>(
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -4739,9 +3542,6 @@ async fn engine_conformal_margin_reduces_threshold() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -4833,9 +3633,6 @@ async fn engine_conformal_margin_clamps_to_zero() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -4925,9 +3722,6 @@ async fn engine_zero_deadline_returns_deadline_exceeded() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -5027,9 +3821,6 @@ async fn engine_failing_verifier_exhausts_retries() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -5135,9 +3926,6 @@ async fn engine_agent_dropout_path_with_retries() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -5242,9 +4030,6 @@ async fn engine_complexity_overflow_routes_to_failure() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: Some(researcher),
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -5349,9 +4134,6 @@ async fn engine_run_offline_with_nats_event_publishing() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -5463,9 +4245,6 @@ async fn engine_reasoning_checkpoint_non_strict_writes() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),

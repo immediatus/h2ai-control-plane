@@ -51,6 +51,8 @@
     clippy::unreadable_literal,
     clippy::no_effect_underscore_binding
 )]
+use h2ai_api::task_pipeline::{build_tao_config, is_network_error};
+use h2ai_config::H2AIConfig;
 use h2ai_types::config::ParetoWeights;
 use h2ai_types::manifest::TaskManifest;
 use h2ai_types::sizing::condorcet_quality;
@@ -139,4 +141,111 @@ fn task_manifest_oracle_field_accessible() {
     });
     let m: TaskManifest = serde_json::from_value(raw).unwrap();
     assert!(m.oracle.is_none());
+}
+
+// ── is_network_error ──────────────────────────────────────────────────────────
+//
+// Regression: before the fix, "model hit max_tokens during thinking phase" was classified
+// as is_network=true.  This caused the engine to stop silently instead of emitting a
+// proper TaskFailed event (the adapter wraps budget errors in AdapterError::NetworkError).
+
+#[test]
+fn max_tokens_during_thinking_is_not_network_error() {
+    assert!(
+        !is_network_error(
+            "adapter error: network error: model hit max_tokens during thinking phase; \
+             increase max_tokens and retry"
+        ),
+        "max_tokens budget failure must NOT be treated as a network outage"
+    );
+}
+
+#[test]
+fn max_tokens_prefix_alone_is_not_network_error() {
+    assert!(!is_network_error("max_tokens exceeded"));
+}
+
+#[test]
+fn connection_refused_is_network_error() {
+    assert!(is_network_error(
+        "connection refused: host.docker.internal:8080"
+    ));
+}
+
+#[test]
+fn timed_out_is_network_error() {
+    assert!(is_network_error(
+        "network error: connection timed out after 30s"
+    ));
+}
+
+#[test]
+fn generic_network_error_without_max_tokens_is_network_error() {
+    assert!(is_network_error("network error: unexpected EOF"));
+}
+
+// ── build_tao_config ─────────────────────────────────────────────────────────
+//
+// Regression: before the fix, `tao_config` was always built with `TaoConfig::default()`,
+// ignoring `H2AIConfig.tao_per_turn_timeout_secs`.  The `[tao]` TOML section that scenario
+// configs used was silently discarded by the config crate (H2AIConfig has no nested tao struct).
+
+#[test]
+fn tao_config_inherits_per_turn_timeout_from_h2ai_config() {
+    let cfg = H2AIConfig {
+        tao_per_turn_timeout_secs: 3600,
+        ..Default::default()
+    };
+    let tao = build_tao_config(&cfg);
+    assert_eq!(
+        tao.per_turn_timeout_secs, 3600,
+        "TaoConfig must inherit per_turn_timeout_secs from H2AIConfig; \
+         before the fix it always used TaoConfig::default() = 600s regardless of config"
+    );
+}
+
+#[test]
+fn tao_config_default_is_600s() {
+    let cfg = H2AIConfig::default();
+    let tao = build_tao_config(&cfg);
+    assert_eq!(
+        tao.per_turn_timeout_secs, 600,
+        "default tao_per_turn_timeout_secs in reference.toml must be 600s"
+    );
+}
+
+#[test]
+fn tao_config_inherits_timeout_retry_max_tokens_from_h2ai_config() {
+    let cfg = H2AIConfig {
+        tao_timeout_retry_max_tokens: 4096,
+        ..Default::default()
+    };
+    let tao = build_tao_config(&cfg);
+    assert_eq!(
+        tao.timeout_retry_max_tokens, 4096,
+        "TaoConfig must inherit timeout_retry_max_tokens from H2AIConfig; \
+         before the fix it always used TaoConfig::default() = 512 which causes \
+         thinking models to exhaust the retry budget and emit LlmAdapterUnavailable"
+    );
+}
+
+#[test]
+fn tao_config_default_timeout_retry_max_tokens_is_4096() {
+    let cfg = H2AIConfig::default();
+    let tao = build_tao_config(&cfg);
+    assert_eq!(
+        tao.timeout_retry_max_tokens, 4096,
+        "default tao_timeout_retry_max_tokens in reference.toml must be 4096 (thinking-model safe)"
+    );
+}
+
+#[test]
+fn tao_config_preserves_retry_on_timeout_default() {
+    let cfg = H2AIConfig {
+        tao_per_turn_timeout_secs: 1800,
+        ..Default::default()
+    };
+    let tao = build_tao_config(&cfg);
+    let defaults = h2ai_types::config::TaoConfig::default();
+    assert_eq!(tao.retry_on_timeout, defaults.retry_on_timeout);
 }

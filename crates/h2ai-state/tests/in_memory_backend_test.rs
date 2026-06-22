@@ -285,7 +285,7 @@ async fn arc_wrapped_backend_active_variant_ptr_roundtrip() {
     assert_eq!(loaded, "v2");
 }
 
-// ── EstimatorStore (tao, srani, bandit) ──────────────────────────────────────
+// ── EstimatorStore (tao, bandit) ─────────────────────────────────────────────
 
 #[tokio::test]
 async fn estimator_store_tao_roundtrip() {
@@ -307,17 +307,6 @@ async fn estimator_store_tao_roundtrip() {
         .unwrap();
     assert!((ema - 0.42).abs() < 1e-9);
     assert_eq!(count, 7);
-}
-
-#[tokio::test]
-async fn estimator_store_srani_roundtrip() {
-    let backend = InMemoryStateBackend::new();
-    let tenant = TenantId::default_tenant();
-    assert!(backend.get_srani_state(&tenant).await.unwrap().is_none());
-    backend.put_srani_state(&tenant, 0.75, 3).await.unwrap();
-    let (cfi, count) = backend.get_srani_state(&tenant).await.unwrap().unwrap();
-    assert!((cfi - 0.75).abs() < 1e-9);
-    assert_eq!(count, 3);
 }
 
 #[tokio::test]

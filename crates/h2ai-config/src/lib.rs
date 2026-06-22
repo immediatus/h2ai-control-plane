@@ -196,6 +196,9 @@ pub enum ConfigLoadError {
     /// TOML parsing or field-type mismatch in the layered config stack.
     #[error("config error: {0}")]
     Config(#[from] config::ConfigError),
+    /// A field value is out of its valid range.
+    #[error("config validation error: {0}")]
+    Validation(String),
 }
 
 /// Configuration for the Phase 4 shadow auditor.
@@ -303,90 +306,86 @@ impl Default for SafetyConfig {
     }
 }
 
-/// Configuration for SRANI — Specification-Relative Architectural Noun Intersection.
-/// Detects shared ungrounded architectural entities across proposals (extension).
+// ── Grounding judge config ────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SraniConfig {
-    /// When false, SRANI check is skipped entirely. Default true.
-    #[serde(default = "srani_default_enabled")]
+pub struct GroundingConfig {
+    #[serde(default = "default_grounding_enabled")]
     pub enabled: bool,
-    /// When true (default), use sigmoid gate with EMA midpoint.
-    /// When false, use static `warn_threshold` / `inject_threshold`.
-    #[serde(default = "srani_default_adaptive")]
-    pub adaptive: bool,
-    /// EMA smoothing factor for the adaptive midpoint. Range (0, 1].
-    /// Lower = slower adaptation (longer memory). Default 0.20 ≈ 5-task horizon.
-    #[serde(default = "srani_default_ema_alpha")]
-    pub ema_alpha: f64,
-    /// Sigmoid temperature: controls curve sharpness. Lower = sharper cliff. Default 0.15.
-    #[serde(default = "srani_default_temperature")]
-    pub temperature: f64,
-    /// Injection pressure above which the grounding hint is injected. Default 0.50.
-    #[serde(default = "srani_default_gate_threshold")]
-    pub gate_threshold: f64,
-    /// CFI above this threshold emits `CorrelatedFabricationEvent` (adaptive=false only).
-    /// Also used for `cold_start_midpoint()` when adaptive=true. Default 0.3.
-    #[serde(default = "srani_default_warn_threshold")]
-    pub warn_threshold: f64,
-    /// CFI above this threshold injects a grounding hint (adaptive=false only).
-    /// Also used for `cold_start_midpoint()` when adaptive=true. Default 0.6.
-    #[serde(default = "srani_default_inject_threshold")]
-    pub inject_threshold: f64,
-    /// When true (default) and a researcher adapter is available, distill raw
-    /// web-search results with the LLM before injecting them as grounding context.
-    #[serde(default = "srani_default_grounding_distill")]
+    #[serde(default = "default_grounding_max_tokens")]
+    pub max_tokens: u64,
+    #[serde(default = "default_grounding_min_confidence")]
+    pub min_confidence: f64,
+    #[serde(default = "default_grounding_tau")]
+    pub tau: f64,
+}
+
+const fn default_grounding_enabled() -> bool {
+    true
+}
+const fn default_grounding_max_tokens() -> u64 {
+    8192
+}
+fn default_grounding_min_confidence() -> f64 {
+    0.7
+}
+fn default_grounding_tau() -> f64 {
+    0.2
+}
+
+impl Default for GroundingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_grounding_enabled(),
+            max_tokens: default_grounding_max_tokens(),
+            min_confidence: default_grounding_min_confidence(),
+            tau: default_grounding_tau(),
+        }
+    }
+}
+
+// ── Gap research chain config ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GapResearchConfig {
+    #[serde(default = "default_gap_research_grounding_distill")]
     pub grounding_distill: bool,
-    /// Minimum character count that triggers LLM distillation.
-    /// Results shorter than this are already compact and skip compression.
-    /// Default 800.
-    #[serde(default = "srani_default_grounding_compress_threshold")]
+    #[serde(default = "default_gap_research_compress_threshold")]
     pub grounding_compress_threshold: usize,
-    /// Max tokens for the SRANI researcher LLM call. Default: 32768.
-    #[serde(default = "default_srani_researcher_max_tokens")]
+    #[serde(default = "default_gap_research_researcher_max_tokens")]
     pub researcher_max_tokens: u64,
-    /// Max tokens for the distillation LLM call. Default: 32768.
-    #[serde(default = "default_srani_distill_max_tokens")]
+    #[serde(default = "default_gap_research_distill_max_tokens")]
     pub distill_max_tokens: u64,
-    /// Max tokens for the gap synthesis validation LLM call. Default: 32768.
-    #[serde(default = "default_srani_gap_synthesis_max_tokens")]
+    #[serde(default = "default_gap_research_gap_synthesis_max_tokens")]
     pub gap_synthesis_max_tokens: u64,
 }
 
-const fn srani_default_enabled() -> bool {
+const fn default_gap_research_grounding_distill() -> bool {
     true
 }
-const fn srani_default_adaptive() -> bool {
-    true
-}
-const fn srani_default_ema_alpha() -> f64 {
-    0.20
-}
-const fn srani_default_temperature() -> f64 {
-    0.15
-}
-const fn srani_default_gate_threshold() -> f64 {
-    0.50
-}
-const fn srani_default_warn_threshold() -> f64 {
-    0.3
-}
-const fn srani_default_inject_threshold() -> f64 {
-    0.6
-}
-const fn srani_default_grounding_distill() -> bool {
-    true
-}
-const fn srani_default_grounding_compress_threshold() -> usize {
+const fn default_gap_research_compress_threshold() -> usize {
     800
 }
-const fn default_srani_researcher_max_tokens() -> u64 {
+const fn default_gap_research_researcher_max_tokens() -> u64 {
     32_768
 }
-const fn default_srani_distill_max_tokens() -> u64 {
+const fn default_gap_research_distill_max_tokens() -> u64 {
     32_768
 }
-const fn default_srani_gap_synthesis_max_tokens() -> u64 {
+const fn default_gap_research_gap_synthesis_max_tokens() -> u64 {
     32_768
+}
+
+impl Default for GapResearchConfig {
+    fn default() -> Self {
+        Self {
+            grounding_distill: default_gap_research_grounding_distill(),
+            grounding_compress_threshold: default_gap_research_compress_threshold(),
+            researcher_max_tokens: default_gap_research_researcher_max_tokens(),
+            distill_max_tokens: default_gap_research_distill_max_tokens(),
+            gap_synthesis_max_tokens: default_gap_research_gap_synthesis_max_tokens(),
+        }
+    }
 }
 
 /// Configuration for OPRO (Optimization by Prompt Retrieval).
@@ -562,34 +561,6 @@ impl Default for CalibrationSlowStartConfig {
             reset_multiplier: 3.0,
             reset_threshold: 0.4,
         }
-    }
-}
-
-impl Default for SraniConfig {
-    fn default() -> Self {
-        Self {
-            enabled: srani_default_enabled(),
-            adaptive: srani_default_adaptive(),
-            ema_alpha: srani_default_ema_alpha(),
-            temperature: srani_default_temperature(),
-            gate_threshold: srani_default_gate_threshold(),
-            warn_threshold: srani_default_warn_threshold(),
-            inject_threshold: srani_default_inject_threshold(),
-            grounding_distill: srani_default_grounding_distill(),
-            grounding_compress_threshold: srani_default_grounding_compress_threshold(),
-            researcher_max_tokens: default_srani_researcher_max_tokens(),
-            distill_max_tokens: default_srani_distill_max_tokens(),
-            gap_synthesis_max_tokens: default_srani_gap_synthesis_max_tokens(),
-        }
-    }
-}
-
-impl SraniConfig {
-    /// Returns the static midpoint used during cold start (count < 5) and when adaptive=false.
-    /// Derived from existing thresholds — no new config required.
-    #[must_use]
-    pub const fn cold_start_midpoint(&self) -> f64 {
-        f64::midpoint(self.warn_threshold, self.inject_threshold)
     }
 }
 
@@ -1571,6 +1542,14 @@ pub struct H2AIConfig {
     pub beta_calibration_source: Option<h2ai_types::sizing::BetaCalibrationSource>,
     /// Quality factor gained per TAO loop turn; heuristic prior that converges after ~20 Tier 1 oracle tasks.
     pub tao_per_turn_factor: f64,
+    /// Per-turn LLM call timeout in seconds for TAO loop adapters. Increase for slow or queued local models
+    /// (e.g. `n_adapters × single_call_time_s`). Default 600.
+    pub tao_per_turn_timeout_secs: u64,
+    /// max_tokens cap for the single retry request issued after a per-turn timeout. Thinking models
+    /// require ≥ 4096 — they exhaust the internal reasoning budget before producing output at 512.
+    /// Default 4096.
+    #[serde(default = "default_tao_timeout_retry_max_tokens")]
+    pub tao_timeout_retry_max_tokens: u32,
     /// EMA smoothing factor α for `TaoMultiplierEstimator` drift tracking. Smaller values weight history more; half-life ≈ ln(2) / α samples.
     pub tao_estimator_ema_alpha: f64,
     /// Hard deadline in seconds for a single task end-to-end. `None` means no deadline; omit from the override file to leave unlimited.
@@ -1799,12 +1778,15 @@ pub struct H2AIConfig {
     /// Fires `DiversityGuardDegradedEvent` when below this threshold. Default 0.40.
     #[serde(default = "default_domain_coverage_threshold")]
     pub domain_coverage_threshold: f64,
-    /// SRANI correlated fabrication detection configuration (extension).
+    /// Grounding judge configuration (LLM and heuristic grounding analysis).
     #[serde(default)]
-    pub srani: SraniConfig,
+    pub grounding: GroundingConfig,
+    /// Gap research chain configuration (distillation, synthesis, compression).
+    #[serde(default)]
+    pub gap_research: GapResearchConfig,
     /// Optional path to an NDJSON debug log file. When set, every completed task
     /// appends one JSON line containing the full spec, all proposals with scores,
-    /// SRANI events, EMA before/after, and the merged output — no truncation.
+    /// grounding events and the merged output — no truncation.
     /// File is opened in append mode; directory must already exist.
     /// Example: `/tmp/h2ai-debug.ndjson`
     #[serde(default)]
@@ -1919,6 +1901,8 @@ pub struct H2AIConfig {
     pub oom_guard: OomGuardConfig,
     #[serde(default)]
     pub gap_quality: GapQualityConfig,
+    #[serde(default)]
+    pub epistemic_quality: EpistemicQualityConfig,
     #[serde(default)]
     pub audit_gate: AuditGateConfig,
 }
@@ -2071,6 +2055,9 @@ const fn default_talagrand_tau_min() -> f64 {
 }
 const fn default_evaluator_timeout_secs() -> u64 {
     600
+}
+const fn default_tao_timeout_retry_max_tokens() -> u32 {
+    4096
 }
 
 const fn default_verifier_consensus_passes() -> u8 {
@@ -2235,16 +2222,6 @@ impl H2AIConfig {
         if self.thinking_loop.synthesis_tournament_max_round_tokens == REF {
             self.thinking_loop.synthesis_tournament_max_round_tokens = d;
         }
-        // SraniConfig
-        if self.srani.researcher_max_tokens == REF {
-            self.srani.researcher_max_tokens = d;
-        }
-        if self.srani.distill_max_tokens == REF {
-            self.srani.distill_max_tokens = d;
-        }
-        if self.srani.gap_synthesis_max_tokens == REF {
-            self.srani.gap_synthesis_max_tokens = d;
-        }
         // GapK1Config
         if self.gap_k1.repair_max_tokens == REF {
             self.gap_k1.repair_max_tokens = d;
@@ -2253,6 +2230,38 @@ impl H2AIConfig {
         if self.opro.max_tokens == REF {
             self.opro.max_tokens = d;
         }
+        // GapResearchConfig
+        if self.gap_research.researcher_max_tokens == REF {
+            self.gap_research.researcher_max_tokens = d;
+        }
+        if self.gap_research.distill_max_tokens == REF {
+            self.gap_research.distill_max_tokens = d;
+        }
+        if self.gap_research.gap_synthesis_max_tokens == REF {
+            self.gap_research.gap_synthesis_max_tokens = d;
+        }
+    }
+
+    /// Validates field ranges that cannot be expressed as type-level constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if any field is outside its valid range.
+    pub fn validate(&self) -> Result<(), ConfigLoadError> {
+        // Grounding config
+        if !(0.0..=1.0).contains(&self.grounding.tau) {
+            return Err(ConfigLoadError::Validation(format!(
+                "grounding.tau must be in [0, 1], got {}",
+                self.grounding.tau
+            )));
+        }
+        if !(0.0..=1.0).contains(&self.grounding.min_confidence) {
+            return Err(ConfigLoadError::Validation(format!(
+                "grounding.min_confidence must be in [0, 1], got {}",
+                self.grounding.min_confidence
+            )));
+        }
+        Ok(())
     }
 
     /// Emits `tracing::warn`! for every command in `shell_hardened_allowlist` that is
@@ -2308,6 +2317,7 @@ impl H2AIConfig {
         let mut cfg: Self = builder.build()?.try_deserialize()?;
         apply_safety_profile(&mut cfg);
         cfg.apply_model_max_tokens();
+        cfg.validate()?;
         cfg.validate_shell_allowlist_subset();
         Ok(cfg)
     }
@@ -2323,6 +2333,7 @@ impl H2AIConfig {
     pub fn load_from_file(path: &Path) -> Result<Self, ConfigLoadError> {
         let contents = std::fs::read_to_string(path)?;
         let cfg: Self = serde_json::from_str(&contents)?;
+        cfg.validate()?;
         cfg.validate_shell_allowlist_subset();
         Ok(cfg)
     }
@@ -2396,32 +2407,26 @@ pub fn log_startup_config_report(cfg: &H2AIConfig) {
         );
     }
 
-    // [srani] block — WARN if !enabled
-    if cfg.srani.enabled {
+    // [grounding] block — WARN if !enabled
+    if cfg.grounding.enabled {
         tracing::info!(
-            enabled = cfg.srani.enabled,
-            adaptive = cfg.srani.adaptive,
-            ema_alpha = cfg.srani.ema_alpha,
-            temperature = cfg.srani.temperature,
-            gate_threshold = cfg.srani.gate_threshold,
-            warn_threshold = cfg.srani.warn_threshold,
-            inject_threshold = cfg.srani.inject_threshold,
-            "[srani] enabled={} ({})",
-            cfg.srani.enabled,
-            "hint injection active"
+            enabled = cfg.grounding.enabled,
+            max_tokens = cfg.grounding.max_tokens,
+            min_confidence = cfg.grounding.min_confidence,
+            tau = cfg.grounding.tau,
+            "[grounding] enabled={} ({})",
+            cfg.grounding.enabled,
+            "grounding checker active"
         );
     } else {
         tracing::warn!(
-            enabled = cfg.srani.enabled,
-            adaptive = cfg.srani.adaptive,
-            ema_alpha = cfg.srani.ema_alpha,
-            temperature = cfg.srani.temperature,
-            gate_threshold = cfg.srani.gate_threshold,
-            warn_threshold = cfg.srani.warn_threshold,
-            inject_threshold = cfg.srani.inject_threshold,
-            "[srani] enabled={} ({})",
-            cfg.srani.enabled,
-            "hint injection disabled"
+            enabled = cfg.grounding.enabled,
+            max_tokens = cfg.grounding.max_tokens,
+            min_confidence = cfg.grounding.min_confidence,
+            tau = cfg.grounding.tau,
+            "[grounding] enabled={} ({})",
+            cfg.grounding.enabled,
+            "grounding checker disabled"
         );
     }
 
@@ -2619,6 +2624,81 @@ impl Default for GapQualityConfig {
         Self {
             min_improvement_to_retain: Self::default_min_improvement_to_retain(),
             min_post_injection_waves: Self::default_min_post_injection_waves(),
+        }
+    }
+}
+
+// ── Epistemic Output Quality ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpistemicQualityConfig {
+    /// Master switch. Defaults to true — FabricationChecker always runs for every task.
+    /// Set to false only to fully bypass the epistemic stage (not recommended).
+    #[serde(default = "EpistemicQualityConfig::default_enabled")]
+    pub enabled: bool,
+    /// Run CoherenceChecker after selection. Adds ~1 LLM call per task. Default: false.
+    #[serde(default = "EpistemicQualityConfig::default_coherence_check_enabled")]
+    pub coherence_check_enabled: bool,
+    /// Minimum gap severity that triggers coherence reporting ("low"|"medium"|"high").
+    #[serde(default = "EpistemicQualityConfig::default_coherence_min_severity")]
+    pub coherence_min_severity: String,
+    /// Attempt MicroExplorerResolver recovery for each gap batch. Default: false.
+    #[serde(default = "EpistemicQualityConfig::default_recovery_enabled")]
+    pub recovery_enabled: bool,
+    /// Maximum number of gap-resolution passes before accepting current state.
+    #[serde(default = "EpistemicQualityConfig::default_recovery_max_passes")]
+    pub recovery_max_passes: u8,
+    /// Minimum score improvement (delta) for a recovered patch to be accepted (0.0–1.0).
+    #[serde(default = "EpistemicQualityConfig::default_recovery_tau")]
+    pub recovery_tau: f64,
+    /// "fail" (default) → suppress ProvenanceMap when 0 proposals pass epistemic check.
+    /// "deliver_unverified" → emit ProvenanceMap with Unverified confidence for audit pipelines.
+    #[serde(default = "EpistemicQualityConfig::default_zero_valid_proposals_policy")]
+    pub zero_valid_proposals_policy: String,
+    /// "passthrough" (default) → output unchanged, fabrication data in ProvenanceRecordedEvent only.
+    /// "clean" → prepend confidence header. "audit" → header + inline annotations + footer.
+    #[serde(default = "EpistemicQualityConfig::default_output_mode")]
+    pub output_mode: String,
+}
+
+impl EpistemicQualityConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+    const fn default_coherence_check_enabled() -> bool {
+        false
+    }
+    fn default_coherence_min_severity() -> String {
+        "medium".into()
+    }
+    const fn default_recovery_enabled() -> bool {
+        false
+    }
+    const fn default_recovery_max_passes() -> u8 {
+        2
+    }
+    const fn default_recovery_tau() -> f64 {
+        0.5
+    }
+    fn default_zero_valid_proposals_policy() -> String {
+        "fail".into()
+    }
+    fn default_output_mode() -> String {
+        "passthrough".into()
+    }
+}
+
+impl Default for EpistemicQualityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            coherence_check_enabled: Self::default_coherence_check_enabled(),
+            coherence_min_severity: Self::default_coherence_min_severity(),
+            recovery_enabled: Self::default_recovery_enabled(),
+            recovery_max_passes: Self::default_recovery_max_passes(),
+            recovery_tau: Self::default_recovery_tau(),
+            zero_valid_proposals_policy: Self::default_zero_valid_proposals_policy(),
+            output_mode: Self::default_output_mode(),
         }
     }
 }

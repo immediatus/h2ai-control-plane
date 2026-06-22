@@ -239,56 +239,23 @@ async fn main() {
         m.safety_require_bivariate_cg = u8::from(app_state.cfg.safety.require_bivariate_cg);
     }
 
-    {
-        use h2ai_orchestrator::srani_grounding::{
-            LlmResearcherGrounder, SpecAnchorGrounder, SraniGroundingChain,
-        };
-        let srani_cfg = &app_state.cfg.srani;
-        let mut tiers: Vec<Box<dyn h2ai_orchestrator::srani_grounding::GroundingProvider>> =
-            vec![Box::new(SpecAnchorGrounder)];
-        if let Some(ref r) = app_state.researcher_adapter {
-            tiers.push(Box::new(LlmResearcherGrounder::new(
-                r.clone(),
-                srani_cfg.researcher_max_tokens,
-            )));
-        }
-        let chain = SraniGroundingChain::new(tiers)
-            .with_compress_threshold(srani_cfg.grounding_compress_threshold);
-        // Wire distiller from the researcher adapter if distillation is enabled.
-        let chain = if let Some(ref r) = app_state.researcher_adapter {
-            chain.with_distiller(
-                r.clone(),
-                srani_cfg.grounding_distill,
-                srani_cfg.distill_max_tokens,
-            )
-        } else {
-            chain
-        };
-        app_state.srani_grounding_chain = Some(std::sync::Arc::new(chain));
-        tracing::info!(
-            target: "h2ai.startup",
-            distill = srani_cfg.grounding_distill,
-            "SRANI grounding chain built"
-        );
-    }
-
     // ── gap research chain: StackOverflow + LLM distiller ───────────────
     // DuckDuckGo lite is CAPTCHA-blocked on cloud/devcontainer IPs; SO is not.
     {
-        use h2ai_orchestrator::srani_grounding::{SraniGroundingChain, WebSearchGrounder};
+        use h2ai_orchestrator::grounding_chain::{GapResearchChain, WebSearchGrounder};
         use h2ai_tools::web_search::StackOverflowSearchBackend;
         let backend = std::sync::Arc::new(StackOverflowSearchBackend::new());
         let web_grounder = WebSearchGrounder::new(backend, 5);
-        let providers: Vec<Box<dyn h2ai_orchestrator::srani_grounding::GroundingProvider>> =
+        let providers: Vec<Box<dyn h2ai_orchestrator::grounding_chain::GroundingProvider>> =
             vec![Box::new(web_grounder)];
-        let srani_cfg = &app_state.cfg.srani;
-        let chain = SraniGroundingChain::new(providers)
-            .with_compress_threshold(srani_cfg.grounding_compress_threshold);
+        let gap_cfg = &app_state.cfg.gap_research;
+        let chain = GapResearchChain::new(providers)
+            .with_compress_threshold(gap_cfg.grounding_compress_threshold);
         let chain = if let Some(ref r) = app_state.researcher_adapter {
             chain.with_distiller(
                 r.clone(),
-                srani_cfg.grounding_distill,
-                srani_cfg.distill_max_tokens,
+                gap_cfg.grounding_distill,
+                gap_cfg.distill_max_tokens,
             )
         } else {
             chain

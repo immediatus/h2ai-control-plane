@@ -143,6 +143,9 @@ async fn disabled_loop_returns_empty_report() {
         task_id: "",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
     let report = run(input).await;
@@ -253,6 +256,9 @@ async fn run_forwards_constraint_ids_to_knowledge_query() {
         task_id: "",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
 
@@ -393,6 +399,9 @@ async fn run_with_two_iterations_covers_convergence_check() {
         task_id: "test-task",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
 
@@ -446,6 +455,9 @@ async fn run_with_low_coverage_continues_to_next_iteration() {
         task_id: "",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
 
@@ -483,6 +495,9 @@ async fn run_uses_fallback_archetype_on_parse_failure() {
         task_id: "",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
 
@@ -586,6 +601,9 @@ async fn adapter_error_in_select_archetypes_produces_default_report() {
         task_id: "test-task-id",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
     let report = run(input).await;
@@ -624,4 +642,116 @@ fn format_induction_priors_formats_top_5() {
     let result = format_induction_priors(&patterns);
     // Only top 5 shown even though 7 provided
     assert_eq!(result.matches("node-").count(), 5);
+}
+
+// ── select_tension_seeds ─────────────────────────────────────────────────────
+
+#[test]
+fn select_tension_seeds_empty_tensions_returns_empty() {
+    use h2ai_orchestrator::thinking_loop::select_tension_seeds;
+    let result = select_tension_seeds(&[], &["billing".to_string()], 0.05, 3);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn select_tension_seeds_empty_tags_returns_empty() {
+    use h2ai_orchestrator::induction::{normalize_for_shingling, trigram_shingles};
+    use h2ai_orchestrator::thinking_loop::select_tension_seeds;
+    use h2ai_types::memory::TensionPattern;
+    let canonical = "atomicity guarantees conflict with distributed writes".to_string();
+    let shingles = trigram_shingles(&normalize_for_shingling(&canonical));
+    let pattern = TensionPattern {
+        canonical_text: canonical,
+        frequency: 5,
+        resolution_hint: None,
+        shingles,
+    };
+    let patterns = [pattern];
+    let result = select_tension_seeds(&patterns, &[], 0.05, 3);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn select_tension_seeds_returns_top_by_jaccard() {
+    use h2ai_orchestrator::induction::{normalize_for_shingling, trigram_shingles};
+    use h2ai_orchestrator::thinking_loop::select_tension_seeds;
+    use h2ai_types::memory::TensionPattern;
+
+    let make_pattern = |text: &str, freq: u32| {
+        let shingles = trigram_shingles(&normalize_for_shingling(text));
+        TensionPattern {
+            canonical_text: text.to_string(),
+            frequency: freq,
+            resolution_hint: None,
+            shingles,
+        }
+    };
+
+    let patterns = vec![
+        make_pattern("atomicity conflict distributed writes", 10),
+        make_pattern("billing audit log event ordering", 8),
+        make_pattern("completely unrelated domain foobar", 3),
+    ];
+
+    let tags = vec!["atomicity".to_string(), "distributed".to_string()];
+    let seeds = select_tension_seeds(&patterns, &tags, 0.01, 3);
+    // The atomicity pattern should score highest
+    assert!(!seeds.is_empty());
+    assert!(
+        seeds[0].canonical_text.contains("atomicity")
+            || seeds[0].canonical_text.contains("distributed")
+    );
+}
+
+#[test]
+fn select_tension_seeds_caps_at_max_count() {
+    use h2ai_orchestrator::induction::{normalize_for_shingling, trigram_shingles};
+    use h2ai_orchestrator::thinking_loop::select_tension_seeds;
+    use h2ai_types::memory::TensionPattern;
+
+    let make_pattern = |text: &str| {
+        let shingles = trigram_shingles(&normalize_for_shingling(text));
+        TensionPattern {
+            canonical_text: text.to_string(),
+            frequency: 1,
+            resolution_hint: None,
+            shingles,
+        }
+    };
+
+    let patterns: Vec<_> = (0..10)
+        .map(|i| make_pattern(&format!("atomicity constraint {i} conflict")))
+        .collect();
+
+    let tags = vec!["atomicity".to_string()];
+    let seeds = select_tension_seeds(&patterns, &tags, 0.01, 3);
+    assert!(seeds.len() <= 3);
+}
+
+// ── format_tension_seeds ─────────────────────────────────────────────────────
+
+#[test]
+fn format_tension_seeds_empty_returns_empty() {
+    use h2ai_orchestrator::thinking_loop::format_tension_seeds;
+    assert_eq!(format_tension_seeds(&[]), "");
+}
+
+#[test]
+fn format_tension_seeds_includes_header_and_text() {
+    use h2ai_orchestrator::induction::{normalize_for_shingling, trigram_shingles};
+    use h2ai_orchestrator::thinking_loop::format_tension_seeds;
+    use h2ai_types::memory::TensionPattern;
+    let canonical = "atomicity conflict with distributed writes".to_string();
+    let shingles = trigram_shingles(&normalize_for_shingling(&canonical));
+    let pattern = TensionPattern {
+        canonical_text: canonical.clone(),
+        frequency: 2,
+        resolution_hint: None,
+        shingles,
+    };
+    let seeds: Vec<&TensionPattern> = vec![&pattern];
+    let formatted = format_tension_seeds(&seeds);
+    assert!(formatted.contains("PREVIOUSLY OBSERVED TENSIONS"));
+    assert!(formatted.contains(&canonical));
+    assert!(formatted.contains("validate, refute, or refine"));
 }

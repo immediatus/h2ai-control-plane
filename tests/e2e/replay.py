@@ -276,6 +276,13 @@ def _trace_event(event: dict, start: float) -> None:
         yield_score = event.get("yield_score") or 0.0
         header = f"yield={yield_score:.3f}"
 
+    elif kind == "ProvenanceRecorded":
+        dc = event.get("document_confidence") or "?"
+        provisions = event.get("provision_count") or 0
+        open_gaps = event.get("open_gap_count") or 0
+        flag = "⚠ " if open_gaps > 0 else ""
+        header = f"{flag}document_confidence={dc}  provisions={provisions}  open_gaps={open_gaps}"
+
     elif kind == "TopologyProvisioned":
         n_exp = event.get("n_explorers") or event.get("explorer_count") or "?"
         topology = event.get("topology_kind") or "?"
@@ -435,7 +442,7 @@ class ExecutionTracker:
         self.waves: list[_WaveSummary] = [_WaveSummary(wave=0)]
         self.phase_log: list[tuple[str, str]] = []  # (elapsed, label)
         self.violation_counts: collections.Counter = collections.Counter()
-        self.srani_cfi_history: list[float] = []
+        self.grounding_cfi_history: list[float] = []
         self.calibration: "dict | None" = None
 
     @property
@@ -475,7 +482,7 @@ class ExecutionTracker:
         elif kind == "TaskFailed":
             self.phase_log.append((_elapsed(self.start), "TaskFailed"))
         elif kind == "CorrelatedFabrication":
-            self.srani_cfi_history.append(event.get("cfi", 0.0))
+            self.grounding_cfi_history.append(event.get("cfi", 0.0))
         elif kind == "CalibrationCompleted":
             self.calibration = event
 
@@ -570,11 +577,11 @@ def _diagnose_run(tracker: ExecutionTracker, terminal_kind: str, j_eff: "float |
                 "— repair context is not improving constraint pass rate"
             )
 
-    # SRANI CFI rising: grounding not working
-    hist = tracker.srani_cfi_history
+    # CFI rising: grounding not working
+    hist = tracker.grounding_cfi_history
     if len(hist) >= 2 and hist[-1] > hist[0] + 0.10:
         issues.append(
-            f"SRANI CFI rising across waves: {hist[0]:.2f} → {hist[-1]:.2f} "
+            f"CFI rising across waves: {hist[0]:.2f} → {hist[-1]:.2f} "
             "— grounding hints are not reducing correlated fabrication"
         )
 
@@ -627,9 +634,9 @@ MODEL_MAX_TOKENS = 32768
 def load_scenarios(names: list[str] | None) -> list[tuple[str, pathlib.Path, dict]]:
     """Return list of (display_name, scenario_dir, task_dict).
 
-    Scans recursively under SCENARIOS_DIR so features/ and benchmark/ subdirs
-    are discovered automatically.  The display name is the path relative to
-    SCENARIOS_DIR with slashes preserved (e.g. "features/01-thinking-loop").
+    Scans recursively under SCENARIOS_DIR so any subdirs are discovered
+    automatically.  The display name is the path relative to SCENARIOS_DIR
+    with slashes preserved (e.g. "complexity-routing").
     Names passed on the CLI can match either the full relative path or the
     leaf directory name.
     """
@@ -718,7 +725,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     tracker = ExecutionTracker(run_start)
     events_raw: list[dict] = []
     verification_scores: list[float] = []
-    srani_events: list[dict] = []
+    grounding_events: list[dict] = []
     pruned_constraints: list[str] = []
     j_eff: float | None = None
     merged_output = ""
@@ -732,6 +739,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     approval_resolved_event: dict | None = None
     leader_elected = False
     leader_elected_events: list[dict] = []
+    provenance_recorded_event: dict | None = None
 
     for event in stream_events(task_id, tenant_id=tenant_id, timeout_s=timeout_s):
         kind = event.get("kind", "")
@@ -804,7 +812,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
             _trace_event(event, run_start)
 
         elif kind == "CorrelatedFabrication":
-            srani_events.append(event)
+            grounding_events.append(event)
             _trace_event(event, run_start)
 
         elif kind == "ThinkingLoopCompleted":
@@ -822,6 +830,10 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         elif kind == "LeaderElected":
             leader_elected = True
             leader_elected_events.append(event)
+            _trace_event(event, run_start)
+
+        elif kind == "ProvenanceRecorded":
+            provenance_recorded_event = event
             _trace_event(event, run_start)
 
         elif kind == "MergeResolved":
@@ -870,7 +882,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         "j_eff": j_eff,
         "verification_scores": verification_scores,
         "avg_verification_score": avg_score,
-        "srani_events": srani_events,
+        "grounding_events": grounding_events,
         "pruned_constraints": pruned_constraints,
         "merged_output": merged_output,
         "events_raw": events_raw,
@@ -882,6 +894,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
         "approval_resolved_event": approval_resolved_event,
         "leader_elected": leader_elected,
         "leader_elected_events": leader_elected_events,
+        "provenance_recorded_event": provenance_recorded_event,
         "tracker": tracker,
     }
 
@@ -896,6 +909,9 @@ def check_assertions(result: dict, expected: dict, task_json: dict) -> dict[str,
     - valid_proposals_min: len(verification_scores) >= N
     - j_eff_min: j_eff >= diversity_weight * coverage_score
     - should_prune (MULTIFAMILY only): constraint IDs present in pruned_constraints
+    - provenance_recorded: bool — ProvenanceRecordedEvent was emitted during the run
+    - document_confidence_not_verified: bool — document_confidence != "High" (some provisions uncertain)
+    - open_gap_count_min: int — open_gap_count from ProvenanceRecordedEvent >= N
     """
     out: dict[str, dict] = {}
 
@@ -931,6 +947,34 @@ def check_assertions(result: dict, expected: dict, task_json: dict) -> dict[str,
             found = any(constraint_id in c for c in result["pruned_constraints"])
             out[f"prune_{constraint_id}"] = {"expected": True, "actual": found, "pass": found}
 
+    if "provenance_recorded" in expected:
+        actual = result.get("provenance_recorded_event") is not None
+        exp = expected["provenance_recorded"]
+        out["provenance_recorded"] = {"expected": exp, "actual": actual, "pass": actual == exp}
+
+    if "document_confidence_not_verified" in expected and expected["document_confidence_not_verified"]:
+        pev = result.get("provenance_recorded_event")
+        if pev is None:
+            out["document_confidence_not_verified"] = {
+                "expected": "not High", "actual": "no ProvenanceRecorded event", "pass": False,
+            }
+        else:
+            dc = pev.get("document_confidence", "")
+            out["document_confidence_not_verified"] = {
+                "expected": "not High", "actual": dc, "pass": dc != "High",
+            }
+
+    if "open_gap_count_min" in expected:
+        pev = result.get("provenance_recorded_event")
+        if pev is None:
+            out["open_gap_count_min"] = {
+                "expected": expected["open_gap_count_min"], "actual": None, "pass": False,
+            }
+        else:
+            actual = pev.get("open_gap_count", 0)
+            exp = expected["open_gap_count_min"]
+            out["open_gap_count_min"] = {"expected": exp, "actual": actual, "pass": actual >= exp}
+
     return out
 
 
@@ -960,8 +1004,8 @@ def save_results(scenario_name: str, task: dict, result: dict, assertions: dict)
         "j_eff": result["j_eff"],
         "verification_scores": result["verification_scores"],
         "avg_verification_score": result["avg_verification_score"],
-        "srani_events_count": len(result["srani_events"]),
-        "srani_cfi": result["srani_events"][0].get("cfi") if result["srani_events"] else None,
+        "grounding_events_count": len(result["grounding_events"]),
+        "grounding_cfi": result["grounding_events"][0].get("cfi") if result["grounding_events"] else None,
         "pruned_constraints": result["pruned_constraints"],
         # Thinking loop signals
         "thinking_loop_enabled": tl.get("enabled") if tl else None,
@@ -1299,7 +1343,7 @@ def _run_h2ai_trials(
         "hitl_fired": last_result.get("hitl_gate_fired", False),
         "leader_elected": last_result.get("leader_elected", False),
         "leader_election_count": len(last_result.get("leader_elected_events", [])),
-        "srani_events": len(last_result.get("srani_events", [])),
+        "grounding_events": len(last_result.get("grounding_events", [])),
         "answer_chars": len(merged) if merged else None,
         "elapsed_s": None,
     }
@@ -1318,7 +1362,7 @@ def _baseline_summary(result: dict) -> dict:
         "hitl_fired": False,
         "leader_elected": None,
         "leader_election_count": 0,
-        "srani_events": 0,
+        "grounding_events": 0,
         "answer_chars": result.get("answer_chars"),
         "elapsed_s": result.get("elapsed_s"),
     }
@@ -1357,7 +1401,7 @@ def _print_triple_table(
         ("avg_verif_score",None,                                   None,                                  h2ai_metrics["avg_verification_score"]),
         ("j_eff",          None,                                   None,                                  h2ai_metrics["j_eff"]),
         ("thinking_iters", None,                                   None,                                  h2ai_metrics["thinking_loop_iters"]),
-        ("srani_events",   llm_metrics["srani_events"],           rag_metrics["srani_events"],           h2ai_metrics["srani_events"]),
+        ("grounding_events", llm_metrics["grounding_events"],     rag_metrics["grounding_events"],       h2ai_metrics["grounding_events"]),
         ("leader_elected", None,                                   None,                                  h2ai_metrics.get("leader_elected")),
         ("hitl_fired",     llm_metrics["hitl_fired"],             rag_metrics["hitl_fired"],             h2ai_metrics["hitl_fired"]),
     ]
@@ -1405,7 +1449,7 @@ def _print_delta_table(h2ai_metrics: dict, baseline_metrics: dict) -> None:
         ("thinking_iters",  h2ai_metrics["thinking_loop_iters"],   baseline_metrics["thinking_loop_iters"]),
         ("hitl_fired",      h2ai_metrics["hitl_fired"],            baseline_metrics["hitl_fired"]),
         ("leader_elected",  h2ai_metrics.get("leader_elected"),    baseline_metrics.get("leader_elected")),
-        ("srani_events",    h2ai_metrics["srani_events"],          baseline_metrics["srani_events"]),
+        ("grounding_events", h2ai_metrics["grounding_events"],     baseline_metrics["grounding_events"]),
     ]
     col_w = 18
     print(f"\n{'─'*72}")

@@ -11,8 +11,6 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ../:/workspaces/h2ai-control-plane:z
-      - cargo-cache:/usr/local/cargo/registry:z
-      - target-cache:/workspaces/h2ai-control-plane/target:z
       - ${HOME}/.claude:/home/developer/.claude
       - ${HOME}/.claude.json:/home/developer/.claude.json
       - ${HOME}/.gemini:/home/developer/.gemini
@@ -52,7 +50,3 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-volumes:
-  cargo-cache:
-  target-cache:

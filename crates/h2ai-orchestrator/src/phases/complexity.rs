@@ -4,7 +4,7 @@ use h2ai_types::adapter::IComputeAdapter;
 use h2ai_types::events::TaskComplexityAssessedEvent;
 use h2ai_types::sizing::{MultiplicationConditionFailure, TaskQuadrant};
 
-/// BFT/Krum/SRANI quorum minimum — N must be at least 3 for voting algorithms to work.
+/// BFT/Krum quorum minimum — N must be at least 3 for voting algorithms to work.
 const QUORUM_FLOOR: u32 = 3;
 
 pub struct Output {
@@ -51,7 +51,7 @@ pub async fn run(input: &EngineInput<'_>, system_context: &str) -> Result<Output
     let cc = &input.calibration.coefficients;
 
     // Quorum degradation guard (non-shadow mode only): if N_max < 3, the adapter is too
-    // degraded to support BFT/Krum/SRANI. Fail immediately rather than silently using a
+    // degraded to support BFT/Krum. Fail immediately rather than silently using a
     // sub-quorum pool, which would disable the very safety mechanisms that make the failure
     // detectable.
     if !input.cfg.task_complexity.shadow_mode && cc.n_max_degraded() {

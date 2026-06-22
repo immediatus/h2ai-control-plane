@@ -66,7 +66,7 @@ use h2ai_constraints::types::{
     CompositeOp, ConstraintDoc, ConstraintPredicate, ConstraintSeverity,
 };
 use h2ai_orchestrator::engine::{EngineError, EngineInput, ExecutionEngine};
-use h2ai_orchestrator::srani_grounding::{SpecAnchorGrounder, SraniGroundingChain};
+use h2ai_orchestrator::grounding_chain::{GapResearchChain, SpecAnchorGrounder};
 use h2ai_orchestrator::tao_loop::TaoMultiplierEstimator;
 use h2ai_orchestrator::task_store::{TaskState, TaskStore};
 use h2ai_test_utils::{decomposition_adapter, mock_adapter, MockIComputeAdapter};
@@ -250,9 +250,6 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -293,9 +290,9 @@ async fn calibrate_then_engine_respects_n_max_ceiling() {
 }
 
 /// Proves the full engine pipeline (calibration → exploration → verification → synthesis)
-/// runs end-to-end with mock adapters and SRANI grounding chain (SpecAnchor only).
+/// runs end-to-end with mock adapters and grounding chain (SpecAnchor only).
 ///
-/// With mock adapters: SRANI may or may not fire depending on CFI thresholds.
+/// With mock adapters grounding may or may not fire depending on thresholds.
 /// The core invariant is that the engine completes without panicking and either
 /// produces output or marks the task as failed in the store.
 #[tokio::test]
@@ -346,7 +343,7 @@ async fn engine_full_pipeline_with_mock_adapters() {
         Arc::new(mock_adapter("Redis is the authoritative source."));
     let registry = AdapterRegistry::new(Arc::new(mock_adapter("reg")) as Arc<dyn IComputeAdapter>);
 
-    let chain = Arc::new(SraniGroundingChain::new(vec![Box::new(SpecAnchorGrounder)]));
+    let _chain = Arc::new(GapResearchChain::new(vec![Box::new(SpecAnchorGrounder)]));
 
     let manifest = TaskManifest {
         description: "Build a rate-limiting service using Redis sliding windows for HTTP APIs."
@@ -398,9 +395,6 @@ async fn engine_full_pipeline_with_mock_adapters() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: Some(Arc::clone(&researcher)),
-        srani_ema_cfi: 0.45,
-        srani_count: 5,
-        srani_grounding_chain: Some(chain),
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),
@@ -420,7 +414,6 @@ async fn engine_full_pipeline_with_mock_adapters() {
                 "  Proposals evaluated: {}",
                 output.verification_events.len()
             );
-            eprintln!("  EMA CFI: {:.4}", output.srani_ema_cfi_updated);
             assert!(
                 !output.resolved_output.is_empty(),
                 "resolved output must not be empty"
@@ -594,9 +587,6 @@ async fn synthesis_wave_fires_and_resolves_on_partial_constraint_coverage() {
         bandit_state: None,
         shadow_audit_ctx: None,
         researcher_adapter: None,
-        srani_ema_cfi: 0.45,
-        srani_count: 0,
-        srani_grounding_chain: None,
         gap_research_chain: None,
         nats_raw: None,
         tenant_id: TenantId::default_tenant(),

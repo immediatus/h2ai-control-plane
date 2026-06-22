@@ -103,6 +103,15 @@ pub struct TenantMemoryStore {
     pub generated_at: DateTime<Utc>,
     pub task_count_seen: u64,
     pub retry_hint_patterns: Vec<RetryHintPattern>,
+    /// Distilled archetype performance priors. Empty on cold-start and old stored data.
+    #[serde(default)]
+    pub archetype_priors: Vec<ArchetypePrior>,
+    /// Distilled tension cluster patterns. Empty on cold-start and old stored data.
+    #[serde(default)]
+    pub tension_patterns: Vec<TensionPattern>,
+    /// Distilled decomposition seeding templates. Empty on cold-start and old stored data.
+    #[serde(default)]
+    pub decomposition_templates: Vec<DecompositionTemplate>,
 }
 
 /// Per-tag KV bucket value for tag-sharded `RetryHintPattern` storage.
@@ -112,4 +121,66 @@ pub struct TenantMemoryStore {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TagPatternBucket {
     pub patterns: Vec<RetryHintPattern>,
+}
+
+// ── GAP-G1 Phase 2: Semantic memory types ────────────────────────────────────
+
+/// Minimum task sample count before `avoid_for_tags` is populated for an archetype.
+pub const MIN_SAMPLE_COUNT_FOR_AVOID: u32 = 3;
+
+/// Induction-derived prior over archetype performance within a domain.
+///
+/// One record per unique `archetype_name` across all observed tasks.
+/// `net_confidence` is the unweighted mean of per-task confidences reported
+/// by that archetype. `avoid_for_tags` is populated only when
+/// `sample_count >= MIN_SAMPLE_COUNT_FOR_AVOID && net_confidence < 0.4`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchetypePrior {
+    pub archetype_name: String,
+    /// Union of `constraint_tags` from all tasks where this archetype was observed.
+    pub domain_tags: Vec<String>,
+    /// Unweighted mean confidence across `sample_count` tasks.
+    pub net_confidence: f64,
+    /// Number of task appearances contributing to this estimate.
+    pub sample_count: u32,
+    /// Constraint tags for which this archetype consistently underperformed.
+    /// Empty unless `sample_count >= MIN_SAMPLE_COUNT_FOR_AVOID && net_confidence < 0.4`.
+    pub avoid_for_tags: Vec<String>,
+}
+
+/// Induction-derived pattern from recurring tension strings across tasks.
+///
+/// Tensions are clustered by trigram Jaccard similarity. One record per cluster;
+/// `canonical_text` is the longest normalized member. `shingles` are pre-computed
+/// at distillation time for fast similarity retrieval without re-normalization.
+/// `resolution_hint` is populated in Phase 3 when outcome data becomes available.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TensionPattern {
+    /// Representative text chosen as the longest normalized member of the cluster.
+    pub canonical_text: String,
+    /// Number of tension strings across all tasks that mapped to this cluster.
+    pub frequency: u32,
+    /// Effective resolution for this tension class (Phase 3 only; `None` in Phase 2).
+    pub resolution_hint: Option<String>,
+    /// Pre-computed trigram shingles of `canonical_text` after normalization.
+    pub shingles: Vec<[u8; 3]>,
+}
+
+/// Induction-derived template for task decomposition seeding.
+///
+/// Groups resolved tasks by `(quadrant, sorted constraint_tags)`. The `shared_understanding`
+/// from the member with the lowest `retry_count` serves as the seed for decomposition step 1.
+/// `success_count` counts members where `retry_count == 0`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecompositionTemplate {
+    /// String representation of `TaskQuadrant` (e.g. `"Coverage"`, `"Precision"`).
+    /// Uses `format!("{:?}", quadrant)`. `""` when quadrant is `None`.
+    pub quadrant: String,
+    /// Sorted constraint tags defining the template's domain scope.
+    pub constraint_tags: Vec<String>,
+    /// `shared_understanding` from the lowest-`retry_count` task in this group.
+    pub shared_understanding: String,
+    /// Count of tasks in this group with `retry_count == 0`.
+    /// Floored at 1 by construction — a group with no zero-retry members still reports 1.
+    pub success_count: u32,
 }

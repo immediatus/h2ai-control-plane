@@ -69,6 +69,7 @@ fn scored_event(score: f64, passed: bool) -> h2ai_types::events::VerificationSco
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     }
 }
@@ -848,6 +849,7 @@ async fn observe_global_best_proposal_updated_when_better_score() {
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     };
 
@@ -895,6 +897,7 @@ async fn observe_global_best_proposal_replaced_when_higher_score_arrives() {
             total_checks: None,
             score_lower: None,
             score_upper: None,
+            per_check_verdicts: vec![],
             timestamp: chrono::Utc::now(),
         };
         let events = WaveEvents {
@@ -942,6 +945,7 @@ async fn observe_empty_proposal_text_is_skipped() {
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     };
 
@@ -994,6 +998,7 @@ async fn observe_compliance_score_history_grows() {
             total_checks: None,
             score_lower: None,
             score_upper: None,
+            per_check_verdicts: vec![],
             timestamp: chrono::Utc::now(),
         };
         let events = WaveEvents {
@@ -1325,6 +1330,7 @@ async fn decide_integration_wave_fires_on_plateau() {
             total_checks: None,
             score_lower: None,
             score_upper: None,
+            per_check_verdicts: vec![],
             timestamp: chrono::Utc::now(),
         };
         let events = WaveEvents {
@@ -1395,6 +1401,7 @@ fn decide_convergence_gate_triggers_on_high_cosine() {
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     };
 

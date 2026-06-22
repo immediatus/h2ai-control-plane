@@ -85,7 +85,6 @@ fn make_output(
     valid_proposals: usize,
     topology_retry_events: Vec<h2ai_types::events::TopologyProvisionedEvent>,
     coherence_state: CoherenceState,
-    srani_events: Vec<h2ai_types::events::CorrelatedFabricationEvent>,
     verification_events: Vec<h2ai_types::events::VerificationScoredEvent>,
 ) -> EngineOutput {
     EngineOutput {
@@ -103,6 +102,7 @@ fn make_output(
         topology_retry_events,
         mode_collapse_count: 0,
         epistemic_yield: None,
+        provenance_map: None,
         task_quadrant: None,
         complexity_event: stub_complexity(task_id),
         frontier_event: None,
@@ -113,9 +113,6 @@ fn make_output(
         correlated_warnings: vec![],
         researcher_grounding_events: vec![],
         diversity_degraded_event: None,
-        srani_events,
-        srani_ema_cfi_updated: 0.0,
-        srani_count_updated: 0,
         oracle_gate_passed: None,
         leader_elected_events: vec![],
         socratic_diagnosis_events: vec![],
@@ -179,6 +176,7 @@ fn verification_event(
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     }
 }
@@ -188,14 +186,7 @@ fn verification_event(
 #[test]
 fn clean_run_produces_no_skills() {
     let task_id = TaskId::new();
-    let output = make_output(
-        task_id.clone(),
-        2,
-        vec![],
-        closed_coherence(),
-        vec![],
-        vec![],
-    );
+    let output = make_output(task_id.clone(), 2, vec![], closed_coherence(), vec![]);
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
     assert!(nodes.is_empty(), "clean run must produce no skills");
@@ -215,7 +206,6 @@ fn zero_valid_proposals_with_retries_produces_skills() {
         )],
         closed_coherence(),
         vec![],
-        vec![],
     );
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -229,14 +219,7 @@ fn zero_valid_proposals_with_retries_produces_skills() {
 fn zero_valid_proposals_and_zero_retries_returns_empty() {
     // No signal at all → no skill nodes.
     let task_id = TaskId::new();
-    let output = make_output(
-        task_id.clone(),
-        0,
-        vec![],
-        closed_coherence(),
-        vec![],
-        vec![],
-    );
+    let output = make_output(task_id.clone(), 0, vec![], closed_coherence(), vec![]);
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
     assert!(
@@ -258,7 +241,6 @@ fn topology_retry_produces_topic_per_domain() {
             Some("violated auth constraint".into()),
         )],
         closed_coherence(),
-        vec![],
         vec![],
     );
     let corpus = stub_corpus(&["auth", "billing"]);
@@ -300,7 +282,6 @@ fn uncovered_domain_produces_targeted_topic_node() {
             active_contradictions: vec![],
         },
         vec![],
-        vec![],
     );
     let corpus = stub_corpus(&["auth", "security"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -309,36 +290,7 @@ fn uncovered_domain_produces_targeted_topic_node() {
     assert_eq!(nodes[0].depth, NodeDepth::Topic);
 }
 
-#[test]
-fn srani_produces_fabrication_failure_mode() {
-    use h2ai_types::events::CorrelatedFabricationEvent;
-    let task_id = TaskId::new();
-    let srani_ev = CorrelatedFabricationEvent {
-        task_id: task_id.clone(),
-        cfi: 0.6,
-        injection_pressure: 0.55,
-        shared_ungrounded_entities: vec!["AuthService".into(), "TokenVault".into()],
-        proposal_count: 2,
-        hint_injected: true,
-        timestamp: chrono::Utc::now(),
-    };
-    let output = make_output(
-        task_id.clone(),
-        1,
-        vec![],
-        closed_coherence(),
-        vec![srani_ev],
-        vec![],
-    );
-    let corpus = stub_corpus(&["auth"]);
-    let nodes = skill_from_output(&output, &corpus, &task_id);
-    assert_eq!(nodes.len(), 1);
-    let failure_text = nodes[0].failure_modes.join(" ");
-    assert!(
-        failure_text.contains("AuthService") && failure_text.contains("TokenVault"),
-        "ungrounded entities must appear in failure_modes"
-    );
-}
+// Test removed: fabrication_failure_mode — entity loop removed from extract_skill_nodes.
 
 #[test]
 fn importance_scales_with_retry_count() {
@@ -353,7 +305,6 @@ fn importance_scales_with_retry_count() {
             active_contradictions: vec![],
         },
         vec![],
-        vec![],
     );
     let output_high = make_output(
         task_id.clone(),
@@ -364,7 +315,6 @@ fn importance_scales_with_retry_count() {
             Some("heavy failure".into()),
         )],
         closed_coherence(),
-        vec![],
         vec![],
     );
     let low_nodes = skill_from_output(&output_low, &corpus, &task_id);
@@ -387,7 +337,6 @@ fn topic_node_id_is_deterministic() {
             uncovered_domains: vec!["auth".into()],
             active_contradictions: vec![],
         },
-        vec![],
         vec![],
     );
     let corpus = stub_corpus(&["auth"]);
@@ -440,7 +389,6 @@ fn constraint_leaf_emitted_when_tombstone_has_parseable_id() {
         )],
         closed_coherence(),
         vec![],
-        vec![],
     );
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -479,7 +427,6 @@ fn constraint_leaf_importance_1_when_tombstone_appears_twice() {
         ],
         closed_coherence(),
         vec![],
-        vec![],
     );
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -508,7 +455,6 @@ fn reason_leaf_emitted_when_no_constraint_id_in_tombstone() {
             Some("auth quota exceeded".into()),
         )],
         closed_coherence(),
-        vec![],
         vec![verification_event(
             task_id.clone(),
             0.3,
@@ -547,7 +493,6 @@ fn jaccard_dedup_prevents_near_duplicate_reason_leaves() {
             Some("generic failure".into()),
         )],
         closed_coherence(),
-        vec![],
         vec![
             verification_event(
                 task_id.clone(),
@@ -588,7 +533,6 @@ fn topic_node_id_has_topic_suffix() {
         )],
         closed_coherence(),
         vec![],
-        vec![],
     );
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -611,7 +555,6 @@ fn topic_node_tensions_contain_socratic_questions() {
         1,
         vec![retry_event(task_id.clone(), 1, Some("tombstone".into()))],
         closed_coherence(),
-        vec![],
         vec![],
     );
     output.socratic_diagnosis_events = vec![SocraticDiagnosisEvent {
@@ -643,7 +586,6 @@ fn topic_node_entry_points_contain_resolution_excerpt() {
         1,
         vec![retry_event(task_id.clone(), 1, Some("tombstone".into()))],
         closed_coherence(),
-        vec![],
         vec![],
     );
     output.resolved_output = "word ".repeat(100); // 500 chars
@@ -704,7 +646,6 @@ fn reason_leaf_not_emitted_when_constraint_already_covered_by_leaf() {
             Some("violated C-000 auth quota".into()),
         )],
         closed_coherence(),
-        vec![],
         vec![verification_event(
             task_id.clone(),
             0.3,
@@ -839,7 +780,6 @@ fn jaccard_dedup_treats_two_empty_reasons_as_duplicates() {
             Some("generic tombstone".into()),
         )],
         closed_coherence(),
-        vec![],
         vec![
             verification_event(task_id.clone(), 0.2, ""),
             verification_event(task_id.clone(), 0.3, ""),
@@ -879,7 +819,6 @@ fn topology_retry_event_with_retry_count_zero_does_not_add_failure_mode() {
             active_contradictions: vec![],
         },
         vec![],
-        vec![],
     );
     let corpus = stub_corpus(&["auth"]);
     let nodes = skill_from_output(&output, &corpus, &task_id);
@@ -897,44 +836,4 @@ fn topology_retry_event_with_retry_count_zero_does_not_add_failure_mode() {
     );
 }
 
-#[test]
-fn srani_event_with_hint_not_injected_does_not_add_failure_mode() {
-    use h2ai_types::events::CorrelatedFabricationEvent;
-    let task_id = TaskId::new();
-    // hint_injected=false → inner if-body is skipped; entities present but not injected.
-    // Pair with an uncovered domain so domain_failures is non-empty (avoids early return).
-    let srani_ev = CorrelatedFabricationEvent {
-        task_id: task_id.clone(),
-        cfi: 0.6,
-        injection_pressure: 0.55,
-        shared_ungrounded_entities: vec!["SomeEntity".into()],
-        proposal_count: 2,
-        hint_injected: false,
-        timestamp: chrono::Utc::now(),
-    };
-    let output = make_output(
-        task_id.clone(),
-        1,
-        vec![],
-        CoherenceState {
-            uncovered_domains: vec!["auth".into()],
-            active_contradictions: vec![],
-        },
-        vec![srani_ev],
-        vec![],
-    );
-    let corpus = stub_corpus(&["auth"]);
-    let nodes = skill_from_output(&output, &corpus, &task_id);
-    assert!(
-        !nodes.is_empty(),
-        "uncovered domain must still produce a Topic node"
-    );
-    let all_failures: Vec<String> = nodes
-        .iter()
-        .flat_map(|n| n.failure_modes.iter().cloned())
-        .collect();
-    assert!(
-        all_failures.iter().all(|f| !f.contains("SomeEntity")),
-        "hint_injected=false must not add ungrounded entities to failure_modes"
-    );
-}
+// Test removed: grounding_event_hint_not_injected — entity loop removed from skill extractor.

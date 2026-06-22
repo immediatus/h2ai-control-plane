@@ -225,3 +225,108 @@ async fn run_retroactive_writes_attempt_count_to_tag_buckets() {
         "attempt_count must be incremented from 3 to 4"
     );
 }
+
+// ── GAP-G1 Phase 2: NatsInductionScheduler semantic memory ───────────────────
+
+use h2ai_types::identity::{TaskId, TenantId};
+use h2ai_types::reasoning_checkpoint::ArchetypeResult as CheckpointArchetypeResult2;
+use h2ai_types::TaskMetaState;
+
+fn make_nats_meta(archetype_name: &str, confidence: f64) -> TaskMetaState {
+    TaskMetaState {
+        task_id: TaskId::new(),
+        tenant_id: TenantId("t1".into()),
+        resolved_at: 0,
+        constraint_tags: vec!["billing".to_string()],
+        domain: None,
+        task_quadrant: None,
+        shared_understanding: "billing context".to_string(),
+        tensions: vec!["throughput vs latency".to_string()],
+        archetype_results: vec![CheckpointArchetypeResult2 {
+            name: archetype_name.to_string(),
+            confidence,
+        }],
+        thinking_iterations: 1,
+        retry_count: 0,
+        retry_context_that_resolved: None,
+        tried_topologies: vec![],
+        tau_values_that_converged: None,
+        system_context_with_rubric_hash: 0,
+        constraint_corpus_fingerprint: 0,
+    }
+}
+
+#[tokio::test]
+async fn load_semantic_memory_returns_none_before_any_cycle() {
+    let kv = Arc::new(InMemoryRetryKvBackend::default());
+    let scheduler = NatsInductionScheduler::from_backend(kv);
+    let result = scheduler.load_semantic_memory("tenant-x").await;
+    assert!(
+        result.is_none(),
+        "must return None before any distillation cycle"
+    );
+}
+
+#[tokio::test]
+async fn run_distillation_cycle_writes_and_load_reads_back() {
+    let kv = Arc::new(InMemoryRetryKvBackend::default());
+    let scheduler = NatsInductionScheduler::from_backend(kv);
+
+    let metas = vec![make_nats_meta("DEVIL_ADVOCATE", 0.75)];
+    let written = scheduler.run_distillation_cycle(&metas, "tenant-x").await;
+
+    assert_eq!(written.archetype_priors.len(), 1);
+    assert_eq!(written.archetype_priors[0].archetype_name, "DEVIL_ADVOCATE");
+
+    let loaded = scheduler
+        .load_semantic_memory("tenant-x")
+        .await
+        .expect("must be Some after cycle ran");
+    assert_eq!(loaded.archetype_priors.len(), 1);
+    assert_eq!(loaded.archetype_priors[0].archetype_name, "DEVIL_ADVOCATE");
+}
+
+#[tokio::test]
+async fn run_distillation_cycle_overwrites_previous_result() {
+    let kv = Arc::new(InMemoryRetryKvBackend::default());
+    let scheduler = NatsInductionScheduler::from_backend(kv);
+
+    // First cycle: one archetype
+    scheduler
+        .run_distillation_cycle(&[make_nats_meta("FIRST_PRINCIPLES", 0.8)], "tenant-y")
+        .await;
+
+    // Second cycle: different metas
+    scheduler
+        .run_distillation_cycle(&[make_nats_meta("STEELMAN", 0.9)], "tenant-y")
+        .await;
+
+    let loaded = scheduler
+        .load_semantic_memory("tenant-y")
+        .await
+        .expect("must be Some");
+    // The second cycle result is stored; it has STEELMAN not FIRST_PRINCIPLES
+    let names: Vec<&str> = loaded
+        .archetype_priors
+        .iter()
+        .map(|p| p.archetype_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"STEELMAN"),
+        "second cycle must overwrite: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn semantic_keys_are_tenant_scoped() {
+    let kv: Arc<dyn RetryKvBackend> = Arc::new(InMemoryRetryKvBackend::default());
+    let scheduler = NatsInductionScheduler::from_backend(Arc::clone(&kv));
+
+    scheduler
+        .run_distillation_cycle(&[make_nats_meta("DEVIL_ADVOCATE", 0.5)], "tenant-a")
+        .await;
+
+    // tenant-b has no cycle — must return None
+    let b_result = scheduler.load_semantic_memory("tenant-b").await;
+    assert!(b_result.is_none(), "tenant-b must not see tenant-a's data");
+}

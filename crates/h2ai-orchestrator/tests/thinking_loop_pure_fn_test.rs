@@ -20,6 +20,7 @@ use h2ai_orchestrator::thinking_loop::{
     format_constraint_context, format_retry_hint_priors, parse_archetypes_from_markdown,
     parse_synthesis_from_markdown, scheduled_tau,
 };
+use h2ai_types::thinking::ThinkingReport;
 
 // ── format_constraint_context ─────────────────────────────────────────────────
 
@@ -520,4 +521,36 @@ fn format_retry_hint_priors_caps_at_five_patterns() {
         !hint_5_present,
         "hint-5 (6th) must be excluded; only top-5 allowed"
     );
+}
+
+// ── ThinkingReport.archetypes field ──────────────────────────────────────────
+//
+// Regression: ThinkingLoopCompletedEvent.archetypes was hardcoded to vec![] in
+// task_pipeline.rs — the field never carried the actual archetype names selected
+// in the final iteration.  The fix adds `archetypes: Vec<String>` to ThinkingReport
+// and wires it through the loop.
+
+#[test]
+fn thinking_report_archetypes_field_exists_and_defaults_empty() {
+    // Verify the field exists with a default-empty value; wiring test for
+    // the struct addition that enables task_pipeline.rs to emit archetype names.
+    let report = ThinkingReport::default();
+    assert!(
+        report.archetypes.is_empty(),
+        "default ThinkingReport must have empty archetypes"
+    );
+}
+
+#[test]
+fn thinking_report_archetypes_field_carries_names() {
+    let report = ThinkingReport {
+        archetypes: vec![
+            "constraint-satisfier".to_string(),
+            "failure-analyst".to_string(),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(report.archetypes.len(), 2);
+    assert_eq!(report.archetypes[0], "constraint-satisfier");
+    assert_eq!(report.archetypes[1], "failure-analyst");
 }

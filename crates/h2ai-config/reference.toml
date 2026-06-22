@@ -114,10 +114,10 @@ eigen_n_eff_delta = 0.05
 # Raise to 50–100 for high-variance task distributions.
 tao_estimator_warmup = 20
 
-# TaoConfig per-request fields (set in task payloads, not in this global config).
-# Documented here for reference:
-#   retry_on_timeout = true         — retry once on turn-1 or bypass-path timeout with reduced max_tokens
-#   timeout_retry_max_tokens = 512  — max_tokens cap for the single retry request after a timeout
+# max_tokens cap for the single retry request issued after a per-turn TAO loop timeout.
+# Thinking models (Qwen3, DeepSeek R1) require ≥ 4096 — they exhaust the internal
+# reasoning budget before producing output at the old default of 512.
+tao_timeout_retry_max_tokens = 4096
 
 # Initial N_max used to seed the Thompson Sampling bandit warm prior at first startup.
 # Clamped to [1, bandit_n_max_arms] by the bandit. Default 4 — conservative mid-range prior.
@@ -140,6 +140,10 @@ beta_base_default = 0.039
 # Quality factor gained per TAO loop turn. Heuristic prior; converges after
 # 20 Tier 1 oracle tasks via TaoMultiplierEstimator.
 tao_per_turn_factor = 0.6
+
+# Per-turn LLM call timeout in seconds for TAO loop adapters. Increase for slow or
+# queued local models (rule of thumb: n_adapters × single_call_time_s). Default 600.
+tao_per_turn_timeout_secs = 600
 
 # EMA smoothing factor for TaoMultiplierEstimator drift tracking.
 # Smaller values weight historical data more; larger values react faster to drift.
@@ -581,28 +585,23 @@ correlated_hallucination_min_jaccard_floor = 0.50
 # ── Domain Coverage ───────────────────────────────────────────────────
 # Minimum slot-domain coverage fraction before DiversityGuardDegradedEvent fires.
 domain_coverage_threshold = 0.40
-# ── SRANI: Specification-Relative Architectural Noun Intersection (ext.) ──
-# Detects shared ungrounded architectural entities across proposals.
-# CFI = max pairwise overlap of per-proposal ungrounded entity sets.
-[srani]
-enabled          = true
-# Adaptive sigmoid gate — self-calibrates midpoint via EMA over observed CFI values.
-# Set adaptive=false to revert to static warn_threshold/inject_threshold behavior.
-adaptive         = true
-ema_alpha        = 0.20
-temperature      = 0.15
-gate_threshold   = 0.50
-# Used when adaptive=false and as cold-start midpoint when adaptive=true.
-warn_threshold   = 0.30
-inject_threshold = 0.60
-# Use the researcher adapter to distill web results before hint injection. Default true.
-grounding_distill        = true
-# Minimum character count in a grounding statement to trigger LLM distillation.
-# Compact results (below this threshold) skip compression. Default 800.
-grounding_compress_threshold = 800
-researcher_max_tokens    = 32768
-distill_max_tokens       = 32768
-gap_synthesis_max_tokens = 32768
+# ── Grounding judge ──────────────────────────────────────────────────────────
+# Controls the LLM grounding checker (GroundingChecker) that verifies proposals
+# against factual knowledge. Disable in development to skip the grounding pass.
+[grounding]
+enabled        = true
+max_tokens     = 8192
+min_confidence = 0.7
+tau            = 0.2
+
+# ── Gap research chain ────────────────────────────────────────────────────────
+# Controls distillation, compression, and synthesis for the GapResearchChain.
+[gap_research]
+grounding_distill              = true
+grounding_compress_threshold   = 800
+researcher_max_tokens          = 32768
+distill_max_tokens             = 32768
+gap_synthesis_max_tokens       = 32768
 
 # ── Precision-mode slot budget ────────────────────────────────────────────────
 # Maximum explorer slots for Precision-quadrant tasks (Self-MoA).
@@ -629,8 +628,8 @@ verifier_consensus_passes = 1
 
 # ── Debug NDJSON logging ──────────────────────────────────────────────────────
 # When set, every completed task appends one JSON line to this file.
-# Each line captures: task_id, description, srani config, ema_before/after,
-# all verification proposals (full text + score), srani events, merged output.
+# Each line captures: task_id, description, grounding config,
+# all verification proposals (full text + score), grounding events, merged output.
 # The file is opened in append mode; directory must exist.
 # Unset (commented out) disables logging. Sensitive — do not set in production.
 # debug_log_path = "/tmp/h2ai-debug.ndjson"

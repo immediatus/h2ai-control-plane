@@ -9,6 +9,9 @@ fn make_store_with_patterns(patterns: Vec<RetryHintPattern>) -> TenantMemoryStor
         generated_at: Utc::now(),
         task_count_seen: patterns.len() as u64,
         retry_hint_patterns: patterns,
+        archetype_priors: vec![],
+        tension_patterns: vec![],
+        decomposition_templates: vec![],
     }
 }
 
@@ -185,4 +188,94 @@ fn rank_and_filter_matches_violated_constraint_ids() {
         1,
         "pattern matching violated_constraint_id must be included"
     );
+}
+
+// ── GAP-G1 Phase 2: AlgorithmicInductionWorker semantic memory ────────────────
+
+use h2ai_types::memory::{ArchetypePrior, DecompositionTemplate, TensionPattern};
+use h2ai_types::reasoning_checkpoint::ArchetypeResult as CheckpointArchetypeResult;
+
+fn make_store_with_priors(
+    priors: Vec<ArchetypePrior>,
+    tension_patterns: Vec<TensionPattern>,
+    decomposition_templates: Vec<DecompositionTemplate>,
+) -> TenantMemoryStore {
+    TenantMemoryStore {
+        tenant_id: "t1".to_string(),
+        generated_at: Utc::now(),
+        task_count_seen: 5,
+        retry_hint_patterns: vec![],
+        archetype_priors: priors,
+        tension_patterns,
+        decomposition_templates,
+    }
+}
+
+#[tokio::test]
+async fn load_semantic_memory_returns_none_when_store_empty() {
+    let store = make_store_with_priors(vec![], vec![], vec![]);
+    let worker = AlgorithmicInductionWorker::new(store);
+    let result = worker.load_semantic_memory("t1").await;
+    assert!(result.is_none(), "empty priors must yield None");
+}
+
+#[tokio::test]
+async fn load_semantic_memory_returns_priors_from_primed_store() {
+    let prior = ArchetypePrior {
+        archetype_name: "STEELMAN".to_string(),
+        domain_tags: vec!["auth".to_string()],
+        net_confidence: 0.85,
+        sample_count: 4,
+        avoid_for_tags: vec![],
+    };
+    let store = make_store_with_priors(vec![prior], vec![], vec![]);
+    let worker = AlgorithmicInductionWorker::new(store);
+    let result = worker.load_semantic_memory("t1").await.unwrap();
+    assert_eq!(result.archetype_priors.len(), 1);
+    assert_eq!(result.archetype_priors[0].archetype_name, "STEELMAN");
+}
+
+#[tokio::test]
+async fn run_distillation_cycle_returns_priors_from_metas() {
+    use h2ai_types::identity::{TaskId, TenantId};
+    use h2ai_types::TaskMetaState;
+
+    let meta = TaskMetaState {
+        task_id: TaskId::new(),
+        tenant_id: TenantId("t1".into()),
+        resolved_at: 0,
+        constraint_tags: vec!["billing".to_string()],
+        domain: None,
+        task_quadrant: None,
+        shared_understanding: "billing is core".to_string(),
+        tensions: vec![],
+        archetype_results: vec![CheckpointArchetypeResult {
+            name: "FIRST_PRINCIPLES".to_string(),
+            confidence: 0.9,
+        }],
+        thinking_iterations: 1,
+        retry_count: 0,
+        retry_context_that_resolved: None,
+        tried_topologies: vec![],
+        tau_values_that_converged: None,
+        system_context_with_rubric_hash: 0,
+        constraint_corpus_fingerprint: 0,
+    };
+    let store = make_store_with_priors(vec![], vec![], vec![]);
+    let worker = AlgorithmicInductionWorker::new(store);
+    let result = worker.run_distillation_cycle(&[meta], "t1").await;
+    assert_eq!(result.archetype_priors.len(), 1);
+    assert_eq!(
+        result.archetype_priors[0].archetype_name,
+        "FIRST_PRINCIPLES"
+    );
+    assert_eq!(result.decomposition_templates.len(), 1);
+}
+
+#[tokio::test]
+async fn run_distillation_cycle_empty_metas_returns_empty() {
+    let store = make_store_with_priors(vec![], vec![], vec![]);
+    let worker = AlgorithmicInductionWorker::new(store);
+    let result = worker.run_distillation_cycle(&[], "t1").await;
+    assert!(result.is_empty());
 }

@@ -1,0 +1,73 @@
+id: CONSTRAINT-AIL-1
+title: AI Medical Diagnostic System — Cross-Jurisdiction Liability Memo
+severity: hard
+version: "1.0"
+description: |
+  A cross-jurisdiction liability and regulatory exposure memo for an AI-powered
+  medical diagnostic assistant must address mandatory regulatory requirements
+  across the EU, UK, and US jurisdictions. The EU layer (AI Act + GDPR) is
+  well-established and required. The UK and US state layers are rapidly evolving
+  and assessed on a best-effort basis; partial coverage is expected and noted.
+
+domains:
+  - ai-regulation
+  - healthcare-law
+  - data-protection
+  - product-liability
+
+guidance:
+  explorer: |
+    Your memo MUST include ALL of the following provisions:
+    1. EU AI Act classification: identify the system as a high-risk AI system
+       under Annex III (medical devices / critical infrastructure) and specify
+       the conformity assessment requirements under Articles 9 and 43.
+    2. GDPR Article 22 obligations: address automated decision-making in
+       healthcare, the right to human review of AI-driven triage decisions,
+       and data minimization requirements for clinical imaging data.
+    3. Data Processing Agreement: specify that the AI vendor must act as a
+       data processor under GDPR Article 28 with a signed DPA before
+       deployment.
+    4. UK post-Brexit AI liability: address how the UK's AI liability
+       framework applies post-Brexit — note the absence of a UK AI Act
+       equivalent, the role of the Consumer Protection Act 1987 for product
+       liability, and any applicable NHS AI Lab governance guidance.
+    5. US state AI liability: address New York Local Law 49 automated
+       decision-making requirements (noting its limited scope relative to
+       clinical AI), California's evolving AI transparency statutes, and
+       federal FDA oversight of AI/ML-based Software as a Medical Device
+       (SaMD) under the 2021 Action Plan.
+  verifier: |
+    Score 1.0 only if provisions 1, 2, and 3 are present, correctly scoped,
+    and cite the specific EU regulatory articles stated (AI Act Annex III,
+    GDPR Articles 22 and 28). Score 0.0 if any of provisions 1, 2, or 3 is
+    missing or materially wrong (e.g., wrong risk tier, missing right-to-human-
+    review language, no DPA requirement). Provisions 4 and 5 are assessed for
+    awareness: partial coverage is noted but does not alone cause a 0.0 score.
+
+criteria:
+  pass: |
+    The memo correctly classifies the system as high-risk under EU AI Act
+    Annex III, addresses GDPR Article 22 automated decision-making obligations
+    with explicit right-to-human-review language, specifies DPA requirements
+    under GDPR Article 28, and provides at least an awareness-level analysis
+    of UK post-Brexit AI liability and US state AI statutes.
+  partial: |
+    The memo covers EU/GDPR obligations but provides only superficial or
+    potentially outdated analysis of UK post-Brexit AI liability or US state
+    AI statutes.
+  fail: |
+    The memo is missing EU AI Act classification, GDPR Article 22 analysis,
+    or DPA requirements — or materially misidentifies the applicable EU
+    regulatory tier (e.g., classifies the system as minimal-risk or uses
+    a pre-AI-Act framework).
+  checks:
+    - Does the memo classify the AI diagnostic system as high-risk under EU AI Act Annex III and specify the conformity assessment pathway?
+    - Does the memo address GDPR Article 22 automated decision-making with explicit right-to-human-review language?
+    - Does the memo specify data processor and DPA requirements under GDPR Article 28?
+    - Does the memo address UK post-Brexit AI liability exposure, correctly noting the absence of a UK AI Act equivalent?
+    - Does the memo address US state AI liability (NY Local Law 49, California statutes) and FDA SaMD oversight?
+
+binary_checks:
+  - "The memo classifies the AI medical diagnostic system as a high-risk AI system under EU AI Act Annex III"
+  - "The memo addresses GDPR Article 22 automated decision-making obligations with language about the right to human review of AI-driven decisions"
+  - "The memo specifies that the AI vendor must act as a data processor with a signed Data Processing Agreement under GDPR Article 28 before deployment"

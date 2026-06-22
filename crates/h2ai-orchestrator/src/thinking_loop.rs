@@ -26,9 +26,11 @@ use h2ai_types::config::AgentRole;
 use h2ai_types::events::OracleGateResultEvent;
 use h2ai_types::knowledge::{profile_for_role, RetrievalMode as TypesRetrievalMode};
 use h2ai_types::manifest::CotStyle;
-use h2ai_types::memory::RetryHintPattern;
+use h2ai_types::memory::{RetryHintPattern, TensionPattern};
 use h2ai_types::sizing::TauValue;
 use h2ai_types::thinking::{ArchetypeOutput, ArchetypeSpec, ModelTier, ThinkingReport};
+
+use crate::induction::DistillationResult;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -66,6 +68,13 @@ pub struct ThinkingLoopInput<'a> {
     /// Top patterns (by success_rate) are formatted into the archetype selection system prompt.
     /// Pass `&[]` when no scheduler is available — `format_retry_hint_priors` returns empty string.
     pub retry_hint_priors: &'a [RetryHintPattern],
+    /// Last-distilled semantic memory for this tenant. Used for archetype prior
+    /// boost/penalty and iteration-0 tension seeding. `None` when no distillation has run.
+    pub semantic_memory: Option<&'a DistillationResult>,
+    /// Maximum per-archetype confidence boost from `ArchetypePrior.net_confidence > 0.6`.
+    pub max_archetype_boost: f64,
+    /// Maximum per-archetype confidence penalty when archetype appears in `avoid_for_tags`.
+    pub max_archetype_penalty: f64,
 }
 
 // ─── Pure helpers (pub for unit tests) ───────────────────────────────────────
@@ -106,6 +115,66 @@ pub fn scheduled_tau(iteration: usize, max_iterations: u32, tau_max: f64, tau_mi
     (tau_max - progress * (tau_max - tau_min)).clamp(tau_min, tau_max)
 }
 
+/// Select top-`max_count` tension patterns whose text overlaps with the current task's
+/// constraint tags (trigram Jaccard against pre-computed shingles).
+///
+/// Matching is done by joining `constraint_tags` into a single string, normalising it, and
+/// computing trigram Jaccard against each pattern's pre-computed shingles. Patterns with
+/// similarity ≥ 0.05 are included; the caller controls the threshold via the argument.
+/// Results are sorted by Jaccard score descending, then by `frequency` descending on ties.
+#[must_use]
+pub fn select_tension_seeds<'a>(
+    tensions: &'a [TensionPattern],
+    constraint_tags: &[String],
+    min_similarity: f64,
+    max_count: usize,
+) -> Vec<&'a TensionPattern> {
+    use crate::induction::{jaccard_shingles, normalize_for_shingling, trigram_shingles};
+
+    if tensions.is_empty() || constraint_tags.is_empty() {
+        return vec![];
+    }
+    let tags_text = constraint_tags.join(" ");
+    let tags_shingles = trigram_shingles(&normalize_for_shingling(&tags_text));
+    if tags_shingles.is_empty() {
+        return vec![];
+    }
+
+    let mut scored: Vec<(f64, &TensionPattern)> = tensions
+        .iter()
+        .filter_map(|t| {
+            let sim = jaccard_shingles(&tags_shingles, &t.shingles);
+            if sim >= min_similarity {
+                Some((sim, t))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by(|(sa, ta), (sb, tb)| {
+        sb.partial_cmp(sa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| tb.frequency.cmp(&ta.frequency))
+    });
+    scored.into_iter().take(max_count).map(|(_, t)| t).collect()
+}
+
+/// Format up to `max_tensions` tension patterns as a seed block for the brainstorm prompt.
+/// Returns empty string when `seeds` is empty.
+#[must_use]
+pub fn format_tension_seeds(seeds: &[&TensionPattern]) -> String {
+    if seeds.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("PREVIOUSLY OBSERVED TENSIONS (validate, refute, or refine each):\n");
+    for (i, t) in seeds.iter().enumerate() {
+        out.push_str(&format!("{}. {}\n", i + 1, t.canonical_text));
+    }
+    out
+}
+
 /// Extract the `candidate_solution` field value from structured LLM output text.
 /// Searches for the last occurrence of `"candidate_solution"` and extracts the quoted string after the colon.
 #[must_use]
@@ -139,6 +208,15 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
     let mut report = ThinkingReport::default();
     let mut all_retrieved: Vec<(String, NodeSource)> = vec![];
 
+    // Pre-compute iteration-0 tension seeds from semantic memory (computed once, used at iter 0).
+    let tension_seed_block: String = input
+        .semantic_memory
+        .map(|mem| {
+            let seeds = select_tension_seeds(&mem.tension_patterns, input.constraint_tags, 0.05, 3);
+            format_tension_seeds(&seeds)
+        })
+        .unwrap_or_default();
+
     for iteration in 0..input.cfg.max_iterations as usize {
         // Approximation: no per-run pass_rate tracked yet; coverage_score is directionally correlated.
         let current_filter_ratio = if iteration == 0 {
@@ -159,7 +237,17 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
         let (iteration_knowledge, retrieved) =
             fetch_iteration_knowledge(&input, &report, iteration).await;
         all_retrieved.extend(retrieved);
-        let research_context = if iteration_knowledge.is_empty() {
+        // At iteration 0, append tension seeds to research_context so archetypes and
+        // brainstorming prompts receive the "previously observed tensions" block.
+        let iter_context_with_seeds;
+        let research_context = if iteration == 0 && !tension_seed_block.is_empty() {
+            iter_context_with_seeds = if iteration_knowledge.is_empty() {
+                tension_seed_block.clone()
+            } else {
+                format!("{}\n\n{}", iteration_knowledge, tension_seed_block)
+            };
+            &iter_context_with_seeds as &str
+        } else if iteration_knowledge.is_empty() {
             input.research_context
         } else {
             &iteration_knowledge
@@ -202,6 +290,7 @@ pub async fn run(input: ThinkingLoopInput<'_>) -> ThinkingReport {
             input.embedding_model,
         );
         new_report.iteration = iteration as u32 + 1;
+        new_report.archetypes = archetypes.iter().map(|a| a.name.clone()).collect();
         report = new_report;
 
         let is_last = iteration + 1 >= input.cfg.max_iterations as usize;
@@ -512,6 +601,41 @@ async fn select_archetypes(
             "no archetype covers constraint — synthesizing coverage archetype"
         );
         archetypes.push(synthesize_coverage_archetype(cid, input.constraint_corpus));
+    }
+
+    // Apply archetype prior boost/penalty from semantic memory.
+    //
+    // Boost (+max_archetype_boost): prior shows net_confidence > 0.6 AND domain_tags overlap with
+    // current constraint tags.
+    // Penalty (-max_archetype_penalty): prior has avoid_for_tags overlapping current constraint tags.
+    // Both adjustments clamp to [0.0, 1.0]. Boost and penalty are non-additive (checked separately).
+    if let Some(memory) = input.semantic_memory {
+        if !memory.archetype_priors.is_empty() {
+            for archetype in &mut archetypes {
+                if let Some(prior) = memory
+                    .archetype_priors
+                    .iter()
+                    .find(|p| p.archetype_name == archetype.name)
+                {
+                    let has_domain_overlap = prior
+                        .domain_tags
+                        .iter()
+                        .any(|t| input.constraint_tags.contains(t));
+                    if prior.net_confidence > 0.6 && has_domain_overlap {
+                        archetype.confidence =
+                            (archetype.confidence + input.max_archetype_boost).min(1.0);
+                    }
+                    let has_avoid_overlap = prior
+                        .avoid_for_tags
+                        .iter()
+                        .any(|t| input.constraint_tags.contains(t));
+                    if has_avoid_overlap {
+                        archetype.confidence =
+                            (archetype.confidence - input.max_archetype_penalty).max(0.0);
+                    }
+                }
+            }
+        }
     }
 
     archetypes
@@ -967,10 +1091,7 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
                 shared_understanding: parsed.shared_understanding,
                 tensions: parsed.tensions,
                 coverage_score: parsed.coverage_score,
-                iteration: 0,
-                prev_similarity: 0.0,
-                retrieved_node_ids: vec![],
-                skill_nodes_used: 0,
+                ..Default::default()
             };
         }
     }
@@ -978,12 +1099,8 @@ pub fn parse_thinking_report(text: &str) -> ThinkingReport {
     // Plain text fallback.
     ThinkingReport {
         shared_understanding: text.to_string(),
-        tensions: vec![],
         coverage_score: 0.5,
-        iteration: 0,
-        prev_similarity: 0.0,
-        retrieved_node_ids: vec![],
-        skill_nodes_used: 0,
+        ..Default::default()
     }
 }
 
@@ -1007,12 +1124,8 @@ pub fn parse_synthesis_from_markdown(text: &str) -> ThinkingReport {
     {
         return ThinkingReport {
             shared_understanding: text.to_string(),
-            tensions: vec![],
             coverage_score: 0.5,
-            iteration: 0,
-            prev_similarity: 0.0,
-            retrieved_node_ids: vec![],
-            skill_nodes_used: 0,
+            ..Default::default()
         };
     }
 
@@ -1037,10 +1150,7 @@ pub fn parse_synthesis_from_markdown(text: &str) -> ThinkingReport {
         shared_understanding,
         tensions,
         coverage_score,
-        iteration: 0,
-        prev_similarity: 0.0,
-        retrieved_node_ids: vec![],
-        skill_nodes_used: 0,
+        ..Default::default()
     }
 }
 

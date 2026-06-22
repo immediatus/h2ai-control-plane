@@ -206,6 +206,9 @@ fn tenant_memory_store_roundtrips_json() {
             success_count: 2,
             attempt_count: 5,
         }],
+        archetype_priors: vec![],
+        tension_patterns: vec![],
+        decomposition_templates: vec![],
     };
     let json = serde_json::to_string(&store).unwrap();
     let back: TenantMemoryStore = serde_json::from_str(&json).unwrap();
@@ -240,4 +243,115 @@ fn tag_pattern_bucket_default_is_empty() {
     use h2ai_types::memory::TagPatternBucket;
     let b = TagPatternBucket::default();
     assert!(b.patterns.is_empty());
+}
+
+// ── GAP-G1 Phase 2: new semantic memory types ─────────────────────────────────
+
+#[test]
+fn archetype_prior_serde_round_trip() {
+    use h2ai_types::memory::ArchetypePrior;
+    let prior = ArchetypePrior {
+        archetype_name: "DEVIL_ADVOCATE".to_string(),
+        domain_tags: vec!["billing".to_string(), "rate-limit".to_string()],
+        net_confidence: 0.72,
+        sample_count: 5,
+        avoid_for_tags: vec![],
+    };
+    let json = serde_json::to_string(&prior).unwrap();
+    let back: ArchetypePrior = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.archetype_name, "DEVIL_ADVOCATE");
+    assert_eq!(back.sample_count, 5);
+    assert!((back.net_confidence - 0.72).abs() < 1e-9);
+}
+
+#[test]
+fn tension_pattern_serde_round_trip() {
+    use h2ai_types::memory::TensionPattern;
+    let tp = TensionPattern {
+        canonical_text: "rate limit vs throughput".to_string(),
+        frequency: 3,
+        resolution_hint: Some("cap at p99".to_string()),
+        shingles: vec![[b'r', b'a', b't']],
+    };
+    let json = serde_json::to_string(&tp).unwrap();
+    let back: TensionPattern = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.canonical_text, "rate limit vs throughput");
+    assert_eq!(back.frequency, 3);
+    assert_eq!(back.resolution_hint.as_deref(), Some("cap at p99"));
+    assert_eq!(back.shingles.len(), 1);
+}
+
+#[test]
+fn decomposition_template_serde_round_trip() {
+    use h2ai_types::memory::DecompositionTemplate;
+    let dt = DecompositionTemplate {
+        quadrant: "Coverage".to_string(),
+        constraint_tags: vec!["auth".to_string()],
+        shared_understanding: "JWT validation is the core concern.".to_string(),
+        success_count: 2,
+    };
+    let json = serde_json::to_string(&dt).unwrap();
+    let back: DecompositionTemplate = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.quadrant, "Coverage");
+    assert_eq!(back.success_count, 2);
+    assert_eq!(
+        back.shared_understanding,
+        "JWT validation is the core concern."
+    );
+}
+
+#[test]
+fn tenant_memory_store_backward_compat_missing_new_fields() {
+    // Old JSON without archetype_priors / tension_patterns / decomposition_templates
+    // must deserialize cleanly with empty Vecs.
+    let old_json = r#"{
+        "tenant_id": "t1",
+        "generated_at": "2026-01-01T00:00:00Z",
+        "task_count_seen": 5,
+        "retry_hint_patterns": []
+    }"#;
+    let store: h2ai_types::memory::TenantMemoryStore =
+        serde_json::from_str(old_json).expect("must deserialize old format");
+    assert_eq!(store.tenant_id, "t1");
+    assert!(store.archetype_priors.is_empty());
+    assert!(store.tension_patterns.is_empty());
+    assert!(store.decomposition_templates.is_empty());
+}
+
+#[test]
+fn tenant_memory_store_new_fields_serde_round_trip() {
+    use chrono::Utc;
+    use h2ai_types::memory::{
+        ArchetypePrior, DecompositionTemplate, TenantMemoryStore, TensionPattern,
+    };
+    let store = TenantMemoryStore {
+        tenant_id: "t2".to_string(),
+        generated_at: Utc::now(),
+        task_count_seen: 10,
+        retry_hint_patterns: vec![],
+        archetype_priors: vec![ArchetypePrior {
+            archetype_name: "STEELMAN".to_string(),
+            domain_tags: vec!["caching".to_string()],
+            net_confidence: 0.85,
+            sample_count: 4,
+            avoid_for_tags: vec![],
+        }],
+        tension_patterns: vec![TensionPattern {
+            canonical_text: "cache invalidation timing".to_string(),
+            frequency: 2,
+            resolution_hint: None,
+            shingles: vec![],
+        }],
+        decomposition_templates: vec![DecompositionTemplate {
+            quadrant: "Precision".to_string(),
+            constraint_tags: vec!["caching".to_string()],
+            shared_understanding: "TTL enforcement is central.".to_string(),
+            success_count: 1,
+        }],
+    };
+    let json = serde_json::to_string(&store).unwrap();
+    let back: TenantMemoryStore = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.archetype_priors.len(), 1);
+    assert_eq!(back.tension_patterns.len(), 1);
+    assert_eq!(back.decomposition_templates.len(), 1);
 }

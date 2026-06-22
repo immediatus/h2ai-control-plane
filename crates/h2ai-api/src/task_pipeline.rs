@@ -24,6 +24,32 @@ use std::sync::Arc;
 
 const THINKING_LOOP_SECTION: &str = "## Thinking Loop Analysis";
 
+/// Returns true iff the error message indicates a real network outage (connection refused,
+/// timed out, etc.) as opposed to a generation-budget failure like "model hit max_tokens".
+///
+/// "model hit max_tokens" arrives wrapped in AdapterError::NetworkError but is a
+/// budget/config problem, not a connectivity failure.  Classifying it as a network error
+/// caused the engine to stop silently instead of emitting a proper TaskFailed event.
+pub fn is_network_error(msg: &str) -> bool {
+    (msg.contains("network error")
+        || msg.contains("connection refused")
+        || msg.contains("timed out"))
+        && !msg.contains("max_tokens")
+}
+
+/// Construct a `TaoConfig` from the flat `H2AIConfig` fields.
+///
+/// Extracted as a pure function so tests can assert that `tao_per_turn_timeout_secs`
+/// (which was previously silently ignored because `[tao]` TOML sections are unknown to
+/// H2AIConfig) is actually propagated to the TAO loop.
+pub fn build_tao_config(cfg: &H2AIConfig) -> h2ai_types::config::TaoConfig {
+    h2ai_types::config::TaoConfig {
+        per_turn_timeout_secs: cfg.tao_per_turn_timeout_secs,
+        timeout_retry_max_tokens: cfg.tao_timeout_retry_max_tokens,
+        ..h2ai_types::config::TaoConfig::default()
+    }
+}
+
 pub struct TaskPipelineInput {
     // Identity
     pub task_id: TaskId,
@@ -60,10 +86,7 @@ pub struct TaskPipelineInput {
     // Tenant runtime state
     pub tenant_state: Arc<TenantState>,
     pub nats_dispatch: Option<NatsDispatchConfig>,
-    pub srani_ema_cfi: f64,
-    pub srani_count: usize,
-    pub srani_grounding_chain: Option<Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
-    pub gap_research_chain: Option<Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
+    pub gap_research_chain: Option<Arc<h2ai_orchestrator::grounding_chain::GapResearchChain>>,
     pub shadow_audit_ctx: Option<ShadowAuditCtx>,
     pub shadow_accumulator: Option<Arc<tokio::sync::Mutex<ShadowAuditorAccumulator>>>,
     pub registry: AdapterRegistry,
@@ -78,7 +101,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         build_probe_items, run_awareness_probe, LlmAwarenessJudge, ProbeVerdict,
     };
     use h2ai_orchestrator::decomposition::compute_role_diversity;
-    use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
+    use h2ai_types::config::{AuditorConfig, VerificationConfig};
     use h2ai_types::events::{
         AwarenessProbeCompletedEvent, H2AIEvent, ProbeVerdictEntry, TaskFailedEvent,
         ThinkingLoopCompletedEvent,
@@ -93,8 +116,6 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
     let tao_multiplier = ts.tao_multiplier_estimator.read().await.multiplier();
     let tao_multiplier_estimator = Arc::clone(&ts.tao_multiplier_estimator);
     let bandit = Arc::clone(&ts.bandit_state);
-    let srani_ema_cfi = input.srani_ema_cfi;
-    let srani_count = input.srani_count;
 
     let thinking_constraint_tags: Vec<String> = input
         .corpus
@@ -106,6 +127,17 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
 
     let induction_scheduler =
         build_induction_scheduler(input.nats_raw_client.as_ref(), &input.tenant_id).await;
+
+    // Load last-distilled semantic memory (archetype priors + tension patterns).
+    // Returns None when no distillation cycle has run yet for this tenant.
+    let semantic_memory = if input.cfg.reasoning_memory.enabled {
+        match &induction_scheduler {
+            Some(sched) => sched.load_semantic_memory(input.tenant_id.as_ref()).await,
+            None => None,
+        }
+    } else {
+        None
+    };
 
     // Capture fields needed by both the initial and (optional) re-iteration calls.
     let probe_task_description = input.manifest.description.clone();
@@ -124,6 +156,9 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
     let probe_nats_client = input.nats_raw_client.clone();
     let probe_task_id = task_id.to_string();
 
+    let probe_max_archetype_boost = input.cfg.reasoning_memory.max_archetype_boost;
+    let probe_max_archetype_penalty = input.cfg.reasoning_memory.max_archetype_penalty;
+
     let mut thinking_report = input
         .thinking_loop_runner
         .run(ThinkingLoopArgs {
@@ -141,6 +176,9 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             awareness_hints: None,
             tenant_id: input.tenant_id.clone(),
             induction_scheduler: induction_scheduler.clone(),
+            semantic_memory: semantic_memory.clone(),
+            max_archetype_boost: probe_max_archetype_boost,
+            max_archetype_penalty: probe_max_archetype_penalty,
         })
         .await;
 
@@ -191,6 +229,9 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                         awareness_hints: Some(hints),
                         tenant_id: input.tenant_id.clone(),
                         induction_scheduler: induction_scheduler.clone(),
+                        semantic_memory: semantic_memory.clone(),
+                        max_archetype_boost: probe_max_archetype_boost,
+                        max_archetype_penalty: probe_max_archetype_penalty,
                     };
                     thinking_report = input.thinking_loop_runner.run(reiter_args).await;
                     re_iterated = true;
@@ -262,7 +303,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             iterations_run: thinking_report.iteration,
             coverage_score: thinking_report.coverage_score,
             shared_understanding_len: thinking_report.shared_understanding.len(),
-            archetypes: vec![],
+            archetypes: thinking_report.archetypes.clone(),
             timestamp: chrono::Utc::now(),
         });
         if let Err(e) = nats.publish_event(&task_id, &ev).await {
@@ -380,7 +421,7 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
             adapter: input.auditor_adapter.kind().clone(),
             ..Default::default()
         },
-        tao_config: TaoConfig::default(),
+        tao_config: build_tao_config(&input.cfg),
         verification_config: if use_adversarial {
             VerificationConfig {
                 threshold: input.cfg.verify_threshold,
@@ -411,9 +452,6 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         bandit_state: Some(bandit),
         shadow_audit_ctx,
         researcher_adapter: input.researcher_adapter.clone(),
-        srani_ema_cfi,
-        srani_count,
-        srani_grounding_chain: input.srani_grounding_chain.clone(),
         gap_research_chain: input.gap_research_chain.clone(),
         nats_raw: None,
         tenant_id: tenant_id.clone(),
@@ -446,8 +484,6 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
                 wiki_revision,
                 calibration_for_merge,
                 calibration_source_for_attr,
-                srani_ema_cfi,
-                srani_count,
                 tenant_id,
                 Arc::clone(&ts),
             )
@@ -455,9 +491,10 @@ pub async fn run_task_pipeline(mut input: TaskPipelineInput) {
         }
         Err((e, run_ctx)) => {
             let msg = e.to_string();
-            let is_network = msg.contains("network error")
-                || msg.contains("connection refused")
-                || msg.contains("timed out");
+            // "model hit max_tokens" is a generation budget issue, NOT a network outage.
+            // Exclude it from is_network so the engine logs it as a non-fatal error and
+            // emits a proper TaskFailed event rather than stopping with "adapter unreachable".
+            let is_network = is_network_error(&msg);
             if is_network {
                 tracing::warn!(target: "h2ai.tasks", "task engine stopped — LLM adapter unreachable: {msg}");
             } else {
@@ -589,8 +626,6 @@ pub(crate) async fn post_run(
     wiki_revision: u64,
     calibration_for_merge: CalibrationCompletedEvent,
     calibration_source_for_attr: h2ai_types::events::CalibrationSource,
-    srani_ema_cfi: f64,
-    srani_count: usize,
     tenant_id: TenantId,
     ts: Arc<TenantState>,
 ) {
@@ -667,13 +702,8 @@ pub(crate) async fn post_run(
 
     // Debug log (sync, best-effort).
     if let Some(ref log_path) = ctx.debug_log_path {
-        let record = crate::debug_record::TaskDebugRecord::build(
-            &ctx.manifest.description,
-            srani_ema_cfi,
-            srani_count,
-            &output,
-            &ctx.cfg,
-        );
+        let record =
+            crate::debug_record::TaskDebugRecord::build(&ctx.manifest.description, &output);
         crate::debug_record::append_debug_record(log_path, &record);
     }
 
@@ -890,28 +920,6 @@ pub(crate) async fn post_run(
         }
     }
 
-    for srani_ev in &output.srani_events {
-        let ev = H2AIEvent::CorrelatedFabrication(srani_ev.clone());
-        if let Err(e) = nats.publish_event_seq(task_id, &ev).await {
-            tracing::warn!("failed to publish CorrelatedFabricationEvent: {e}");
-        }
-    }
-
-    // Persist updated SRANI EMA state.
-    if output.srani_count_updated != srani_count {
-        if let Err(e) = nats
-            .put_srani_state(
-                &tenant_id,
-                output.srani_ema_cfi_updated,
-                output.srani_count_updated,
-            )
-            .await
-        {
-            tracing::warn!("failed to persist srani state: {e}");
-        }
-        *ts.srani_state.write().await = (output.srani_ema_cfi_updated, output.srani_count_updated);
-    }
-
     for grounding in &output.researcher_grounding_events {
         let ev = H2AIEvent::ResearcherGrounding(grounding.clone());
         if let Err(e) = nats.publish_event_seq(task_id, &ev).await {
@@ -960,6 +968,41 @@ pub(crate) async fn post_run(
             .await
         {
             tracing::warn!(task_id = %task_id, "failed to publish SocraticDiagnosisEvent: {e}");
+        }
+    }
+
+    // Publish ProvenanceRecordedEvent before MergeResolved: subscribers that stop
+    // collecting on MergeResolved (the terminal event) must see the provenance
+    // metadata first.
+    if let Some(ref pmap) = output.provenance_map {
+        use h2ai_orchestrator::provenance::DocumentConfidence;
+        use h2ai_types::events::ProvenanceRecordedEvent;
+        let dc_label = match pmap.document_confidence() {
+            DocumentConfidence::High => "High",
+            DocumentConfidence::ReviewRecommended => "ReviewRecommended",
+            DocumentConfidence::RequiresReview => "RequiresReview",
+            DocumentConfidence::Unverified => "Unverified",
+        };
+        let open_gap_count = pmap
+            .provisions()
+            .iter()
+            .filter(|p| {
+                !matches!(
+                    p.confidence,
+                    h2ai_orchestrator::provenance::ProvisionConfidence::Verified
+                        | h2ai_orchestrator::provenance::ProvisionConfidence::AutoCorrected
+                )
+            })
+            .count();
+        let prov_ev = H2AIEvent::ProvenanceRecorded(ProvenanceRecordedEvent {
+            task_id: task_id.clone(),
+            document_confidence: dc_label.into(),
+            provision_count: pmap.provisions().len(),
+            open_gap_count,
+            timestamp: chrono::Utc::now(),
+        });
+        if let Err(e) = nats.publish_event(task_id, &prov_ev).await {
+            tracing::warn!("failed to publish ProvenanceRecordedEvent: {e}");
         }
     }
 
@@ -1074,6 +1117,73 @@ pub(crate) async fn post_run(
                         "CalibrationChangepoint — ORCA margin active for next tasks"
                     );
                 }
+            }
+        }
+    }
+
+    // Induction distillation trigger: fire when resolved_task_count reaches a multiple of
+    // induction_batch_size. Spawned as a background task — never blocks the resolve path.
+    if ctx.cfg.reasoning_memory.enabled {
+        let resolved_count = ts
+            .resolved_task_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let batch_size = ctx.cfg.reasoning_memory.induction_batch_size;
+        if resolved_count.is_multiple_of(batch_size) {
+            if let Some(ref nats_raw) = ctx.nats_raw_client {
+                use h2ai_orchestrator::induction::nats_scheduler::build_induction_scheduler;
+                use h2ai_types::events::H2AIEvent;
+
+                let induction_nats_raw = nats_raw.clone();
+                let induction_nats = nats.clone();
+                let induction_tenant = tenant_id.clone();
+                let induction_task_id = task_id.clone();
+                let induction_max_tasks = ctx.cfg.reasoning_memory.induction_max_tasks_per_run;
+                let meta_prefix = format!("H2AI_META_{induction_tenant}");
+
+                tokio::spawn(async move {
+                    let sched =
+                        build_induction_scheduler(Some(&induction_nats_raw), &induction_tenant)
+                            .await;
+                    if let Some(sched) = sched {
+                        let metas = induction_nats
+                            .list_task_meta_states(
+                                &induction_tenant,
+                                &meta_prefix,
+                                induction_max_tasks,
+                            )
+                            .await;
+                        let result = sched
+                            .run_distillation_cycle(&metas, induction_tenant.as_ref())
+                            .await;
+                        let cycle_ev = H2AIEvent::InductionCycleCompleted(
+                            h2ai_types::events::InductionCycleCompletedEvent {
+                                tenant_id: induction_tenant.to_string(),
+                                tasks_processed: metas.len() as u32,
+                                archetype_priors_count: result.archetype_priors.len() as u32,
+                                tension_patterns_count: result.tension_patterns.len() as u32,
+                                decomposition_templates_count: result.decomposition_templates.len()
+                                    as u32,
+                                timestamp: chrono::Utc::now(),
+                            },
+                        );
+                        if let Err(e) = induction_nats
+                            .publish_event(&induction_task_id, &cycle_ev)
+                            .await
+                        {
+                            tracing::warn!("failed to publish InductionCycleCompletedEvent: {e}");
+                        }
+                        tracing::info!(
+                            target: "h2ai.induction",
+                            tenant_id = %induction_tenant,
+                            resolved_count,
+                            archetype_priors = result.archetype_priors.len(),
+                            tension_patterns = result.tension_patterns.len(),
+                            decomposition_templates = result.decomposition_templates.len(),
+                            "induction distillation cycle complete"
+                        );
+                    }
+                });
             }
         }
     }

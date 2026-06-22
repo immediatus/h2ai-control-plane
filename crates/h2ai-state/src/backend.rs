@@ -145,7 +145,7 @@ pub trait OproStore: Send + Sync {
     async fn put_adapter_opro_state(&self, state: &AdapterOproState) -> Result<(), NatsError>;
 }
 
-/// Persists and retrieves per-tenant estimator state (TAO EMA, SRANI, bandit).
+/// Persists and retrieves per-tenant estimator state (TAO EMA, bandit).
 #[async_trait]
 pub trait EstimatorStore: Send + Sync {
     async fn get_tao_estimator_state(
@@ -156,16 +156,6 @@ pub trait EstimatorStore: Send + Sync {
         &self,
         tenant_id: &TenantId,
         ema: f64,
-        count: usize,
-    ) -> Result<(), NatsError>;
-    async fn get_srani_state(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Option<(f64, usize)>, NatsError>;
-    async fn put_srani_state(
-        &self,
-        tenant_id: &TenantId,
-        ema_cfi: f64,
         count: usize,
     ) -> Result<(), NatsError>;
     async fn get_bandit_state(&self, tenant_id: &TenantId) -> Result<Option<Vec<u8>>, NatsError>;
@@ -264,7 +254,7 @@ pub trait ReasoningStore: Send + Sync {
 }
 
 /// Persists and retrieves the per-tenant conflict-rate accumulator used by
-/// the SRANI beta-quality adjustment in the engine.
+/// the beta-quality adjustment in the engine.
 ///
 /// The `bucket_prefix` argument is a caller-supplied configuration string
 /// (e.g. `"h2ai-conflict"`) that scopes the storage key.  On the in-memory

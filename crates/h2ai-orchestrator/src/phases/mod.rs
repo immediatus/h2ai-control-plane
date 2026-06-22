@@ -54,7 +54,6 @@ pub mod llm_coverage;
 pub mod merge;
 pub mod multiply;
 pub mod oracle;
-pub mod srani;
 pub mod synthesis;
 pub mod topology;
 pub mod verify;

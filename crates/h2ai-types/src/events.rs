@@ -398,6 +398,9 @@ pub enum TerminalCause {
     LlmAdapterUnavailable,
     /// All proposals failed verification across all MAPE-K retry waves.
     VerificationExhaustion,
+    /// Epistemic stage found zero proposals with valid provenance after gap resolution;
+    /// `zero_valid_proposals_policy = "fail"` is in effect.
+    NoValidProposals,
     /// Task complexity exceeded ensemble capacity; no retry resolves without replanning.
     ComplexityOverflow,
     /// Token budget collapsed mid-task; recoverable by chunking.
@@ -417,6 +420,7 @@ impl TerminalCause {
         match self {
             Self::LlmAdapterUnavailable => 0,
             Self::VerificationExhaustion => 1,
+            Self::NoValidProposals => 1,
             Self::ComplexityOverflow => 2,
             Self::ContextExhaustion => 3,
             Self::OracleRejected => 4,
@@ -553,29 +557,7 @@ pub struct CorrelatedEnsembleWarning {
     pub retry_count: u32,
 }
 
-/// Emitted when SRANI detects shared ungrounded architectural entities across proposals.
-///
-/// CFI (Correlated Fabrication Index) = max pairwise overlap of ungrounded entity sets.
-/// 0.0 = no shared fabrication; 1.0 = all proposals share the same fabricated component.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CorrelatedFabricationEvent {
-    pub task_id: TaskId,
-    /// CFI value that triggered this event.
-    pub cfi: f64,
-    /// Sigmoid injection pressure: `sigmoid((CFI − μ) / T)`. Range [0, 1].
-    /// 0.20 = warn floor; `gate_threshold` (default 0.50) = injection cutoff.
-    /// Set to 0.0 when `adaptive=false` (legacy static-threshold path).
-    pub injection_pressure: f64,
-    /// Architectural entities present in ≥2 proposals but absent from the task specification.
-    pub shared_ungrounded_entities: Vec<String>,
-    /// Number of proposals analysed.
-    pub proposal_count: usize,
-    /// True if a grounding hint was injected into `retry_context`.
-    pub hint_injected: bool,
-    pub timestamp: DateTime<Utc>,
-}
-
-/// Identifies which tier of the SRANI grounding chain produced a `ResearcherGroundingEvent`.
+/// Identifies which tier of the gap research chain produced a `ResearcherGroundingEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GroundingSource {
@@ -594,7 +576,7 @@ pub struct ResearcherGroundingEvent {
     pub shared_assumption: String,
     /// Summary of what external literature says about this topic.
     pub literature_summary: String,
-    /// Domain slot for this grounding event. For SRANI reactive grounding, classified from
+    /// Domain slot for this grounding event. For reactive grounding, classified from
     /// fabricated entity names (e.g. `"message_broker"`, `"cache_layer"`). `None` only for
     /// events deserialised from storage predating slot classification.
     pub slot: Option<String>,
@@ -659,6 +641,26 @@ pub struct TaoIterationEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Pass/fail verdict for a single binary check within a constraint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckVerdictKind {
+    /// The check criterion was found present in the proposal.
+    Present,
+    /// The check criterion was missing or deficient in the proposal.
+    Missing,
+}
+
+/// Per-check verdict from the LlmJudge verifier CoT output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckVerdict {
+    /// Zero-based index into the constraint's binary_checks list.
+    pub index: usize,
+    pub kind: CheckVerdictKind,
+    /// The evidence text extracted from the judge's CoT for this check.
+    pub text: String,
+}
+
 /// Emitted when the LLM-as-Judge verifier assigns a compliance score to a proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationScoredEvent {
@@ -687,6 +689,10 @@ pub struct VerificationScoredEvent {
     /// `None` on legacy events or when `total_checks` is zero (no discrete evidence).
     #[serde(default)]
     pub score_upper: Option<f64>,
+    /// Per-check verdicts parsed from the LlmJudge CoT output for all constraints combined.
+    /// Empty on legacy events or when no binary checks were defined.
+    #[serde(default)]
+    pub per_check_verdicts: Vec<CheckVerdict>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -1380,6 +1386,35 @@ pub struct AwarenessProbeCompletedEvent {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// GAP-G1 Phase 2: emitted after a distillation cycle completes over resolved task states.
+///
+/// Carries counts of distilled artifacts for telemetry. The full artifacts are
+/// persisted to NATS KV (`{tenant_id}.semantic`) and loaded via `load_semantic_memory`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InductionCycleCompletedEvent {
+    pub tenant_id: String,
+    pub tasks_processed: u32,
+    pub archetype_priors_count: u32,
+    pub tension_patterns_count: u32,
+    pub decomposition_templates_count: u32,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Emitted after the epistemic quality stage records provenance for the resolved output.
+/// Carries structured confidence metadata for downstream consumers and audit pipelines.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvenanceRecordedEvent {
+    pub task_id: TaskId,
+    /// String representation of `DocumentConfidence` for the resolved output.
+    /// One of: "High", "ReviewRecommended", "RequiresReview", "Unverified".
+    pub document_confidence: String,
+    /// Total number of provisions tracked in the ProvenanceMap.
+    pub provision_count: usize,
+    /// Number of gaps that remain open (not resolved) after all recovery passes.
+    pub open_gap_count: usize,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Discriminated union of all events published to the NATS event stream by the orchestrator.
 ///
 /// Serialised with an `event_type` tag and a `payload` content field for downstream consumers.
@@ -1477,8 +1512,6 @@ pub enum H2AIEvent {
     ResearcherGrounding(ResearcherGroundingEvent),
     /// C3 domain coverage degradation — slot assignment covers insufficient corpus domains.
     DiversityGuardDegraded(DiversityGuardDegradedEvent),
-    /// SRANI correlated fabrication warning — shared ungrounded entities detected across proposals.
-    CorrelatedFabrication(CorrelatedFabricationEvent),
     /// Pre-execution thinking loop completed (or was skipped). Always emitted per task.
     ThinkingLoopCompleted(ThinkingLoopCompletedEvent),
     /// Oracle accumulated enough observations to replace heuristic `p_mean` with `pass_rate`.
@@ -1526,6 +1559,10 @@ pub enum H2AIEvent {
     ConstraintVersionCreated(ConstraintVersionCreated),
     /// Repair failed — best candidate below acceptance threshold.
     ConstraintRepairFailed(ConstraintRepairFailed),
+    /// GAP-G1 Phase 2: distillation cycle over resolved task states completed.
+    InductionCycleCompleted(InductionCycleCompletedEvent),
+    /// Epistemic quality stage completed: provenance recorded for the resolved output.
+    ProvenanceRecorded(ProvenanceRecordedEvent),
 }
 
 impl H2AIEvent {

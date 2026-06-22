@@ -624,59 +624,6 @@ impl NatsClient {
         }
     }
 
-    /// Persist the SRANI adaptive EMA state so it survives process restarts.
-    pub async fn put_srani_state(
-        &self,
-        tenant_id: &TenantId,
-        ema_cfi: f64,
-        count: usize,
-    ) -> Result<(), NatsError> {
-        #[derive(serde::Serialize)]
-        struct State {
-            ema_cfi: f64,
-            count: usize,
-        }
-        let payload = serde_json::to_vec(&State { ema_cfi, count })
-            .map_err(|e| NatsError::Serialize(e.to_string()))?;
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.estimator_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/srani", tenant_id.bucket_safe());
-        kv.put(&key, payload.into())
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Retrieve the persisted SRANI adaptive EMA state, or `None` if absent.
-    pub async fn get_srani_state(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Option<(f64, usize)>, NatsError> {
-        #[derive(serde::Deserialize)]
-        struct State {
-            ema_cfi: f64,
-            count: usize,
-        }
-        let kv = self
-            .jetstream
-            .get_key_value(&self.state_cfg.estimator_bucket)
-            .await
-            .map_err(|e| NatsError::KvError(e.to_string()))?;
-        let key = format!("{}/srani", tenant_id.bucket_safe());
-        match kv.get(&key).await {
-            Ok(Some(entry)) => {
-                let s: State = serde_json::from_slice(&entry)
-                    .map_err(|e| NatsError::Serialize(e.to_string()))?;
-                Ok(Some((s.ema_cfi, s.count)))
-            }
-            Ok(None) => Ok(None),
-            Err(e) => Err(NatsError::KvError(e.to_string())),
-        }
-    }
-
     /// Persist raw JSON bytes to the `H2AI_ESTIMATOR` bucket under key `{tenant_safe}/bandit`.
     /// Callers are responsible for serialization (avoids a circular crate dependency).
     pub async fn put_bandit_state(
@@ -2020,20 +1967,6 @@ impl crate::backend::EstimatorStore for NatsClient {
         count: usize,
     ) -> Result<(), NatsError> {
         self.put_tao_estimator_state(tenant_id, ema, count).await
-    }
-    async fn get_srani_state(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Option<(f64, usize)>, NatsError> {
-        self.get_srani_state(tenant_id).await
-    }
-    async fn put_srani_state(
-        &self,
-        tenant_id: &TenantId,
-        ema_cfi: f64,
-        count: usize,
-    ) -> Result<(), NatsError> {
-        self.put_srani_state(tenant_id, ema_cfi, count).await
     }
     async fn get_bandit_state(&self, tenant_id: &TenantId) -> Result<Option<Vec<u8>>, NatsError> {
         self.get_bandit_state(tenant_id).await

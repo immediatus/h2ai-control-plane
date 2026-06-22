@@ -20,9 +20,9 @@ use crate::decomposition::DecompositionError;
 use crate::engine::{
     EngineError, EngineOutput, EngineRunContext, NatsDispatchConfig, ShadowAuditCtx,
 };
-use crate::induction::InductionScheduler;
+use crate::grounding_chain::GapResearchChain;
+use crate::induction::{DistillationResult, InductionScheduler};
 use crate::induction_store::InductionStore;
-use crate::srani_grounding::SraniGroundingChain;
 use crate::tao_loop::TaoMultiplierEstimator;
 use crate::task_store::TaskStore;
 
@@ -52,6 +52,13 @@ pub struct ThinkingLoopArgs {
     /// Optional induction scheduler. When `Some`, `DefaultThinkingLoopRunner` calls
     /// `load_priming_hints` and passes the result into `ThinkingLoopInput.retry_hint_priors`.
     pub induction_scheduler: Option<std::sync::Arc<dyn InductionScheduler>>,
+    /// Last-distilled semantic memory loaded from NATS KV before the task starts.
+    /// Passed into `ThinkingLoopInput` for archetype prior boost/penalty and tension seeding.
+    pub semantic_memory: Option<DistillationResult>,
+    /// Maximum per-archetype confidence boost from `ArchetypePrior`. From `reasoning_memory.max_archetype_boost`.
+    pub max_archetype_boost: f64,
+    /// Maximum per-archetype confidence penalty from `avoid_for_tags`. From `reasoning_memory.max_archetype_penalty`.
+    pub max_archetype_penalty: f64,
 }
 
 pub struct DecompositionArgs {
@@ -93,10 +100,7 @@ pub struct OwnedEngineInput {
     pub bandit_state: Option<Arc<RwLock<BanditState>>>,
     pub shadow_audit_ctx: Option<ShadowAuditCtx>,
     pub researcher_adapter: Option<Arc<dyn IComputeAdapter>>,
-    pub srani_ema_cfi: f64,
-    pub srani_count: usize,
-    pub srani_grounding_chain: Option<Arc<SraniGroundingChain>>,
-    pub gap_research_chain: Option<Arc<SraniGroundingChain>>,
+    pub gap_research_chain: Option<Arc<GapResearchChain>>,
     pub nats_raw: Option<Arc<async_nats::Client>>,
     pub tenant_id: TenantId,
     pub nats: Option<Arc<dyn NatsBackend>>,
@@ -177,6 +181,9 @@ impl ThinkingLoopRunner for DefaultThinkingLoopRunner {
             task_id: &args.task_id,
             induction_patterns: &[],
             retry_hint_priors: &retry_hint_priors,
+            semantic_memory: args.semantic_memory.as_ref(),
+            max_archetype_boost: args.max_archetype_boost,
+            max_archetype_penalty: args.max_archetype_penalty,
         })
         .await
     }
@@ -248,9 +255,6 @@ impl EngineRunner for DefaultEngineRunner {
             bandit_state,
             shadow_audit_ctx,
             researcher_adapter,
-            srani_ema_cfi,
-            srani_count,
-            srani_grounding_chain,
             gap_research_chain,
             nats_raw,
             tenant_id,
@@ -289,9 +293,6 @@ impl EngineRunner for DefaultEngineRunner {
             bandit_state,
             shadow_audit_ctx,
             researcher_adapter,
-            srani_ema_cfi,
-            srani_count,
-            srani_grounding_chain,
             gap_research_chain,
             nats_raw,
             tenant_id,

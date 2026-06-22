@@ -1,7 +1,11 @@
-use crate::induction::{InductionContext, InductionResult, InductionScheduler};
+use crate::induction::algorithmic::{
+    distill_archetype_priors, distill_decomposition_templates, distill_tension_patterns,
+};
+use crate::induction::{DistillationResult, InductionContext, InductionResult, InductionScheduler};
 use async_nats::jetstream::kv::Store as KvStore;
 use async_trait::async_trait;
 use h2ai_types::memory::TagPatternBucket;
+use h2ai_types::TaskMetaState;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -231,6 +235,11 @@ impl NatsInductionScheduler {
         rank_and_filter(&all, &augmented_ctx)
     }
 
+    /// NATS KV key for the tenant's distilled semantic memory.
+    fn semantic_key(tenant_id: &str) -> String {
+        format!("{tenant_id}.semantic")
+    }
+
     /// CAS-increment `attempt_count` (and optionally `success_count`) for a specific
     /// pattern in a tag bucket.
     async fn cas_increment_in_bucket(&self, key: &str, hint_text: &str, success: bool) {
@@ -317,6 +326,30 @@ impl InductionScheduler for NatsInductionScheduler {
                 self.cas_increment_in_bucket(&key, hint_text, true).await;
             }
         }
+    }
+
+    async fn run_distillation_cycle(
+        &self,
+        metas: &[TaskMetaState],
+        tenant_id: &str,
+    ) -> DistillationResult {
+        let result = DistillationResult {
+            archetype_priors: distill_archetype_priors(metas),
+            tension_patterns: distill_tension_patterns(metas),
+            decomposition_templates: distill_decomposition_templates(metas),
+        };
+        if let Ok(bytes) = serde_json::to_vec(&result) {
+            let _ = self
+                .kv
+                .put(&Self::semantic_key(tenant_id), bytes.into())
+                .await;
+        }
+        result
+    }
+
+    async fn load_semantic_memory(&self, tenant_id: &str) -> Option<DistillationResult> {
+        let (bytes, _) = self.kv.get_entry(&Self::semantic_key(tenant_id)).await?;
+        serde_json::from_slice::<DistillationResult>(&bytes).ok()
     }
 }
 

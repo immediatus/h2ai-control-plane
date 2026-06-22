@@ -233,7 +233,7 @@ impl CoherencyCoefficients {
     /// `n_max_hi` is the optimistic bound. The pair bounds the true `N_max` under measurement
     /// uncertainty.
     ///
-    /// Both bounds are floored at **3.0** — the minimum quorum required for BFT/Krum/SRANI.
+    /// Both bounds are floored at **3.0** — the minimum quorum required for BFT/Krum.
     /// When the unclamped value falls below 3, call `n_max_degraded()` to detect the
     /// degradation and trigger a circuit-breaker rather than silently using a 1–2 agent pool.
     #[must_use]
@@ -248,7 +248,7 @@ impl CoherencyCoefficients {
         };
         let n_hi = n_at_cg(cg_mean + sigma);
         let n_lo = n_at_cg(cg_mean - sigma);
-        // Hard floor: BFT/Krum/SRANI require N ≥ 3. Unclamped values < 3 indicate
+        // Hard floor: BFT/Krum require N ≥ 3. Unclamped values < 3 indicate
         // adapter degradation; callers should check n_max_degraded() and trip the
         // circuit breaker rather than proceeding with a sub-quorum pool.
         let lo = n_lo.min(n_hi).max(3.0);
@@ -257,7 +257,7 @@ impl CoherencyCoefficients {
     }
 
     /// Returns `true` when the **unclamped** `N_max` point estimate falls below 3.0,
-    /// indicating the adapter is too degraded to maintain BFT/Krum/SRANI quorum.
+    /// indicating the adapter is too degraded to maintain BFT/Krum quorum.
     ///
     /// When this is `true`, callers in non-shadow-mode should fail fast with
     /// `MultiplicationConditionFailure::QuorumDegradedBelowMinimum` rather than
@@ -967,7 +967,7 @@ pub enum MultiplicationConditionFailure {
         explorer_family: String,
         verifier_family: String,
     },
-    #[error("adapter N_max={unclamped_n_max:.1} < 3 — model too degraded to maintain BFT/Krum/SRANI quorum; adapter must be marked Offline")]
+    #[error("adapter N_max={unclamped_n_max:.1} < 3 — model too degraded to maintain BFT/Krum quorum; adapter must be marked Offline")]
     QuorumDegradedBelowMinimum { unclamped_n_max: f64 },
 }
 

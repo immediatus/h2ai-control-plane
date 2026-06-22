@@ -100,8 +100,6 @@ pub async fn submit_task(
 
     let manifest_json = serde_json::to_string(&manifest).unwrap_or_default();
     let oracle_spec = manifest.oracle.clone();
-    let (srani_ema_cfi, srani_count) = *ts.srani_state.read().await;
-
     let nats_dispatch = state
         .agent_provider
         .as_ref()
@@ -163,9 +161,6 @@ pub async fn submit_task(
         knowledge_provider: state.knowledge_provider.clone(),
         tenant_state: Arc::clone(&ts),
         nats_dispatch,
-        srani_ema_cfi,
-        srani_count,
-        srani_grounding_chain: state.srani_grounding_chain.clone(),
         gap_research_chain: state.gap_research_chain.clone(),
         shadow_audit_ctx,
         shadow_accumulator: state.shadow_accumulator.clone(),

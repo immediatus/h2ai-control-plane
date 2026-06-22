@@ -90,6 +90,9 @@ async fn archetype_select_uses_config_max_tokens() {
         task_id: "test-task-id",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
 
@@ -131,6 +134,9 @@ async fn quality_gate_uses_config_max_tokens() {
         task_id: "test-task-id",
         induction_patterns: &[],
         retry_hint_priors: &[],
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
         constraint_corpus: &[],
     };
 

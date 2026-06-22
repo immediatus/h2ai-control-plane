@@ -65,10 +65,13 @@ impl McpBackend for StdioMcpBackend {
         let child_pid = child.id();
 
         let result = timeout(Duration::from_secs(self.timeout_secs), async {
-            stdin
-                .write_all(request_line.as_bytes())
-                .await
-                .map_err(ToolError::Io)?;
+            // BrokenPipe on stdin write is non-fatal: the subprocess may have
+            // already written its response to stdout without reading input.
+            if let Err(e) = stdin.write_all(request_line.as_bytes()).await {
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(ToolError::Io(e));
+                }
+            }
             drop(stdin);
 
             let mut reader = BufReader::new(stdout);

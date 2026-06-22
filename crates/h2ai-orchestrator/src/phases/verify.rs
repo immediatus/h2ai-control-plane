@@ -171,17 +171,42 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         } else {
             (None, None)
         };
+        // Build per-check verdicts from all constraint results for this passing proposal.
+        let per_check_verdicts_passing: Vec<h2ai_types::events::CheckVerdict> = results
+            .iter()
+            .flat_map(|r| {
+                r.check_reasons
+                    .iter()
+                    .enumerate()
+                    .map(move |(i, text)| h2ai_types::events::CheckVerdict {
+                        index: i,
+                        kind: if r.check_verdicts.get(i).copied().unwrap_or(false) {
+                            h2ai_types::events::CheckVerdictKind::Present
+                        } else {
+                            h2ai_types::events::CheckVerdictKind::Missing
+                        },
+                        text: text.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let passing_reason = results
+            .iter()
+            .filter_map(|r| r.verifier_reason.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
         iteration_verification_events.push(VerificationScoredEvent {
             task_id: task_id.clone(),
             explorer_id: prop.explorer_id.clone(),
             score,
-            reason: String::new(),
+            reason: passing_reason,
             passed: true,
             cache_hit: any_cache_hit,
             passed_checks: Some(passed_checks),
             total_checks: Some(total_checks),
             score_lower,
             score_upper,
+            per_check_verdicts: per_check_verdicts_passing,
             timestamp: Utc::now(),
         });
         engine_input.store.record_validation(task_id, true);
@@ -207,6 +232,24 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         } else {
             (None, None)
         };
+        let per_check_verdicts_failing: Vec<h2ai_types::events::CheckVerdict> = results
+            .iter()
+            .flat_map(|r| {
+                r.check_reasons
+                    .iter()
+                    .enumerate()
+                    .map(move |(i, text)| h2ai_types::events::CheckVerdict {
+                        index: i,
+                        kind: if r.check_verdicts.get(i).copied().unwrap_or(false) {
+                            h2ai_types::events::CheckVerdictKind::Present
+                        } else {
+                            h2ai_types::events::CheckVerdictKind::Missing
+                        },
+                        text: text.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         iteration_verification_events.push(VerificationScoredEvent {
             task_id: task_id.clone(),
             explorer_id: prop.explorer_id.clone(),
@@ -222,6 +265,7 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             total_checks: Some(total_checks),
             score_lower,
             score_upper,
+            per_check_verdicts: per_check_verdicts_failing,
             timestamp: Utc::now(),
         });
         let error_cost = RoleErrorCost::new((1.0 - compliance).clamp(0.0, 1.0)).unwrap();

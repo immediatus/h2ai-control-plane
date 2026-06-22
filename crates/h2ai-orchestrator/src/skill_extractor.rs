@@ -3,8 +3,7 @@ use std::collections::{HashMap, HashSet};
 use h2ai_constraints::types::ConstraintDoc;
 use h2ai_knowledge::types::{KnowledgeNode, NodeDepth, NodeSource, TensionRef};
 use h2ai_types::events::{
-    CorrelatedFabricationEvent, SocraticDiagnosisEvent, TopologyProvisionedEvent,
-    VerificationScoredEvent,
+    SocraticDiagnosisEvent, TopologyProvisionedEvent, VerificationScoredEvent,
 };
 use h2ai_types::identity::TaskId;
 
@@ -106,7 +105,6 @@ fn extract_skill_nodes(
     n_valid: usize,
     topology_retry_events: &[TopologyProvisionedEvent],
     uncovered_domains: &[String],
-    srani_events: &[CorrelatedFabricationEvent],
     verification_events: &[VerificationScoredEvent],
     resolved_output: &str,
     socratic_diagnosis_events: &[SocraticDiagnosisEvent],
@@ -164,18 +162,6 @@ fn extract_skill_nodes(
                     "domain '{}' remained uncovered after {} topology waves",
                     domain, n_retries
                 ));
-        }
-    }
-
-    for ev in srani_events {
-        if ev.hint_injected && !ev.shared_ungrounded_entities.is_empty() {
-            let msg = format!(
-                "ungrounded entities: {}",
-                ev.shared_ungrounded_entities.join(", ")
-            );
-            for domain in domain_constraints.keys() {
-                domain_failures.entry(domain).or_default().push(msg.clone());
-            }
         }
     }
 
@@ -332,7 +318,6 @@ pub fn skill_from_output(
         output.selection_resolved.valid_proposals.len(),
         &output.topology_retry_events,
         &output.coherence_state.uncovered_domains,
-        &output.srani_events,
         &output.verification_events,
         &output.resolved_output,
         &output.socratic_diagnosis_events,
@@ -352,7 +337,6 @@ pub fn skill_from_retry_events(
     extract_skill_nodes(
         0,
         &topology_retry_events,
-        &[],
         &[],
         partial_verification_events,
         "",

@@ -106,3 +106,17 @@ fn i1_synthesis_validator_task_uses_prior_approach_not_wrong_belief() {
     );
     assert!(I1_SYNTHESIS_VALIDATOR_TASK.contains("PRIOR APPROACH"));
 }
+
+#[test]
+fn coherence_check_prompts_non_empty() {
+    use h2ai_config::prompts::{
+        COHERENCE_CHECK_SYSTEM, COHERENCE_CHECK_TASK, RECOVERY_SYSTEM, RECOVERY_TASK,
+    };
+    assert!(!COHERENCE_CHECK_SYSTEM.is_empty());
+    assert!(COHERENCE_CHECK_TASK.contains("{provisions}"));
+    assert!(!RECOVERY_SYSTEM.is_empty());
+    assert!(RECOVERY_TASK.contains("{gap_description}"));
+    assert!(RECOVERY_TASK.contains("{constraint_text}"));
+    assert!(RECOVERY_TASK.contains("{verified_provision_list}"));
+    assert!(RECOVERY_TASK.contains("{draft_section}"));
+}

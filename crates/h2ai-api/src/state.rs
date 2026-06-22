@@ -92,14 +92,10 @@ pub struct AppState {
     /// When `Some`, search-enabled slots get a pre-step and low-CV retries fetch contradiction evidence.
     /// When `None`, C1 falls back to hint-only without external web grounding.
     pub researcher_adapter: Option<Arc<dyn IComputeAdapter>>,
-    /// SRANI grounding chain: spec anchor → LLM researcher → web search escalation.
-    /// Built at startup from available adapters; `None` = spec anchor only (inline, no chain).
-    pub srani_grounding_chain:
-        Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
     /// Dedicated grounding chain gap researcher: DuckDuckGo web search + LLM distiller.
     /// `None` when researcher adapter is not configured.
     pub gap_research_chain:
-        Option<std::sync::Arc<h2ai_orchestrator::srani_grounding::SraniGroundingChain>>,
+        Option<std::sync::Arc<h2ai_orchestrator::grounding_chain::GapResearchChain>>,
     /// Pending human clarification waiters.
     /// Maps `task_id` → (Notify to wake the waiting engine, slot for the answer text).
     /// Populated by the engine when it suspends for clarification; resolved by POST /tasks/{id}/clarify.
@@ -264,7 +260,6 @@ impl AppState {
             payload_store: Arc::new(MemoryPayloadStore::new()),
             shadow_accumulator: None,
             researcher_adapter: None,
-            srani_grounding_chain: None,
             gap_research_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
             constraint_resolver,
@@ -334,7 +329,6 @@ impl AppState {
             payload_store: Arc::new(MemoryPayloadStore::new()),
             shadow_accumulator: None,
             researcher_adapter: None,
-            srani_grounding_chain: None,
             gap_research_chain: None,
             clarification_waiters: Arc::new(Mutex::new(HashMap::new())),
             constraint_resolver,
@@ -483,27 +477,6 @@ impl AppState {
             Ok(None) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "bandit state load from NATS failed; using default");
-            }
-        }
-
-        // SRANI adaptive EMA
-        match nats.get_srani_state(tenant_id).await {
-            Ok(Some((ema_cfi, count))) => {
-                *ts.srani_state.write().await = (ema_cfi, count);
-                tracing::info!(
-                    target: "h2ai.startup",
-                    ema_cfi, count,
-                    "srani adaptive state restored from NATS KV"
-                );
-            }
-            Ok(None) => {
-                let midpoint = self.cfg.srani.cold_start_midpoint();
-                *ts.srani_state.write().await = (midpoint, 0);
-            }
-            Err(e) => {
-                tracing::warn!(target: "h2ai.startup", error = %e, "srani state load failed; using cold-start defaults");
-                let midpoint = self.cfg.srani.cold_start_midpoint();
-                *ts.srani_state.write().await = (midpoint, 0);
             }
         }
 

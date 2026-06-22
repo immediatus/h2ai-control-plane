@@ -381,26 +381,6 @@ fn correlated_ensemble_warning_serde_roundtrip() {
     assert_eq!(back.retry_count, 2);
 }
 
-// ── CorrelatedFabricationEvent ────────────────────────────────────────────────
-
-#[test]
-fn correlated_fabrication_event_serde_roundtrip() {
-    let e = CorrelatedFabricationEvent {
-        task_id: task_id(),
-        cfi: 0.75,
-        injection_pressure: 0.52,
-        shared_ungrounded_entities: vec!["ServiceMesh".into(), "ApiGateway".into()],
-        proposal_count: 3,
-        hint_injected: true,
-        timestamp: Utc::now(),
-    };
-    let s = serde_json::to_string(&e).unwrap();
-    let back: CorrelatedFabricationEvent = serde_json::from_str(&s).unwrap();
-    assert!((back.cfi - 0.75).abs() < 1e-9);
-    assert!(back.hint_injected);
-    assert_eq!(back.shared_ungrounded_entities.len(), 2);
-}
-
 // ── ResearcherGroundingEvent ──────────────────────────────────────────────────
 
 #[test]
@@ -479,6 +459,7 @@ fn verification_scored_event_serde_roundtrip_cache_hit_default() {
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: Utc::now(),
     };
     let s = serde_json::to_string(&e).unwrap();
@@ -565,6 +546,78 @@ fn subtask_completed_event_serde_roundtrip() {
     let s = serde_json::to_string(&e).unwrap();
     let back: SubtaskCompletedEvent = serde_json::from_str(&s).unwrap();
     assert_eq!(back.token_cost, 300);
+}
+
+// ── CheckVerdictKind and CheckVerdict ─────────────────────────────────────
+
+#[test]
+fn check_verdict_kind_serde_round_trip() {
+    use h2ai_types::events::{CheckVerdict, CheckVerdictKind};
+    let v = CheckVerdict {
+        index: 0,
+        kind: CheckVerdictKind::Present,
+        text: "clause found".into(),
+    };
+    let json = serde_json::to_string(&v).unwrap();
+    let back: CheckVerdict = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.index, 0);
+    assert!(matches!(back.kind, CheckVerdictKind::Present));
+    assert_eq!(back.text, "clause found");
+    // Also test Missing variant
+    let v2 = CheckVerdict {
+        index: 1,
+        kind: CheckVerdictKind::Missing,
+        text: "not found".into(),
+    };
+    let json2 = serde_json::to_string(&v2).unwrap();
+    let back2: CheckVerdict = serde_json::from_str(&json2).unwrap();
+    assert!(matches!(back2.kind, CheckVerdictKind::Missing));
+}
+
+#[test]
+fn verification_scored_event_per_check_verdicts_round_trip() {
+    use h2ai_types::events::{CheckVerdict, CheckVerdictKind, VerificationScoredEvent};
+    let ev = VerificationScoredEvent {
+        task_id: task_id(),
+        explorer_id: explorer_id(),
+        score: 1.0,
+        reason: "CHECK 1: clause → PRESENT\nCHECK 2: clause → PRESENT".into(),
+        passed: true,
+        cache_hit: false,
+        passed_checks: Some(2),
+        total_checks: Some(2),
+        score_lower: None,
+        score_upper: None,
+        per_check_verdicts: vec![
+            CheckVerdict {
+                index: 0,
+                kind: CheckVerdictKind::Present,
+                text: "clause found".into(),
+            },
+            CheckVerdict {
+                index: 1,
+                kind: CheckVerdictKind::Present,
+                text: "clause found".into(),
+            },
+        ],
+        timestamp: Utc::now(),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: VerificationScoredEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.per_check_verdicts.len(), 2);
+    assert!(matches!(
+        back.per_check_verdicts[0].kind,
+        CheckVerdictKind::Present
+    ));
+}
+
+#[test]
+fn terminal_cause_no_valid_proposals_serde() {
+    use h2ai_types::events::TerminalCause;
+    let v = TerminalCause::NoValidProposals;
+    let json = serde_json::to_string(&v).unwrap();
+    let back: TerminalCause = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, TerminalCause::NoValidProposals));
 }
 
 // ── OptimizationKind ──────────────────────────────────────────────────────────
@@ -1161,23 +1214,6 @@ fn h2ai_event_diversity_guard_degraded_serde_roundtrip() {
 }
 
 #[test]
-fn h2ai_event_correlated_fabrication_serde_roundtrip() {
-    let e = H2AIEvent::CorrelatedFabrication(CorrelatedFabricationEvent {
-        task_id: task_id(),
-        cfi: 0.6,
-        injection_pressure: 0.45,
-        shared_ungrounded_entities: vec!["Cache".into()],
-        proposal_count: 2,
-        hint_injected: false,
-        timestamp: Utc::now(),
-    });
-    let s = serde_json::to_string(&e).unwrap();
-    assert!(s.contains("\"event_type\":\"CorrelatedFabrication\""));
-    let back: H2AIEvent = serde_json::from_str(&s).unwrap();
-    assert!(matches!(back, H2AIEvent::CorrelatedFabrication(_)));
-}
-
-#[test]
 fn h2ai_event_opro_triggered_serde_roundtrip() {
     let e = H2AIEvent::OproTriggered(OproTriggeredEvent {
         adapter_name: "llama3".into(),
@@ -1339,4 +1375,40 @@ fn h2ai_event_epistemic_yield_serde_roundtrip() {
     assert!(s.contains("\"event_type\":\"EpistemicYield\""));
     let back: H2AIEvent = serde_json::from_str(&s).unwrap();
     assert!(matches!(back, H2AIEvent::EpistemicYield(_)));
+}
+
+// ── ProvenanceRecordedEvent ───────────────────────────────────────────────────
+
+#[test]
+fn provenance_recorded_event_serde_round_trip() {
+    use h2ai_types::events::ProvenanceRecordedEvent;
+    let tid = task_id();
+    let ev = ProvenanceRecordedEvent {
+        task_id: tid.clone(),
+        document_confidence: "High".into(),
+        provision_count: 6,
+        open_gap_count: 0,
+        timestamp: Utc::now(),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: ProvenanceRecordedEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.task_id, tid);
+    assert_eq!(back.document_confidence, "High");
+    assert_eq!(back.provision_count, 6);
+    assert_eq!(back.open_gap_count, 0);
+}
+
+#[test]
+fn h2ai_event_provenance_recorded_serde_roundtrip() {
+    let e = H2AIEvent::ProvenanceRecorded(h2ai_types::events::ProvenanceRecordedEvent {
+        task_id: task_id(),
+        document_confidence: "ReviewRecommended".into(),
+        provision_count: 3,
+        open_gap_count: 1,
+        timestamp: Utc::now(),
+    });
+    let s = serde_json::to_string(&e).unwrap();
+    assert!(s.contains("\"event_type\":\"ProvenanceRecorded\""));
+    let back: H2AIEvent = serde_json::from_str(&s).unwrap();
+    assert!(matches!(back, H2AIEvent::ProvenanceRecorded(_)));
 }

@@ -37,9 +37,6 @@ pub async fn reset_experiment_state(
         TaoMultiplierEstimator::new_with_alpha(cfg.tao_estimator_ema_alpha)
             .with_warmup(cfg.tao_estimator_warmup);
 
-    let srani_midpoint = cfg.srani.cold_start_midpoint();
-    *ts.srani_state.write().await = (srani_midpoint, 0);
-
     *ts.rho_ema.write().await = crate::rho_ema::RhoEmaState::default();
 
     Json(reset_response_body_value(&tenant_id))
@@ -53,7 +50,6 @@ pub fn reset_response_body_value(tenant_id: &str) -> serde_json::Value {
             "tau_spread_estimator",
             "bandit_state",
             "tao_multiplier_estimator",
-            "srani_state",
             "rho_ema"
         ]
     })

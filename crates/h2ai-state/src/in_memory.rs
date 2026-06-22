@@ -59,7 +59,6 @@ pub struct InMemoryStateBackend {
     active_variant_ptrs: Arc<RwLock<HashMap<String, String>>>,
     // EstimatorStore fields
     tao_states: Arc<RwLock<HashMap<String, (f64, usize)>>>,
-    srani_states: Arc<RwLock<HashMap<String, (f64, usize)>>>,
     bandit_states: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     // ReasoningStore fields
     reasoning_checkpoints: Arc<RwLock<HashMap<String, TaskReasoningCheckpoint>>>,
@@ -303,28 +302,6 @@ impl EstimatorStore for InMemoryStateBackend {
     ) -> Result<(), NatsError> {
         let key = format!("{}/tao", tenant_id.bucket_safe());
         self.tao_states.write().await.insert(key, (ema, count));
-        Ok(())
-    }
-
-    async fn get_srani_state(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Option<(f64, usize)>, NatsError> {
-        let key = format!("{}/srani", tenant_id.bucket_safe());
-        Ok(self.srani_states.read().await.get(&key).copied())
-    }
-
-    async fn put_srani_state(
-        &self,
-        tenant_id: &TenantId,
-        ema_cfi: f64,
-        count: usize,
-    ) -> Result<(), NatsError> {
-        let key = format!("{}/srani", tenant_id.bucket_safe());
-        self.srani_states
-            .write()
-            .await
-            .insert(key, (ema_cfi, count));
         Ok(())
     }
 

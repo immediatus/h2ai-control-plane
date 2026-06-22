@@ -957,6 +957,7 @@ fn verification_scored_event_new_fields_round_trip() {
         total_checks: Some(5),
         score_lower: Some(0.23),
         score_upper: Some(0.88),
+        per_check_verdicts: vec![],
         timestamp: chrono::Utc::now(),
     };
     let json = serde_json::to_string(&ev).unwrap();

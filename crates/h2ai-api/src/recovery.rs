@@ -236,7 +236,10 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                 adapter: auditor.kind().clone(),
                 ..Default::default()
             },
-            tao_config: TaoConfig::default(),
+            tao_config: TaoConfig {
+                per_turn_timeout_secs: cfg.tao_per_turn_timeout_secs,
+                ..TaoConfig::default()
+            },
             verification_config: VerificationConfig::default(),
             constraint_corpus: corpus,
             cfg: &cfg,
@@ -250,9 +253,6 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
             bandit_state: Some(bandit),
             shadow_audit_ctx: None,
             researcher_adapter: None,
-            srani_ema_cfi: 0.45,
-            srani_count: 0,
-            srani_grounding_chain: None,
             gap_research_chain: None,
             nats_raw: None,
             tenant_id,

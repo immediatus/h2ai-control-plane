@@ -72,6 +72,7 @@ fn make_verification_event(explorer_id: ExplorerId, score: f64) -> VerificationS
         total_checks: None,
         score_lower: None,
         score_upper: None,
+        per_check_verdicts: vec![],
         timestamp: Utc::now(),
     }
 }

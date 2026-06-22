@@ -151,6 +151,25 @@ impl AdapterRegistry {
                 .unwrap_or_else(|| self.reasoning.as_ref()),
         }
     }
+
+    /// Resolve the adapter for the given profile and return a clone of its `Arc`.
+    ///
+    /// Equivalent to [`resolve`] but returns `Arc<dyn IComputeAdapter>` for callers
+    /// that need an owned handle (e.g., async tasks that outlive the registry borrow).
+    #[must_use]
+    pub fn resolve_arc(&self, profile: &TaskProfile) -> Arc<dyn IComputeAdapter> {
+        match profile {
+            TaskProfile::Reasoning => Arc::clone(&self.reasoning),
+            TaskProfile::Scoring => self
+                .scoring
+                .as_ref()
+                .map_or_else(|| Arc::clone(&self.reasoning), Arc::clone),
+            TaskProfile::Structural => self
+                .structural
+                .as_ref()
+                .map_or_else(|| Arc::clone(&self.reasoning), Arc::clone),
+        }
+    }
 }
 
 impl std::fmt::Debug for AdapterRegistry {

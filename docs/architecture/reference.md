@@ -162,6 +162,7 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `ZeroSurvival` | `ZeroSurvivalEvent` | 5 → MAPE-K |
 | `EpistemicYield` | `EpistemicYieldEvent` | post-merge (async) |
 | `TaskAttribution` | `TaskAttributionEvent` | post-merge |
+| `ProvenanceRecorded` | `ProvenanceRecordedEvent` | post-merge (epistemic quality) |
 | `TaskFailed` | `TaskFailedEvent` | terminal |
 | `InterfaceSaturationWarning` | `InterfaceSaturationWarningEvent` | any |
 | `SubtaskPlanCreated` | `SubtaskPlanCreatedEvent` | planner |
@@ -172,7 +173,6 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `ApprovalResolved` | `ApprovalResolvedEvent` | post-approval |
 | `CoherenceIncomplete` | `CoherenceIncompleteEvent` | post-merge (observability) |
 | `CorrelatedEnsemble` | `CorrelatedEnsembleWarning` | 3.1 (C1 detection) |
-| `CorrelatedFabrication` | `CorrelatedFabricationEvent` | 3.2 (SRANI) |
 | `ResearcherGrounding` | `ResearcherGroundingEvent` | 3.1 / 3.2 / proactive |
 | `DiversityGuardDegraded` | `DiversityGuardDegradedEvent` | 2.6 (domain coverage) |
 | `OracleGateResult` | `OracleGateResultEvent` | 4.5 |
@@ -182,6 +182,29 @@ The discriminated union is `H2AIEvent` in `crates/h2ai-types/src/events.rs`. All
 | `ConstraintAmbiguity` | `ConstraintAmbiguityEvent` | 3.5 (corpus quality signal) |
 | `ComplexityProbe` | `ComplexityProbeEvent` | pre-loop |
 | `ComplexityCeilingDetected` | `ComplexityCeilingDetectedEvent` | MAPE-K |
+| `TaskComplexityAssessed` | `TaskComplexityAssessedEvent` | pre-loop (complexity module) |
+| `ThinkingLoopCompleted` | `ThinkingLoopCompletedEvent` | Phase -1 |
+| `AwarenessProbeCompleted` | `AwarenessProbeCompletedEvent` | Phase -1 (post thinking loop) |
+| `LeaderElected` | `LeaderElectedEvent` | MAPE-K (between waves) |
+| `SocraticDiagnosis` | `SocraticDiagnosisEvent` | MAPE-K (between waves) |
+| `VerifierFrozen` | `VerifierFrozenEvent` | MAPE-K (per-constraint bypass) |
+| `VerifierReasonContradiction` | `VerifierReasonContradictionEvent` | MAPE-K |
+| `ConstraintFrontier` | `ConstraintFrontierEvent` | 4.5 (static constraint matrix) |
+| `CostThresholdWarning` | `CostThresholdWarningEvent` | any (cost guard) |
+| `BudgetExhausted` | `BudgetExhaustedEvent` | any (cost guard abort) |
+| `ConvergenceGate` | `ConvergenceGateEvent` | MAPE-K (convergence gate) |
+| `ConstraintCoherenceWarning` | `ConstraintCoherenceWarning` | corpus management |
+| `ConstraintRepairAttempted` | `ConstraintRepairAttempted` | corpus management |
+| `ConstraintVersionCreated` | `ConstraintVersionCreated` | corpus management |
+| `ConstraintRepairFailed` | `ConstraintRepairFailed` | corpus management |
+| `InductionCycleCompleted` | `InductionCycleCompletedEvent` | post-merge (cross-task memory) |
+| `VerifierInstability` | `VerifierInstabilityEvent` | MAPE-K (verifier stability monitor) |
+| `GenerationKnowledge` | `GenerationKnowledgeEvent` | Phase 3 (knowledge enrichment) |
+| `ShadowAudit` | `ShadowAuditorResultEvent` | Phase 4 (shadow auditor) |
+| `OracleCalibrationPatched` | `OracleCalibrationPatchedEvent` | post-merge (oracle empirical patch) |
+| `AuditDomainPromoted` | `AuditDomainPromotedEvent` | Phase 4 (shadow auditor domain promotion) |
+| `AuditDomainDemoted` | `AuditDomainDemotedEvent` | Phase 4 (shadow auditor domain demotion) |
+| `VerifierComparison` | `VerifierComparisonEvent` | Phase 3.5 (cross-family verifier comparison) |
 
 ### Key payloads
 
@@ -363,25 +386,9 @@ struct CorrelatedEnsembleWarning {
 }
 ```
 
-#### CorrelatedFabricationEvent
-
-Emitted (Phase 3.2) when SRANI detects shared ungrounded architectural entities across proposals. CFI = max pairwise overlap of per-proposal ungrounded entity sets (absent from the task spec).
-
-```rust
-struct CorrelatedFabricationEvent {
-    task_id: TaskId,
-    cfi: f64,                               // Correlated Fabrication Index ∈ [0, 1]
-    injection_pressure: f64,               // sigmoid((CFI − μ) / T); 0.0 when adaptive=false
-    shared_ungrounded_entities: Vec<String>,
-    proposal_count: usize,
-    hint_injected: bool,
-    timestamp: DateTime<Utc>,
-}
-```
-
 #### ResearcherGroundingEvent
 
-Emitted when external grounding is fetched — either reactively (C1/SRANI retry) or proactively (slot with `search_enabled: true`).
+Emitted when external grounding is fetched — either reactively (C1 hallucination retry via `GapResearchChain`) or proactively (slot with `search_enabled: true`).
 
 ```rust
 struct ResearcherGroundingEvent {
@@ -454,6 +461,49 @@ struct ConstraintAmbiguityEvent {
 
 ---
 
+#### ThinkingLoopCompletedEvent
+
+Published after the final thinking loop iteration (Phase -1). When `thinking_loop.enabled = false`, all numeric fields are zero and `archetypes` is empty.
+
+```rust
+struct ThinkingLoopCompletedEvent {
+    task_id: TaskId,
+    enabled: bool,                       // false when thinking_loop.enabled = false
+    iterations_run: u32,                 // how many iterations actually ran
+    coverage_score: f64,                 // final coverage score from the last ThinkingReport
+    shared_understanding_len: usize,     // char count (keeps event payload small)
+    archetypes: Vec<String>,             // names of archetypes selected in the final iteration
+    timestamp: DateTime<Utc>,
+}
+```
+
+#### VerificationScoredEvent
+
+```rust
+struct VerificationScoredEvent {
+    task_id: TaskId,
+    explorer_id: ExplorerId,
+    score: f64,
+    reason: String,
+    passed: bool,
+    #[serde(default)]
+    cache_hit: bool,                     // true when score reused from per-task eval cache
+    #[serde(default)]
+    passed_checks: Option<u32>,          // count of binary check_verdicts = true
+    #[serde(default)]
+    total_checks: Option<u32>,           // total binary check_verdicts (None when no binary checks)
+    #[serde(default)]
+    score_lower: Option<f64>,            // 95% Wilson CI lower bound on binary-check pass fraction
+    #[serde(default)]
+    score_upper: Option<f64>,            // 95% Wilson CI upper bound on binary-check pass fraction
+    #[serde(default)]
+    per_check_verdicts: Vec<CheckVerdict>, // per-check PRESENT/MISSING verdicts parsed from CoT
+    timestamp: DateTime<Utc>,
+}
+```
+
+`total_checks = 0` when the verifier response does not contain a visible `CHECK VERDICTS:` section. Thinking models (llama_cpp, Qwen3, R1) emit CHECK reasoning in hidden `<think>` tokens by default; the `CHECK_EVIDENCE_FORMAT_INSTRUCTION` prompt constant instructs the model to emit a `CHECK VERDICTS:` block in the visible final response to make the `has_check_markers` guard fire. Legacy events (before binary-check tracking) have all `Option` fields as `None`.
+
 #### MergeResolvedEvent (updated fields)
 
 `MergeResolvedEvent` carries two optional diagnostic fields:
@@ -507,6 +557,24 @@ struct ComplexityCeilingDetectedEvent {
 ```
 
 **Operational use:** frequent firing for tasks the probe rated ≤ 3 means the probe is misclassifying. Either upgrade `complexity_probe_adapter` to a stronger model or lower `decompose_threshold`. The detector exists precisely as a safety net for probe miscalibration.
+
+#### ProvenanceRecordedEvent
+
+Emitted after the epistemic output quality pipeline completes for the resolved output. Requires `epistemic_quality.enabled = true`. Always fires after `MergeResolved` and before task close.
+
+```rust
+struct ProvenanceRecordedEvent {
+    task_id: TaskId,
+    document_confidence: String,  // "High" | "ReviewRecommended" | "RequiresReview" | "Unverified"
+    provision_count: usize,       // total provisions tracked in ProvenanceMap
+    open_gap_count: usize,        // gaps remaining after all MicroExplorerResolver passes
+    timestamp: DateTime<Utc>,
+}
+```
+
+`document_confidence` is the worst-wins aggregate over all provisions in the `ProvenanceMap`: if any provision is `Unverified`, the document is `Unverified`; `Verified` and `AutoCorrected` provisions both contribute to a `High` document-level rating, because `AutoCorrected` means the gap was patched and closed (no unresolved gap remains). `open_gap_count > 0` with `document_confidence = "High"` cannot occur — any unclosed gap leaves at least one provision below `AutoCorrected`.
+
+**E2E assertions** in `replay.py`: `provenance_recorded` (event fired), `document_confidence_not_verified` (`document_confidence != "Unverified"`), `open_gap_count_min` (`open_gap_count >= N`).
 
 #### VerifierReasonContradictionEvent.beyond_budget_count *(added 2026-05-29)*
 
@@ -689,7 +757,7 @@ AIMD slow-start governs how the calibration harness adapts the `alpha_contention
 
 ### Complexity-Ceiling Routing
 
-Pre-dispatch complexity probe + intra-retry ceiling detector. Routes structurally intractable tasks to /H1 synthesis-wave grafting or HITL before burning the full retry budget. Opt-in; default off in `reference.toml`, enabled in all four benchmark scenarios (`tests/e2e/scenarios/benchmark/*`).
+Pre-dispatch complexity probe + intra-retry ceiling detector. Routes structurally intractable tasks to /H1 synthesis-wave grafting or HITL before burning the full retry budget. Opt-in; default off in `reference.toml`, enabled in all six E2E scenarios (`tests/e2e/scenarios/*/`).
 
 ```toml
 [complexity_routing]
@@ -821,7 +889,7 @@ budget_floor_fraction         = 0.30
 | `synthesis_critique_max_tokens` | `1024` | Critique stage budget. |
 | `synthesis_max_tokens` | `2048` | Synthesis stage budget. |
 
-### Correlated Hallucination and SRANI
+### Correlated Hallucination and Universal Grounding
 
 | Field | Default | Purpose |
 |---|---|---|
@@ -829,23 +897,21 @@ budget_floor_fraction         = 0.30
 | `correlated_hallucination_min_jaccard_floor` | `0.50` | Mean pairwise Jaccard distance must also be **below** this floor for C1 to fire. Joint AND condition prevents spurious retries on genuinely-diverse equidistant ensembles (CV=0 but all distances high). |
 | `domain_coverage_threshold` | `0.40` | Minimum fraction of corpus domains that slot `constraint_domains` must cover. Below this, `DiversityGuardDegradedEvent` fires. |
 | `require_bivariate_cg` | `false` | When `true`, tasks fail rather than warn when domain coverage is below threshold. |
-| `[srani]` | — | SRANI correlated fabrication detection (entity-level cross-proposal overlap). |
-| `srani.enabled` | `true` | Set to `false` to skip SRANI check entirely. |
-| `srani.adaptive` | `true` | Use sigmoid gate with EMA-tracked midpoint (`true`) vs. static `warn_threshold`/`inject_threshold` pair (`false`). |
-| `srani.ema_alpha` | `0.20` | EMA smoothing factor for adaptive midpoint. Lower = slower adaptation (longer memory horizon). 0.20 ≈ 5-task memory. |
-| `srani.temperature` | `0.15` | Sigmoid temperature: controls gate sharpness. Lower = sharper cliff around midpoint. |
-| `srani.gate_threshold` | `0.50` | Injection pressure above which grounding hint is injected. |
-| `srani.warn_threshold` | `0.30` | CFI above which `CorrelatedFabricationEvent` is emitted (adaptive=false only). Also the cold-start midpoint lower bound. |
-| `srani.inject_threshold` | `0.60` | CFI above which grounding hint is injected (adaptive=false only). Also the cold-start midpoint upper bound. |
-| `srani.grounding_compress_threshold` | `800` | Maximum characters of a single grounding source's text before it is compressed. Limits per-source token cost during distillation. |
-| `srani.grounding_distill` | `true` | When `true` and a researcher adapter is available, distill raw web-search results with the LLM before injection. |
-| `srani.researcher_max_tokens` | `32768` | Max tokens budget for the `LlmResearcherGrounder` call (entity classification + grounding statement). |
-| `srani.distill_max_tokens` | `32768` | Max tokens budget for the web-search distillation LLM call. |
-| `srani.gap_synthesis_max_tokens` | `32768` | Max tokens budget for GAP researcher synthesis calls. |
+| `[grounding]` | — | Universal grounding checker (`GroundingChecker`) that verifies proposals/merged output against the spec boundary. |
+| `grounding.enabled` | `true` | Set to `false` to skip the grounding check in development. |
+| `grounding.max_tokens` | `8192` | Token budget for the `LlmGroundingJudge` researcher call. |
+| `grounding.min_confidence` | `0.7` | Findings with `confidence < min_confidence` are discarded before gap production. |
+| `grounding.tau` | `0.2` | Temperature for the `LlmGroundingJudge` call. Must be in [0, 1]; validated at config load. |
+| `[gap_research]` | — | Settings for the `GapResearchChain` used by C1 reactive grounding and gap resolution. |
+| `gap_research.grounding_distill` | `true` | When `true` and a researcher adapter is available, distill raw web-search results with the LLM before injection. |
+| `gap_research.grounding_compress_threshold` | `800` | Maximum characters of a single grounding source's text before compression. Limits per-source token cost during distillation. |
+| `gap_research.researcher_max_tokens` | `32768` | Max tokens for the `LlmResearcherGrounder` call. |
+| `gap_research.distill_max_tokens` | `32768` | Max tokens for the web-search distillation LLM call. |
+| `gap_research.gap_synthesis_max_tokens` | `32768` | Max tokens for GAP researcher synthesis calls. |
 
-**NATS KV state:** SRANI EMA state (`srani_ema_cfi`, `srani_count`) is persisted at key `"srani_adaptive_state"` in `H2AI_ESTIMATOR`. Cold start: μ = 0.45 (midpoint of default thresholds) until count ≥ 5.
+**Spec boundary construction:** The `effective_spec` passed to `GroundingChecker::new()` is built from three sources concatenated: `manifest.description`, `manifest.context` (the optional contextual background field — e.g. "We run Redis Cluster for caching"), and all constraint corpus text (`ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, `ConstraintDoc.pass_criteria` when present). Technologies named in any of these sources are treated as grounded and will not produce `UngroundedContent` gaps.
 
-**Spec boundary construction:** The `effective_spec` passed to `check_specification_grounding` is built from three sources concatenated: `manifest.description`, `manifest.context` (the optional contextual background field — e.g. "We run Redis Cluster for caching"), and all constraint corpus text (`ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, `ConstraintDoc.pass_criteria` when present). This prevents technologies named in the task description, contextual background, or constraint rubrics from being classified as ungrounded and subsequently targeted for removal by the grounding chain.
+**Validation:** `H2AIConfig::validate()` is called by both `load_layered()` and `load_from_file()` and rejects configs where `grounding.tau ∉ [0, 1]` or `grounding.min_confidence ∉ [0, 1]` with a `ConfigLoadError::Validation` error before the config is returned to the caller.
 
 ### Pipeline Resilience
 
@@ -1276,6 +1342,43 @@ Phase 3.5 verification now uses a `JudgePanel` instead of a single `LlmJudge` ad
 **Config**: `[judge_panel]` section in `reference.toml`.
 
 **Research**: PoLL (2404.18796), CARE (2603.00039), Prosa (2605.01630), Logarithmic Scores (2604.00477).
+
+---
+
+### Epistemic Output Quality
+
+`[epistemic_quality]` is disabled by default. Enable to run the post-merge gap detection and provision annotation pipeline that emits `ProvenanceRecordedEvent`.
+
+```toml
+[epistemic_quality]
+enabled                      = false
+coherence_check_enabled      = true
+coherence_min_severity       = "medium"
+recovery_enabled             = true
+recovery_max_passes          = 2
+recovery_tau                 = 0.5
+zero_valid_proposals_policy  = "fail"
+output_mode                  = "clean"
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `epistemic_quality.enabled` | `false` | Master switch. When `false`, the entire post-merge epistemic stage is skipped; `ProvenanceRecordedEvent` is never emitted. |
+| `epistemic_quality.coherence_check_enabled` | `true` | Run `CoherenceChecker` after `SelectionPruningExtractor`. Adds one LLM call (τ=0.7, max_tokens=1024) per task when enabled. |
+| `epistemic_quality.coherence_min_severity` | `"medium"` | Minimum `GapSeverity` (`"low"`, `"medium"`, `"high"`) for CoherenceChecker inter-provision conflicts to be included. |
+| `epistemic_quality.recovery_enabled` | `true` | Run `MicroExplorerResolver` on each gap batch produced by `GapRegistry::dispatch_batches()`. When `false`, gaps are recorded but no recovery LLM calls are made. |
+| `epistemic_quality.recovery_max_passes` | `2` | Maximum number of gap-resolution passes before the pipeline accepts the current `ProvenanceMap` state. |
+| `epistemic_quality.recovery_tau` | `0.5` | Minimum score delta for a resolved patch to be accepted. Currently unused — the resolver uses binary acceptance (non-empty patch = score_delta=1.0). Reserved for a future continuous scoring mode. |
+| `epistemic_quality.zero_valid_proposals_policy` | `"fail"` | Behaviour when `open_gap_count` equals `provision_count` (nothing resolved): `"fail"` → emit `TaskFailed(NoValidProposals)`; `"deliver_unverified"` → proceed and emit `ProvenanceRecordedEvent` with `document_confidence = "Unverified"`. Use `"deliver_unverified"` in audit pipelines that must surface output regardless of quality. |
+| `epistemic_quality.output_mode` | `"clean"` | Output annotation mode. `"clean"` → prepend blockquote confidence header only. `"audit"` → header + per-provision annotations for every non-`Verified` provision (with `gap_ids`) + footer (`Document confidence: {label} | Provisions reviewed: {N}`). |
+
+**Pipeline sequence** (when `enabled = true`): `SelectionPruningExtractor.extract_gaps_from_pruned()` → `CoherenceChecker.check()` (if `coherence_check_enabled`) → `GapRegistry::dispatch_batches()` (Kahn's topological sort) → per-batch `MicroExplorerResolver.resolve()` (if `recovery_enabled`) → `ProvenanceMap::document_confidence()` → `OutputRenderer::render_output()` → `ProvenanceRecordedEvent`.
+
+**Gap ID scheme**: SelectionPruning gaps: `g{1-based-index}` (deterministic, deduplicated by description). CoherenceCheck conflicts: `coh-{1-based-index}`.
+
+**`ProvisionConfidence` strict order** (worst-wins dominance): `Verified(0) < AutoCorrected(1) < ReviewRecommended(2) < RequiresReview(3) < Unverified(4)`. `derive(PartialOrd, Ord)` encodes the order. `AutoCorrected` collapses to `High` at document level — a patched provision has no unresolved gap.
+
+**Implementation**: `crates/h2ai-orchestrator/src/gap_checkers/`, `gap_registry.rs`, `gap_resolvers/`, `provenance.rs`, `output_renderer.rs`.
 
 ---
 

@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use h2ai_types::memory::RetryHintPattern;
+use h2ai_types::memory::{ArchetypePrior, DecompositionTemplate, RetryHintPattern, TensionPattern};
+use h2ai_types::TaskMetaState;
+use serde::{Deserialize, Serialize};
 
 pub mod algorithmic;
 pub mod nats_scheduler;
@@ -27,6 +29,34 @@ impl InductionResult {
     }
 }
 
+/// Output of a distillation cycle over resolved task states.
+///
+/// Contains the three semantic memory artifact collections produced by the
+/// `run_distillation_cycle` method. Persisted to NATS KV by `NatsInductionScheduler`
+/// and returned from `load_semantic_memory` on subsequent loads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DistillationResult {
+    pub archetype_priors: Vec<ArchetypePrior>,
+    pub tension_patterns: Vec<TensionPattern>,
+    pub decomposition_templates: Vec<DecompositionTemplate>,
+}
+
+impl DistillationResult {
+    /// Returns a `DistillationResult` with all collections empty.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` when all three collections are empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.archetype_priors.is_empty()
+            && self.tension_patterns.is_empty()
+            && self.decomposition_templates.is_empty()
+    }
+}
+
 /// Trait for scheduling retroactive induction over prior task history.
 /// Inject as `Arc<dyn InductionScheduler>` for testability.
 #[async_trait]
@@ -46,6 +76,28 @@ pub trait InductionScheduler: Send + Sync {
     /// Called from `engine.rs` when a wave resolves after induction hints were applied.
     /// Default is a no-op so existing mock impls compile without change.
     async fn record_success(&self, _hint_texts: &[String], _ctx: &InductionContext) {}
+
+    /// Run a distillation cycle over resolved task states.
+    ///
+    /// Called by the engine when `task_count_seen % config.induction_batch_size == 0`.
+    /// Returns the distilled semantic memory artifacts. Implementations should persist
+    /// the result so that `load_semantic_memory` can return it on the next call.
+    /// Default is a no-op returning `DistillationResult::empty()`.
+    async fn run_distillation_cycle(
+        &self,
+        _metas: &[TaskMetaState],
+        _tenant_id: &str,
+    ) -> DistillationResult {
+        DistillationResult::empty()
+    }
+
+    /// Load the last-distilled semantic memory for this tenant.
+    ///
+    /// Returns `None` when no distillation cycle has run yet for this tenant.
+    /// Default returns `None`.
+    async fn load_semantic_memory(&self, _tenant_id: &str) -> Option<DistillationResult> {
+        None
+    }
 }
 
 // ── Shingling pure functions ──────────────────────────────────────────────────

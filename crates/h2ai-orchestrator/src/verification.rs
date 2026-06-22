@@ -614,15 +614,48 @@ impl VerificationPhase {
                     (score, reason, false)
                 };
 
-                let check_verdicts = verifier_reason
+                // Only parse binary check verdicts when the LlmJudge response actually contains
+                // "CHECK " markers. Thinking models (Qwen3/DeepSeek R1) reason about binary
+                // checks in their hidden <think> block and emit a concise JSON reason without
+                // markers. Parsing such a reason produces vec![false; n_checks], which
+                // score_from_verdicts takes as 0/n — overriding a genuine high holistic score.
+                // When no markers are present, let score_from_verdicts fall back to llm_float.
+                let has_check_markers = verifier_reason
                     .as_deref()
-                    .map(|r| parse_check_verdicts(r, n_checks))
-                    .unwrap_or_default();
-                let check_reasons = verifier_reason
-                    .as_deref()
-                    .map(|r| parse_check_reasons(r, n_checks))
-                    .unwrap_or_default();
-                let effective_score = score_from_verdicts(&check_verdicts, n_checks, score);
+                    .is_some_and(|r| r.contains("CHECK "));
+                let check_verdicts = if has_check_markers {
+                    verifier_reason
+                        .as_deref()
+                        .map(|r| parse_check_verdicts(r, n_checks))
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                };
+                let check_reasons = if has_check_markers {
+                    verifier_reason
+                        .as_deref()
+                        .map(|r| parse_check_reasons(r, n_checks))
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                };
+                // When no binary check verdicts are available AND the LlmJudge errored
+                // (verifier_reason = None, score = 0.7 neutral), do not apply the binary
+                // check threshold (n-1)/n — that threshold is calibrated for verdict fractions,
+                // not fallback holistic scores. Semantic predicates (SemanticPresence/Exclusion)
+                // have already validated the key requirements; a transient evaluator error should
+                // not block an otherwise valid proposal. Guard score > 0.0 preserves genuine
+                // SemanticPresence failures (Composite short-circuits at 0.0, reason = None).
+                let effective_score = if check_verdicts.is_empty()
+                    && n_checks > 0
+                    && verifier_reason.is_none()
+                    && score > 0.0
+                {
+                    let binary_threshold = (n_checks - 1) as f64 / n_checks as f64;
+                    score.max(binary_threshold + f64::EPSILON)
+                } else {
+                    score_from_verdicts(&check_verdicts, n_checks, score)
+                };
                 (
                     ComplianceResult {
                         constraint_id,
@@ -719,6 +752,7 @@ impl VerificationPhase {
                         tau,
                         *passes,
                         false,
+                        max_tokens,
                     )
                     .await,
                     None,
@@ -734,6 +768,7 @@ impl VerificationPhase {
                         tau,
                         *passes,
                         false,
+                        max_tokens,
                     )
                     .await,
                     None,
@@ -749,6 +784,7 @@ impl VerificationPhase {
                         tau,
                         *passes,
                         true,
+                        max_tokens,
                     )
                     .await,
                     None,
@@ -981,6 +1017,9 @@ impl VerificationPhase {
     /// Uses a neutral binary-classifier system prompt instead of the adversarial evaluator prompt.
     /// The adversarial framing (hostile reviewer → find failures) is wrong for factual presence
     /// checks and causes the model to answer NO regardless of content.
+    ///
+    /// `max_tokens` is inherited from the evaluator budget so that thinking-mode models
+    /// (Qwen3, DeepSeek R1) can complete their reasoning chain before emitting YES/NO.
     async fn majority_binary_check(
         prompt: &str,
         evaluator: &dyn IComputeAdapter,
@@ -988,6 +1027,7 @@ impl VerificationPhase {
         tau: h2ai_types::sizing::TauValue,
         passes: u8,
         invert: bool,
+        max_tokens: u64,
     ) -> f64 {
         let passes = passes.max(1) as usize;
         let mut yes_count = 0usize;
@@ -996,7 +1036,7 @@ impl VerificationPhase {
                 system_context: BINARY_CLASSIFIER_SYSTEM_PROMPT.to_owned(),
                 task: prompt.to_owned(),
                 tau,
-                max_tokens: 16,
+                max_tokens,
             };
             let is_yes = match evaluator.execute(req).await {
                 Ok(resp) => resp.output.trim().to_uppercase().starts_with("YES"),

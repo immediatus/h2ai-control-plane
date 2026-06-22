@@ -297,15 +297,7 @@ impl<'a> ExecutionPipeline<'a> {
         osp_accumulator: Option<&mut RetryAccumulator>,
         osp_config: Option<&OspConfig>,
     ) -> PipelineWaveResult {
-        // Initialise WaveEvents with carry-forward SRANI state so early-exit paths
-        // don't accidentally reset the EMA/count/tier to zero.
-        let mut events = WaveEvents {
-            srani_last_wave_fired: params.srani_last_wave_fired,
-            srani_tier_updated: params.srani_tier,
-            srani_ema_cfi_updated: params.srani_ema_cfi,
-            srani_count_updated: params.srani_count as usize,
-            ..WaveEvents::default()
-        };
+        let mut events = WaveEvents::default();
 
         let task_id = &self.input.task_id;
         let retry_count_u32 = retry_count as u32;
@@ -427,37 +419,6 @@ impl<'a> ExecutionPipeline<'a> {
             events
         )
         .generation;
-
-        // ── SRANI: Specification-Relative Architectural Noun Intersection ────────
-        let srani_out = match phases::srani::run(
-            gen_out,
-            phases::srani::Input {
-                engine_input: self.input,
-                task_id,
-                srani_tier: params.srani_tier,
-                srani_last_wave_fired: params.srani_last_wave_fired,
-                retry_context: params.retry_context.clone(),
-            },
-        )
-        .await
-        {
-            phases::StepResult::Done(out) => out,
-            _ => unreachable!("srani phase never early-exits or fatals"),
-        };
-
-        // Update SRANI carry-forward state in events so observe() sees the updated values.
-        events.srani_last_wave_fired = srani_out.srani_last_wave_fired_updated;
-        events.srani_tier_updated = srani_out.srani_tier_updated;
-        events.srani_ema_cfi_updated = srani_out.srani_ema_cfi_updated;
-        events.srani_count_updated = srani_out.srani_count_updated;
-        events.srani_retry_context = srani_out.retry_context.clone();
-        events
-            .srani_events
-            .extend(srani_out.srani_events.iter().cloned());
-        events
-            .researcher_grounding_events
-            .extend(srani_out.researcher_grounding_events.iter().cloned());
-        let gen_out = srani_out.generation;
 
         // Save proposal texts so the MAPE-K loop can carry them forward for the
         // next wave's leader context injection.

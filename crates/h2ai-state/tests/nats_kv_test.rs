@@ -189,34 +189,6 @@ async fn tao_estimator_overwrite_updates_value() {
     assert_eq!(back.1, 99);
 }
 
-// ── SRANI state ──────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn srani_state_put_get_roundtrip() {
-    let Some(client) = connect().await else {
-        return;
-    };
-    let tid = TenantId::from("srani-test-tenant");
-    client.put_srani_state(&tid, 0.35, 17).await.expect("put");
-    let back = client
-        .get_srani_state(&tid)
-        .await
-        .expect("get")
-        .expect("some");
-    assert!((back.0 - 0.35).abs() < 1e-9);
-    assert_eq!(back.1, 17);
-}
-
-#[tokio::test]
-async fn srani_state_missing_returns_none() {
-    let Some(client) = connect().await else {
-        return;
-    };
-    let tid = TenantId::from("srani-never-written-xyz");
-    let result = client.get_srani_state(&tid).await.expect("get");
-    assert!(result.is_none());
-}
-
 // ── bandit state ─────────────────────────────────────────────────────────────
 
 #[tokio::test]

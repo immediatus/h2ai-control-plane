@@ -257,8 +257,8 @@ fn kv_key(tenant: &TenantId, suffix: &str) -> String {
 #[test]
 fn hyphen_sanitized_to_underscore() {
     assert_eq!(
-        kv_key(&TenantId::from("acme-corp"), "srani"),
-        "acme_corp/srani"
+        kv_key(&TenantId::from("acme-corp"), "bandit"),
+        "acme_corp/bandit"
     );
 }
 

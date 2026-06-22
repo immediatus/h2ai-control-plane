@@ -5,9 +5,9 @@ use crate::self_optimizer::{OptimizerParams, QualityMeasurement, SelfOptimizer, 
 use h2ai_autonomic::retry::{RetryAction, RetryPolicy};
 use h2ai_types::config::{TaoConfig, TopologyKind, VerificationConfig};
 use h2ai_types::events::{
-    ConstraintFrontierEvent, CorrelatedEnsembleWarning, CorrelatedFabricationEvent,
-    ProposalFailedEvent, ResearcherGroundingEvent, ShadowAuditorResultEvent,
-    TopologyProvisionedEvent, VerificationScoredEvent, ZeroSurvivalEvent,
+    ConstraintFrontierEvent, CorrelatedEnsembleWarning, ProposalFailedEvent,
+    ResearcherGroundingEvent, ShadowAuditorResultEvent, TopologyProvisionedEvent,
+    VerificationScoredEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::{ExplorerId, TaskId};
 
@@ -22,10 +22,6 @@ pub struct PipelineParams {
     pub retry_context: Option<String>,
     pub tao_config: TaoConfig,
     pub verification_config: VerificationConfig,
-    pub srani_ema_cfi: f64,
-    pub srani_count: u64,
-    pub srani_tier: usize,
-    pub srani_last_wave_fired: bool,
     pub pending_tombstone: Option<String>,
     /// Leader context snapshot for per-slot context injection in generation.
     pub leader_context: Option<crate::leader::LeaderContextSnapshot>,
@@ -60,27 +56,12 @@ pub struct WaveEvents {
     pub failed_proposals: Vec<ProposalFailedEvent>,
     pub shadow_audit_events: Vec<ShadowAuditorResultEvent>,
     pub correlated_warnings: Vec<CorrelatedEnsembleWarning>,
-    pub srani_events: Vec<CorrelatedFabricationEvent>,
     pub researcher_grounding_events: Vec<ResearcherGroundingEvent>,
     pub quality_measurement: Option<crate::self_optimizer::QualityMeasurement>,
     pub talagrand_feedback: Option<TalagrandFeedback>,
     pub tao_estimator_update: Option<TaoEstimatorUpdate>,
     pub topology_retry_event: Option<TopologyProvisionedEvent>,
     pub frontier_event: Option<ConstraintFrontierEvent>,
-    /// Updated `srani_last_wave_fired` flag from the SRANI phase output.
-    /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
-    pub srani_last_wave_fired: bool,
-    /// Updated `srani_tier` from the SRANI phase output.
-    /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
-    pub srani_tier_updated: usize,
-    /// Updated `srani_ema_cfi` from the SRANI phase output.
-    /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
-    pub srani_ema_cfi_updated: f64,
-    /// Updated `srani_count` from the SRANI phase output (as usize, matching engine.rs).
-    /// Initialized to the pre-wave value; overwritten when SRANI phase runs.
-    pub srani_count_updated: usize,
-    /// Updated `retry_context` from the SRANI phase (may have been extended with SRANI hint).
-    pub srani_retry_context: Option<String>,
     /// Verification filter ratio from this wave's merge phase (surviving / total evaluated).
     /// 1.0 when no merge ran (early-exit before merge). Used by the coordinator to call `decide()`.
     pub filter_ratio: f64,
@@ -111,18 +92,12 @@ impl Default for WaveEvents {
             failed_proposals: Vec::new(),
             shadow_audit_events: Vec::new(),
             correlated_warnings: Vec::new(),
-            srani_events: Vec::new(),
             researcher_grounding_events: Vec::new(),
             quality_measurement: None,
             talagrand_feedback: None,
             tao_estimator_update: None,
             topology_retry_event: None,
             frontier_event: None,
-            srani_last_wave_fired: false,
-            srani_tier_updated: 0,
-            srani_ema_cfi_updated: 0.0,
-            srani_count_updated: 0,
-            srani_retry_context: None,
             filter_ratio: 1.0,
             pruned_events: Vec::new(),
             conflict_rate: None,
@@ -241,12 +216,6 @@ pub struct MapeKController {
     pub(crate) system_context_with_rubric: String,
     pub(crate) max_retries: usize,
 
-    // SRANI EMA
-    pub(crate) srani_ema: f64,
-    pub(crate) srani_count: u64,
-    pub(crate) srani_tier: usize,
-    pub(crate) srani_last_wave_fired: bool,
-
     // Per-wave config overrides
     pub(crate) tao_config: TaoConfig,
     pub(crate) verification_config: VerificationConfig,
@@ -256,7 +225,6 @@ pub struct MapeKController {
     pub(crate) all_failed_proposals: Vec<ProposalFailedEvent>,
     pub(crate) all_shadow_audit_events: Vec<ShadowAuditorResultEvent>,
     pub(crate) all_correlated_warnings: Vec<CorrelatedEnsembleWarning>,
-    pub(crate) all_srani_events: Vec<CorrelatedFabricationEvent>,
     pub(crate) all_researcher_grounding_events: Vec<ResearcherGroundingEvent>,
     pub(crate) all_pruned: Vec<h2ai_types::events::BranchPrunedEvent>,
     /// Pruned events from the most recent wave only — used for tombstone synthesis
@@ -300,7 +268,13 @@ pub struct MapeKController {
     // ── CSPR-v2: Conflict-Aware Constraint-Scoped Prior Repair ──────────────
     /// Cross-wave global best proposal: (score, `proposal_text`).
     /// Updated by `observe()` each wave; used by CSPR-v2 repair context builder.
+    /// Only set when the proposal passed the hard gate — used with constraint reasons.
     pub(crate) global_best_proposal: Option<(f64, String)>,
+    /// Best proposal text seen across all waves, regardless of pass status.
+    /// Used as CSPR repair prior when `global_best_proposal` is None (i.e. all
+    /// wave proposals failed the hard gate). Prevents wave 2 from starting cold
+    /// in zero-pass scenarios by providing the best partial match as a repair basis.
+    pub(crate) global_best_partial_proposal: Option<(f64, String)>,
     /// Dynamic per-constraint verifier reasons from the global-best passing proposal.
     /// Populated in `observe()` when a new best proposal score is recorded.
     /// Used as `passing_constraint_pins` hints in CSPR repair context to anchor the
@@ -330,7 +304,7 @@ pub struct MapeKController {
         Option<std::sync::Arc<dyn h2ai_types::adapter::IComputeAdapter>>,
     /// Grounding chain gap researcher: DDG search + LLM distiller.
     pub(crate) gap_grounding_chain:
-        Option<std::sync::Arc<crate::srani_grounding::SraniGroundingChain>>,
+        Option<std::sync::Arc<crate::grounding_chain::GapResearchChain>>,
     /// Maps constraint_id → cached corpus fields for repair signal enrichment.
     pub(crate) constraint_pass_map: std::collections::HashMap<String, ConstraintPassEntry>,
 
@@ -594,9 +568,6 @@ impl MapeKController {
             verify_threshold: input.verification_config.threshold,
         };
 
-        let srani_ema = input.srani_ema_cfi;
-        let srani_count = input.srani_count as u64;
-
         let task_deadline = input
             .cfg
             .task_deadline_secs
@@ -619,17 +590,12 @@ impl MapeKController {
             pending_tombstone: None,
             system_context_with_rubric: bootstrap_out.system_context_with_rubric.clone(),
             max_retries: input.cfg.max_autonomic_retries as usize,
-            srani_ema,
-            srani_count,
-            srani_tier: 0,
-            srani_last_wave_fired: false,
             tao_config: input.tao_config.clone(),
             verification_config: input.verification_config.clone(),
             all_verification_events: Vec::new(),
             all_failed_proposals: Vec::new(),
             all_shadow_audit_events: Vec::new(),
             all_correlated_warnings: Vec::new(),
-            all_srani_events: Vec::new(),
             all_researcher_grounding_events: Vec::new(),
             all_pruned: Vec::new(),
             last_wave_pruned: Vec::new(),
@@ -658,6 +624,7 @@ impl MapeKController {
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
+            global_best_partial_proposal: None,
             global_best_constraint_reasons: std::collections::HashMap::new(),
             compliance_score_history: Vec::new(),
             conflict_graph,
@@ -730,10 +697,6 @@ impl MapeKController {
             retry_context: self.retry_context.clone(),
             tao_config: self.tao_config.clone(),
             verification_config: self.verification_config.clone(),
-            srani_ema_cfi: self.srani_ema,
-            srani_count: self.srani_count,
-            srani_tier: self.srani_tier,
-            srani_last_wave_fired: self.srani_last_wave_fired,
             pending_tombstone: self.pending_tombstone.clone(),
             leader_context: self
                 .leader
@@ -852,8 +815,8 @@ impl MapeKController {
         // GAP-F5: consume a completed induction task if one is pending.
         // Awaits up to grace_period_ms before proceeding — spec-compliant bounded wait.
         // If the induction hasn't finished within the grace period it is dropped.
-        // The result is applied *after* the SRANI retry_context update below so the
-        // induction hint appends on top of (rather than underneath) SRANI's output.
+        // The result is applied after grounding retry_context update so the
+        // induction hint appends on top of (rather than underneath) grounding output.
         let pending_induction_result: Option<crate::induction::InductionResult> =
             if let Some(handle) = self.pending_induction.take() {
                 let grace_ms = self.cfg_ref.induction_trigger.grace_period_ms;
@@ -882,7 +845,6 @@ impl MapeKController {
             .extend(e.shadow_audit_events.iter().cloned());
         self.all_correlated_warnings
             .extend(e.correlated_warnings.iter().cloned());
-        self.all_srani_events.extend(e.srani_events.iter().cloned());
         self.all_researcher_grounding_events
             .extend(e.researcher_grounding_events.iter().cloned());
         if let Some(ref qm) = e.quality_measurement {
@@ -894,15 +856,7 @@ impl MapeKController {
         if let Some(ref retry_ev) = e.topology_retry_event {
             self.topology_retry_events.push(retry_ev.clone());
         }
-        // SRANI state updates from the wave.
-        self.srani_last_wave_fired = e.srani_last_wave_fired;
-        self.srani_tier = e.srani_tier_updated;
-        self.srani_ema = e.srani_ema_cfi_updated;
-        self.srani_count = e.srani_count_updated as u64;
-        if let Some(ref rc) = e.srani_retry_context {
-            self.retry_context = Some(rc.clone());
-        }
-        // GAP-F5: apply induction hint after SRANI so it appends on top.
+        // GAP-F5: apply induction hint after grounding so it appends on top.
         if let Some(result) = pending_induction_result {
             self.apply_induction_result(&result);
         }
@@ -929,20 +883,34 @@ impl MapeKController {
             if let Some(ev) = e
                 .verification_events
                 .iter()
-                .find(|ev| &ev.explorer_id == explorer_id && ev.passed)
+                .find(|ev| &ev.explorer_id == explorer_id)
             {
-                let is_better = self
-                    .global_best_proposal
+                // Track the best proposal regardless of pass status as a zero-pass fallback.
+                // When all wave proposals fail the hard gate, global_best_partial_proposal
+                // provides a concrete repair basis for wave 2 via CSPR.
+                let is_better_partial = self
+                    .global_best_partial_proposal
                     .as_ref()
                     .is_none_or(|(best_score, _)| ev.score > *best_score);
-                if is_better {
-                    self.global_best_proposal = Some((ev.score, text.clone()));
-                    // Update dynamic per-constraint reasons from this wave's best passing proposal.
-                    // The wave's best_passing_constraint_reasons approximates this proposal's
-                    // compliance evidence — both come from the highest-scoring passing proposal.
-                    if !e.best_passing_constraint_reasons.is_empty() {
-                        self.global_best_constraint_reasons =
-                            e.best_passing_constraint_reasons.clone();
+                if is_better_partial {
+                    self.global_best_partial_proposal = Some((ev.score, text.clone()));
+                }
+
+                // Only update the passing-proposal tracker and constraint reasons when ev.passed.
+                if ev.passed {
+                    let is_better = self
+                        .global_best_proposal
+                        .as_ref()
+                        .is_none_or(|(best_score, _)| ev.score > *best_score);
+                    if is_better {
+                        self.global_best_proposal = Some((ev.score, text.clone()));
+                        // Update dynamic per-constraint reasons from this wave's best passing proposal.
+                        // The wave's best_passing_constraint_reasons approximates this proposal's
+                        // compliance evidence — both come from the highest-scoring passing proposal.
+                        if !e.best_passing_constraint_reasons.is_empty() {
+                            self.global_best_constraint_reasons =
+                                e.best_passing_constraint_reasons.clone();
+                        }
                     }
                 }
             }
@@ -1598,10 +1566,18 @@ impl MapeKController {
                 self.force_topology = Some(topology);
                 if !targets.is_empty() {
                     let attempts_remaining = (self.max_retries as u32).saturating_sub(retry_count);
-                    let use_cspr = self.cfg_ref.cspr.enabled && self.global_best_proposal.is_some();
+                    let use_cspr = self.cfg_ref.cspr.enabled
+                        && (self.global_best_proposal.is_some()
+                            || self.global_best_partial_proposal.is_some());
                     let prior_text = if use_cspr {
+                        // Prefer the global-best *passing* proposal; fall back to the best
+                        // partial (failing) proposal when all waves so far produced zero passes.
+                        // This prevents wave 2 from starting cold in hard zero-pass scenarios
+                        // like multi-hard-constraint tasks where the model needs a concrete
+                        // repair basis rather than an empty prior.
                         self.global_best_proposal
                             .as_ref()
+                            .or(self.global_best_partial_proposal.as_ref())
                             .map(|(_, t)| t.as_str())
                             .unwrap_or("")
                     } else {
@@ -1675,6 +1651,7 @@ impl MapeKController {
                             prior_best_score: self
                                 .global_best_proposal
                                 .as_ref()
+                                .or(self.global_best_partial_proposal.as_ref())
                                 .map(|(score, _)| *score),
                             domain_syntheses: &syntheses,
                             coupled_constraint_hints: &coupled_hints,
@@ -1741,6 +1718,7 @@ impl MapeKController {
             topology_retry_events: self.topology_retry_events.clone(),
             mode_collapse_count: self.mode_collapse_count,
             epistemic_yield: merge_out.epistemic_yield,
+            provenance_map: None,
             task_quadrant: Some(self.assessed_quadrant),
             complexity_event: self.complexity_event.clone(),
             frontier_event: merge_out.frontier_event,
@@ -1751,9 +1729,6 @@ impl MapeKController {
             correlated_warnings: self.all_correlated_warnings.clone(),
             researcher_grounding_events: self.all_researcher_grounding_events.clone(),
             diversity_degraded_event: self.diversity_degraded_event.clone(),
-            srani_events: self.all_srani_events.clone(),
-            srani_ema_cfi_updated: self.srani_ema,
-            srani_count_updated: self.srani_count as usize,
             oracle_gate_passed: merge_out.oracle_gate_passed,
             leader_elected_events: std::mem::take(&mut self.pending_leader_elected_events),
             socratic_diagnosis_events: std::mem::take(&mut self.pending_socratic_diagnosis_events),
@@ -2030,6 +2005,7 @@ impl MapeKController {
             best_partial_text: self
                 .global_best_proposal
                 .as_ref()
+                .or(self.global_best_partial_proposal.as_ref())
                 .map(|(_, text)| text.clone()),
             // violation_freq and last_selection_valid_count are accumulated in engine.rs
             // and injected into the context after take_run_context() returns.
@@ -2202,16 +2178,16 @@ impl MapeKController {
             );
 
             let corpus_hint = self.corpus_pass_hint_for(&gap.constraint_id);
-            match crate::srani_grounding::run_gap_researcher(
+            match crate::grounding_chain::run_gap_researcher(
                 &gap,
                 &check_text,
                 &adapter,
                 gap_chain.as_deref(),
-                crate::srani_grounding::GapResearcherOpts {
+                crate::grounding_chain::GapResearcherOpts {
                     min_confidence: self.cfg_ref.gap_i1.synthesis_min_confidence,
                     timeout_secs: self.cfg_ref.gap_i1.researcher_timeout_secs,
                     corpus_pass_hint: corpus_hint.as_deref(),
-                    synthesis_max_tokens: self.cfg_ref.srani.gap_synthesis_max_tokens,
+                    synthesis_max_tokens: self.cfg_ref.gap_research.gap_synthesis_max_tokens,
                 },
             )
             .await
@@ -2585,17 +2561,12 @@ impl MapeKController {
             pending_tombstone: None,
             system_context_with_rubric: String::new(),
             max_retries,
-            srani_ema: 0.0,
-            srani_count: 0,
-            srani_tier: 0,
-            srani_last_wave_fired: false,
             tao_config,
             verification_config,
             all_verification_events: Vec::new(),
             all_failed_proposals: Vec::new(),
             all_shadow_audit_events: Vec::new(),
             all_correlated_warnings: Vec::new(),
-            all_srani_events: Vec::new(),
             all_researcher_grounding_events: Vec::new(),
             all_pruned: Vec::new(),
             last_wave_pruned: Vec::new(),
@@ -2623,6 +2594,7 @@ impl MapeKController {
             last_wave_violated_constraint_ids: Vec::new(),
             prev_assembled_contexts: Vec::new(),
             global_best_proposal: None,
+            global_best_partial_proposal: None,
             global_best_constraint_reasons: std::collections::HashMap::new(),
             compliance_score_history: Vec::new(),
             conflict_graph: h2ai_constraints::conflict::ConstraintConflictGraph::build(&[]),

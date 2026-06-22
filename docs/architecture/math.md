@@ -181,7 +181,7 @@ Analytical USL fit (M ≥ 3):
 α  = z_2 − 2β₀
 ```
 
-When M < 3 the fit falls back to `cfg.calibration_default_alpha` and `cfg.calibration_default_beta`. Online β₀ is then tracked via `beta_from_token_spans` — an EMA over per-merge timing pulled from the live token stream.
+When M < 3 the fit falls back to `cfg.alpha_contention` and `cfg.beta_base_default`. Online β₀ is then tracked via `beta_from_token_spans` — an EMA over per-merge timing pulled from the live token stream.
 
 ### 2.6 AIMD slow start (infrastructure, not yet wired to calibration loop)
 
@@ -202,7 +202,7 @@ Config: `calibration_slow_start.seed_alpha = 0.15`, `decay_rate = 0.95`, `reset_
 
 ### 2.7 N_max quorum floor — AIMD death spiral prevention
 
-AIMD can collapse `N_max` to 1–2 during sustained model degradation. At N_max < 3, the BFT/Krum/SRANI merge strategies lose their minimum viable quorum — `OutlierResistant{f}` requires `n ≥ 2f + 3`, so f ≥ 1 needs N ≥ 5; even f = 0 (no tolerated Byzantine fault) requires N ≥ 3. A committee of 1 or 2 cannot provide Byzantine-resistant output selection.
+AIMD can collapse `N_max` to 1–2 during sustained model degradation. At N_max < 3, the BFT/Krum merge strategies lose their minimum viable quorum — `OutlierResistant{f}` requires `n ≥ 2f + 3`, so f ≥ 1 needs N ≥ 5; even f = 0 (no tolerated Byzantine fault) requires N ≥ 3. A committee of 1 or 2 cannot provide Byzantine-resistant output selection.
 
 **Hard floor in the type system.** `CoherencyCoefficients::n_max_ci()` floors both CI bounds at 3.0:
 
@@ -264,13 +264,14 @@ Both compute symmetric eigendecomposition, clamp negative eigenvalues to 0 (nume
 
 ## 4. Multiplication Condition Gates
 
-Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Five failure modes:
+Source: `crates/h2ai-types/src/sizing.rs::MultiplicationConditionFailure`. Six failure modes:
 
 1. **InsufficientCompetence** — `p_mean ≤ min_competence`. Adding more adapters makes the committee worse.
 2. **InsufficientDecorrelation** — `rho_mean ≥ max_correlation`. Errors are correlated; CJT gain collapses.
 3. **CommonGroundBelowFloor** — `cg_mean < θ_coord`. Adapters too epistemically distant; coordination cost exceeds diversity benefit.
 4. **InsufficientPoolDiversity** — `n_eff_cosine_prior < 1.0 + diversity_threshold`. Pool is semantically near-degenerate.
-5. **QuorumDegradedBelowMinimum** — unclamped `N_max < 3.0`. Adapter has degraded below the BFT/Krum/SRANI minimum quorum. Carries `unclamped_n_max: f64` for telemetry. Fails fast outside shadow mode; emits a warning in shadow mode. See §2.7 for the quorum floor rationale.
+5. **QuorumDegradedBelowMinimum** — unclamped `N_max < 3.0`. Adapter has degraded below the BFT/Krum minimum quorum. Carries `unclamped_n_max: f64` for telemetry. Fails fast outside shadow mode; emits a warning in shadow mode. See §2.7 for the quorum floor rationale.
+6. **VerifierExplorerFamilyConflict** — explorer pool and verification adapter share a provider family when `cfg.safety.family_constraint = RequireDiverse`. Not retryable — a topology problem, not a task problem. Fires before the MAPE-K loop at Phase 2.6.
 
 The first three are checked at Phase 2.5 by `MultiplicationChecker::check`. The fourth is checked at Phase 2.6 by the engine directly when `cfg.diversity_threshold > 0`. The fifth is checked at Phase 2.6 by `phases/complexity.rs` via `n_max_degraded()`.
 
@@ -541,73 +542,52 @@ else                                          → ScoreOrdered
 
 ---
 
-## 10. Correlated Fabrication Index (SRANI)
+## 10. Universal Grounding (GroundingChecker)
 
-Source: `crates/h2ai-orchestrator/src/srani_gate.rs`, `crates/h2ai-orchestrator/src/srani_grounding.rs`.
+Source: `crates/h2ai-orchestrator/src/gap_checkers/grounding.rs`.
 
-SRANI (Specification-Relative Architectural Noun Intersection) measures entity-level cross-proposal fabrication — distinct from the token-level Jaccard CV in §6.
+The universal grounding checker replaces the former cross-proposal CFI system (removed 2026-06-23). Rather than a cross-proposal statistical signal, it applies a `GroundingJudge` to the merged output or spec boundary to produce per-finding `GapKind::UngroundedContent` gaps.
 
-### 10.1 CFI — Correlated Fabrication Index
+### 10.1 Finding confidence and severity
 
-For each proposal `i`, extract the set of architectural noun entities `E_i` that appear in the proposal but are absent from the task specification. The raw Correlated Fabrication Index is:
-
-```
-ungrounded_i = E_i \ spec_entities
-CFI = max_{i ≠ j} |ungrounded_i ∩ ungrounded_j| / max(|ungrounded_i|, |ungrounded_j|)
-```
-
-CFI ∈ [0, 1]. CFI = 0 means no two proposals share any fabricated entity. CFI = 1 means at least one pair of proposals shares all fabricated entities — strong cross-proposal correlated fabrication signal. The raw CFI (including any provider-specific sub-terms that might be implied by grounded technologies) drives the adaptive gate, so the gate fires conservatively.
-
-**LLM-driven implied entity classification (2026-06-21):** After the gate fires (`injection_pressure ≥ srani.gate_threshold`), `extract_arch_nouns(effective_spec)` collects all architectural nouns from the effective spec and populates `GroundingContext.spec_technologies`. The researcher LLM call (`LlmResearcherGrounder`) receives the shared ungrounded entities, `spec_technologies`, and the task description; it responds classifying each entity as `implied` (a standard sub-component of an in-scope technology — e.g. `RocksDB` when ClickHouse is in spec) or `novel` (introduces something not implied by any in-scope technology). Only `novel_entities` (= shared ungrounded entities minus `GroundingResult.implied_entities`) receive the "Avoid (not in spec)" repair hint. The `apply_implied_by_suppression` pure function in `specification_grounding.rs` remains available for tests and custom static overrides.
-
-CFI ∈ [0, 1]. CFI = 0 means no two proposals share any fabricated entity. CFI = 1 means at least one pair of proposals shares all fabricated entities — strong cross-proposal correlated fabrication signal.
-
-### 10.2 Adaptive sigmoid gate
-
-Rather than static thresholds, injection pressure is computed as:
+Each `GroundingFinding` carries a confidence in [0, 1]. After filtering by `grounding.min_confidence` (default 0.7), severity is assigned:
 
 ```
-injection_pressure = σ((CFI − μ) / T)
-σ(x) = 1 / (1 + exp(−x))
+severity(confidence) =
+  High   if confidence ≥ 0.9
+  Medium if confidence ≥ 0.7
+  Low    otherwise
 ```
 
-- `μ` — EMA of observed CFI values: `μ_new = (1 − α) × μ_old + α × CFI`, `α = srani.ema_alpha` (default 0.20)
-- `T` — sigmoid temperature (`srani.temperature`, default 0.15): lower = sharper cliff around μ
-- Cold start: `μ = 0.45` until count ≥ 5 observations
+### 10.2 Spec boundary
 
-When `injection_pressure ≥ srani.gate_threshold` (default 0.50), `SraniGroundingChain::resolve` is called.
+The `effective_spec` is built from two sources concatenated (engine.rs, `run_epistemic_stage`):
 
-> **Parameter rationale and experimental basis (2026-05-11–12):**
->
-> **`α = 0.20` (EMA decay):** Gives a ≈5-task memory horizon (`1/α`). During Experiment 4
-> (Constraint-Gap), testing α=0.50 caused the baseline μ to spike on isolated high-CFI tasks
-> and then over-suppress grounding on the subsequent wave, even when fabrication was still
-> present. α=0.05 (20-task horizon) was too slow to adapt when a new task class with
-> persistently high CFI entered the deployment. α=0.20 balanced responsiveness against
-> noise.
->
-> **`T = 0.15` (sigmoid temperature):** Produces a transition width of ≈0.4 CFI units from 10%
-> to 90% injection pressure. T=0.30 spread the transition so broadly that tasks with CFI=0.8
-> received only moderate pressure. T=0.10 was too sharp — a 0.05 measurement noise jitter
-> flipped a task between no-grounding and full-grounding unpredictably.
->
-> **Cold-start `μ = 0.45`:** Set midway between `warn_threshold (0.20)` and `gate_threshold (0.50)`
-> with a slight upward offset. Before 5 observations the deployment's CFI regime is unknown; μ=0.45
-> means the first task with CFI ≥ 0.50 triggers grounding without requiring a warm-up period.
->
-> **Key finding from Experiment 4 — CFI=1.0 model bias:** CONSTRAINT-005 (immutable audit log)
-> with a single-family pool produced CFI=1.0 — all proposals shared the same fabricated
-> architecture entities (CockroachDB, ClickHouse). Hint injection via SRANI suppressed the
-> entities in subsequent waves, but the model refilled the technology slots with the same
-> components because the hint provided no substitute grounding. This established that SRANI
-> is a detection + warning layer; high-CFI remediation (CFI ≥ 0.8) requires the researcher
-> adapter (`H2AI_RESEARCHER`) to inject verified alternatives, not just prohibitions.
+```
+effective_spec = manifest.description + "\n" + constraint_corpus_text
 
-### 10.3 EMA properties
+constraint_corpus_text = join("\n", [ "{c.id}: {c.description}" for c in constraint_corpus ])
+```
 
-The EMA tracks the system's operating CFI regime. With α = 0.20, the effective memory horizon is approximately 5 tasks (`1/α`). Tasks in a low-CFI regime build a low baseline, so genuine spikes trigger grounding. Tasks in a sustained high-CFI regime raise the baseline, preventing every wave from triggering.
+`manifest.context` is **not** part of `effective_spec` — it is passed separately to `TaskContextSeeder::seed_uncertainty_gaps()` to detect domain uncertainty keywords. Only `ConstraintDoc.id` and `ConstraintDoc.description` contribute to `constraint_corpus_text`; `binary_checks` and `pass_criteria` are not included. Technologies or entities present in `manifest.description` or any constraint description are considered grounded and will not produce `UngroundedContent` gaps.
 
-Persistence: μ and count are written to NATS KV bucket `H2AI_ESTIMATOR` key `"srani_adaptive_state"` after each task and loaded at startup. This prevents cold-start reset across process restarts.
+### 10.3 Gap identity
+
+For each finding that passes the confidence threshold, one `Gap` is emitted:
+
+```
+Gap {
+    id:          "grounding:{text_lowercased_with_underscores}",
+    description: "[entity|claim] {text}: {reason}",
+    kind:        GapKind::UngroundedContent,
+    source:      GapSource::GroundingCheck,
+    severity:    confidence_to_severity(confidence),
+}
+```
+
+### 10.4 Reactive grounding path
+
+When C1 (token-Jaccard CV) fires (`cv < cv_threshold AND mean_jaccard < floor`), the reactive grounding path invokes `GapResearchChain::resolve` — a three-tier escalating chain: `SpecAnchorGrounder` (always, injects spec entities), `LlmResearcherGrounder` (tier 0, fetches contradiction evidence), `WebSearchGrounder` (tier 1, live web search + LLM distillation). This is distinct from the `GroundingChecker` — `GapResearchChain` provides a repair hint for the next generation wave; `GroundingChecker` produces structured gaps in the epistemic quality stage after merge.
 
 ---
 
@@ -618,20 +598,30 @@ Source: `crates/h2ai-orchestrator/src/attribution.rs::HarnessAttribution::comput
 Per-task confidence decomposition (`q_confidence` — self-assessment, not oracle quality):
 
 ```
-q_confidence = base_quality
-             × verification_filter_ratio
-             × tao_uplift_factor
-             × topology_correction(rho_eff)
-             + synthesis_gain
+q_confidence  = clamp(1 − (1 − Q(N, p, ρ_adj)) × verification_filter_ratio × tao_multiplier,
+                      p_mean, 1.0)
+
+Q(N, p, ρ_adj) = condorcet_quality(n_agents, p_mean, rho_adjusted)
+tao_multiplier  = tao_per_turn_factor ^ (tao_turns_mean − 1)   [EMA from TaoMultiplierEstimator]
+ρ_adj           = rho_mean + Case B conservative corrections (see below)
 ```
 
-- `base_quality` — `Q(N, p, ρ)` from the calibrated CJT chain.
-- `verification_filter_ratio` — fraction of proposals that survived Phase 3.5 + Phase 4.
-- `tao_uplift_factor` — derived from the live `TaoMultiplierEstimator`, which is updated each task with turn-1 score vs. final score pairs.
-- `topology_correction(rho_eff)` — soft penalty when the eigen-derived ρ exceeds the calibrated `rho_mean`.
+Fields on `HarnessAttribution`:
+- `baseline_quality` — `p_mean`: single-agent accuracy prior from calibration.
+- `topology_gain` — `Q(N, p, ρ_adj) − p_mean`: CJT ensemble improvement over single-agent baseline.
+- `verification_gain` — `Q_ensemble × (1 − verification_filter_ratio)`: informational only; not a direct factor in the `q_confidence` formula.
+- `tao_gain` — `Q_ensemble × (1 − tao_multiplier)`: informational only; not a direct factor in the `q_confidence` formula.
+- `q_confidence` — total output confidence clamped to `[p_mean, 1.0]`.
+- `rho_adjusted` — ρ after Case B conservative corrections; equals `rho_mean` when no correction applies.
+- `case_b_flag` — `true` when at least one Case B signal fired (Talagrand `UnderDispersed` + `rho_mean < 0.5`, or `N_eff/N < 0.4`).
 - `synthesis_gain` — `Q(synthesis) − max(Q(individuals))` when Phase 5a runs; 0 otherwise.
 
-Bootstrap intervals over CG samples (`bootstrap_interval`, 1000 resamples) provide `q_interval_lo` / `q_interval_hi` whenever ≥ 2 CG samples are available. The Talagrand rank histogram (`TalagrandDiagnostic::from_verification_scores`) supplies a calibration state used as a soft ρ correction in `S7`.
+**Case B ρ corrections (S7):** Applied conservatively to avoid overestimating quality when correlated-failure signals fire:
+- Talagrand `UnderDispersed` and `rho_mean < 0.5`: adds `+0.30 × (1 − rho_mean)` to ρ.
+- `N_eff/N < 0.4` (low effective pool diversity): adds `+0.15 × (1 − rho_mean)` to ρ.
+Both corrections are additive; `rho_adjusted` is clamped to `[0, 1]`.
+
+Bootstrap intervals over CG samples (`bootstrap_interval`, 1000 resamples) provide `q_confidence_lo` / `q_confidence_hi` via `AttributionInterval` whenever ≥ 2 CG samples are available. The `CalibrationState` enum (from `crates/h2ai-orchestrator/src/diagnostics.rs`) classifies the Talagrand rank histogram (`UnderDispersed` / `Calibrated` / `OverDispersed`) and feeds the S7 ρ correction in `HarnessAttribution::compute`.
 
 ---
 
@@ -641,7 +631,7 @@ The math used in this system is calibrated to specific assumptions. They are lis
 
 - **CJT independence.** The theorem assumes independent voters. The runtime corrects with `(1 − ρ)`, but ρ is proxied — not directly measured. Cross-family pools, single-family warnings, and the cosine N_eff guard mitigate this; they do not eliminate it.
 - **CG as a proxy chain.** The flow is `CG → β_eff → N_max` and `CG → (p, ρ) → Q`. Each arrow is a heuristic. Empirical validation upgrades `p` to measured; ρ remains a proxy.
-- **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 (cosine N_eff diversity guard), Phase 3.1 (token-Jaccard CV joint check), and Phase 3.2 (SRANI entity-level CFI with sigmoid-gated grounding) each add a layer of mitigation. None can eliminate shared pre-training data as a source of correlated failure — they reduce the surface, not eliminate it.
+- **Correlated hallucination.** When two adapters share a training corpus and produce the same wrong answer, both Hamming CG and cosine N_eff can simultaneously read "high diversity" if the binary profiles disagree on different constraints. Phase 2.6 (cosine N_eff diversity guard), Phase 3.1 (token-Jaccard CV joint check), and Phase 3.2 (universal grounding — `GroundingChecker` producing `GapKind::UngroundedContent` gaps from the merged output) each add a layer of mitigation. None can eliminate shared pre-training data as a source of correlated failure — they reduce the surface, not eliminate it.
 - **Synthesis gain is local.** `synthesis_gain` is measured against the same verification adapter that scored the individual proposals. A verifier blind spot inflates both terms equally and cancels out.
 - **No oracle.** Without a `q_measured` from an external oracle, `q_confidence` is the only quality signal and it measures the system's self-confidence, not correctness. The bootstrap interval reflects CG variance, not ground-truth uncertainty.
 
@@ -686,7 +676,7 @@ The current retry loop treats both as quality failures by default. (Complexity-C
 Quality-Ceiling Retry Conflation, Sikka & Sikka arXiv 2507.07505) added a lightweight
 pre-dispatch complexity probe — `ComplexityProbe` in `h2ai-autonomic` — that rates the task on a
 1–5 scale before the first wave. When `complexity_routing.enabled = true` (opt-in via
-`reference.toml`; enabled in all four benchmark scenarios as of 2026-05-29), tasks rated at or
+`reference.toml`; enabled in all current E2E scenarios as of 2026-05-29), tasks rated at or
 above `decompose_threshold` route to /H1 synthesis-wave grafting on first failure, and tasks
 at `hitl_threshold` skip the retry loop entirely. An intra-retry ceiling detector
 (`failure_signature_entropy`, `retry_slope`, `N_eff × CG_mean` signals in
@@ -703,7 +693,7 @@ The full implementation (2026-05-29) delivers five interacting layers:
 
 5. **Over-decomposition graft guards** — the iterative grafting loop now tracks three stopping conditions: `graft_is_redundant` (Jaccard-like shared/union ratio > 0.6 between base and candidate passing-check sets), `grafted_ids_cycle_detected` (all missing constraint IDs were already grafted in a prior round), and `graft_token_projection_exceeds` ((base + candidate chars) / 4 > base_tokens × 1.3). Any guard firing skips the candidate and prevents infinite or wasteful graft loops.
 
-`pass_rate=0.0` in the oracle accumulator therefore disambiguates calibration drift from complexity ceiling once the probe result is consulted alongside it. The dedicated E2E scenario `tests/e2e/scenarios/benchmark/complexity-routing/h2ai.toml` exercises the full stack with `decompose_threshold = 3` and `verifier_decomposition_enabled = true`.
+`pass_rate=0.0` in the oracle accumulator therefore disambiguates calibration drift from complexity ceiling once the probe result is consulted alongside it. The dedicated E2E scenario `tests/e2e/scenarios/complexity-routing/h2ai.toml` exercises the full stack with `decompose_threshold = 3` and `verifier_decomposition_enabled = true`.
 
 > **Experimental basis for decompose_threshold=3 and hitl_threshold=5 (2026-05-29):**
 > The 1–5 complexity scale maps to Theorem 1's complexity classes: 1=O(n), 2=O(n log n or O(n²),
@@ -1088,4 +1078,211 @@ Config:
 | `talagrand_eta` | 0.1 | Step size η for τ updates |
 | `talagrand_tau_min` | 0.5 | Lower clip bound for τ |
 
-6 unit tests in `crates/h2ai-autonomic/tests/epistemic_unit_test.rs`: empty/short histogram → 0.0; zero histogram → 0.0; flat histogram → Δτ ≈ 0; U-shaped → positive Δτ; Λ-shaped → negative Δτ; INNOVATION-5 Λ-shaped score distribution correctly detected as negative Δτ.
+7 unit tests in `crates/h2ai-autonomic/tests/epistemic_unit_test.rs`: short histogram → 0.0; zero histogram → 0.0; flat histogram → Δτ ≈ 0; U-shaped → positive Δτ; Λ-shaped → negative Δτ; INNOVATION-5 Λ-shaped score distribution correctly detected as negative Δτ; zero edge bins covers else branch.
+
+---
+
+## 18. Epistemic Output Quality Stage
+
+Source: `crates/h2ai-orchestrator/src/` (`gap_checkers/`, `gap_registry.rs`, `gap_resolvers/`, `provenance.rs`, `output_renderer.rs`). Config: `EpistemicQualityConfig` in `crates/h2ai-config/src/lib.rs`. Event: `ProvenanceRecordedEvent` in `crates/h2ai-types/src/events.rs`.
+
+Triggered after `MergeResolved` when `epistemic_quality.enabled = true`. The stage annotates the resolved output with calibrated epistemic confidence before publishing to NATS. It does not alter the content of the resolved output — it is a metadata pipeline.
+
+### 18.1 Pipeline sequence
+
+`run_epistemic_stage` is called after `MergeResolved`. It performs three pure-function gap seeding steps, then enters the feedback loop, then builds the provenance map, then renders.
+
+```
+MergeResolved
+    │
+    ├─► 1. SelectionPruningExtractor::extract_gaps_from_pruned(pruned_proposals)
+    │           → Vec<Gap { kind: MissingProvision, source: SelectionPruning }>
+    │
+    ├─► 2. TaskContextSeeder::seed_uncertainty_gaps(manifest.context)
+    │           → Vec<Gap { kind: UncertainDomain, source: TaskContextSeeding }>
+    │           [fires for keywords: "unsettled", "best-effort basis", "rapidly evolving"]
+    │
+    ├─► 3. GroundingChecker::check(resolved_output, grounding_gap_ctx)
+    │           → Vec<Gap { kind: UngroundedContent, source: GroundingCheck }>
+    │           [HeuristicGroundingJudge when grounding.enabled=false;
+    │            LlmGroundingJudge when grounding.enabled=true]
+    │
+    │   ── static_gaps = steps 1 + 2 + 3 ──────────────────────────────────────────
+    │
+    ├─► 4. run_epistemic_feedback_loop(static_gaps, resolved_output)
+    │       Each pass (up to recovery_max_passes):
+    │       ├─► CoherenceChecker::check(current_output)          [optional; 1 LLM call
+    │       │       → new Vec<Gap { kind: InterProvisionConflict }>    per pass; skipped
+    │       │                                                    when coherence_check_enabled=false]
+    │       ├─► GapRegistry::new(static + coherence_gaps).dispatch_batches()
+    │       │       → Vec<Vec<String>>  (Gap IDs, Kahn's topological batches)
+    │       └─► [per batch, concurrent] MicroExplorerResolver::resolve(gap)
+    │               → ResolutionResult { patched_text, score_delta }
+    │               [skipped when recovery_enabled=false → NullResolver closes nothing]
+    │       → FeedbackLoopResult { final_output, closed_ids, open_gaps }
+    │
+    ├─► 5. [if closed_ids non-empty] GroundingChecker::check(final_output)
+    │           → additional UngroundedContent gaps for new entities introduced by patches
+    │
+    ├─► 6. ProvenanceMap::build from:
+    │           verification_events (passed=true → Verified)
+    │           + closed_ids        (gap resolved → AutoCorrected)
+    │           + open_gaps         (unresolved → RequiresReview)
+    │
+    ├─► 7. [if closed_ids non-empty] Re-verify final_output against constraint_corpus
+    │           → if passes: promote AutoCorrected provisions → Verified
+    │
+    ├─► 8. zero_valid_proposals_policy check
+    │           → if "fail" AND verified_count == 0: return (original_text, None)
+    │
+    ├─► 9. OutputRenderer::render_output(final_output, &map, output_mode)
+    │           → annotated String
+    │
+    └─► publish ProvenanceRecordedEvent to NATS
+```
+
+### 18.2 Gap types
+
+Four sources produce gaps. The first three are seeded **before** the feedback loop (static gaps); `CoherenceChecker` re-runs **inside** the feedback loop on each pass.
+
+**SelectionPruningExtractor** (pure function `extract_gaps_from_pruned` in `gap_checkers/selection_pruning.rs`): reads `SelectionResolvedEvent.pruned_proposals: Vec<(ExplorerId, String)>`. Each unique pruned reason becomes one `Gap { kind: MissingProvision, severity: High, source: SelectionPruning }`. Duplicate reasons across explorers are deduplicated — one gap per unique description. Gap IDs: `"g{1-based-index}"`.
+
+**TaskContextSeeder** (pure function `seed_uncertainty_gaps` in `gap_checkers/task_context_seeder.rs`): reads `manifest.context`. Fires one `Gap { kind: UncertainDomain, severity: Medium, source: TaskContextSeeding }` per occurrence of a known uncertainty keyword (`"unsettled"`, `"best-effort basis"`, `"rapidly evolving"`). `UncertainDomain` gaps are **never resolvable** — they always propagate to `RequiresReview` provisions. Gap IDs: `"g-uncertain-ctx-{0-based-index}"`.
+
+**GroundingChecker** (in `gap_checkers/grounding.rs`): called on the merged output before the feedback loop. Emits one `Gap { kind: UngroundedContent, source: GroundingCheck }` per `GroundingFinding` that passes the `min_confidence` threshold. `UngroundedContent` gaps are **never resolvable** — they always surface as `RequiresReview`. Gap IDs: `"grounding:{text_lowercased_underscored}"`. A second call on the patched output fires after the feedback loop when recovery closed at least one gap (to catch new entities introduced by patches).
+
+**CoherenceChecker** (`gap_checkers/coherence.rs`): one LLM call (τ=0.7, max_tokens=1024) using `COHERENCE_CHECK_SYSTEM` + `COHERENCE_CHECK_TASK` prompts, runs **per pass inside the feedback loop** (skipped entirely when `coherence_check_enabled=false`). Parses JSON array of `{ provision_a, provision_b, risk, severity }` objects. Each conflict above `coherence_min_severity` (default `"medium"`) becomes one `Gap { kind: InterProvisionConflict, source: CoherenceCheck }`. IDs: `"coh-{1-based-index}"`. `InterProvisionConflict` gaps are **not handled** by `MicroExplorerResolver` — they always remain open.
+
+Gap model fields:
+
+```rust
+struct Gap {
+    id: String,                          // "g1", "g-uncertain-ctx-0", "grounding:kafka", "coh-1"
+    kind: GapKind,                       // MissingProvision | InterProvisionConflict
+                                         //   | IncompleteProvision | UncertainDomain | UngroundedContent
+    severity: GapSeverity,               // Low | Medium | High
+    description: String,
+    affected_provisions: Vec<String>,    // output section labels this gap touches
+    depends_on: Option<Vec<String>>,     // gap IDs that must resolve first
+    source: GapSource,                   // SelectionPruning | CoherenceCheck
+                                         //   | TaskContextSeeding | GroundingCheck
+}
+```
+
+### 18.3 GapRegistry — topological batch dispatch
+
+Source: `crates/h2ai-orchestrator/src/gap_registry.rs`.
+
+`dispatch_batches()` implements Kahn's algorithm over the gap dependency DAG:
+
+```
+Build adjacency from Gap.depends_on fields.
+Initialize queue with all gaps having in-degree 0.
+While queue non-empty:
+    Drain queue into one batch (all same-level gaps run concurrently).
+    For each gap in batch: decrement dependents' in-degrees.
+    Enqueue newly zero-in-degree gaps.
+Return Err(CycleError) if visited < total gaps (cycle detected).
+```
+
+Gaps with `depends_on = None` all land in batch 0 and are resolved concurrently. Dependent gaps wait for the batch that resolves their dependencies. `CycleError` propagates to the engine as a non-fatal warning — the stage proceeds without recovery on cycle detection.
+
+### 18.4 MicroExplorerResolver
+
+Source: `crates/h2ai-orchestrator/src/gap_resolvers/micro_explorer.rs`.
+
+Handles `GapKind::MissingProvision` and `GapKind::IncompleteProvision`. One focused LLM call (τ=0.7, max_tokens=2048) using `RECOVERY_SYSTEM` + `RECOVERY_TASK` prompts with placeholders: `{gap_description}`, `{constraint_text}`, `{verified_provision_list}`, `{draft_section}`.
+
+Acceptance is binary: a non-empty patch is accepted with `score_delta = 1.0`; empty or failed response produces `score_delta = 0.0` and no patch. The resolver cannot compute a real verification delta without a second verifier pass, so binary acceptance is the correct conservative choice. `InterProvisionConflict` gaps are not handled by `MicroExplorerResolver` (conflict gaps require structural restructuring, not provision patching).
+
+The recovery loop runs at most `recovery_max_passes` times (default 2), accepting each resolved gap's patch before the next pass.
+
+### 18.5 ProvisionConfidence tiers
+
+Source: `crates/h2ai-orchestrator/src/provenance.rs`.
+
+Five states form a strict dominance order — higher ordinal is worse:
+
+```
+Verified           (0) — score == 1.0 and all binary checks PRESENT
+AutoCorrected      (1) — passed verification; MicroExplorerResolver auto-corrected a gap
+ReviewRecommended  (2) — passed with score < 1.0 (soft constraint partial credit)
+RequiresReview     (3) — gap detected and not resolved; manual review required
+Unverified         (4) — no verification data for this provision
+```
+
+The Rust `derive(PartialOrd, Ord)` on `ProvisionConfidence` encodes this order directly. `Verified < AutoCorrected < ReviewRecommended < RequiresReview < Unverified` — larger enum discriminant = worse confidence.
+
+### 18.6 DocumentConfidence — worst-wins dominance
+
+`ProvenanceMap::document_confidence()` applies a worst-wins rule: the document's confidence equals the worst provision's confidence. When provisions are empty, `DocumentConfidence::Unverified` is returned.
+
+```
+if any provision = Unverified     → DocumentConfidence::Unverified
+elif any provision = RequiresReview → DocumentConfidence::RequiresReview
+elif any provision = ReviewRecommended → DocumentConfidence::ReviewRecommended
+else (all Verified or AutoCorrected) → DocumentConfidence::High
+```
+
+> **AutoCorrected collapses to High at the document level.** A provision where `MicroExplorerResolver` produced a patch is `AutoCorrected` at the provision level but does not degrade the document below `High`. The rationale: the recovery pass closed the gap — the document is epistemically complete. The `AutoCorrected` tag at the provision level remains as an audit signal: the recovery ran and patched this section, so downstream consumers can inspect it. Document-level `High` means "no unresolved gaps"; it does not mean "no recovery was needed."
+
+### 18.7 OutputRenderer modes
+
+Source: `crates/h2ai-orchestrator/src/output_renderer.rs`.
+
+`render_output(text, &map, mode) -> String`
+
+**`mode = "passthrough"` (default):** Returns text unchanged. Epistemic metadata is published in `ProvenanceRecordedEvent` but is not embedded in the output string.
+
+**`mode = "clean"`:** Prepends a single blockquote header:
+```
+> **Epistemic Confidence: {High|ReviewRecommended|RequiresReview|Unverified}** — h2ai epistemic quality stage
+
+{original resolved text}
+```
+
+**`mode = "audit"`:** Prepends the same header, then per-provision annotations for every provision that is not `Verified`, then the original text, then an epistemic footer:
+```
+> **Epistemic Confidence: {label}** — h2ai epistemic quality stage
+
+> ⚠ **{provision_label}** — {ReviewRecommended|RequiresReview|Unverified} [gaps: g1, coh-2]
+(... one line per non-Verified provision ...)
+
+{original resolved text}
+
+---
+> **Epistemic Footer** | Document confidence: {label} | Provisions reviewed: {N}
+```
+
+Provisions with `ProvisionConfidence::Verified` are omitted from audit annotations — the annotation only highlights what needs attention.
+
+### 18.8 ProvenanceRecordedEvent
+
+Source: `crates/h2ai-types/src/events.rs::ProvenanceRecordedEvent`. Published to NATS after output rendering completes.
+
+```rust
+struct ProvenanceRecordedEvent {
+    task_id: TaskId,
+    document_confidence: String,   // "High" | "ReviewRecommended" | "RequiresReview" | "Unverified"
+    provision_count: usize,        // total provisions in ProvenanceMap
+    open_gap_count: usize,         // gaps not resolved after all recovery passes
+    timestamp: DateTime<Utc>,
+}
+```
+
+`open_gap_count > 0` and `document_confidence != "High"` are the two primary E2E assertion signals (see `tests/e2e/replay.py`).
+
+### 18.9 EpistemicQualityConfig defaults
+
+| Field | Default | Purpose |
+|---|---|---|
+| `epistemic_quality.enabled` | `true` | Master switch. Skip the entire stage when false. |
+| `epistemic_quality.coherence_check_enabled` | `false` | Run CoherenceChecker (1 LLM call). Disabled by default to avoid extra LLM cost. |
+| `epistemic_quality.coherence_min_severity` | `"medium"` | Filter CoherenceChecker gaps below this severity. |
+| `epistemic_quality.recovery_enabled` | `false` | Attempt MicroExplorerResolver recovery per gap batch. Disabled by default; enable for audit pipelines. |
+| `epistemic_quality.recovery_max_passes` | `2` | Maximum recovery loop iterations. |
+| `epistemic_quality.recovery_tau` | `0.5` | Minimum score_delta for a patch to be accepted. |
+| `epistemic_quality.zero_valid_proposals_policy` | `"fail"` | `"fail"` → TaskFailed(NoValidProposals); `"deliver_unverified"` → proceed with Unverified annotation for audit pipelines. |
+| `epistemic_quality.output_mode` | `"passthrough"` | `"passthrough"` (unchanged text, default), `"clean"` (adds confidence header), or `"audit"` (full annotations). |
+
+The stage runs in `"passthrough"` mode by default (no annotations embedded in the output text). Set `output_mode = "audit"` in a scenario's TOML to embed per-provision epistemic annotations. `ProvenanceRecordedEvent` always carries `document_confidence` and `open_gap_count` regardless of output mode, making them available for assertion in replay scripts.

@@ -62,7 +62,7 @@ fn append_debug_record_bad_path_does_not_panic() {
 fn build_produces_correct_task_id_and_resolved_output() {
     use chrono::Utc;
     use h2ai_api::debug_record::TaskDebugRecord;
-    use h2ai_config::H2AIConfig;
+
     use h2ai_orchestrator::attribution::HarnessAttribution;
     use h2ai_orchestrator::coherence::CoherenceState;
     use h2ai_orchestrator::engine::EngineOutput;
@@ -110,6 +110,7 @@ fn build_produces_correct_task_id_and_resolved_output() {
             total_checks: None,
             score_lower: None,
             score_upper: None,
+            per_check_verdicts: vec![],
             timestamp: Utc::now(),
         }],
         failed_proposals: vec![],
@@ -120,6 +121,7 @@ fn build_produces_correct_task_id_and_resolved_output() {
         topology_retry_events: vec![],
         mode_collapse_count: 0,
         epistemic_yield: None,
+        provenance_map: None,
         task_quadrant: Some(TaskQuadrant::Coverage),
         complexity_event: TaskComplexityAssessedEvent {
             task_id: task_id.clone(),
@@ -144,9 +146,6 @@ fn build_produces_correct_task_id_and_resolved_output() {
         correlated_warnings: vec![],
         researcher_grounding_events: vec![],
         diversity_degraded_event: None,
-        srani_events: vec![],
-        srani_ema_cfi_updated: 0.15,
-        srani_count_updated: 3,
         oracle_gate_passed: None,
         leader_elected_events: vec![],
         socratic_diagnosis_events: vec![],
@@ -154,18 +153,13 @@ fn build_produces_correct_task_id_and_resolved_output() {
         tokens_used: 0,
     };
 
-    let cfg = H2AIConfig::default();
-    let record = TaskDebugRecord::build("test description", 0.1, 2, &output, &cfg);
+    let record = TaskDebugRecord::build("test description", &output);
 
     let json = serde_json::to_value(&record).expect("must serialize");
     assert_eq!(json["task_id"], task_id.to_string());
     assert_eq!(json["resolved_output"], "the answer");
     assert!((json["q_confidence"].as_f64().unwrap() - 0.82).abs() < 1e-9);
     assert!((json["waste_ratio"].as_f64().unwrap() - 0.25).abs() < 1e-9);
-    assert_eq!(json["srani_ema_before"].as_f64().unwrap(), 0.1);
-    assert_eq!(json["srani_count_before"].as_u64().unwrap(), 2);
-    assert_eq!(json["srani_ema_after"].as_f64().unwrap(), 0.15);
-    assert_eq!(json["srani_count_after"].as_u64().unwrap(), 3);
     assert_eq!(json["description"], "test description");
     // One verification event mapped
     assert_eq!(json["verification_events"].as_array().unwrap().len(), 1);

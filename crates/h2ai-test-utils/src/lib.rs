@@ -104,6 +104,25 @@ pub fn mock_adapter(output: impl Into<String>) -> MockIComputeAdapter {
     m
 }
 
+/// Mock adapter that records every `ComputeRequest` it receives and always succeeds.
+///
+/// Returns the shared `Arc<Mutex<Vec<ComputeRequest>>>` so callers can inspect
+/// what fields (e.g. `max_tokens`) were passed in each call.
+pub fn capturing_adapter(
+    output: impl Into<String>,
+) -> (MockIComputeAdapter, Arc<Mutex<Vec<ComputeRequest>>>) {
+    let output = output.into();
+    let captured: Arc<Mutex<Vec<ComputeRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured2 = Arc::clone(&captured);
+    let mut m = MockIComputeAdapter::new();
+    m.expect_execute().returning(move |req| {
+        captured2.lock().unwrap().push(req);
+        Ok(make_response(output.clone(), 0))
+    });
+    m.expect_kind().return_const(default_kind()).times(0..);
+    (m, captured)
+}
+
 /// Mock adapter that always fails with `AdapterError::NetworkError`.
 pub fn failing_adapter() -> MockIComputeAdapter {
     let mut m = MockIComputeAdapter::new();
@@ -280,8 +299,6 @@ mockall::mock! {
     impl EstimatorStore for NatsBackend {
         async fn get_tao_estimator_state(&self, tenant_id: &TenantId) -> Result<Option<(f64, usize)>, NatsError>;
         async fn put_tao_estimator_state(&self, tenant_id: &TenantId, ema: f64, count: usize) -> Result<(), NatsError>;
-        async fn get_srani_state(&self, tenant_id: &TenantId) -> Result<Option<(f64, usize)>, NatsError>;
-        async fn put_srani_state(&self, tenant_id: &TenantId, ema_cfi: f64, count: usize) -> Result<(), NatsError>;
         async fn get_bandit_state(&self, tenant_id: &TenantId) -> Result<Option<Vec<u8>>, NatsError>;
         async fn put_bandit_state(&self, tenant_id: &TenantId, json_bytes: Vec<u8>) -> Result<(), NatsError>;
     }
@@ -386,12 +403,9 @@ pub use _engine_runner_mock::MockEngineRunner;
 pub fn stub_thinking_report() -> ThinkingReport {
     ThinkingReport {
         shared_understanding: "stub understanding".into(),
-        tensions: vec![],
         coverage_score: 0.9,
         iteration: 1,
-        prev_similarity: 0.0,
-        retrieved_node_ids: vec![],
-        skill_nodes_used: 0,
+        ..Default::default()
     }
 }
 
@@ -489,6 +503,7 @@ pub fn stub_engine_output(task_id: h2ai_types::identity::TaskId) -> EngineOutput
         topology_retry_events: vec![],
         mode_collapse_count: 0,
         epistemic_yield: None,
+        provenance_map: None,
         task_quadrant: Some(TaskQuadrant::Precision),
         complexity_event: complexity,
         frontier_event: None,
@@ -502,9 +517,6 @@ pub fn stub_engine_output(task_id: h2ai_types::identity::TaskId) -> EngineOutput
         correlated_warnings: vec![],
         researcher_grounding_events: vec![],
         diversity_degraded_event: None,
-        srani_events: vec![],
-        srani_ema_cfi_updated: 0.0,
-        srani_count_updated: 0,
         oracle_gate_passed: None,
         leader_elected_events: vec![],
         socratic_diagnosis_events: vec![],

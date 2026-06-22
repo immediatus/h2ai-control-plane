@@ -2,11 +2,11 @@ use h2ai_config::{
     apply_safety_profile, AuditGateConfig, AwarenessProbeConfig, AwarenessProbeMode,
     CalibrationBootstrapConfig, CalibrationProbeConfig, CalibrationSlowStartConfig,
     ComplexityRoutingConfig, ConfigLoadError, ConflictBetaConfig, ConvergenceGateConfig,
-    CostGuardConfig, CsprConfig, DPPMConfig, FamilyConstraint, GapI1Config, GapK1Config,
-    H2AIConfig, JudgePanelConfig, OproConfig, OracleGateConfig, ProbeTaskSource,
-    ReasoningMemoryConfig, SafetyConfig, SafetyProfile, SchedulerPolicy, ShadowAuditorConfig,
-    SraniConfig, StateConfig, StateDeltaConfig, SystemModifier, ThinkingLoopConfig,
-    TieredExitConfig,
+    CostGuardConfig, CsprConfig, DPPMConfig, EpistemicQualityConfig, FamilyConstraint, GapI1Config,
+    GapK1Config, GapResearchConfig, GroundingConfig, H2AIConfig, JudgePanelConfig, OproConfig,
+    OracleGateConfig, ProbeTaskSource, ReasoningMemoryConfig, SafetyConfig, SafetyProfile,
+    SchedulerPolicy, ShadowAuditorConfig, StateConfig, StateDeltaConfig, SystemModifier,
+    ThinkingLoopConfig, TieredExitConfig,
 };
 use h2ai_types::config::AdapterKind;
 use std::io::Write;
@@ -402,172 +402,59 @@ auto_demotion = false
     assert!(!cfg.safety.shadow_auditor.auto_demotion);
 }
 
-// ── SraniConfig ───────────────────────────────────────────────────────────────
+// ── GroundingConfig ───────────────────────────────────────────────────────────
 
 #[test]
-fn srani_config_defaults_match_spec() {
+fn grounding_config_defaults_are_sane() {
     let cfg = H2AIConfig::default();
-    let srani = &cfg.srani;
-    assert!(srani.enabled, "srani must be enabled by default");
     assert!(
-        (srani.warn_threshold - 0.3).abs() < 1e-9,
-        "default warn_threshold must be 0.3, got {}",
-        srani.warn_threshold
+        cfg.grounding.enabled,
+        "grounding must be enabled by default"
     );
-    assert!(
-        (srani.inject_threshold - 0.6).abs() < 1e-9,
-        "default inject_threshold must be 0.6, got {}",
-        srani.inject_threshold
-    );
-    assert!(
-        srani.warn_threshold < srani.inject_threshold,
-        "warn_threshold must be strictly below inject_threshold"
-    );
+    assert_eq!(cfg.grounding.max_tokens, 8192);
+    assert!((cfg.grounding.min_confidence - 0.7).abs() < 1e-9);
+    assert!((cfg.grounding.tau - 0.2).abs() < 1e-9);
 }
 
 #[test]
-fn srani_config_round_trips_json() {
+fn grounding_config_round_trips_json() {
     let cfg = H2AIConfig::default();
     let json = serde_json::to_string(&cfg).unwrap();
     let restored: H2AIConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        cfg.srani, restored.srani,
-        "srani config must survive JSON round-trip"
-    );
+    assert_eq!(cfg.grounding.enabled, restored.grounding.enabled);
+    assert!((cfg.grounding.tau - restored.grounding.tau).abs() < 1e-9);
 }
 
 #[test]
-fn srani_config_deserialises_from_json_without_srani_field() {
-    // Old JSON payloads without the "srani" key must deserialise cleanly using defaults.
-    // Simulate by serialising a full config, removing the srani key, then round-tripping.
+fn grounding_config_missing_key_uses_defaults() {
     let mut v: serde_json::Value = serde_json::to_value(H2AIConfig::default()).unwrap();
-    v.as_object_mut().unwrap().remove("srani");
+    v.as_object_mut().unwrap().remove("grounding");
     let cfg: H2AIConfig = serde_json::from_value(v).unwrap();
     assert!(
-        cfg.srani.enabled,
-        "missing srani key must default to enabled=true"
-    );
-    assert!(
-        (cfg.srani.warn_threshold - 0.3).abs() < 1e-9,
-        "missing srani key must default warn_threshold to 0.3"
+        cfg.grounding.enabled,
+        "missing grounding key must default to enabled=true"
     );
 }
 
+// ── GapResearchConfig ─────────────────────────────────────────────────────────
+
 #[test]
-fn srani_adaptive_defaults_are_sane() {
+fn gap_research_config_defaults_are_sane() {
     let cfg = H2AIConfig::default();
-    assert!(cfg.srani.adaptive, "adaptive must default to true");
-    assert!(
-        (cfg.srani.ema_alpha - 0.20).abs() < 1e-9,
-        "ema_alpha must default to 0.20, got {}",
-        cfg.srani.ema_alpha
-    );
-    assert!(
-        (cfg.srani.temperature - 0.15).abs() < 1e-9,
-        "temperature must default to 0.15, got {}",
-        cfg.srani.temperature
-    );
-    assert!(
-        (cfg.srani.gate_threshold - 0.50).abs() < 1e-9,
-        "gate_threshold must default to 0.50, got {}",
-        cfg.srani.gate_threshold
-    );
+    assert!(cfg.gap_research.grounding_distill);
+    assert_eq!(cfg.gap_research.grounding_compress_threshold, 800);
+    assert_eq!(cfg.gap_research.researcher_max_tokens, 32_768);
+    assert_eq!(cfg.gap_research.distill_max_tokens, 32_768);
+    assert_eq!(cfg.gap_research.gap_synthesis_max_tokens, 32_768);
 }
 
 #[test]
-fn srani_cold_start_midpoint_is_mean_of_thresholds() {
-    let cfg = H2AIConfig::default();
-    let midpoint = cfg.srani.cold_start_midpoint();
-    let expected = f64::midpoint(cfg.srani.warn_threshold, cfg.srani.inject_threshold);
-    assert!(
-        (midpoint - expected).abs() < 1e-9,
-        "cold_start_midpoint must be (warn + inject) / 2, got {midpoint}"
-    );
-    // For defaults: (0.30 + 0.60) / 2 = 0.45
-    assert!(
-        (midpoint - 0.45).abs() < 1e-9,
-        "default cold_start_midpoint must be 0.45, got {midpoint}"
-    );
-}
-
-#[test]
-fn srani_adaptive_false_deserialises_cleanly() {
+fn gap_research_config_missing_key_uses_defaults() {
     let mut v: serde_json::Value = serde_json::to_value(H2AIConfig::default()).unwrap();
-    v["srani"]["adaptive"] = serde_json::json!(false);
+    v.as_object_mut().unwrap().remove("gap_research");
     let cfg: H2AIConfig = serde_json::from_value(v).unwrap();
-    assert!(!cfg.srani.adaptive, "adaptive=false must round-trip");
-    assert!(
-        (cfg.srani.warn_threshold - 0.30).abs() < 1e-9,
-        "warn_threshold must survive adaptive=false"
-    );
-}
-
-#[test]
-fn srani_new_fields_deserialise_from_json_without_them() {
-    // Old JSON without new fields must deserialise using defaults (backward compat).
-    let mut v: serde_json::Value = serde_json::to_value(H2AIConfig::default()).unwrap();
-    let srani = v["srani"].as_object_mut().unwrap();
-    srani.remove("adaptive");
-    srani.remove("ema_alpha");
-    srani.remove("temperature");
-    srani.remove("gate_threshold");
-    let cfg: H2AIConfig = serde_json::from_value(v).unwrap();
-    assert!(cfg.srani.adaptive, "missing adaptive must default to true");
-    assert!(
-        (cfg.srani.ema_alpha - 0.20).abs() < 1e-9,
-        "missing ema_alpha must default to 0.20"
-    );
-}
-
-// ── SraniConfig grounding fields ──────────────────────────────────────────────
-
-#[test]
-fn srani_grounding_defaults_are_sane() {
-    let srani = &H2AIConfig::default().srani;
-    assert!(srani.grounding_distill, "distill must default to true");
-    assert_eq!(
-        srani.grounding_compress_threshold, 800,
-        "compress threshold must default to 800"
-    );
-}
-
-#[test]
-fn srani_grounding_fields_round_trip_json() {
-    let original = H2AIConfig::default();
-    let json = serde_json::to_string(&original).unwrap();
-    let restored: H2AIConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        restored.srani.grounding_distill,
-        original.srani.grounding_distill
-    );
-    assert_eq!(
-        restored.srani.grounding_compress_threshold,
-        original.srani.grounding_compress_threshold
-    );
-}
-
-#[test]
-fn srani_grounding_missing_fields_use_defaults() {
-    // Old JSON payloads without grounding fields must deserialise with defaults.
-    let mut v: serde_json::Value = serde_json::to_value(H2AIConfig::default()).unwrap();
-    let srani = v["srani"].as_object_mut().unwrap();
-    srani.remove("grounding_distill");
-    srani.remove("grounding_compress_threshold");
-    let cfg: H2AIConfig = serde_json::from_value(v).unwrap();
-    assert!(cfg.srani.grounding_distill);
-    assert_eq!(cfg.srani.grounding_compress_threshold, 800);
-}
-
-#[test]
-fn srani_grounding_config_override_via_toml() {
-    let toml = r"
-[srani]
-grounding_distill        = false
-";
-    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
-    f.write_all(toml.as_bytes()).unwrap();
-    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
-    assert!(!cfg.srani.grounding_distill);
+    assert!(cfg.gap_research.grounding_distill);
+    assert_eq!(cfg.gap_research.grounding_compress_threshold, 800);
 }
 
 // ── C1 min_jaccard_floor ──────────────────────────────────────────────────────
@@ -860,7 +747,7 @@ fn safety_section_loads_from_reference_toml() {
 fn startup_report_development_is_warn() {
     // Verify log_startup_config_report compiles and does not panic with a default config.
     // The default config uses SafetyProfile::Development, shadow_mode=true, so WARN paths
-    // for [safety] and [task_complexity] are exercised; [srani] and [hitl] take INFO paths.
+    // for [safety] and [task_complexity] are exercised; [grounding] and [hitl] take INFO paths.
     let cfg = H2AIConfig::default();
     h2ai_config::log_startup_config_report(&cfg);
 }
@@ -896,14 +783,14 @@ fn load_layered_thinking_loop_enabled_overrides_reference_default() {
 }
 
 #[test]
-fn load_layered_srani_disabled_overrides_reference_default() {
-    let toml = "[srani]\nenabled = false\n";
+fn load_layered_grounding_disabled_overrides_reference_default() {
+    let toml = "[grounding]\nenabled = false\n";
     let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
     f.write_all(toml.as_bytes()).unwrap();
     let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
     assert!(
-        !cfg.srani.enabled,
-        "srani.enabled=false in override must win over reference.toml default=true"
+        !cfg.grounding.enabled,
+        "grounding.enabled=false in override must win over reference.toml default=true"
     );
 }
 
@@ -1554,35 +1441,46 @@ fn thinking_loop_config_round_trips_json() {
     assert_eq!(c, restored);
 }
 
-// ── SraniConfig direct Default ────────────────────────────────────────────────
+// ── GroundingConfig direct Default ───────────────────────────────────────────
 
 #[test]
-fn srani_config_direct_default() {
-    let c = SraniConfig::default();
+fn grounding_config_direct_default() {
+    let c = GroundingConfig::default();
     assert!(c.enabled);
-    assert!(c.adaptive);
-    assert!((c.ema_alpha - 0.20).abs() < 1e-9);
-    assert!((c.temperature - 0.15).abs() < 1e-9);
-    assert!((c.gate_threshold - 0.50).abs() < 1e-9);
-    assert!((c.warn_threshold - 0.3).abs() < 1e-9);
-    assert!((c.inject_threshold - 0.6).abs() < 1e-9);
-    assert!(c.grounding_distill);
-    assert_eq!(c.grounding_compress_threshold, 800);
+    assert_eq!(c.max_tokens, 8192);
+    assert!((c.min_confidence - 0.7).abs() < 1e-9);
+    assert!((c.tau - 0.2).abs() < 1e-9);
 }
 
 #[test]
-fn srani_config_serde_empty() {
+fn grounding_config_serde_empty() {
     // All serde default_* functions exercised when all fields absent.
-    let c: SraniConfig = serde_json::from_str("{}").unwrap();
+    let c: GroundingConfig = serde_json::from_str("{}").unwrap();
     assert!(c.enabled);
-    assert!(c.adaptive);
-    assert!((c.ema_alpha - 0.20).abs() < 1e-9);
-    assert!((c.temperature - 0.15).abs() < 1e-9);
-    assert!((c.gate_threshold - 0.50).abs() < 1e-9);
-    assert!((c.warn_threshold - 0.3).abs() < 1e-9);
-    assert!((c.inject_threshold - 0.6).abs() < 1e-9);
+    assert_eq!(c.max_tokens, 8192);
+    assert!((c.min_confidence - 0.7).abs() < 1e-9);
+    assert!((c.tau - 0.2).abs() < 1e-9);
+}
+
+#[test]
+fn gap_research_config_direct_default() {
+    let c = GapResearchConfig::default();
     assert!(c.grounding_distill);
     assert_eq!(c.grounding_compress_threshold, 800);
+    assert_eq!(c.researcher_max_tokens, 32_768);
+    assert_eq!(c.distill_max_tokens, 32_768);
+    assert_eq!(c.gap_synthesis_max_tokens, 32_768);
+}
+
+#[test]
+fn gap_research_config_serde_empty() {
+    // All serde default_* functions exercised when all fields absent.
+    let c: GapResearchConfig = serde_json::from_str("{}").unwrap();
+    assert!(c.grounding_distill);
+    assert_eq!(c.grounding_compress_threshold, 800);
+    assert_eq!(c.researcher_max_tokens, 32_768);
+    assert_eq!(c.distill_max_tokens, 32_768);
+    assert_eq!(c.gap_synthesis_max_tokens, 32_768);
 }
 
 // ── CsprConfig default ────────────────────────────────────────────────────────
@@ -1731,12 +1629,12 @@ fn startup_report_production_profile_info_paths() {
 }
 
 #[test]
-fn startup_report_srani_disabled_warn_path() {
-    // srani.enabled=false → WARN path for [srani] block
+fn startup_report_grounding_disabled_warn_path() {
+    // grounding.enabled=false → WARN path for [grounding] block
     let cfg = H2AIConfig {
-        srani: SraniConfig {
+        grounding: GroundingConfig {
             enabled: false,
-            ..SraniConfig::default()
+            ..GroundingConfig::default()
         },
         ..H2AIConfig::default()
     };
@@ -2613,4 +2511,166 @@ fn validate_shell_allowlist_subset_no_warn_when_subset() {
     };
     // "echo" is in both lists — no contradiction
     cfg.validate_shell_allowlist_subset();
+}
+
+// ── EpistemicQualityConfig ────────────────────────────────────────────────────
+
+#[test]
+fn epistemic_quality_config_defaults() {
+    let cfg = EpistemicQualityConfig::default();
+    assert!(
+        cfg.enabled,
+        "enabled by default — FabricationChecker always runs"
+    );
+    assert!(!cfg.coherence_check_enabled, "coherence is opt-in");
+    assert_eq!(cfg.coherence_min_severity, "medium");
+    assert!(!cfg.recovery_enabled, "recovery is opt-in");
+    assert_eq!(cfg.recovery_max_passes, 2);
+    assert!((cfg.recovery_tau - 0.5).abs() < 1e-9);
+    assert_eq!(cfg.zero_valid_proposals_policy, "fail");
+    assert_eq!(cfg.output_mode, "passthrough");
+}
+
+#[test]
+fn epistemic_quality_config_toml_parse() {
+    let toml = r#"
+[epistemic_quality]
+enabled = true
+output_mode = "audit"
+zero_valid_proposals_policy = "deliver_unverified"
+recovery_max_passes = 3
+"#;
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    f.write_all(toml.as_bytes()).unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert!(cfg.epistemic_quality.enabled);
+    assert_eq!(cfg.epistemic_quality.output_mode, "audit");
+    assert_eq!(
+        cfg.epistemic_quality.zero_valid_proposals_policy,
+        "deliver_unverified"
+    );
+    assert_eq!(cfg.epistemic_quality.recovery_max_passes, 3);
+    // Unset fields keep defaults (coherence is opt-in, recovery is opt-in)
+    assert!(!cfg.epistemic_quality.coherence_check_enabled);
+    assert!(!cfg.epistemic_quality.recovery_enabled);
+}
+
+// ── tao_per_turn_timeout_secs ─────────────────────────────────────────────────
+//
+// Regression: the `[tao]` TOML section used in benchmark scenario configs was silently
+// discarded by the config crate because H2AIConfig has no nested `tao` struct.  The fix
+// adds a flat `tao_per_turn_timeout_secs` field (matching the existing tao_* naming
+// convention) so the value survives load_layered().
+
+#[test]
+fn tao_per_turn_timeout_secs_default_is_600() {
+    assert_eq!(H2AIConfig::default().tao_per_turn_timeout_secs, 600);
+}
+
+#[test]
+fn tao_per_turn_timeout_secs_parses_from_toml_override() {
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    writeln!(f, "tao_per_turn_timeout_secs = 3600").unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert_eq!(
+        cfg.tao_per_turn_timeout_secs, 3600,
+        "flat tao_per_turn_timeout_secs field must survive load_layered; \
+         the old [tao] section was silently dropped"
+    );
+}
+
+#[test]
+fn tao_per_turn_timeout_secs_non_overridden_fields_keep_defaults() {
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    writeln!(f, "tao_per_turn_timeout_secs = 1800").unwrap();
+    let cfg = H2AIConfig::load_layered(Some(f.path())).unwrap();
+    assert_eq!(cfg.tao_per_turn_timeout_secs, 1800);
+    // Unrelated fields must fall through to reference.toml defaults.
+    assert_eq!(
+        cfg.tao_per_turn_factor,
+        H2AIConfig::default().tao_per_turn_factor
+    );
+}
+
+// ── scenario calibration_max_tokens ───────────────────────────────────────────
+//
+// Thinking models (Qwen3, DeepSeek R1) exhaust a 256/512-token budget during their
+// internal reasoning chain before producing any output.  The calibration adapter then
+// returns AdapterError::NetworkError("model hit max_tokens during thinking phase"),
+// calibration is skipped every run, and USL N_max falls back to reference.toml defaults
+// instead of using measured adapter timing.  All e2e scenario configs must set
+// calibration_max_tokens ≥ 4096 so the thinking model can complete a probe call.
+
+#[test]
+fn scenario_configs_have_sufficient_calibration_max_tokens_for_thinking_models() {
+    const MIN_TOKENS: u64 = 4096;
+    // Path from crates/h2ai-config/ to workspace root
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root must exist");
+
+    let scenarios = [
+        "tests/e2e/scenarios/complexity-routing",
+        "tests/e2e/scenarios/terminal-bft-adversarial",
+        "tests/e2e/scenarios/tau-bench-constraint-drift",
+        "tests/e2e/scenarios/hle-expert-consensus",
+        "tests/e2e/scenarios/compliance-lite",
+        "tests/e2e/scenarios/multi-constraint-billing",
+    ];
+
+    for scenario in &scenarios {
+        let toml_path = workspace.join(scenario).join("h2ai.toml");
+        let cfg = H2AIConfig::load_layered(Some(&toml_path))
+            .unwrap_or_else(|e| panic!("failed to load {scenario}/h2ai.toml: {e}"));
+        assert!(
+            cfg.calibration_max_tokens >= MIN_TOKENS,
+            "{scenario}: calibration_max_tokens={} is too small for thinking models \
+             (min {MIN_TOKENS}); calibration will always be skipped and USL will use \
+             stale reference.toml defaults instead of measured adapter timing",
+            cfg.calibration_max_tokens
+        );
+    }
+}
+
+#[test]
+fn scenario_configs_have_sufficient_evaluator_timeout_for_single_slot_llm() {
+    // Each evaluator call is dispatched concurrently, but the single-slot LLM processes
+    // them one at a time.  The last call in the queue waits (N_evals - 1) × avg_eval_time
+    // before the LLM even starts processing it.  With verifier_consensus_passes=1,
+    // N_evals = N_adapters × 2 (initial round + one MAPE-K retry round).  At ~600 s per
+    // eval call on a single-slot thinking model, the minimum safe timeout is:
+    //   N_adapters × 2 × 600 s
+    // Scenario configs with 1800 s caused 7/10 evaluators to timeout in complexity-routing.
+    const AVG_EVAL_SECS: u64 = 600;
+    const MAPE_K_ROUNDS: u64 = 2;
+
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root must exist");
+
+    let scenarios = [
+        "tests/e2e/scenarios/complexity-routing",
+        "tests/e2e/scenarios/terminal-bft-adversarial",
+        "tests/e2e/scenarios/tau-bench-constraint-drift",
+        "tests/e2e/scenarios/hle-expert-consensus",
+        "tests/e2e/scenarios/compliance-lite",
+        "tests/e2e/scenarios/multi-constraint-billing",
+    ];
+
+    for scenario in &scenarios {
+        let toml_path = workspace.join(scenario).join("h2ai.toml");
+        let cfg = H2AIConfig::load_layered(Some(&toml_path))
+            .unwrap_or_else(|e| panic!("failed to load {scenario}/h2ai.toml: {e}"));
+        let n_adapters = cfg.adapter_profiles.len() as u64;
+        let min_timeout = n_adapters * MAPE_K_ROUNDS * AVG_EVAL_SECS;
+        assert!(
+            cfg.evaluator_timeout_secs >= min_timeout,
+            "{scenario}: evaluator_timeout_secs={} is too low for {n_adapters} adapters on \
+             single-slot LLM (min {min_timeout} = {n_adapters} × {MAPE_K_ROUNDS} rounds × \
+             {AVG_EVAL_SECS}s avg); queued evaluators timeout before the LLM reaches them",
+            cfg.evaluator_timeout_secs
+        );
+    }
 }

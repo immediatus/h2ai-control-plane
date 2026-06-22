@@ -5,7 +5,7 @@ use h2ai_constraints::types::{ConstraintDoc, ConstraintPredicate, ConstraintSeve
 use h2ai_orchestrator::verification::{
     new_eval_cache, parse_check_reasons, parse_check_verdicts, VerificationInput, VerificationPhase,
 };
-use h2ai_test_utils::{failing_adapter, mock_adapter};
+use h2ai_test_utils::{capturing_adapter, failing_adapter, mock_adapter};
 use h2ai_types::config::{AdapterKind, VerificationConfig};
 use h2ai_types::events::ProposalEvent;
 use h2ai_types::identity::{ExplorerId, TaskId};
@@ -767,4 +767,98 @@ fn parse_check_reasons_zero_check_number_is_skipped() {
     let r = parse_check_reasons(reason, 1);
     assert_eq!(r.len(), 1);
     assert!(!r[0].is_empty(), "CHECK 1 should be extracted");
+}
+
+// ── CHECK_EVIDENCE_FORMAT_INSTRUCTION: thinking-model visible-output gate ────
+//
+// Regression: thinking models (llama_cpp/Qwen3/R1) reason about binary checks in
+// their hidden <think> block and emit a concise summary WITHOUT "CHECK " markers
+// in their visible output.  The `has_check_markers` guard then produces
+// check_verdicts=[] and total_checks=0 in VerificationScoredEvent.
+//
+// Fix: the prompt instruction must include a required VERDICT BLOCK section header
+// ("CHECK VERDICTS:") so the model emits it verbatim in the visible response.
+// The existing parser already handles the "CHECK VERDICTS:" line gracefully
+// (VERDICTS is not a valid check number, so it is skipped) and correctly
+// parses the subsequent numbered lines.
+
+#[test]
+fn check_evidence_format_instruction_contains_verdict_block_header() {
+    // The instruction must include "CHECK VERDICTS:" so that even thinking
+    // models — which reason in hidden <think> tokens — emit the section
+    // header in the visible response, making has_check_markers=true.
+    assert!(
+        h2ai_config::prompts::CHECK_EVIDENCE_FORMAT_INSTRUCTION.contains("CHECK VERDICTS:"),
+        "instruction must contain 'CHECK VERDICTS:' section header so thinking models \
+         emit it in their visible output and has_check_markers fires correctly"
+    );
+}
+
+#[test]
+fn parse_check_verdicts_with_verdict_block_header_prefix() {
+    // When a thinking model emits a "CHECK VERDICTS:" header before the numbered
+    // checks, the parser must skip the header line and correctly parse the checks.
+    let reason = "CHECK VERDICTS:\nCHECK 1: graph construction is explicit → PRESENT\nCHECK 2: backward direction omitted → MISSING";
+    let v = parse_check_verdicts(reason, 2);
+    assert!(v[0], "CHECK 1 must be PRESENT");
+    assert!(!v[1], "CHECK 2 must be MISSING");
+}
+
+// ── majority_binary_check inherits evaluator_max_tokens ───────────────────────
+//
+// Regression: before the fix majority_binary_check hardcoded `max_tokens: 16` in the
+// ComputeRequest it sent to the adapter, regardless of VerificationConfig.evaluator_max_tokens.
+// With thinking-mode models (Qwen3, DeepSeek R1) 16 tokens is exhausted before any output
+// is produced, causing every binary check to fail.  The fix passes evaluator_max_tokens
+// through as the `max_tokens` parameter to majority_binary_check.
+
+#[tokio::test]
+async fn majority_binary_check_inherits_evaluator_max_tokens() {
+    const CUSTOM_MAX_TOKENS: u64 = 4096;
+
+    let (evaluator, captured) = capturing_adapter("YES");
+    let doc = ConstraintDoc {
+        id: "binary_max_tokens_regression".into(),
+        source_file: "test".into(),
+        description: "binary check must forward evaluator_max_tokens to the adapter".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::SemanticPresence {
+            concept: "idempotency".into(),
+            passes: 1,
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+        binary_checks: vec![],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
+    };
+    let proposal = make_proposal(TaskId::new(), "Uses idempotency keys.");
+    let _out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig {
+            evaluator_max_tokens: CUSTOM_MAX_TOKENS,
+            ..VerificationConfig::default()
+        },
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+
+    let reqs = captured.lock().unwrap();
+    assert!(
+        !reqs.is_empty(),
+        "capturing_adapter must have been called at least once by majority_binary_check"
+    );
+    for req in reqs.iter() {
+        assert_eq!(
+            req.max_tokens, CUSTOM_MAX_TOKENS,
+            "majority_binary_check must forward evaluator_max_tokens={CUSTOM_MAX_TOKENS} \
+             to the ComputeRequest; before the fix it hardcoded 16 which broke thinking models"
+        );
+    }
 }

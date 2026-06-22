@@ -127,7 +127,7 @@ Single-tenant deployments use `default` as the tenant ID. The `tenant_id` field 
 | Layer | Mechanism |
 |---|---|
 | Estimators | `TenantRegistry` — `DashMap<TenantId, Arc<TenantState>>`, lazily created per tenant |
-| NATS KV keys | Per-tenant prefix: `{tenant_id}/tao`, `{tenant_id}/bandit`, `{tenant_id}/srani` |
+| NATS KV keys | Per-tenant prefix: `{tenant_id}/tao`, `{tenant_id}/bandit` |
 | Task ownership | `TaskStore::get_for_tenant()` returns `None` for cross-tenant access |
 | HITL signals | Subject-scoped: `h2ai.signals.{tenant_bucket_safe}.{task_id}` — tenant is in the subject by construction; no cross-tenant delivery possible |
 | Calibration | Shared (global) — calibration runs measure the adapter pool, not tenant workloads. New tenants inherit the default tenant's calibration on first task submission |
@@ -157,7 +157,7 @@ NATS is the authoritative event log and the KV backing store. The runtime expect
 | `H2AI_TELEMETRY` (`h2ai.telemetry.>`) | File | MaxAge 7d, MaxBytes 10 GB | 3 | Adapter telemetry. |
 | `H2AI_CALIBRATION` KV | — | TTL none (invalidated by `POST /calibrate`) | 3 | Latest calibration. |
 | `H2AI_AGENT_MEMORY` KV | — | per-session keys | 3 | Session memory. |
-| `H2AI_ESTIMATOR` KV | — | — | 1 | TAO multiplier estimator + bandit state + SRANI adaptive EMA. Keys are prefixed by `{tenant_id}/` (e.g. `default/tao`, `acme/bandit`). |
+| `H2AI_ESTIMATOR` KV | — | — | 1 | TAO multiplier estimator + bandit state. Keys are prefixed by `{tenant_id}/` (e.g. `default/tao`, `acme/bandit`). |
 | `H2AI_SNAPSHOTS` KV | — | History 1 | 1 | Per-task snapshots. |
 | `H2AI_CHECKPOINT_{tenant}` KV | — | TTL 7d | 1 | Reasoning Memory Phase 1: per-task `TaskReasoningCheckpoint` written at each engine phase gate; used by `run_from_checkpoint` for crash recovery. One bucket per tenant. |
 | `H2AI_META_{tenant}` KV | — | TTL 90d | 1 | Reasoning Memory Phase 1: `TaskMetaState` projected at task resolution; outcome record for induction. One bucket per tenant. |
@@ -350,7 +350,7 @@ The control loop runs after every `ZeroSurvival` event. Operators do not configu
 - **`diversity_threshold`** is the load-bearing knob. At `0.0` (the default), Phase 2.6 is disabled and the MAPE-K classifier always returns `ConstrainedExploration` for any wave with `n_eff > 0`. Production deployments should set it to `0.5`.
 - **`max_autonomic_retries`** caps the loop at 2 retries per task by default. `TaskFailed` is emitted on exhaustion with a record of every topology and τ vector tried.
 - **`synthesis_wave_enabled`** (default `true`) — when all retries exhaust with `verified=0`, the engine fires one terminal synthesis wave: orthogonal partial-pass examples (greedy set-cover) + compliance checklist + Coherence Mandate → single LLM call → re-verify. On full pass returns resolved output; on partial pass surfaces `best_partial_text` in `MaxRetriesExhausted` for HITL. Set to `false` to skip entirely (useful when the synthesis adapter is unavailable or latency budget is tight).
-- **`complexity_routing.enabled`** (default `false`) — when `true`, a cheap pre-dispatch `ComplexityProbe` rates the task 1–5; ≥ `decompose_threshold` (4) triggers /H1 synthesis-wave grafting on first failure, ≥ `hitl_threshold` (5) skips retries entirely and surfaces to HITL. Probe failure or timeout defaults to `complexity = 2` (conservative — never misroutes easy tasks). All four benchmark scenarios ship with this enabled; reference defaults keep it opt-in. The intra-retry detector (`complexity_routing.intra_retry.enabled`) is a separate safety net that fires inside `ZeroSurvival` based on failure-signature entropy, retry-score slope, and `N_eff × CG_mean`.
+- **`complexity_routing.enabled`** (default `false`) — when `true`, a cheap pre-dispatch `ComplexityProbe` rates the task 1–5; ≥ `decompose_threshold` (4) triggers /H1 synthesis-wave grafting on first failure, ≥ `hitl_threshold` (5) skips retries entirely and surfaces to HITL. Probe failure or timeout defaults to `complexity = 2` (conservative — never misroutes easy tasks). All six E2E scenarios ship with this enabled; reference defaults keep it opt-in. The intra-retry detector (`complexity_routing.intra_retry.enabled`) is a separate safety net that fires inside `ZeroSurvival` based on failure-signature entropy, retry-score slope, and `N_eff × CG_mean`.
 - **`adapter_rotation_offset`** is task-local. Two consecutive `ModeCollapse` retries advance the offset by 2; the next wave samples a rotated subset of the pool. The offset resets on task completion.
 - **The Constraint Violation Tombstone** is written into `TopologyProvisionedEvent.constraint_tombstone` *only* on `ConstrainedExploration` retries. It contains constraint IDs, severity labels, and per-constraint scores — never raw proposal text. The orchestrator reads this back into the next wave's `system_context` so the explorers see what the previous wave failed.
 
@@ -427,6 +427,9 @@ These are the system's hard limits. They are not bugs; they are physical or desi
 | All proposals fail with `TAO timeout` | `tao.per_turn_timeout_secs` too short for model response time | Raise `per_turn_timeout_secs` in `[tao]` config; 11B local models generating 1024-token outputs typically need ≥120s |
 | All proposals pruned by verifier with low constraint compliance scores | Task description or constraint context is insufficient for the constraint difficulty; verifier judging all proposals as non-compliant | Lower `verifier_consensus_passes` temporarily to diagnose; inspect `VerifierReasonContradictionEvent.explanation` for the failure pattern; add constraint clarification to the task description or check that the corpus constraints are achievable for the given task |
 | Calibration fails with `env var LLAMACPP_API_KEY not set` | CloudGeneric adapter reads API key from env even for local servers | Set `LLAMACPP_API_KEY=local` (any non-empty value); the server ignores the key but the adapter client requires the env var to be present |
+| `TaskFailed` with `primary_cause = NoValidProposals` after `MergeResolved` | Epistemic quality stage found zero provisions with valid provenance after gap resolution; `zero_valid_proposals_policy = "fail"` is active | Set `zero_valid_proposals_policy = "deliver_unverified"` to accept annotated output despite unresolved gaps; or investigate `CoherenceChecker` conflict threshold via `coherence_min_severity` |
+| `ProvenanceRecordedEvent.document_confidence = "Unverified"` | No provision reached `Verified` or `AutoCorrected` level — all gaps remain open after `recovery_max_passes` | Raise `recovery_max_passes`; check adapter availability for the MicroExplorerResolver LLM call |
+| `open_gap_count` non-zero across multiple tasks for the same provision labels | MicroExplorerResolver cannot close these gap types (e.g. `InterProvisionConflict` — not handled) | Set `output_mode = "audit"` to surface annotations; InterProvisionConflict gaps require human review — the resolver handles only MissingProvision and IncompleteProvision |
 
 ---
 
@@ -620,3 +623,60 @@ Set `concordance_alpha = 0.05` for stricter injection (recommended when Zone 3 g
 ### RetryAccumulator decay
 
 The RetryAccumulator tracks per-constraint violation rates using an exponential moving average with decay λ=0.7 (configurable via `accumulation_decay`). It is reset on task success and retained on `ZeroSurvival`, so accumulated signal carries across mode-collapse retries. The accumulator is a local variable in the engine retry loop — it is never persisted to NATS KV and is lost when the server restarts.
+
+---
+
+## 12. Epistemic Output Quality Operations
+
+The epistemic quality stage is disabled by default (`epistemic_quality.enabled = false`). Enable it for deployments that require provision-level confidence annotations, inter-provision conflict detection, or structured gap recovery before delivering output.
+
+### Enabling
+
+```toml
+[epistemic_quality]
+enabled     = true
+output_mode = "audit"   # "clean" = header only; "audit" = header + per-provision annotations + footer
+```
+
+No other config changes are required for basic operation. The full set of fields and their defaults is in `reference.md §4 Epistemic Output Quality`.
+
+### What fires after enabling
+
+When `enabled = true` and a task resolves, the following sequence runs after `MergeResolved`:
+
+1. `SelectionPruningExtractor` extracts gaps from pruned proposals (IDs: `g1`, `g2`, …)
+2. `CoherenceChecker` finds inter-provision conflicts via one LLM call (IDs: `coh-1`, `coh-2`, …)
+3. `GapRegistry` topologically sorts all gaps and returns concurrent batches
+4. `MicroExplorerResolver` attempts to patch each `MissingProvision` and `IncompleteProvision` gap via one LLM call per gap (max `recovery_max_passes` rounds)
+5. `OutputRenderer` annotates the output text in `clean` or `audit` mode
+6. `ProvenanceRecordedEvent` fires on NATS with `document_confidence`, `provision_count`, and `open_gap_count`
+
+### Interpreting ProvenanceRecordedEvent
+
+| `document_confidence` | Meaning |
+|---|---|
+| `"High"` | All provisions are `Verified` or `AutoCorrected` — no unresolved gaps |
+| `"ReviewRecommended"` | ≥1 provision is `ReviewRecommended` — potentially low-stakes gap |
+| `"RequiresReview"` | ≥1 provision is `RequiresReview` — gap could affect correctness |
+| `"Unverified"` | ≥1 provision never improved beyond baseline; requires human review |
+
+`open_gap_count > 0` with `"High"` confidence is not possible — any unclosed gap leaves at least one provision below `AutoCorrected`. Use `open_gap_count` as a task-level gap load metric across a batch of tasks to assess corpus coverage.
+
+### `output_mode` effects
+
+| `output_mode` | Output text format |
+|---|---|
+| `"clean"` | Prepends a single blockquote confidence header. No per-provision annotations. Lower token cost; suitable for downstream consumption. |
+| `"audit"` | Prepends confidence header, inlines `> ⚠ gap_ids: [...]` annotations on every non-`Verified` provision, appends a footer (`Document confidence: {label} | Provisions reviewed: {N}`). Use for compliance workflows or human review queues. |
+
+### Adding epistemic assertions to e2e scenarios
+
+The `replay.py` harness supports three assertion keys for scenarios with `epistemic_quality.enabled = true`:
+
+| Key | Assertion |
+|---|---|
+| `provenance_recorded` | `ProvenanceRecordedEvent` was emitted for this task |
+| `document_confidence_not_verified` | `document_confidence != "Unverified"` (any resolved state) |
+| `open_gap_count_min` | `open_gap_count >= N` (verify that gaps were actually found, not silently skipped) |
+
+Add these to the scenario's `checks` list in the task descriptor alongside existing functional checks.

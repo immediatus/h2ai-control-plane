@@ -35,6 +35,9 @@ fn make_args(task_description: &str, awareness_hints: Option<String>) -> Thinkin
         constraint_corpus: vec![],
         tenant_id: h2ai_types::identity::TenantId::default_tenant(),
         induction_scheduler: None,
+        semantic_memory: None,
+        max_archetype_boost: 0.15,
+        max_archetype_penalty: 0.20,
     }
 }
 

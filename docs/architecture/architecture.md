@@ -53,7 +53,7 @@ Each row is an independently-observable failure mode in naive LLM orchestration,
 | Orthogonal constraint-satisfaction — no single proposal satisfies all constraints | Retry with full generation | Sequential Constraint Grafting — iterative grafting loop with highest-scoring partial as base; `missing_constraint_ids()` identifies constraint clusters; Monotonicity Invariant; Sequential Edge arXiv 2503.12345 (+46.7% constraint satisfaction) |
 | MUS oscillation — sequential repair loops cycle without convergence; each wave that repairs constraint A re-violates constraint B | Accept oscillatory plateau and exhaust retries | DPPM-MetaRefine Wave — two triggers: (1) isolation evidence: ≥2 partials whose passed-check union covers all binary checks but no single partial covers all; (2) plateau: compliance mean unchanged for 2 consecutive waves at `retry_count ≥ 2`. Either trigger fires `ComplexityOverflow { graft_first: true }` immediately. DPPM wave: BFS cluster the constraint corpus; `find_oscillation_pairs + divergence_events_from_pruned` build a MetaObserver balancing instruction; parallel per-cluster LLM solvers seeded from the best matching partial and all accumulated gap_i1 domain knowledge corrections (`controller.all_domain_syntheses()` → `RepairInput.domain_syntheses`); integration wave merges cluster outputs with explicit conflict-resolution brief (`INTEGRATION_WAVE_PROMPT` in `repair.rs`). Literature: DPPM arXiv:2506.02683; DeCRIM arXiv:2410.06458; Branch-Solve-Merge arXiv:2310.15123. |
 | LLM provider silently updates model weights — calibration goes stale | Re-run calibration on a schedule | Calibration Drift Detection — DDM O(1) fast-lane + BOCPD (Adams & MacKay 2007) + ORCA conformal margin widen during active drift |
-| Verifier rejects proposals on knowledge-intensive checks — missing domain facts | Retry with stronger hint | Knowledge Gap Detection — `detect_cold_checks()` + `build_gap_queries()` + `run_gap_researcher()` + corpus `pass_hint` fallback (`gap_hint_or_query` in `srani_grounding.rs` prefers corpus `pass_criteria` text over web-derived `correct_pattern`) + `[DOMAIN KNOWLEDGE]` slot injection |
+| Verifier rejects proposals on knowledge-intensive checks — missing domain facts | Retry with stronger hint | Knowledge Gap Detection — `detect_cold_checks()` + `build_gap_queries()` + `run_gap_researcher()` + corpus `pass_hint` fallback (`gap_hint_or_query` in `grounding_chain.rs` prefers corpus `pass_criteria` text over web-derived `correct_pattern`) + `[DOMAIN KNOWLEDGE]` slot injection |
 | LLM holistic verifier score contradicts its own check verdicts — holistic float corrupts Krum input | Trust LLM float as authoritative | Binary-Verdict Scoring — `score_from_verdicts` in `verification.rs` derives `present_checks / n_checks` deterministically from parsed `check_verdicts`; `tau` overridden to `0.0` for binary-check constraints; removes verbosity and holistic-judgment drift from the Krum input distribution |
 | Single-family model pool — Krum selects majority-hallucination winner with high confidence | Retry the same pool | BFT Lever 1 (family diversity gate) — `model_lineage_key()` on `AdapterKind` tags each adapter's model lineage; `min_explorer_families` in `SafetyConfig` warns when < 2 lineages present in the calibration pool. BFT Lever 2 (oracle post-selection hard-gate) — `run_post_selection` in `oracle.rs` blocks the Krum-selected winner after merge if the oracle rejects it; `OraclePostSelectionBlocked` routes to `handle_exit_reason` in `mape_k.rs`: emits `CorrelatedEnsembleWarning`, increments `adapter_rotation_offset`, sets `retry_context`, retries — a regime shift without waiting for the hallucination-detector path |
 | Repair prompts for coupled constraints give no hint about the other constraint | Attempt repair with single-constraint context | Coupled Constraint Hints — `mape_k.rs` builds `coupled_hints` from `conflict_graph.conflicts_for()`, filtering to exclude the currently-failing constraints; `coupled_constraint_hints: &[(String, Option<String>)]` field on `RepairInput` injects passing-constraint context into `build_repair_context()` |
@@ -63,11 +63,11 @@ Each row is an independently-observable failure mode in naive LLM orchestration,
 | Tacit knowledge is invisible | Agents guess team constraints | Dark Knowledge Compiler — typed `ConstraintDoc` predicates (Hard/Soft/Advisory) become hard Auditor gates |
 | Constraint corpus is static and fragile | Bulk file reload loses history | Constraint Wiki (`H2AI_CONSTRAINT_WIKI` KV) — hot-reload via NATS KV watch; `ConstraintSnapshot` in every checkpoint |
 | Flat constraint retrieval | Inject entire corpus or keyword-match | Hierarchical Knowledge Provider — BM25+/PPR, dual RAPTOR modes, PPR multi-hop, role-stratified `KnowledgeProfile`, cross-task `InductionStore` |
-| Each task starts with no knowledge of prior failures | Accept repeated failures on same domain | Cross-task skill extraction — `skill_from_output` mines topology retries, uncovered domains, SRANI events, and low verification scores into `KnowledgeNode` entries after resolution; `SkillProvider` holds them live; `CompositeProvider([wiki, skill])` surfaces domain-matched failure signals to every subsequent thinking loop iteration; persisted to `H2AI_SKILLS` NATS KV bucket across restarts |
+| Each task starts with no knowledge of prior failures | Accept repeated failures on same domain | Cross-task skill extraction — `skill_from_output` mines topology retries, uncovered domains, and low verification scores into `KnowledgeNode` entries after resolution; `SkillProvider` holds them live; `CompositeProvider([wiki, skill])` surfaces domain-matched failure signals to every subsequent thinking loop iteration; persisted to `H2AI_SKILLS` NATS KV bucket across restarts |
 | NATS-dependent code requires live infrastructure to unit-test | Skip or mock ad-hoc per test | NATS Backend Abstraction — `NatsBackend` supertrait + `TaskDispatchBackend` trait; `MockNatsBackend` + `MockTaskDispatchBackend` in `h2ai-test-utils`; all production NATS fields are `Arc<dyn NatsBackend>` / `Arc<dyn TaskDispatchBackend>` |
 | Human babysits every step | Constant correction loop | Merge Authority — human resolves a structured CRDT diff once, at the end |
 | Low-confidence outputs reach callers silently | Every output looks the same | HITL Approval Gate — `q_confidence < threshold` parks output in `H2AI_APPROVALS` KV; 30-minute reaper auto-rejects expired records |
-| Proposals converge on fabricated APIs — hallucinated patterns pass constraint checks | Accept or manually filter | SRANI — CFI (Correlated Fabrication Index) measures max pairwise overlap of ungrounded entity sets; adaptive sigmoid gate; SpecAnchorGrounder → LlmResearcherGrounder → WebSearchGrounder escalation |
+| Proposals converge on fabricated or ungrounded content — hallucinated patterns pass constraint checks | Accept or manually filter | Universal Grounding — `GroundingChecker` (implements `GapChecker`) runs a `GroundingJudge` against the merged output and spec; `LlmGroundingJudge` (primary) classifies entities/claims by confidence; `HeuristicGroundingJudge` (fallback) uses heuristic arch-noun extraction; `CompositeGroundingJudge` fans out and deduplicates by text key; results feed `GapKind::UngroundedContent` gaps into the epistemic quality stage; severity bands: confidence ≥ 0.9 → High, ≥ 0.7 → Medium, else → Low |
 | Single-pass generation misses cross-domain tensions | One-shot prompt | Thinking Loop — multi-archetype iterative brainstorm converges at `coverage_score ≥ threshold`; tension-targeted injection for unresolved gaps |
 | Minority constraints get zero dedicated archetype — aggregate coverage score near 1.0 but individual constraint has no specialist, causing ZeroSurvival | Retry after ZeroSurvival | Per-constraint archetype coverage guarantee — `ArchetypeSpec.focus_constraints: Vec<String>` (`#[serde(default)]`) self-reported by LLM via `**Focus Constraints:**` field in archetype markdown prompt; `find_uncovered_constraints` detects constraint IDs with no dedicated archetype; `synthesize_coverage_archetype` creates a specialist from corpus description (falls back to generic text when absent); both wired into `select_archetypes()` — every constraint gets at least one dedicated archetype before exploration begins |
 | MAPE-K repair waves regress passing constraints — repair context guides what to fix but provides no anchor for what must not change; proposals shift to satisfy repair targets and lose prior passing checks | Accept oscillatory plateau; exhaust retries | Repair oscillation anchoring — `phases::verify::run()` captures per-constraint `ComplianceResult.verifier_reason` from the best-scoring passing proposal into `Output.best_passing_constraint_reasons: HashMap<String, String>` (non-empty only; strict `>` score comparison so first-seen wins on ties); threaded through `WaveEvents.best_passing_constraint_reasons` to `MapeKController.global_best_constraint_reasons` (updated in `observe()` only when new map is non-empty); `build_best_passing_pin_hint(constraint_id, dynamic_reasons, corpus_hint)` pure fn prefers dynamic verifier reasoning over static corpus hints; both `coupled_hints` and `passing_pins` in `apply_retry_action`'s `RetryWithTargets` arm use `build_best_passing_pin_hint` |
@@ -75,7 +75,6 @@ Each row is an independently-observable failure mode in naive LLM orchestration,
 | Sequential synthesis merge is an O(n) serialised bottleneck | Accept latency; increase timeout | Tournament Merge — `tournament_merge` in `h2ai-adapters/src/chain.rs` runs a pairwise bracket via `join_all`; each round halves the proposal count with full parallelism; Krum winner sorted first in `proposals[0]` for attention primacy; `THINKING_SYNTHESIS_MD_PAIRWISE` template extracts shared understanding + tensions + score from each merge |
 | Retry loop re-runs even when first wave easily passes acceptance bar | Tune max_retries by hand | Tiered Early Exit — N escalates linearly wave-to-wave from `min_n` to `max_n`; wave exits immediately when `k_accepted ≥ ceil(n × quorum_fraction)` proposals score ≥ `acceptance_score` with all binary checks passing; `TieredExitEvent` signals fast-path resolution |
 | Generation budget depletes silently across retries; semantically-converged proposals keep triggering new waves | Add a retry cap | Cost Guard + Convergence Gate — `CostGuardConfig` tracks cumulative tokens, warns at `budget_warning_fraction`, aborts at `budget_abort_fraction`, and injects a remaining-token hint into the generation context in the [50 %, 85 %) window; `ConvergenceGateConfig` fires early acceptance when surviving proposals exceed `theta_converge` (0.87) mean pairwise cosine and `score_floor`, guarded by `budget_floor_fraction` to prevent mode-collapse false positives |
-| SRANI false-positive CFI spikes when proposals use provider-native APIs of a technology already in the spec (e.g. RocksDB when ClickHouse is grounded) | Raise threshold manually | LLM-driven implied entity classification — when SRANI hint injection fires, `extract_arch_nouns(effective_spec)` populates `GroundingContext.spec_technologies`; the LLM researcher classifies each shared entity as `implied` (standard sub-component of an in-scope technology) or `novel` (introduces something not implied by the spec); only `novel_entities` receive the "Avoid" repair hint; `implied_entities` filter is per-task and per-tenant via the researcher LLM call |
 | Task failures carry no structured diagnostic — impossible to triage which constraints or exit modes cause the most failures | Parse log text offline | `TerminalCause` diagnostic enrichment — 7-variant `TerminalCause` enum with `severity_rank()`; four `#[serde(default)]` fields on `TaskFailedEvent`: `primary_cause`, `contributing_causes`, `top_violated_constraints` (top-5 by frequency), `last_selection_valid_count`; engine accumulates `violation_freq` per constraint across all wave `BranchPrunedEvent`s and populates fields at every terminal exit path |
 | Each task starts cold — no memory of which hint texts resolved similar failures on prior tasks | Accept repeated failures on same constraint class | `NatsInductionScheduler` cross-task priming — `RetryHintPattern { trigger_tags, exit_reason_kind, hint_text, success_count, attempt_count }` persisted in tag-sharded `H2AI_MEMORY` KV (`{tenant_id}.tag.{tag}` → `TagPatternBucket`); two-round SAD retrieval with vocabulary bridge at task start (`load_priming_hints`); ZeroSurvival trigger spawns `run_retroactive` into `pending_induction` and injects matched hints into `retry_context`; `record_success` increments `success_count` at resolution; `format_retry_hint_priors` prepends top-5 priors to archetype selection system prompt; corpus-seeded `n_archetypes` |
 
@@ -169,12 +168,12 @@ C4Container
     Person(client, "Client / Operator")
 
     Container(api, "h2ai-api", "Rust / axum", "REST + SSE gateway.\nHITL approval gate.\nHealth + Metrics endpoints.")
-    Container(orchestrator, "h2ai-orchestrator", "Rust / Tokio", "ExecutionEngine: 6-phase MAPE-K loop.\nMergeEngine. Verification. Synthesis.\nCompoundTaskEngine (DAG execution).")
+    Container(orchestrator, "h2ai-orchestrator", "Rust / Tokio", "ExecutionEngine: Phase -1→5 MAPE-K loop.\nThinking Loop + Epistemic Decomposition.\nMergeEngine. Verification. Synthesis.\nGroundingChecker (UniversalGrounding).\nEpistemic Quality Stage (post-merge).\nCompoundTaskEngine (DAG execution).")
     Container(planner, "h2ai-planner", "Rust", "LLM task decomposition (PlanningEngine).\nPlan structural review (PlanReviewer).")
     Container(autonomic, "h2ai-autonomic", "Rust", "Calibration harness.\nEpistemic diagnostics.\nBandit (Thompson Sampling).")
     Container(agent, "h2ai-agent", "Rust / Tokio", "Edge agent binary.\nTaoAgent loop.\nDispatchLoop + HeartbeatTask.")
     Container(tools, "h2ai-tools", "Rust", "ShellExecutor, WebSearchExecutor,\nMcpExecutor, WasmExecutor.\nToolRegistry::for_wave.")
-    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_AGENT_MEMORY KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CALIBRATION_RECORDS KV\nH2AI_AUDITOR_HEALTH KV\nH2AI_PROBE_LEASE KV\nH2AI_TASK_CHECKPOINTS KV\nH2AI_SKILLS KV\nH2AI_MEMORY KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
+    ContainerDb(nats_db, "NATS JetStream", "NATS", "H2AI_TASKS stream\nH2AI_CALIBRATION KV\nH2AI_SNAPSHOTS KV\nH2AI_PROMPT_VARIANTS KV\nH2AI_CALIBRATION_RECORDS KV\nH2AI_AUDITOR_HEALTH KV\nH2AI_PROBE_LEASE KV\nH2AI_TASK_CHECKPOINTS KV\nH2AI_SKILLS KV\nH2AI_MEMORY KV\nH2AI_ESTIMATOR KV\nH2AI_CHECKPOINT_{tenant} KV (7d TTL, per tenant)\nH2AI_META_{tenant} KV (no TTL, per tenant)")
 
     Rel(client, api, "POST /:tenant_id/tasks\nGET /:tenant_id/tasks/:task_id/events", "HTTPS")
     Rel(api, orchestrator, "spawn ExecutionEngine", "in-process")
@@ -186,7 +185,7 @@ C4Container
     Rel(agent, nats_db, "subscribe ephemeral\npublish result", "NATS")
 ```
 
-A task moves through six phases. Each phase emits one or more events, and every retry restarts at Phase 2.
+A task moves through Phase −1 (Thinking Loop, optional) → Phase 0 (Epistemic Decomposition) → Phases 1–5 (Bootstrap, Provisioning, Generation, Verification/Audit, Merge) → post-merge Epistemic Quality Stage. Each phase emits one or more events, and every MAPE-K retry restarts at Phase 2.
 
 ### Phase −1 — Thinking Loop (optional pre-execution)
 
@@ -200,7 +199,7 @@ When `thinking_loop.enabled = true`, a coverage-convergence brainstorm runs befo
 
 **Per-constraint archetype coverage guarantee:** After `select_archetypes()` returns the LLM-selected archetypes, `find_uncovered_constraints(archetypes, constraint_ids)` identifies any constraint IDs with no dedicated archetype (i.e., no archetype has that ID in its `focus_constraints`; empty `focus_constraints` covers nothing). For each uncovered constraint, `synthesize_coverage_archetype(constraint_id, corpus)` constructs a specialist archetype from the corpus description, ensuring every active constraint has at least one dedicated archetype before brainstorming begins. The LLM self-reports which constraints its archetype targets via the `**Focus Constraints:**` field in the archetype markdown prompt (`THINKING_ARCHETYPE_MD_ITER1`); "all" maps to empty (no specific focus declared). This prevents minority constraints from being collectively "covered" in aggregate score while receiving zero specialist attention.
 
-The loop produces a `ThinkingReport { shared_understanding, tensions, coverage_score, iteration }`. The `shared_understanding` string is injected as `{thinking_context}` into the Phase 0 decomposition prompt. The final `coverage_score` is used as the `thinking_coverage_score` for the `j_eff_min` dynamic threshold.
+The loop produces a `ThinkingReport { shared_understanding, tensions, coverage_score, iteration, prev_similarity, retrieved_node_ids, skill_nodes_used, archetypes }` (`crates/h2ai-types/src/thinking.rs`). `archetypes` carries the names of the archetypes selected in the final iteration and is surfaced in `ThinkingLoopCompletedEvent.archetypes` for observability. `retrieved_node_ids` holds all KnowledgeNode IDs retrieved across all iterations (deduplicated). The `shared_understanding` string is injected as `{thinking_context}` into the Phase 0 decomposition prompt. The final `coverage_score` is used as the `thinking_coverage_score` for the `j_eff_min` dynamic threshold.
 
 **Plan-Awareness Probe:** When `awareness_probe.enabled = true`, a batched LLM judge call runs after the initial thinking loop completes. The judge evaluates `shared_understanding` against every constraint in the corpus (verdicts: `Acknowledged` / `NotAddressed` / `Contradicted`; ~100 tokens/constraint, `judge_max_tokens = 1024` default). In `Active` mode, Hard non-gated `Contradicted` outcomes produce an `awareness_hints` re-iteration prompt that is injected into a second thinking loop pass. In `Shadow` mode (default), verdicts are emitted as `AwarenessProbeCompletedEvent` without blocking the pipeline. Ambiguity-gated constraints are probed but can never trigger re-iteration. Degraded probes (call failure or partial parse) never block.
 
@@ -229,7 +228,7 @@ The orchestrator compiles the task description and the active constraint corpus 
 - **PPR hops** — `expand_hops=2` for Executor (multi-hop constraint traversal, HippoRAG arXiv 2405.14831), `expand_hops=1` for Synthesizer (cross-domain tension surfacing), `expand_hops=0` for Coordinator and Evaluator
 - **domain_tag_boost** — Executor and Evaluator get `topic_knowledge` filtered to domain-matching nodes; Coordinator and Synthesizer get the global view only
 
-Results populate `ContextAssemblerInput.{global_knowledge, topic_knowledge, constraint_tensions}`. Synthesizer slots additionally receive cross-domain `SurfacedTension` entries as `SectionTag::ConstraintTension` (importance=0.85, preserve=false) — cross-domain tension surfacing. The optional `InductionStore` (NATS KV bucket `H2AI_INDUCTION_{tenant}`) records `KnowledgeNodePattern` after accepted merges and boosts `explicit_ids` on subsequent matching tasks (cold start = pure BM25+). Any failure (provider error, store unavailable) degrades silently to `(None, None, None)` — task execution never blocks on knowledge enrichment. When `[knowledge]` is absent, a `PassthroughProvider` delegates to `ConstraintResolver` with no behaviour change.
+Results populate `ContextAssemblerInput.{global_knowledge, topic_knowledge, constraint_tensions}`. Synthesizer slots additionally receive cross-domain `SurfacedTension` entries as `SectionTag::ConstraintTension` (importance=0.85, preserve=false) — cross-domain tension surfacing. The optional `InductionStore` (backed by a named NATS KV bucket, bucket name supplied at startup) records `KnowledgeNodePattern` after accepted merges and boosts `explicit_ids` on subsequent matching tasks (cold start = pure BM25+). Any failure (provider error, store unavailable) degrades silently to `(None, None, None)` — task execution never blocks on knowledge enrichment. When `[knowledge]` is absent, a `PassthroughProvider` delegates to `ConstraintResolver` with no behaviour change.
 
 ### Phase 2 — Topology Provisioning
 
@@ -297,33 +296,53 @@ After all explorer proposals arrive and before verification, the engine runs the
 
 `compute_cv(proposals)` (`crates/h2ai-orchestrator/src/correlated_hallucination.rs`) computes all `N×(N−1)/2` pairwise token-Jaccard distances and returns the coefficient of variation. Low CV = proposals cluster semantically = correlated-regime signal. The N = 2 edge case is handled: a single pairwise distance is a one-point distribution (CV = 0 always); `compute_cv` returns `None` for diverse N = 2 (statistically meaningless) and `Some(cv = 0.0)` only for identical N = 2 proposals (definite signal).
 
-When `cv < correlated_hallucination_cv_threshold` **AND** `mean_jaccard_distance < correlated_hallucination_min_jaccard_floor` (default 0.50): (1) `CorrelatedEnsembleWarning` is appended to the output; (2) the **reactive grounding path** invokes `SraniGroundingChain::resolve` — a three-tier escalating chain: `SpecAnchorGrounder` (always, injects spec entities), then `LlmResearcherGrounder` (tier 0, fetches contradiction evidence via the researcher adapter), then `WebSearchGrounder` (tier 1, live web search distilled by LLM); (3) the MAPE-K retry loop `continue`s to the next generation wave. The joint AND condition prevents spurious retries on high-quality diverse ensembles where all pairwise distances are high (CV=0 but not correlated).
+When `cv < correlated_hallucination_cv_threshold` **AND** `mean_jaccard_distance < correlated_hallucination_min_jaccard_floor` (default 0.50): (1) `CorrelatedEnsembleWarning` is appended to the output; (2) the **reactive grounding path** invokes `GapResearchChain::resolve` — a three-tier escalating chain: `SpecAnchorGrounder` (always, injects spec entities), then `LlmResearcherGrounder` (tier 0, fetches contradiction evidence via the researcher adapter), then `WebSearchGrounder` (tier 1, live web search distilled by LLM); (3) the MAPE-K retry loop `continue`s to the next generation wave. The joint AND condition prevents spurious retries on high-quality diverse ensembles where all pairwise distances are high (CV=0 but not correlated).
 
 **Proactive researcher path** (separate from C1): slots with `search_enabled: true` (set by decomposition STEP3) trigger a researcher pre-pass *before* Phase 3 generation — the researcher fetches domain-specific grounding context that is injected into the slot's system context before any LLM call. This decouples grounding from hallucination detection.
 
 `CorrelatedEnsembleWarning` and `ResearcherGrounding` events are published to NATS via `tasks.rs` after the shadow audit events block.
 
-### Phase 3.2 — SRANI Correlated Fabrication Detection
+### Phase 3.2 — Universal Grounding (GroundingChecker)
 
-After the token-Jaccard CV check (Phase 3.1), the engine runs SRANI (Specification-Relative Architectural Noun Intersection) when `cfg.srani.enabled = true`.
+After the token-Jaccard CV check (Phase 3.1), the engine applies the universal grounding checker when `cfg.grounding.enabled = true`.
 
-**Spec boundary construction:** Before computing CFI, the engine constructs an `effective_spec` from three sources: `manifest.description`, `manifest.context` (the optional contextual background field in the task manifest — e.g. "We run Redis Cluster for caching"), and all constraint corpus text — specifically `ConstraintDoc.description`, all entries of `ConstraintDoc.binary_checks`, and `ConstraintDoc.pass_criteria` when present. This ensures constraint-mandated technologies (e.g., Redis, ClickHouse, Kafka named explicitly in constraint rubrics or declared in the task context) are treated as grounded and never flagged as correlated fabrications. The spec boundary matches the full authoritative knowledge used to evaluate proposals, not just the free-text task description. Implementation: `phases/srani.rs` constructs `effective_spec = format!("{}\n{}\n{}", manifest.description, manifest.context.unwrap_or(""), constraint_text)`.
+**Architecture.** `GroundingChecker` implements `GapChecker` and wraps a composable `GroundingJudge` trait:
 
-**LLM-driven implied entity classification (2026-06-21):** When `injection_pressure ≥ srani_gate_threshold`, `extract_arch_nouns(effective_spec)` collects all architectural nouns from the effective spec and populates `GroundingContext.spec_technologies`. The researcher LLM call (via `LlmResearcherGrounder`) receives these alongside the fabricated entities and the task description, and classifies each shared entity as either `implied` (a standard sub-component or implementation detail of an in-scope technology — e.g. RocksDB is ClickHouse's storage engine; ReplacingMergeTree is a ClickHouse table type) or `novel` (introduces something not implied by any in-scope technology). Only `novel_entities` — entities not in `GroundingResult.implied_entities` — receive the "Avoid (not in spec)" repair hint. The classification is fully per-task and per-tenant: what counts as implied depends on which technologies appear in that task's effective spec, not a global table. The pure fn `apply_implied_by_suppression(shared_ungrounded, implied_by_map, grounded_parents)` in `specification_grounding.rs` remains available for custom static overrides but is no longer called in the main SRANI path.
+```rust
+#[async_trait]
+trait GroundingJudge: Send + Sync {
+    async fn judge(&self, output: &str, spec: &str) -> Vec<GroundingFinding>;
+}
 
-`check_specification_grounding(effective_spec, &proposal_texts)` in `specification_grounding.rs` extracts architectural noun entities from each proposal, intersects them with the set absent from the effective spec, and computes CFI = max pairwise overlap of per-proposal ungrounded entity sets. CFI ∈ [0, 1]; CFI = 1 means every entity in one proposal's ungrounded set is shared with another proposal — a strong cross-proposal fabrication signal at the entity level (distinct from token-level CV). The raw CFI is used for gate/EMA without pre-filtering — the gate fires conservatively, then the LLM classifies which entities are genuinely novel.
+struct GroundingFinding { text: String, kind: FindingKind, reason: String, confidence: f64 }
+enum FindingKind { Entity, Claim }
+```
 
-**Adaptive sigmoid gate:** Rather than static warn/inject thresholds, injection pressure is computed as `injection_pressure = σ((CFI − μ) / T)` where:
-- `μ` = EMA of observed CFI values (`srani_ema_alpha`, default 0.20, ≈5-task memory horizon), cold-start value 0.45
-- `T` = temperature controlling gate sharpness (`srani_temperature`, default 0.15)
+Three implementations are composable:
 
-When `injection_pressure ≥ srani_gate_threshold`: `SraniGroundingChain::resolve(ctx, tier)` is called. The chain escalates: tier 0 runs `SpecAnchorGrounder` (always, injects spec entities as alternatives) + `LlmResearcherGrounder` (researcher adapter fetches grounding evidence); tier 1 additionally runs `WebSearchGrounder` (live web search, LLM-distilled). The hint is injected into the next generation wave.
+- **`HeuristicGroundingJudge`** — pure extraction: `extract_arch_nouns(output) \ extract_arch_nouns(spec)` → `GroundingFinding { kind: Entity, confidence: 0.8 }`. No LLM call. Used as fallback when no researcher adapter is configured.
+- **`LlmGroundingJudge`** — calls the researcher adapter with `GROUNDING_JUDGE_SYSTEM` + `GROUNDING_JUDGE_TASK` prompts (budget: `grounding.max_tokens`, τ: `grounding.tau`); parses JSON response `{"findings": [{ text, kind, reason, confidence }, ...]}`. Findings with `confidence < 0.5` are discarded at parse time. Confidence represents the judge's certainty that the entity/claim is absent from the spec boundary.
+- **`CompositeGroundingJudge`** — fans out to all judges via `futures::join_all`; deduplicates by `text` key (first-seen wins).
 
-**EMA persistence:** `srani_ema_cfi` and `srani_count` are loaded from NATS KV bucket `H2AI_ESTIMATOR` key `"srani_adaptive_state"` at startup and persisted after each task. The EMA tracks the system's operating regime — tasks in low-CFI regimes use a low baseline, letting genuine spikes trigger grounding; tasks in high-CFI regimes raise the baseline so not every wave triggers.
+**Spec boundary.** The `effective_spec` passed to `GroundingChecker::new()` is built from two sources (engine.rs, `run_epistemic_stage`):
+```
+effective_spec = manifest.description + "\n" + join("\n", [ "{c.id}: {c.description}" for c in constraint_corpus ])
+```
+`manifest.context` is **not** included in `effective_spec` — it is consumed separately by `TaskContextSeeder::seed_uncertainty_gaps()` to detect uncertainty keywords. `ConstraintDoc.binary_checks` and `pass_criteria` are also not included — only `ConstraintDoc.id` and `ConstraintDoc.description` contribute. Technologies or entities present in the description or any constraint description are considered grounded.
 
-Emits `CorrelatedFabricationEvent { cfi, injection_pressure, shared_ungrounded_entities, hint_injected }` and optionally `ResearcherGroundingEvent { source: GroundingSource, slot: Option<String>, ... }`.
+**Gap production.** `GroundingChecker::check()` calls `judge.judge(output, spec)`, filters findings by `confidence ≥ min_confidence` (`grounding.min_confidence`, default 0.7), and emits one `Gap` per finding:
 
-**Slot classification:** `ResearcherGroundingEvent.slot` is populated by `classify_grounding_slot(shared_ungrounded_entities)` — a keyword classifier that maps fabricated entity names to named repair context injection slots: `"message_broker"` (Kafka, RabbitMQ, ActiveMQ), `"distributed_coordination"` (ZooKeeper, etcd, Consul, Chubby), `"cache_layer"` (Redis, Memcached, Dragonfly), `"database_migration"` (Postgres system objects, `replication_slot`), or `"implementation_detail"` for unknowns. First-match wins over the entity list. The slot is used by `build_repair_context()` to inject the grounding summary into the structurally correct section of the repair prompt rather than appending it as free-form text.
+- `kind`: `GapKind::UngroundedContent`
+- `source`: `GapSource::GroundingCheck`
+- `id`: `grounding:{text_lowercased_underscored}`
+- `description`: `[entity|claim] text: reason`
+- `severity`: confidence ≥ 0.9 → `High`; ≥ 0.7 → `Medium`; else → `Low`
+
+**Call sites in `engine.rs`.** GroundingChecker is invoked only within `run_epistemic_stage`, which runs **after** `MergeResolved` (never before the MAPE-K wave loop):
+1. **Pre-feedback-loop:** called on `out.resolved_output` (the merged output) before the epistemic feedback loop starts. The resulting `UngroundedContent` gaps become part of `static_gaps` passed to the feedback loop.
+2. **Post-feedback-loop:** called on `final_output` (the patched output) only when `closed_ids` is non-empty — i.e., when `MicroExplorerResolver` closed at least one gap. Catches new ungrounded entities introduced by recovery patches.
+
+Optionally `ResearcherGroundingEvent { source: GroundingSource, slot: Option<String>, ... }` is emitted when external grounding is fetched during C1 detection or a proactive slot research pass.
 
 ### Phase 3.5 — Verification
 
@@ -337,7 +356,7 @@ A multi-variant **judge panel** (`JudgePanel`) scores every proposal against the
 
 **Adversarial verifier:** When any explorer slot carries non-empty `rejection_criteria`, verification uses `ADVERSARIAL_EVALUATOR_SYSTEM_PROMPT` — a hostile-reviewer framing that asks the verifier to find the single most likely silent failure rather than checking rubric compliance. Since Path C always populates `rejection_criteria`, this is the default in production.
 
-**Per-check reasoning capture:** `verification.rs` parses `check_reasons` from the `ScoreResponse` JSON (private to `h2ai-constraints`) and propagates the value to `ConstraintViolation.check_reasons: Option<Vec<String>>`. The field carries per-check evidence the judge cited (e.g., `"Check 2: WATCH/MULTI/EXEC retry loop violates no-distributed-lock constraint"`). When present, `check_reasons` flows through the pipeline alongside `verifier_reason` and is consumed by `extract_incorrect_concept_from` in `mape_k.rs` for targeted per-check repair hint construction. The `CHECK_EVIDENCE_FORMAT_INSTRUCTION` prompt constant in `crates/h2ai-config/src/prompts.rs` instructs the verifier to emit structured per-check reasoning; the field degrades gracefully to `None` if the judge response omits it.
+**Per-check reasoning capture:** `verification.rs` parses `check_reasons` from the `ScoreResponse` JSON (private to `h2ai-constraints`) and propagates the value to `ConstraintViolation.check_reasons: Option<Vec<String>>`. The field carries per-check evidence the judge cited (e.g., `"Check 2: WATCH/MULTI/EXEC retry loop violates no-distributed-lock constraint"`). When present, `check_reasons` flows through the pipeline alongside `verifier_reason` and is consumed by `extract_incorrect_concept_from` in `mape_k.rs` for targeted per-check repair hint construction. The `CHECK_EVIDENCE_FORMAT_INSTRUCTION` prompt constant in `crates/h2ai-config/src/prompts.rs` instructs the verifier to emit a `CHECK VERDICTS:` block header in the **visible** final response (not inside any `<think>` section), followed by one `CHECK N: <evidence> → PRESENT or MISSING` line per check. The `has_check_markers` guard in `verification.rs` requires the string `"CHECK "` to appear in the visible `verifier_reason` before binary-check parsing runs; without the section header, thinking models (llama_cpp, Qwen3, R1) that emit check reasoning only in hidden `<think>` tokens would produce `total_checks = 0` even when correct reasoning exists. The `VerificationScoredEvent` exposes `total_checks`, `passed_checks`, `score_lower`/`score_upper` (95% Wilson CI), and `per_check_verdicts`; `total_checks = 0` signals the header was absent.
 
 ### Phase 4 — Auditor Gate
 
@@ -372,9 +391,8 @@ Surviving proposals enter `MergeEngine::resolve` with the strategy chosen at Pha
 - **OutlierResistant{f}**: smallest sum of distances to its `n − f − 2` nearest neighbours in Jaccard-distance space (Krum-style, from federated learning Byzantine-robust aggregation — Blanchard et al. 2017). Requires `n ≥ 2f + 3`.
 - **MultiOutlierResistant{f, m}**: iteratively select m survivors via OutlierResistant, then take the highest verification score.
 
-**OSP regime layer.** When `[osp]` is configured, `MergeEngine::resolve` classifies the surviving proposals into one of four regimes before strategy dispatch:
-- `ZeroSurvival` (N_v=0): short-circuit before any LLM call.
-- `SingleSurvivor`: return directly.
+**OSP regime layer.** When `[osp]` is configured, `MergeEngine::resolve` handles `MergeOutcome::ZeroSurvival` (N_v=0) as an early exit before strategy dispatch, then classifies the remaining surviving proposals into one of three `OspRegime` variants:
+- `SingleSurvivor` (N_v=1): return directly.
 - `ClearLeader` (score gap Δ ≥ 2·T_v and P(correct) ≥ 0.92): select leader, skip ConsensusMedian.
 - `TightCluster` (Δ < 2·T_v): run ConsensusMedian over passing proposals only.
 
@@ -406,7 +424,7 @@ When the MAPE-K retry loop exhausts — either by reaching `max_autonomic_retrie
 
 The primary path when isolation evidence or plateau detection fires. Implements the Decompose-Plan-Program-Merge pattern (arXiv:2506.02683):
 
-1. **CLUSTER** — `build_clusters(&constraint_corpus)` BFS-partitions constraints into semantically-coherent groups by shared check-index adjacency (in `h2ai-autonomic/src/clustering.rs`). Each cluster owns a disjoint subset of binary check indices.
+1. **CLUSTER** — `build_clusters(&constraint_corpus)` BFS-partitions constraints into semantically-coherent groups by shared check-index adjacency (in `h2ai-constraints/src/clustering.rs`). Each cluster owns a disjoint subset of binary check indices.
 
 2. **META OBSERVE** — `find_oscillation_pairs(all_pruned, check_offsets)` finds constraint pairs that appear in disjoint passed-check sets across proposals (the MUS signature). `divergence_events_from_pruned(all_pruned)` quantifies per-check convergence. Together they feed `build_balancing_instruction(oscillation_pairs, divergence_events)` which produces an explicit conflict-resolution brief for the integration LLM (in `h2ai-autonomic/src/meta_observer.rs`).
 
@@ -471,7 +489,7 @@ The `h2ai-orchestrator` crate implements the MAPE-K loop as three distinct layer
 | **Phase modules** | `src/phases/` (16 modules) | Pure data transformations. Each module exposes an `Input` struct, an `Output` struct, and a `run()` function returning `StepResult<Output>`. No retry state; no cross-wave memory. |
 | **ExecutionPipeline** | `src/pipeline.rs` | Sequences the 16 phase modules for one wave. Stateless — receives `PipelineParams` each wave, returns `PipelineWaveResult`. Can be tested in isolation without a running controller. |
 | **MapeKController** | `src/mape_k.rs` | Owns all retry state. Implements `observe(wave)` (aggregates events across waves — also updates `global_best_proposal: Option<(f64, String)>` cross-wave accumulator and `global_best_constraint_reasons: HashMap<String, String>` dynamic passing-constraint verifier reasons from the global-best passing proposal — updated only when `wave.best_passing_constraint_reasons` is non-empty), `params()` (projects current state into `PipelineParams` for the next wave), and `decide(outcome)` (maps `PipelineOutcome` to `MapeKDecision`). Carries `conflict_graph: ConstraintConflictGraph` (built once at task start) and `binary_checks: Vec<String>` (flat list of all `ConstraintDoc.binary_checks` across the corpus — used by B1 and B2 injection). Exposes `all_pruned() -> &[BranchPrunedEvent]` and `system_context_with_rubric() -> &str` for the terminal synthesis wave. When `cspr.enabled = true`, `apply_retry_action` handles `RetryWithTargets { topology, targets: Vec<RepairTarget> }` from `RetryPolicy::decide()`: calls `build_repair_context(RepairInput { targets, conflict_graph, checks, partial_passes, prior_best_score, … })`. Each `RepairTarget.verifier_reasons: Vec<(f64, String)>` carries scored, Jaccard-deduped reasons selected by `top_k_unique_reasons(k=tried_topologies.len()+1, dedup_j=0.7)` — wave 1 → top-1, wave 2 → top-2, wave 3+ → all unique. Slot A emits a `TARGET BEHAVIOR` block when `RepairTarget.criteria_pass` is non-empty (sourced from `ConstraintDoc.rubric.pass`, propagated `ComplianceResult → ConstraintViolation → RepairTarget`), then "VERIFIER INTERPRETATION (best attempt: N% compliance)" with secondary reasons as "ALTERNATIVE DIAGNOSIS"; when `criteria_pass` is None the YOUR TASK text reads "satisfies the constraint requirement" (positive framing, not prohibition-forward — see Mayne et al. arXiv 2605.13829). Slot B falls back to "GUIDANCE" (remediation_hint); Slot C uses constraint description only. `prior_best_score` emits a global compliance header. Adds `[COMPETING CONSTRAINTS DETECTED]` MetaRepair block when two violated constraints are in the conflict graph. `coupled_hints` and `passing_pins` both call `build_best_passing_pin_hint(id, &self.global_best_constraint_reasons, self.corpus_pass_hint_for(id))` — the public free fn prefers the dynamic verifier reason for a passing constraint over the static corpus hint, falling back when the dynamic entry is absent or empty. This anchors the repair LLM on what the verifier actually accepted, not just on generic corpus requirements. B1 checklist and B2 partial-pass examples appended when `checks` is non-empty and `retry_count >= 1`. In `observe()`: pushes wave mean scores to `per_constraint_wave_scores`, pushes verifier reason to `verifier_reason_history` (bounded at `verifier_freeze.reason_window_size`), and calls `assess_gap_quality(synthesis, cfg)` for every injected `DomainSynthesis` entry — evicting entries where `GapQualityVerdict::Ineffective` (post-injection pass rate failed to improve by `gap_quality.min_improvement_to_retain` across `min_post_injection_waves` waves). `DomainSynthesis` carries three new fields: `injected_at_wave`, `pre_injection_pass_rate`, `post_injection_pass_rates` (see `crates/h2ai-types/src/gap_i1.rs`). The `extract_incorrect_concept_from` helper requires non-empty `check_verdicts` before attributing a verifier reason to a specific check index — empty verdicts (when the verifier omitted per-check breakdown) are excluded to prevent cross-contamination between unrelated constraint failures. |
-| **Coordinator** | `src/engine.rs` (~30 lines) | Creates controller and pipeline, runs the `loop { pipeline.run → controller.observe → controller.decide }` cycle, routes `MapeKDecision` to return/continue/error. |
+| **Coordinator** | `src/engine.rs` | Creates controller and pipeline, runs the `loop { pipeline.run → controller.observe → controller.decide }` cycle, routes `MapeKDecision` to return/continue/error. |
 
 ### Phase execution sequence
 
@@ -481,6 +499,8 @@ Phases split into two groups with different retry semantics:
 
 | Order | Module | What it does | Returns on failure |
 |-------|--------|-------------|-------------------|
+| 0 (opt-in) | `thinking_loop` | When `thinking_loop.enabled = true`: iterative multi-archetype brainstorm converging on `coverage_score ≥ coverage_threshold`; per-constraint archetype coverage guarantee; tournament merge synthesis; emits `ThinkingLoopCompleted { archetypes, coverage_score, iterations_run }` and optionally `AwarenessProbeCompleted` | Failure → task continues with empty `shared_understanding`; never fails the task |
+| 0a | `decomposition` | `run_decomposition_agent()`: one LLM call to derive `Vec<ExplorerSlotConfig>` — each slot has `role_frame`, `cot_style`, `focus_mandate`, `rejection_criteria`, `constraint_domains`, `search_enabled`; `prune_by_orthogonality()` caps N to N_max | `Err(EngineError)` — task fails immediately |
 | 1 | `bootstrap` | Compiles system context (with and without rubric) via `compiler::compile`, applies compaction, checks family conflict gate (`RequireDiverse` / `SingleFamilyOk`) | `Err(EngineError)` — task fails immediately |
 | 2 | `complexity` | Calls `assess_task_complexity()`, assigns `TaskQuadrant`, guards against `Degenerate` in non-shadow mode, derives `cg_mean` and `n_max_ceiling` from calibration | `Err(EngineError)` — task fails immediately |
 | 3 | `domain_coverage` | Computes corpus domain tag coverage across slot configs; emits `DiversityGuardDegradedEvent` (non-blocking unless `require_bivariate_cg = true`) | `Err(EngineError)` — task fails immediately |
@@ -496,8 +516,8 @@ Phases split into two groups with different retry semantics:
 | 2 | `multiply` | `MultiplicationChecker::check()` against `p_mean`, `ρ_mean`, CG threshold from calibration (Phase 2.5) | `MultiplicationFailed { tau_values }` |
 | 3 | `diversity` | `n_eff_cosine_prior < 1.0 + diversity_threshold` check (Phase 2.6) | `MultiplicationConditionFailed { InsufficientPoolDiversity { n_eff, threshold } }` |
 | 4 | `generation` | Parallel TAO agent dispatch — one `TaoAgent::run()` per explorer; collects `ProposalEvent`s | — (never `EarlyExit`) |
-| 5 | `hallucination` | CV + Jaccard correlated hallucination detection; triggers SRANI grounding when both thresholds fire | `HallucinationDetected { retry_context_hint }` |
-| 6 | `srani` | SRANI escalating grounding chain: `SpecAnchorGrounder` → `LlmResearcherGrounder` → `WebSearchGrounder`; updates SRANI EMA-CFI | — |
+| 5 | `hallucination` | CV + Jaccard correlated hallucination detection; triggers `GapResearchChain` reactive grounding when both thresholds fire | `HallucinationDetected { retry_context_hint }` |
+| 6 | (removed) | correlated-fabrication phase removed; universal grounding now runs via `GroundingChecker` in pre-loop and post-loop positions in `engine.rs` | — |
 | 7 | `verify` | `LlmJudgeVerifier` batch verification in parallel; scores each proposal against the constraint corpus | — |
 | 8 | `audit` | `AuditorAdapter` gate; selects auditor-survivor proposals; emits `ShadowAuditorResultEvent` | — |
 | 9 | `frontier` | Static constraint satisfaction matrix (proposal × static-constraint); computes `pareto_coverage` | — (returns `None` when no static constraints) |
@@ -544,7 +564,7 @@ Phase modules only classify failures — they never call `RetryPolicy`. The cont
 
 4. **Frozen verifier detection + bypass** (in `decide()`, every wave after `min_waves_to_detect`): `detect_frozen_verifier(constraint_id, wave_scores, reason_history, other_constraint_trends, cfg)` in `crates/h2ai-autonomic/src/epistemic.rs` fires when ALL five conditions hold: (a) `wave_scores.len() >= min_waves_to_detect`, (b) `variance(wave_scores) < score_variance_threshold` (score not moving), (c) at least one other constraint shows monotonically increasing trend and mean > `other_constraint_success_threshold` (proves proposals genuinely improve — guards against model-ceiling false positives), (d) mean pairwise Jaccard of `reason_history` > `reason_jaccard_threshold` (verifier produces near-identical rejections regardless of proposal evolution), and (e) `other_constraint_trends` is non-empty (single-constraint sessions never trigger). When `bypass_hard_gate_on_freeze = true` and `Some(FrozenVerifierSignal)` is returned: the constraint ID enters `bypassed_verifier_constraints`; proposals failing ONLY bypassed constraints pass pruning tagged with `bypass_reason: Some("VerifierFrozen")`; `VerifierFrozenEvent` is emitted; `EngineOutput.bypassed_constraint_ids` carries the bypass set for operator visibility. Bypass is per-constraint: proposals failing a bypassed constraint AND any non-bypassed Hard constraint are still pruned. The `MapeKController` carries three new fields: `per_constraint_wave_scores: HashMap<String, Vec<f64>>` (per-constraint, per-wave mean scores — the foundational observable shared with gap quality assessment and Talagrand τ-adjustment), `verifier_reason_history: HashMap<String, VecDeque<String>>` (rolling window bounded at `reason_window_size` to prevent unbounded growth), and `bypassed_verifier_constraints: HashSet<String>`.
 
-Events: `ComplexityProbeEvent` (probe complete) and `ComplexityCeilingDetectedEvent` (detector fired) are emitted to NATS. The `beyond_budget_count: u32` field on `VerifierReasonContradictionEvent` (`#[serde(default)]`) carries sub-claim "verifier could not compute" verdicts; when `verifier_decomposition_enabled = true` and `probe.complexity ≥ decompose_threshold`, `BEYOND_BUDGET_VERIFIER_ADDENDUM` is appended to `verification_config.evaluator_system_prompt` in the pre-loop phase, instructing the verifier to decompose evaluation into sub-claims and report each as VERIFIED / UNVERIFIED / BEYOND_BUDGET. AgentDropout N-reduction fires on retry ≥ 2 when `N_eff < n_eff_dropout_threshold`. The iterative grafting loop is guarded by three over-decomposition checks: `graft_is_redundant` (shared/union ratio > 0.6), `grafted_ids_cycle_detected` (all missing IDs already grafted), and `graft_token_projection_exceeds` ((base + candidate) / 4 > base_tokens × 1.3). The dedicated E2E scenario `tests/e2e/scenarios/benchmark/complexity-routing/h2ai.toml` exercises the full stack end-to-end.
+Events: `ComplexityProbeEvent` (probe complete) and `ComplexityCeilingDetectedEvent` (detector fired) are emitted to NATS. The `beyond_budget_count: u32` field on `VerifierReasonContradictionEvent` (`#[serde(default)]`) carries sub-claim "verifier could not compute" verdicts; when `verifier_decomposition_enabled = true` and `probe.complexity ≥ decompose_threshold`, `BEYOND_BUDGET_VERIFIER_ADDENDUM` is appended to `verification_config.evaluator_system_prompt` in the pre-loop phase, instructing the verifier to decompose evaluation into sub-claims and report each as VERIFIED / UNVERIFIED / BEYOND_BUDGET. AgentDropout N-reduction fires on retry ≥ 2 when `N_eff < n_eff_dropout_threshold`. The iterative grafting loop is guarded by three over-decomposition checks: `graft_is_redundant` (shared/union ratio > 0.6), `grafted_ids_cycle_detected` (all missing IDs already grafted), and `graft_token_projection_exceeds` ((base + candidate) / 4 > base_tokens × 1.3). The dedicated E2E scenario `tests/e2e/scenarios/complexity-routing/h2ai.toml` exercises the full stack end-to-end.
 
 ### PipelineParams — controller state projected into each wave
 
@@ -560,10 +580,6 @@ Events: `ComplexityProbeEvent` (probe complete) and `ComplexityCeilingDetectedEv
 | `retry_context` | Injected constraint-feedback hint text from `RetryPolicy` |
 | `tao_config` | Per-turn TAO configuration (may be relaxed on retry) |
 | `verification_config` | Verification gate thresholds |
-| `srani_ema_cfi` | SRANI correlated fabrication index EMA carried forward |
-| `srani_count` | SRANI trigger count accumulated across waves |
-| `srani_tier` | SRANI escalation tier: 0 = SpecAnchor, 1 = Researcher, 2 = WebSearch |
-| `srani_last_wave_fired` | Whether SRANI fired on the immediately preceding wave |
 | `pending_tombstone` | Constraint tombstone injected at the topology phase on retry |
 | `leader_context` | `Option<LeaderContextSnapshot>` — Krum-elected leader's prior proposal text, Socratic question, and per-slot constraint aspect assignment; `None` when `leader_enabled = false` or first wave |
 
@@ -575,11 +591,10 @@ Events: `ComplexityProbeEvent` (probe complete) and `ComplexityCeilingDetectedEv
 |----------|---------------|
 | **Verification** | `VerificationScoredEvent` per proposal, `ProposalFailedEvent` for non-survivors |
 | **Audit** | `ShadowAuditorResultEvent` per wave |
-| **Hallucination / SRANI** | `CorrelatedEnsembleWarning`, `CorrelatedFabricationEvent`, `ResearcherGroundingEvent` |
+| **Hallucination / Grounding** | `CorrelatedEnsembleWarning`, `ResearcherGroundingEvent` |
 | **Optimizer signals** | `QualityMeasurement` (self-optimizer), `TalagrandFeedback` (τ-spread), `TaoEstimatorUpdate` (bandit) |
 | **Topology** | `TopologyProvisionedEvent` (on retry waves), `BranchPrunedEvent` (synthesis/merge pruning) |
 | **Constraint frontier** | `ConstraintFrontierEvent` (static constraint satisfaction matrix) |
-| **SRANI state mutations** | Updated EMA-CFI, tier, count, and retry context — fed back into `PipelineParams` for the next wave |
 | **Gate ratio** | `filter_ratio` (survivors ÷ proposals) — consumed by `RetryPolicy::decide()` |
 | **Proposal texts** | `wave_proposal_texts: Vec<(SlotId, String)>` — raw proposal text per slot, carried forward so `prepare_leader_election()` can build the leader's prior-proposal prefix for the next wave |
 | **Passing-constraint reasons** | `best_passing_constraint_reasons: HashMap<String, String>` — per-constraint verifier reasons from the highest-scoring passing proposal this wave (non-empty reasons only); merged into `MapeKController.global_best_constraint_reasons` in `observe()` when a new global-best is found; consumed by `build_best_passing_pin_hint` as dynamic passing-constraint pin hints |
@@ -621,9 +636,22 @@ The Epistemic Leader is an optional cross-wave guidance layer that runs between 
 ```mermaid
 sequenceDiagram
     participant E as engine.rs (Coordinator)
+    participant TL as thinking_loop (Phase -1)
     participant PH as phases/ (pre-loop)
     participant C as MapeKController
     participant P as ExecutionPipeline
+
+    opt thinking_loop.enabled
+        E->>TL: thinking_loop::run(input) → ThinkingReport
+        TL-->>E: ThinkingReport { shared_understanding, tensions, archetypes }
+        E->>E: publish ThinkingLoopCompleted { archetypes, coverage_score }
+        opt awareness_probe.enabled
+            E->>E: AwarenessProbe::run() → AwarenessProbeCompletedEvent
+        end
+    end
+
+    E->>PH: run_decomposition_agent() → Vec<ExplorerSlotConfig>
+    Note over PH: Phase 0 — Epistemic Decomposition
 
     E->>PH: bootstrap::run()
     PH-->>E: BootstrapOutput
@@ -646,7 +674,11 @@ sequenceDiagram
         E->>P: run(params, retry_count)
         P-->>E: PipelineWaveResult { outcome, events }
         E->>C: observe(wave)
-        Note over C: aggregates WaveEvents,\nupdates SRANI state,\nfeeds Talagrand/optimizer
+        Note over C: aggregates WaveEvents,\nfeeds Talagrand/optimizer
+        opt leader_enabled and wave failed
+            E->>E: prepare_leader_election() → LeaderElectedEvent
+            E->>E: Socratic diagnosis → SocraticDiagnosisEvent
+        end
         E->>C: decide(outcome, retry_count, filter_ratio)
         alt MapeKDecision::Return
             C-->>E: EngineOutput
@@ -687,6 +719,30 @@ sequenceDiagram
     NATS-->>API: CalibrationCompletedEvent
     API-->>C: 202 Accepted {task_id, events_url}
     API->>Orch: spawn ExecutionEngine::run(task_id)
+
+    opt thinking_loop.enabled
+        Note over Orch: Phase -1 — Thinking Loop
+        loop until coverage_score ≥ threshold or max_iterations
+            Orch->>Adapter: select_archetypes() — LLM call (τ=scheduled_tau)
+            Adapter-->>Orch: Vec<ArchetypeSpec> + focus_constraints
+            Orch->>Orch: find_uncovered_constraints → synthesize_coverage_archetype
+            Orch->>Adapter: brainstorm per archetype (parallel)
+            Adapter-->>Orch: archetype outputs
+            Orch->>Adapter: tournament_merge synthesis
+            Adapter-->>Orch: ThinkingReport { shared_understanding, tensions, coverage_score, archetypes }
+        end
+        Orch->>NATS: publish ThinkingLoopCompleted { archetypes, coverage_score, iterations_run }
+        opt awareness_probe.enabled
+            Orch->>Adapter: AwarenessProbe — batch constraint verdicts
+            Adapter-->>Orch: AwarenessProbeCompletedEvent
+            Orch->>NATS: publish AwarenessProbeCompleted
+        end
+    end
+
+    Note over Orch: Phase 0 — Epistemic Decomposition
+    Orch->>Adapter: run_decomposition_agent() — motivated committee (τ=0.1)
+    Adapter-->>Orch: Vec<ExplorerSlotConfig> { role_frame, cot_style, focus_mandate, rejection_criteria }
+    Orch->>Orch: prune_by_orthogonality (if N > N_max)
 
     Note over Orch: Phase 1 — Bootstrap
     Orch->>NATS: publish TaskBootstrapped
@@ -750,6 +806,14 @@ sequenceDiagram
         Orch->>NATS: publish SelectionResolved
         Orch->>NATS: publish MergeResolved
         NATS-->>C: SSE: MergeResolved
+        Note over Orch: Post-Merge — Epistemic Quality Stage
+        Orch->>Orch: SelectionPruningExtractor::extract(pruning_reasons)
+        Orch->>Adapter: CoherenceChecker::check(merged_draft)
+        Orch->>Orch: GapRegistry::dispatch_batches() → concurrent gap batches
+        Orch->>Adapter: MicroExplorerResolver::resolve (per gap, concurrent)
+        Orch->>Orch: ProvenanceMap::build → OutputRenderer::render
+        Orch->>NATS: publish ProvenanceRecordedEvent
+        NATS-->>C: SSE: ProvenanceRecordedEvent
         Orch->>NATS: publish EpistemicYield (async)
     else zero survivors
         Orch->>NATS: publish ZeroSurvival
@@ -767,7 +831,7 @@ flowchart LR
 1. **Validation** — weights must sum to 1.0; manifest structure must be valid. `503` if no current calibration in `H2AI_CALIBRATION` KV.
 2. **task_id allocation** — a `TaskId` (UUID) is minted. Response is `202 Accepted` with `{"task_id": ..., "events_url": "/{tenant_id}/tasks/{id}/events"}`.
 3. **ExecutionEngine::run** — spawned as a Tokio task. Loads `CalibrationCompletedEvent` from `H2AI_CALIBRATION` KV.
-4. **Dark Knowledge compilation** — `h2ai-context` assembles the constraint corpus, task description, and prior session memory (from `H2AI_AGENT_MEMORY` KV) into a single immutable `system_context` string.
+4. **Dark Knowledge compilation** — `h2ai-context` assembles the constraint corpus, task description, and knowledge enrichment into a single immutable `system_context` string.
 5. **TaskBootstrapped** published to `h2ai.tasks.{task_id}` on `H2AI_TASKS` stream.
 
 ### 3.2 Provisioning and gates
@@ -1027,7 +1091,7 @@ sequenceDiagram
     SE-->>Orch: all subtasks complete
 ```
 
-Long or structured tasks can be decomposed into a directed acyclic graph of subtasks by the `CompoundTaskEngine`. Each node in the DAG is a full H2AI wave (all 6 phases), and edges express output-dependency.
+Long or structured tasks can be decomposed into a directed acyclic graph of subtasks by the `CompoundTaskEngine`. Each node in the DAG is a full H2AI task execution (Phase -1 through Phase 5 plus the post-merge epistemic quality stage), and edges express output-dependency.
 
 ### Decomposition — PlanningEngine
 
@@ -1261,11 +1325,17 @@ h2ai-types          Pure value types + math primitives (USL, EigenCalibration, E
                     SubtaskId, SubtaskPlan, SubtaskResult, PlanStatus).
                     TenantId (identity scope), TaskReasoningCheckpoint + ReasoningCheckpointPhase +
                     TaskMetaState + ArchetypeResult (reasoning memory Phase 1 types).
+                    Epistemic quality types: CheckVerdict, CheckVerdictKind (per-check
+                    PRESENT/MISSING verdicts on VerificationScoredEvent); ProvenanceRecordedEvent
+                    (document_confidence, provision_count, open_gap_count).
 
 h2ai-config         Layered config loading (reference.toml + env overrides). Single source of truth.
                     Includes WebSearchConfig, McpFilesystemConfig, WasmExecutorConfig.
                     ReasoningMemoryConfig (induction scheduling, retrieval thresholds). StateConfig
                     extended with per-tenant bucket prefixes.
+                    EpistemicQualityConfig: enabled, coherence_check_enabled, coherence_min_severity,
+                    recovery_enabled, recovery_max_passes, recovery_tau, zero_valid_proposals_policy
+                    ("fail" | "deliver_unverified"), output_mode ("passthrough" | "clean" | "audit").
 
 h2ai-adapters       Adapter trait + per-provider implementations (Anthropic, OpenAI, Gemini, Ollama,
                     LlamaCpp, CloudGeneric, A2a, Mock, SequencedMockAdapter for TAO loop testing).
@@ -1327,10 +1397,41 @@ h2ai-orchestrator   ExecutionEngine — the 6-phase MAPE-K loop. MergeEngine. Ve
                     parse_decomposition_response, prune_by_orthogonality, compute_role_diversity,
                     corpus_fallback (domain-tag → slot templates), run_decomposition_agent.
                     skill_extractor — skill_from_output pure fn (builds SkillNodes from EngineOutput
-                    by inspecting retry events, coherence state, constraint tombstones, and SRANI
-                    correlated warnings); skill_from_retry_events (topology-retry path).
+                    by inspecting retry events, coherence state, constraint tombstones, and
+                    correlated ensemble warnings); skill_from_retry_events (topology-retry path).
                     SessionJournal — persists cross-task SkillNodes to the SkillStore backend at task
                     resolution; reads back nodes for warm-start knowledge injection.
+                    Epistemic quality stage (post-merge, run_epistemic_stage in engine.rs,
+                    wired from task_pipeline.rs):
+                      gap_checkers/selection_pruning.rs — SelectionPruningExtractor: pure fn
+                        extract_gaps_from_pruned; MissingProvision gaps from pruned proposals.
+                      gap_checkers/task_context_seeder.rs — TaskContextSeeder: pure fn
+                        seed_uncertainty_gaps; UncertainDomain gaps from manifest.context keywords
+                        ["unsettled", "best-effort basis", "rapidly evolving"]; never resolvable.
+                      gap_checkers/grounding.rs — GroundingChecker: UngroundedContent gaps for
+                        entities absent from effective_spec; two calls in run_epistemic_stage:
+                        pre-feedback-loop on merged output (static gaps), post-feedback-loop on
+                        patched output when recovery closed gaps; HeuristicGroundingJudge (no LLM)
+                        when grounding.enabled=false, LlmGroundingJudge when enabled.
+                      gap_checkers/coherence.rs — CoherenceChecker: one LLM call per feedback-loop
+                        pass on current output; detects inter-provision interaction risks;
+                        InterProvisionConflict gaps; disabled by default (coherence_check_enabled=false).
+                      gap_resolvers/micro_explorer.rs — MicroExplorerResolver: one LLM call per gap;
+                        handles MissingProvision and IncompleteProvision only; full constraint matrix
+                        injected; implements GapResolver trait; disabled by default (recovery_enabled=false).
+                      gap_registry.rs — GapRegistry: collects gaps from all checkers;
+                        dispatch_batches() builds Kahn's DAG of independent gap batches for
+                        concurrent MicroExplorerResolver calls.
+                      provenance.rs — ProvenanceMap: worst-wins document confidence;
+                        ProvisionConfidence order Verified < AutoCorrected < ReviewRecommended
+                        < RequiresReview < Unverified; DocumentConfidence: Unverified worst →
+                        Unverified; RequiresReview → RequiresReview; ReviewRecommended →
+                        ReviewRecommended; else → High; per-provision ProvisionProvenance
+                        with confidence, verdicts, gap_ids.
+                      output_renderer.rs — OutputRenderer: render_output(text, map, mode)
+                        → annotated String; passthrough=unchanged, clean=header, audit=header
+                        + per-provision annotations + footer. ProvenanceRecordedEvent published
+                        from task_pipeline.rs (not output_renderer) after run_epistemic_stage.
 
 h2ai-planner        LLM-driven task decomposition (PlanningEngine::decompose) and plan structural
                     review (PlanReviewer::evaluate + detect_cycle). Used by CompoundTaskEngine for
@@ -1387,7 +1488,8 @@ flowchart TD
     CO --> P35["Phase 3.5: h2ai-orchestrator + verification adapter LLM-as-Judge"]
     P35 --> P4["Phase 4: h2ai-orchestrator + auditor adapter"]
     P4 --> P5["Phase 5/5a: MergeEngine::resolve + optional synthesis adapter"]
-    P5 --> EV["h2ai-nats publishes each H2AIEvent to H2AI_TASKS stream"]
+    P5 --> EQ["Post-Merge Epistemic Stage: GapRegistry → RecoveryLoop → ProvenanceMap → OutputRenderer → ProvenanceRecordedEvent"]
+    EQ --> EV["h2ai-nats publishes each H2AIEvent to H2AI_TASKS stream"]
     EV --> ZS{"zero survival?"}
     ZS -->|"yes: RetryPolicy, MAPE-K, up to max_autonomic_retries"| P2
     ZS -->|no| SSE["GET /:tenant_id/tasks/:id/events: SSE stream (reconnect with Last-Event-ID)"]
@@ -1398,6 +1500,8 @@ flowchart TD
 ## 8. Event sourcing model
 
 Every state transition is an `H2AIEvent` published to `h2ai.tasks.{task_id}`. Crash recovery is replay from the last snapshot offset; SSE clients reconnect with `Last-Event-ID`. Full event enumeration is in [`reference.md`](reference.md#event-vocabulary). Event payload schemas are stable: every field added since the initial release uses `#[serde(default)]` so old serialised events continue to deserialise.
+
+`ProvenanceRecordedEvent` is published after the post-merge epistemic quality stage completes. Fields: `task_id`, `document_confidence` (string label: `High` | `ReviewRecommended` | `RequiresReview` | `Unverified`), `provision_count` (total provisions annotated), `open_gap_count` (gaps unresolved after recovery), `timestamp` (UTC). Downstream systems that need structured provenance data without inline annotations should consume this event rather than parsing the rendered output text. When `epistemic_quality.enabled = false`, this event is not emitted.
 
 The authoritative log is NATS JetStream stream `H2AI_TASKS` (file-backed, replicated). Calibration data lives in the `H2AI_CALIBRATION` KV store. Snapshots are written to `H2AI_SNAPSHOTS` periodically — recovery loads the latest snapshot and replays only events with `sequence > last_sequence`.
 
@@ -1564,8 +1668,8 @@ H2AI previously discarded all per-task reasoning artifacts on resolution. Phase 
 |---|---|---|
 | 1a. TaskReasoningCheckpoint | ✅ Phase 1 | Progressive checkpoint at each engine phase gate |
 | 1b. TaskMetaState | ✅ Phase 1 | Immutable projection at resolution; feeds induction |
-| 2. InductionScheduler | ✅ Complete (2026-06-19) | `NatsInductionScheduler` — tag-sharded `H2AI_MEMORY` KV (`{tenant_id}.tag.{tag}` → `TagPatternBucket { patterns }`); two-round SAD retrieval with vocabulary bridge; CAS `attempt_count`/`success_count` update; `RetryKvBackend` abstraction for testability; `InductionScheduler` trait: `load_priming_hints`, `run_retroactive`, `record_success` |
-| 3. Thinking loop integration | ✅ Complete (2026-06-19) | `format_retry_hint_priors` prepends top-5 `RetryHintPattern` priors to archetype selection system prompt; `retry_hint_priors: &'a [RetryHintPattern]` on `ThinkingLoopInput`; corpus-seeded `n_archetypes = corpus.len().max(2).min(max_archetypes)`; `MapeKController` ZeroSurvival trigger spawns `run_retroactive` into `pending_induction`; `record_success` at Path A/B |
+| 2. InductionScheduler + Semantic Distillation | ✅ Layer 2a complete (2026-06-19); Layer 2b data layer complete (2026-06-22) | Layer 2a: `NatsInductionScheduler` — tag-sharded `H2AI_MEMORY` KV (`{tenant_id}.tag.{tag}` → `TagPatternBucket`); two-round SAD retrieval; `InductionScheduler` trait: `load_priming_hints`, `run_retroactive`, `record_success`. Layer 2b (2026-06-22): `ArchetypePrior`, `TensionPattern`, `DecompositionTemplate` types + `DistillationResult`; `distill_archetype_priors`, `distill_tension_patterns`, `distill_decomposition_templates` pure functions; `run_distillation_cycle` / `load_semantic_memory` on trait (default no-ops); NATS persistence to `{tenant_id}.semantic` in `H2AI_MEMORY`; not yet called by engine |
+| 3. Thinking loop integration | 🟡 Partial (RetryHintPattern priming complete 2026-06-19; archetype prior boost/tension seeding wiring pending) | `format_retry_hint_priors` prepends top-5 `RetryHintPattern` priors to archetype selection system prompt; corpus-seeded `n_archetypes`; `MapeKController` ZeroSurvival trigger spawns `run_retroactive`; `record_success` at Path A/B. Pending: `select_archetypes()` boost/penalty (+0.15/−0.20) from `ArchetypePrior`; iteration-0 tension seeding from `TensionPattern` — both require `run_distillation_cycle` engine wiring (now unblocked by Layer 2b) |
 | 4. Hybrid retrieval | Planned | Tag-gate + embedding rerank at scale |
 
 ### Tenant model
@@ -1726,14 +1830,13 @@ Each tenant has isolated runtime state created lazily on first request:
 | `tao_multiplier_estimator` | `TaoMultiplierEstimator` | learns per-tenant TAO timing |
 | `tau_spread_estimator` | `TauSpreadEstimator` | per-tenant τ adaptation |
 | `bandit_state` | `BanditState` | per-tenant Thompson bandit for adapter selection |
-| `srani_state` | `(ema_cfi, count)` | per-tenant SRANI adaptive EMA |
 | `rho_ema` | `RhoEmaState` | per-tenant coherence EMA |
 
 **NATS KV isolation** — all per-tenant KV keys are prefixed with `{tenant_id.bucket_safe()}/` (hyphens replaced with underscores):
 
 ```
-default/tao        default/bandit        default/srani
-acme_corp/tao      acme_corp/bandit      acme_corp/srani
+default/tao        default/bandit
+acme_corp/tao      acme_corp/bandit
 acme_corp/{task_id}   ← approval records
 ```
 

@@ -244,6 +244,7 @@ fn apply_verification_scored_passed_increments_valid() {
             total_checks: None,
             score_lower: None,
             score_upper: None,
+            per_check_verdicts: vec![],
             timestamp: Utc::now(),
         }),
     );
@@ -271,6 +272,7 @@ fn apply_verification_scored_failed_increments_pruned() {
             total_checks: None,
             score_lower: None,
             score_upper: None,
+            per_check_verdicts: vec![],
             timestamp: Utc::now(),
         }),
     );

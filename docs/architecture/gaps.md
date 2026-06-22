@@ -34,7 +34,10 @@ is a falsifiable question with a concrete research or engineering path.
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🟡 PARTIAL | **High** | Online ρ_EMA live after 30 obs; cold-start prior 0.45 unvalidated |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit; HITL escalation on graft_first=false path open |
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1b closed; Phases 2–3 open |
-| **GAP-G1 Reasoning Memory Phases 2–4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Phase 2 partial (RetryHintPattern scheduler live; ArchetypePrior/TensionPattern/DecompositionTemplate pending); Phase 3 complete: thinking loop primed with RetryHintPattern via two-round SAD; format_retry_hint_priors injected into archetype selection system prompt; n_archetypes corpus-seeded; Phase 4 pending |
+| **GAP-G1 Reasoning Memory Phase 4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Phase 2 complete (2026-06-22); Phase 3 complete (2026-06-22): archetype prior boost/penalty wired in `select_archetypes()`, iteration-0 tension seeding via `select_tension_seeds`/`format_tension_seeds`, `run_distillation_cycle` triggered at `induction_batch_size` intervals in `post_run`, `InductionCycleCompletedEvent` publisher live, `load_semantic_memory` called before thinking loop; Phase 4 pending |
+| **GAP-B6 Confidence-blind Byzantine merge kernel** | 🔴 OPEN | Medium | Confidence-weighted Krum/Weiszfeld once empirical score_lower distribution is characterized |
+| **GAP-D6 Multi-wave latency and token characterization** | 🔴 OPEN | Low | Fast-path single-shot arm below decompose_threshold; cost-estimate gate before ensemble dispatch |
+| **GAP-D7 Gap research confidence ceiling under local LLMs** | 🟡 PARTIAL | Medium | Mechanical-mechanism prompt refactor applied; two-stage extraction + check-text fallback open |
 | **GAP-H4 Small-N Human Ratings — MoM ECE breaks below N=50** | 🔴 OPEN | Medium | Dirichlet-Categorical posterior + credible-interval circuit breaker |
 
 **Severity key** — Critical: threatens core thesis validity; High: corrupts math inputs or silently disables documented features; Medium: degrades confidence in results; Low: operational or presentation issue.
@@ -46,11 +49,11 @@ is a falsifiable question with a concrete research or engineering path.
 ### INNOVATION-5 — Structured Self-MoA Experiment Protocol
 
 **Closes:** GAP-A1 (comparative signal).
-**Status: COMPLETE (2026-06-20)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, j_eff=1.000, 2026-06-20), Tier 2 (4 constraints, avg_score=0.750, SRANI events=0, 2026-06-20), and Tier 3 (6 constraints, j_eff=0.667 via one MAPE-K retry wave; 1/3 wave-1 proposals at score=1.00 on all 6 constraints, 2026-06-20).
+**Status: COMPLETE (2026-06-20)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, j_eff=1.000, 2026-06-20), Tier 2 (4 constraints, avg_score=0.750, grounding events=0, 2026-06-20), and Tier 3 (6 constraints, j_eff=0.667 via one MAPE-K retry wave; 1/3 wave-1 proposals at score=1.00 on all 6 constraints, 2026-06-20).
 
-**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with SRANI LLM-driven implied entity classification eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0). Open work: cross-task ArchetypePrior/TensionPattern/DecompositionTemplate (reasoning memory Phase 2 pending).
+**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with LLM-driven implied entity classification eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0). Open work: cross-task ArchetypePrior/TensionPattern/DecompositionTemplate (reasoning memory Phase 2 pending).
 
-**Implementation:** `tests/e2e/scenarios/innovation-5/` — three e2e scenarios (Tier 1/2/3).
+**Implementation:** Scenario directories `tests/e2e/scenarios/innovation-5/` were archived during the 2026-06-23 scenario consolidation. Current canonical scenarios are under `tests/e2e/scenarios/`.
 
 **Experiment arms:**
 - **B3 — Self-MoA baseline:** `baseline.toml`, `max_autonomic_retries = 0`. Three explorers with τ-spread; verifier scores; synthesis selects winner. No MAPE-K enforcement loop.
@@ -58,7 +61,7 @@ is a falsifiable question with a concrete research or engineering path.
 
 **Primary metric:** Constraint compliance rate — fraction of `_expected.should_prune` patterns that H2-P rejects and B3 passes through. Secondary: j_eff, verification scores, token cost.
 
-**Open:** A matched B3 run at current code level (post-DPPM+SRANI+manifest.context) has not been completed. The +41pp H₁ delta is against the original pre-stack B3 baseline.
+**Open:** A matched B3 run at current code level (post-DPPM+implied-entity-classification+manifest.context) has not been completed. The +41pp H₁ delta is against the original pre-stack B3 baseline.
 
 ---
 
@@ -268,6 +271,41 @@ for rho_formula, label in [(cg, "rho=CG"), (1-cg, "rho=1-CG")]:
 
 ---
 
+### GAP-B6: Confidence-Blind Byzantine Merge Kernel 🔴 OPEN — Medium
+
+The BFT merge kernel (`krum.rs`, `weiszfeld.rs`) computes proposal consensus using pairwise
+semantic distance (embedding cosine similarity). It does not weight proposals by epistemic
+confidence — a proposal with `score_lower = 0.12` (high uncertainty, 1/8 binary checks passing)
+exerts the same gravitational pull on the Weiszfeld geometric median as a proposal with
+`score_lower = 0.84` (well-evidenced, 9/10 checks passing).
+
+**What is live.** `VerificationScoredEvent` carries `score_lower` and `score_upper` (Wilson score
+95% credible intervals computed from `passed_checks / total_checks`). These are surfaced in the
+event stream for full observability. The gap is between observability and algorithmic consumption:
+the merge kernel has access to the confidence signal but does not use it.
+
+**Why stopped here.** Wiring `score_lower` into the merge kernel requires a principled weighting
+scheme. The two natural forms — confidence-gated Krum (exclude proposals whose `score_lower` is
+below a threshold before ε-neighborhood selection) and confidence-weighted Weiszfeld (weight each
+proposal's pull proportional to `score_lower`) — both require tuning a threshold derived from the
+empirical distribution of `score_lower` values across the ensemble. Before sufficient data exists
+to characterize that distribution, uncalibrated confidence weighting introduces a new bias rather
+than removing one.
+
+**Research path.** Collect `VerificationScoredEvent` across Tier-2 and Tier-3 tasks (target: 100+
+merge events with `score_lower` populated). Regress oracle pass rate against
+`max(score_lower) − min(score_lower)` in the ensemble. If the gap predicts oracle pass rate
+(Spearman ρ > 0.3), the simplest principled intervention is a confidence gate before Krum: exclude
+proposals with `score_lower < p10_threshold` (10th percentile of historical values) from
+neighborhood computation, then apply unweighted Krum on survivors.
+
+**Falsification condition.**
+Run 50 Tier-3 tasks with full `score_lower` logging. If `min(score_lower_i)` in the ensemble does
+not correlate with oracle pass rate of the Krum-selected proposal (p > 0.05), the confidence signal
+adds no information beyond geometric distance and weighting is not justified.
+
+---
+
 ## Brainstorm Group D — Infrastructure and Operational Gaps
 
 ---
@@ -290,39 +328,77 @@ to rate subtask complexity 1–5 before dispatching ensemble. Route 1–2 to sin
 
 ---
 
-### GAP-D4: Thinking Loop Has No Per-Constraint Archetype Guarantee ✅ CLOSED — Medium (2026-06-20)
+### GAP-D6: Multi-Wave Orchestration — Latency and Token Budget 🔴 OPEN — Low
 
-**Gap statement.**
-`ThinkingLoopEngine` achieves high aggregate coverage scores (coverage=0.98 in Tier-3 wave-0) yet individual constraints can have zero dedicated archetype assigned. In the Tier-3 wave-0 run, iteration 0 selected archetypes `[atomic-redis-engineer, immutable-audit-architect, zero-trust-isolation-specialist, additive-migration-strategist]` — none targeting CONSTRAINT-TAU-2 (active cache convergence within 60s TTL) or CONSTRAINT-BFT-1 (rollback script availability). Both constraints failed in every wave-0 proposal.
+At N=3 explorers, 3 MAPE-K waves, and 6 constraints, the minimum inference call count is
+approximately 30–50 LLM calls per task resolution (generation × waves + verification × proposals ×
+constraints + synthesis + audit). On local hardware (llama.cpp, 20–40 tokens/s), end-to-end
+wall-clock time for a Tier-3 6-constraint task is 15–40 minutes. On frontier API, the token cost
+is $0.30–$3.00 depending on context size.
 
-The coverage score is aggregate: it measures how much of the task decomposition is collectively covered by the archetype set, not whether every constraint has at least one dedicated archetype. A minority constraint can register as "covered" while producing zero compliant proposals because no archetype specializes in it.
+This is a deployment constraint, not a defect. H2AI is architected for high-complexity,
+high-stakes tasks (enterprise compliance, distributed systems design, contract analysis) where the
+overhead is warranted by the cost of undetected constraint violations. It is structurally
+unsuitable for synchronous, latency-sensitive applications (user-facing APIs, real-time chat,
+IDE autocomplete).
 
-**Root cause.** `select_archetypes()` optimizes for aggregate coverage score. With corpus-seeded N_eff archetypes, selection saturates on dominant constraints (C-004, C-005) while minority constraints (C-TAU-2, C-BFT-1) remain uncovered.
+**Deployment constraints as specified:**
 
-**Falsification condition.**
-Add a `cache-convergence-specialist` and `bft-rollback-engineer` archetype to the Tier-3 corpus. If all 3 wave-0 proposals achieve score > 0.67 (vs. the observed maximum of 0.67 with the TAU/BFT constraints failing), per-constraint archetype coverage is the root cause.
+| Dimension | Local LLM (llama.cpp) | Frontier API |
+|---|---|---|
+| Wall-clock, Tier-3 (6 constraints, 3 waves) | 15–40 min | 2–8 min |
+| Token budget, Tier-3 | 100k–200k tokens | 50k–150k tokens |
+| Minimum viable (Tier-1, 2 constraints, 1 wave, no retry) | ~4 min | ~30 s |
+| Synchronous use | Not supported | Not supported |
 
-**Implementation (2026-06-20).** `ArchetypeSpec` gained `focus_constraints: Vec<String>` (`#[serde(default)]`). `THINKING_ARCHETYPE_MD_ITER1` prompt requests `**Focus Constraints:**` from the LLM; `parse_archetype_block()` parses and populates the field (case-insensitive "all" → empty vec). `find_uncovered_constraints(archetypes, constraint_ids)` pure fn identifies constraints with no dedicated archetype. `synthesize_coverage_archetype(constraint_id, corpus)` synthesizes a specialist archetype from corpus description; falls back to generic text when description is absent. Both fns wired into `select_archetypes()`: after LLM archetypes are parsed, uncovered constraints are found and specialists synthesized and appended before exploration. Tests: `crates/h2ai-orchestrator/tests/thinking_loop_coverage_test.rs` (8 tests).
+**Research path.** Fast-path routing: extend complexity routing with a `single_shot` arm below
+`decompose_threshold`. Tasks classified as complexity ≤ 2 (single constraint, high p_mean prior)
+bypass ensemble construction and go to a single-adapter direct call. Cost gate: before constructing
+the explorer ensemble, emit a `TaskCostEstimateEvent` with projected call count and token budget;
+surface to operator for confirmation when projected cost exceeds `cost_gate_threshold`.
 
 ---
 
-### GAP-D5: MAPE-K Repair Oscillation — Cross-Constraint Regression ✅ CLOSED — **High** (2026-06-20)
+### GAP-D7: Gap Research Confidence Ceiling Under Local LLMs 🟡 PARTIAL — Medium
 
-**Gap statement.**
-When `MapeKController` generates repair context for constraints that failed in wave N, proposals in wave N+1 can regress on constraints that passed in wave N. Observed in Tier-3: wave-0 proposals violated CONSTRAINT-TAU-2 and CONSTRAINT-BFT-1; wave-1 repair context injected cache-convergence and rollback-script guidance, causing 2/3 wave-1 proposals to violate CONSTRAINT-004, CONSTRAINT-005, and CONSTRAINT-008 (which had partial compliance scores of 0.67 in wave 0). Only 1/3 wave-1 proposals maintained compliance across all 6 constraints (j_eff=0.667).
+**Status: PARTIAL** — Mechanical-mechanism prompt refactor applied; two-stage extraction and
+check-text fallback remain open.
 
-**Mechanism.** Repair context is additive: it appends guidance for what *failed* but provides no anchor for what *passed*. An explorer receiving "add active cache convergence within 60s TTL and ensure rollback scripts are available" shifts generation toward the new requirements, potentially replacing or simplifying the idempotency and audit structures that satisfied CONSTRAINT-004/005/008 in wave 0. This is cross-constraint oscillation, not convergence.
+The gap research pipeline (`GapI1Config`, `run_gap_researcher()`) fires when a binary check has a
+100% historical failure rate. The synthesis validator scores whether the synthesized belief
+correction is mechanically actionable. In Tier-3 enterprise enforcement runs with
+`synthesis_min_confidence = 0.1`, a local 122B model scored 9/9 synthesis calls below the
+threshold. Zero adaptive context was injected into any MAPE-K wave; all waves ran on unmodified
+repair context derived only from the current wave's failure signal.
+
+**Root cause.** The synthesis validator asked: "does the correct belief make it structurally
+impossible to repeat the wrong belief?" A local model reasoning about multi-constraint enterprise
+compliance cannot answer this with >10% confidence — the question requires global counterfactual
+reasoning across the full constraint space that is beyond local model capacity.
+
+**What was changed.** `I1_GAP_EXTRACTOR_SYSTEM` now scopes extraction to "the single missing
+mechanical mechanism" rather than "the belief gap." `I1_GAP_EXTRACTOR_TASK` requests "a specific
+operation, command, or step" rather than "the incorrect concept the author held."
+`I1_SYNTHESIS_VALIDATOR_TASK` now asks "does the correct belief name a specific concrete mechanism
+that was absent from the failed proposals, and would its inclusion satisfy the constraint check?"
+— answerable from local context rather than global counterfactual reasoning.
+
+**Remaining open.** The prompt fix reduces the bar from global-counterfactual to local-mechanical,
+which should raise scores above the 0.1 threshold. The structural ceiling is not eliminated — it
+is lowered. If scores remain below 0.1, the model cannot even verify mechanical specificity.
+
+**Research path.** Two-stage extraction: (1) extract the missing mechanism (simplified); (2)
+validate that the mechanism text appears in the constraint check criteria (substring or semantic
+overlap — near model-free). Mechanism extractable from the check text directly sidesteps the model
+confidence floor entirely. Fallback: when `score < synthesis_min_confidence` after extraction,
+inject the constraint check text verbatim as the repair slot rather than the synthesized belief
+— coarser guidance but guaranteed non-empty and always relevant.
 
 **Falsification condition.**
-Extend `build_repair_context()` to include a "preserve passing constraints" section stating what was correct in wave N. If cross-constraint regression drops from 2/3 to 0/3 in the Tier-3 scenario, repair context anchoring is the fix.
-
-**Research approach.** `MapeKController::build_repair_context()` should produce two sections:
-1. **Failing constraints with repair guidance** — what was wrong and how to fix it.
-2. **Passing constraints with compliance anchors** — what was correct and must not be changed.
-
-The compliance anchor text is derived from the passing proposal's verifier reasoning for each passed constraint check. This converts repair context from a diff (fix failures) into a full specification (fix failures without breaking passes).
-
-**Implementation (2026-06-20).** `phases::verify::run()` tracks the highest-scoring passing proposal's per-constraint `ComplianceResult.verifier_reason` values into `Output.best_passing_constraint_reasons: HashMap<String, String>` (non-empty reasons only; first-seen wins on ties via strict `>` score comparison). `WaveEvents.best_passing_constraint_reasons` carries this forward. `MapeKController.global_best_constraint_reasons` is updated in `observe()` when a new global-best passing proposal is found (guarded: only overwrites when the new map is non-empty, to preserve anchors from earlier waves). `build_best_passing_pin_hint(constraint_id, dynamic_reasons, corpus_hint)` pure fn prefers dynamic verifier reasoning over static corpus hints, falling back when the dynamic entry is absent or empty. Both `coupled_hints` and `passing_pins` computations in `apply_retry_action`'s `RetryWithTargets` arm use `build_best_passing_pin_hint` instead of raw `corpus_pass_hint_for`. Tests: `crates/h2ai-orchestrator/tests/mape_k_repair_anchor_test.rs` (3 tests).
+Re-run Tier-3 enterprise enforcement with updated prompts. If `gap_synthesis_confidence` moves
+from 0.0–0.04 to ≥ 0.1 on ≥ 5 of 9 calls, the mechanical-mechanism framing resolves the
+starvation. If scores remain below 0.1, model capacity is the ceiling and the two-stage validation
+path is required.
 
 ---
 
@@ -365,22 +441,22 @@ Cold-start note: Phase 3 may be net-negative for tenants with fewer than ~200 ta
 
 ---
 
-### GAP-G1: Reasoning Memory Phases 2–4 Unimplemented 🟡 PARTIAL — Medium
+### GAP-G1: Reasoning Memory Phase 4 Unimplemented 🟡 PARTIAL — Medium
 
-**Status: PARTIAL** — Phase 1 live; Phase 2 partial (RetryHintPattern path live; ArchetypePrior/TensionPattern/DecompositionTemplate pending); Phase 3 complete: thinking loop primed with RetryHintPattern via two-round SAD, format_retry_hint_priors injected into archetype selection system prompt, n_archetypes corpus-seeded; Phase 4 pending.
+**Status: PARTIAL** — Phase 1 live; Phase 2 complete (2026-06-22); Phase 3 complete (2026-06-22): full Layer 3 wiring live; Phase 4 pending.
 
 **Phase 1 (live).** `TaskReasoningCheckpoint` written at each engine phase gate; `TaskMetaState`
 projected at resolution; per-tenant NATS KV buckets (`H2AI_CHECKPOINT_{tenant}` 7d TTL,
-`H2AI_META_{tenant}` 90d TTL). `run_from_checkpoint` reads `CheckpointPhase` to skip completed
+`H2AI_META_{tenant}` no TTL). `run_from_checkpoint` reads `CheckpointPhase` to skip completed
 phases. Skill extraction provides a depth-stratified analogue: Topic nodes carry Socratic
 diagnostic questions + resolution excerpts; Constraint-keyed and Reason-keyed Leaf nodes carry
 per-constraint domain signals. `format_induction_priors` formats top-5 `KnowledgeNodePattern`
 entries by `hit_rate` as prior context prepended to archetype selection `system_context` (Layer 3
 partial path).
 
-**Remaining open — Phases 2–4:**
+**Remaining open — Phase 4:**
 
-**Phase 2 — Induction (Layer 2). PARTIAL (2026-06-19).** Two components with strict separation:
+**Phase 2 — Induction (Layer 2). COMPLETE (2026-06-22).** Two components with strict separation:
 `InductionScheduler` async trait (pure I/O interface, in `crates/h2ai-orchestrator/src/induction/mod.rs`)
 and `AlgorithmicInductionWorker` (pure computation, no LLM calls, in `induction/algorithmic.rs`).
 `NatsInductionScheduler` (`induction/nats_scheduler.rs`) owns NATS KV reads/writes with CAS-swap
@@ -390,49 +466,49 @@ retries); `without_nats()` fallback for tests.
 **What is live:** `RetryHintPattern` G-Counter (`trigger_tags`, `exit_reason_kind`, `hint_text`,
 `success_count`/`attempt_count` u64, `success_rate()`, `merge_counts()`) in
 `crates/h2ai-types/src/memory.rs`. `TenantMemoryStore` (tenant_id, generated_at, task_count_seen,
-`retry_hint_patterns: Vec<RetryHintPattern>`). `AlgorithmicInductionWorker` filters stored patterns
-by tag overlap with `InductionContext.task_class_tags` (trigram-shingle Jaccard ≥ threshold), sorts
-by `success_rate()` descending, returns top patterns as `InductionResult`. Trigram shingling pure
+`retry_hint_patterns`, `archetype_priors`, `tension_patterns`, `decomposition_templates` — new fields
+use `#[serde(default)]` for backward compat with stored JSON). `AlgorithmicInductionWorker` filters
+stored patterns by tag overlap with `InductionContext.task_class_tags` (trigram-shingle Jaccard ≥ threshold),
+sorts by `success_rate()` descending, returns top patterns as `InductionResult`. Trigram shingling pure
 functions: `normalize_for_shingling`, `trigram_shingles`, `jaccard_shingles`, `cluster_by_similarity`.
 
-**What remains pending in Phase 2:**
-- **ArchetypePrior** distillation step — group `ArchetypeResult` by `archetype_name + domain_tags`;
-  `net_confidence = weighted_mean`; `avoid_for_tags` where `net_confidence < 0.4` across ≥ 3 tasks
-- **TensionPattern** distillation step — cluster tension strings; store `frequency` + `resolution_hint`
-- **DecompositionTemplate** distillation step — group `shared_understanding` strings by `(quadrant, constraint_tags)`
-- Full `TenantMemoryStore` schema (`archetype_priors[]`, `tension_patterns[]`, `decomposition_templates[]` fields absent)
-- `InductionCycleCompletedEvent` to `h2ai.telemetry.induction`
-- Batch-threshold trigger (`induction_batch_size`, `induction_max_interval_secs`) — current trigger is retroactive only
+**Semantic distillation data layer (complete 2026-06-22):** Three new types (`ArchetypePrior`, `TensionPattern`,
+`DecompositionTemplate`) and `DistillationResult` (`empty()`, `is_empty()`). Pure distillation functions:
+`distill_archetype_priors` (groups `ArchetypeResult` by name; `net_confidence` = unweighted mean;
+`avoid_for_tags` populated when `sample_count ≥ MIN_SAMPLE_COUNT_FOR_AVOID=3 && net_confidence < 0.4`),
+`distill_tension_patterns` (trigram Jaccard clustering at `TENSION_CLUSTER_THRESHOLD=0.6`; pre-computed
+shingles), `distill_decomposition_templates` (groups by `(quadrant, sorted constraint_tags)`; picks
+lowest-`retry_count` member for `shared_understanding`). `InductionScheduler` trait extended with
+`run_distillation_cycle` and `load_semantic_memory` (default no-ops — all existing impls compile unchanged).
+`AlgorithmicInductionWorker` implements both (in-memory from stored `TenantMemoryStore` fields).
+`NatsInductionScheduler` implements both: `run_distillation_cycle` distills and persists `DistillationResult`
+to `{tenant_id}.semantic` in `H2AI_MEMORY` KV; `load_semantic_memory` reads it back. `InductionCycleCompletedEvent`
+struct added to `h2ai-types::events`.
 
-New files: `crates/h2ai-orchestrator/src/induction/mod.rs` (trait + mock),
-`induction/algorithmic.rs` (distillation), `induction/scheduler.rs` (I/O).
-New types: `crates/h2ai-types/src/memory.rs`.
+**Pending (requires engine wiring in Phase 3):** `run_distillation_cycle` is not yet called by the engine
+(`induction_batch_size` / `induction_max_interval_secs` trigger not wired). `InductionCycleCompletedEvent`
+has no publisher. Archetype prior boost/penalty and tension seeding require `load_semantic_memory` integration
+in `task_pipeline.rs` — these are Phase 3 wiring tasks, now unblocked.
 
-**Phase 3 — Thinking Loop Integration (Layer 3, full). COMPLETE (2026-06-19).**
-`NatsInductionScheduler` wired into `task_pipeline.rs`: constructed once per task via
-`build_induction_scheduler`, passed to both `ThinkingLoopArgs` constructions (initial and
-re-iteration) and to `OwnedEngineInput`. `n_archetypes` corpus-seeded:
-`corpus.len().max(2).min(max_archetypes)` — ensures archetype selection breadth scales with
-constraint load. `tenant_id` propagated from `TaskPipelineInput` rather than using the default
-placeholder. `format_retry_hint_priors` injected into archetype selection system prompt. Two-round
-SAD (Socratic Archetype Diagnosis) primes the thinking loop with `RetryHintPattern` hints matching
-the current task's constraint tags.
+**Phase 3 — Thinking Loop Integration (Layer 3, full). COMPLETE (2026-06-22).**
+All three full Layer 3 paths are now live:
 
-Remaining (full Layer 3 completion):
-- **Archetype priors** — `select_archetypes()` gives +0.15 weight boost to archetypes with
-  `net_confidence > 0.6` + matching domain tags; -0.20 penalty to archetypes in `avoid_for_tags`
-  matching current task.
-- **Tension seeding** — Iteration 0 pre-loaded with top 3 `TensionPattern` entries matching
-  constraint tags (Jaccard tag intersection). Injected as hypotheses: "previously observed
-  tensions — validate, refute, or refine."
-- **Retry hint priming** — `MapeKController::new()` receives `Vec<RetryHintPattern>` matching
-  task tags as `primed_retry_hints`. When `ZeroSurvival` or `HallucinationDetected` fires, checks
-  `primed_retry_hints` before computing retry context from scratch.
-
-Full archetype-prior and tension-seeding paths remain blocked on Layer 2 (AlgorithmicInductionWorker producing ArchetypePrior/TensionPattern records) being live.
-
-Config additions to `reference.toml`: `reasoning_memory_max_archetype_boost = 0.15`,
-`reasoning_memory_max_archetype_penalty = 0.20`.
+- **Archetype priors** — `select_archetypes()` in `thinking_loop.rs` applies `+max_archetype_boost`
+  (default 0.15) to archetypes whose `ArchetypePrior.net_confidence > 0.6` with matching domain
+  tags; `-max_archetype_penalty` (default 0.20) when `avoid_for_tags` overlaps current constraint
+  tags. Adjustments clamp to [0.0, 1.0].
+- **Tension seeding** — `select_tension_seeds` computes trigram Jaccard between joined
+  `constraint_tags` and `TensionPattern.shingles`; top 3 matches (similarity ≥ 0.05) formatted
+  via `format_tension_seeds` and appended to `research_context` at iteration 0. Archetypes and
+  brainstorm prompts receive the "PREVIOUSLY OBSERVED TENSIONS — validate, refute, or refine" block.
+- **Distillation trigger** — `post_run` increments `TenantState::resolved_task_count`
+  (per-tenant `AtomicUsize`). When `count % induction_batch_size == 0`, a background tokio task
+  calls `run_distillation_cycle` with up to `induction_max_tasks_per_run` recent `TaskMetaState`
+  records and publishes `InductionCycleCompletedEvent`.
+- **Semantic memory load** — `task_pipeline.rs` calls `load_semantic_memory` after building the
+  induction scheduler (when `reasoning_memory.enabled`). The `DistillationResult` propagates
+  through `ThinkingLoopArgs` → `ThinkingLoopInput` to `select_archetypes` and the tension-seed
+  block builder.
 
 **Phase 4 — Hybrid Retrieval (Layer 4).** Tag-gate (Layer 3 baseline): Jaccard
 `|tags_task ∩ tags_pattern| / |tags_task ∪ tags_pattern| ≥ 0.2`. O(1) per candidate — eliminates
@@ -579,28 +655,70 @@ RMSE(MoM) for N ≤ 30 by at least 20%.
 
 ## Gap Priority Matrix
 
-### Pipeline Success Priority (blocks reliable task completion)
+### Dependency Graph
 
-These gaps are the direct cause of the j_eff = 0.667 stochastic ceiling and cross-constraint regression pattern observed in Tier-3. Fixing them in order transforms MAPE-K from a random-restart loop into directed repair.
+```
+Shared Infrastructure (labeled task set + oracle + per-N harness + ρ logging)
+├── unblocks → GAP-A1  (TCC fitting needs oracle quality signal)
+├── unblocks → GAP-A2  (empirical N_IT vs. quality curve)
+├── unblocks → GAP-B3  (conformal prediction needs oracle-grounded calibration data)
+├── unblocks → GAP-B5  (cold-start prior 0.45 validation needs held-out benchmark)
+└── unblocks → GAP-F4 Phase 3  (REINFORCE graph weights need calibrated oracle — via GAP-B3)
 
-| Gap | Pipeline impact | Status |
-|---|---|---|
-| **GAP-G1 Phase 2 RetryHintPattern scheduler** | Converts BranchPruned history into RetryHintPattern records; NatsInductionScheduler with CAS-swap persistence; AlgorithmicInductionWorker filters/ranks patterns | 🟡 PARTIAL (2026-06-19) — RetryHintPattern path live; ArchetypePrior/TensionPattern/DecompositionTemplate pending; Phases 3–4 pending |
-| **GAP-D4 Per-constraint archetype guarantee** | Ensures every constraint has at least one dedicated archetype — prevents minority constraints from scoring zero across all wave-0 proposals | ✅ CLOSED (2026-06-20) |
-| **GAP-D5 MAPE-K repair oscillation anchoring** | Adds passing-constraint compliance anchors to repair context — prevents wave-1 regression on constraints that passed in wave 0 | ✅ CLOSED (2026-06-20) |
+GAP-B3 (oracle data sufficient)
+└── unblocks → GAP-F4 Phase 3
 
-### Research and Validation Priority (closes core thesis risks)
+GAP-G1 Phase 2 COMPLETE (2026-06-22) — unblocks:
+└── GAP-G1 Phase 3 full path (archetype prior boost/penalty + tension seeding engine wiring) — COMPLETE (2026-06-22)
 
-| Gap | Core thesis risk | Implementation cost | Data dependency | Suggested order |
+Data accumulation — passive (tasks run, events emitted automatically):
+  30+ task observations   → unblocks GAP-B5 ρ_EMA replaces cold-start prior 0.45
+  30+ task observations   → unblocks GAP-B1 empirical regression of conflict_rate vs CG_mean
+  50+ tasks per domain    → unblocks GAP-F4 Phase 2 (Thompson Sampling bandit)
+  100+ merge events       → unblocks GAP-B6 (characterize score_lower distribution)
+
+No upstream blockers (can start immediately):
+  GAP-D7  falsification run (Tier-3 re-run with updated prompts)
+  GAP-G1  Phase 4 (embedding rerank) — hybrid retrieval; deferred until Phase 3 shows signal
+  GAP-H4  implementation (pure math + unit tests, no data needed)
+  GAP-D2  HITL escalation + complexity bandit
+  GAP-D6  fast-path routing + cost gate
+  GAP-A2  Monte Carlo simulation path (Gaussian copula, no oracle needed)
+  GAP-B5  sensitivity analysis script (computation only, rho=CG vs rho=1-CG)
+
+Cannot start (hard external blockers):
+  GAP-A1 full experiment   → second model family unavailable
+```
+
+### What To Start Next
+
+| # | Gap | Action | Rationale | Unblocks |
 |---|---|---|---|---|
-| GAP-A1 TCC parameter fitting | Critical | 2 weeks | Oracle quality signal | Session 1 |
-| GAP-A1 Full experiment (cross-family Coverage quadrant) | Critical | Timeline open | Second adapter family | Session 2+ |
-| GAP-A2 USL quality curve empirical validation | High | 2 weeks | Labeled multi-N benchmark | Session 2 |
-| **GAP-F4 Knowledge provider contrastive eval Phase 2** | High | 1 week | 50+ tasks per domain | Week 3 |
-| GAP-D2 Compound task HITL escalation | Low | 1 week | None | Any |
-| **GAP-D4 Per-constraint archetype guarantee** | Medium | ✅ CLOSED (2026-06-20) | None | — |
-| **GAP-D5 MAPE-K repair oscillation anchoring** | High | ✅ CLOSED (2026-06-20) | None | — |
-| **GAP-H4 Dirichlet human rating posterior** | Medium | 1 week | Human rating data | Week 4 |
+| **1** | **GAP-D7** | Re-run Tier-3 enterprise enforcement scenario | Validates already-deployed prompt fix in ≤1 hour; determines whether two-stage extraction is needed or gap is resolved | Closes or scopes remaining D7 work |
+| **2** | ~~**GAP-G1 Ph.3 (wiring)**~~ | ~~Wire `run_distillation_cycle` call into engine on `induction_batch_size` trigger; add archetype prior boost/penalty (+0.15/−0.20) to `select_archetypes()`; seed iteration 0 with top-3 matching `TensionPattern` entries~~ | **COMPLETE (2026-06-22)** | Turns cross-task ArchetypePrior/TensionPattern into live per-task MAPE-K guidance |
+| **3** | **Shared Infra** | Build labeled task set + JSON/cargo oracle + per-N harness + ρ logging | Single deliverable that simultaneously unblocks 4 critical gaps (A1, A2, B3, B5); without it the core thesis cannot be validated | A1, A2, B3, B5, F4-Ph3 |
+| **4** | **GAP-H4** | Implement `estimate_human_rating` (Bayesian avg + SSBC bootstrap + CI circuit breaker) in `calibration.rs` | Fully self-contained; complete spec with test strategy already written; no data needed to implement and unit-test | Closes H4 on first merge |
+
+### Wait-For-Data Queue (implement when threshold reached)
+
+| Gap | Trigger | What to build |
+|---|---|---|
+| GAP-B5 | 30 task observations (ρ_EMA live) | Validate ρ_EMA convergence; run sensitivity script to pick ρ=CG vs ρ=1-CG |
+| GAP-B1 | 30 task observations | Regress `conflict_rate` vs `(1−CG_mean)` and `(1−CG_mean)×fill(N)`; promote context-aware β_eff if R²_bivariate > R²_univariate |
+| GAP-F4 Ph.2 | 50 tasks per domain | Thompson Sampling bandit: `(domain_tag, knowledge_on)` vs `(domain_tag, knowledge_off)` arms |
+| GAP-B6 | 100 merge events with `score_lower` | Spearman ρ of `max−min(score_lower)` vs oracle pass rate; if ρ > 0.3 implement confidence gate before Krum |
+| GAP-B3 | Oracle data sufficient | Conformal prediction margin over calibration split |
+| GAP-F4 Ph.3 | GAP-B3 closed | REINFORCE graph edge weight updates (requires calibrated oracle signal) |
+
+### Deferred (external blocker)
+
+| Gap | Blocker | Resume condition |
+|---|---|---|
+| GAP-A1 TCC fitting | Oracle quality signal (Shared Infra) | After Shared Infra + first labeled task set run |
+| GAP-A1 full experiment | Second model family unavailable | When second adapter family is accessible |
+| GAP-A2 empirical | Labeled multi-N benchmark (Shared Infra) | After Shared Infra; Monte Carlo simulation runnable now as approximation |
+| GAP-D2 | None — low priority | Any sprint |
+| GAP-D6 | None — low priority | Any sprint |
 
 ---
 

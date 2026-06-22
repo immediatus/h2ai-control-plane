@@ -397,40 +397,6 @@ async fn tao_estimator_state_returns_none_when_absent() {
     assert!(result.is_none());
 }
 
-// ── SRANI state ───────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn srani_state_put_get_roundtrip() {
-    let Some(client) = connect().await else {
-        return;
-    };
-    let tenant = TenantId::default_tenant();
-    client
-        .put_srani_state(&tenant, 0.55, 10)
-        .await
-        .expect("put_srani_state");
-    let result = client
-        .get_srani_state(&tenant)
-        .await
-        .expect("get_srani_state")
-        .expect("should be Some");
-    assert!((result.0 - 0.55).abs() < 1e-9, "ema_cfi should match");
-    assert_eq!(result.1, 10, "count should match");
-}
-
-#[tokio::test]
-async fn srani_state_returns_none_when_absent() {
-    let Some(client) = connect().await else {
-        return;
-    };
-    let tenant = TenantId::from("nonexistent-srani-test-tenant");
-    let result = client
-        .get_srani_state(&tenant)
-        .await
-        .expect("get_srani_state");
-    assert!(result.is_none());
-}
-
 // ── bandit state ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
