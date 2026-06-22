@@ -81,6 +81,10 @@ fn make_verification_event() -> VerificationScoredEvent {
         reason: "ok".into(),
         passed: true,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: Utc::now(),
     }
 }

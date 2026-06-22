@@ -175,6 +175,10 @@ fn verification_event(
         reason: reason.to_string(),
         passed: false,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: chrono::Utc::now(),
     }
 }

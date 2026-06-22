@@ -131,7 +131,12 @@ impl CalibrationHarness {
             m,
             t_m_parallel,
             input.cfg.alpha_contention,
-            input.cfg.beta_base_default,
+            input
+                .cfg
+                .beta_calibration_source
+                .as_ref()
+                .map(|b| b.effective_beta())
+                .unwrap_or(input.cfg.beta_base_default),
         );
 
         // CG_mean: use embedding cosine when a model is available; fall back to

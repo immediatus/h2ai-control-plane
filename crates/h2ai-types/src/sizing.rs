@@ -25,6 +25,36 @@ pub enum PhysicsError {
     InvalidBetaBase(f64),
 }
 
+/// Describes whether the USL β (coherency drag) constant was derived from theory or
+/// fitted empirically to observed synthesis quality degradation vs ensemble size.
+///
+/// Use `Theoretical` when deploying without baseline benchmarks.
+/// Switch to `Empirical` once a calibration run has produced a fitted curve and R².
+/// In both cases, consumers call [`BetaCalibrationSource::effective_beta`] — the
+/// downstream USL computation is identical; only the provenance is surfaced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "calibration_mode")]
+pub enum BetaCalibrationSource {
+    /// β₀ sourced from theoretical bounds (conservative, deployment-tier defaults).
+    Theoretical { assumed_beta: f64 },
+    /// β₀ fitted to observed coherency degradation data; `r_squared` records goodness-of-fit.
+    Empirical {
+        fitted_beta: f64,
+        r_squared: Option<f64>,
+    },
+}
+
+impl BetaCalibrationSource {
+    /// Extract the effective β value regardless of calibration mode.
+    #[must_use]
+    pub fn effective_beta(&self) -> f64 {
+        match self {
+            Self::Theoretical { assumed_beta } => *assumed_beta,
+            Self::Empirical { fitted_beta, .. } => *fitted_beta,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TauValue(f64);
 

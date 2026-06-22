@@ -1,6 +1,7 @@
 use h2ai_constraints::types::{
-    aggregate_compliance_score, fractional_compliance_score, ComplianceResult, ConstraintDoc,
-    ConstraintPredicate, ConstraintSeverity, VocabularyMode,
+    aggregate_compliance_score, beta_credible_interval, count_check_verdicts,
+    fractional_compliance_score, ComplianceResult, ConstraintDoc, ConstraintPredicate,
+    ConstraintSeverity, VocabularyMode,
 };
 
 #[test]
@@ -504,4 +505,93 @@ fn constraint_meta_from_doc_empty_description_uses_fallback() {
         meta.summary
     );
     assert_eq!(meta.predicate_kind, PredicateKind::Static);
+}
+
+// ─── beta_credible_interval ───────────────────────────────────────────────────
+
+#[test]
+fn beta_ci_no_evidence_returns_full_uncertainty() {
+    let (lo, hi) = beta_credible_interval(0, 0);
+    assert_eq!(lo, 0.0);
+    assert_eq!(hi, 1.0);
+}
+
+#[test]
+fn beta_ci_all_pass_upper_bound_near_one() {
+    let (lo, hi) = beta_credible_interval(10, 10);
+    assert!(lo > 0.7, "lower bound for 10/10 should be > 0.7, got {lo}");
+    assert!(hi <= 1.0, "upper bound must be ≤ 1.0, got {hi}");
+}
+
+#[test]
+fn beta_ci_all_fail_lower_bound_near_zero() {
+    let (lo, hi) = beta_credible_interval(0, 10);
+    assert_eq!(lo, 0.0, "lower bound for 0/10 must be 0.0");
+    assert!(hi < 0.3, "upper bound for 0/10 should be < 0.3, got {hi}");
+}
+
+#[test]
+fn beta_ci_half_pass_is_symmetric_around_half() {
+    let (lo, hi) = beta_credible_interval(5, 10);
+    let center = (lo + hi) / 2.0;
+    assert!(
+        (center - 0.5).abs() < 0.02,
+        "center for 5/10 should be ≈ 0.5, got {center}"
+    );
+}
+
+#[test]
+fn beta_ci_bounds_are_ordered_and_in_unit_interval() {
+    for (k, n) in [(0, 1), (1, 1), (3, 6), (7, 8), (0, 100), (100, 100)] {
+        let (lo, hi) = beta_credible_interval(k, n);
+        assert!(lo <= hi, "lo={lo} must be ≤ hi={hi} for k={k} n={n}");
+        assert!(
+            (0.0..=1.0).contains(&lo),
+            "lo={lo} out of [0,1] for k={k} n={n}"
+        );
+        assert!(
+            (0.0..=1.0).contains(&hi),
+            "hi={hi} out of [0,1] for k={k} n={n}"
+        );
+    }
+}
+
+// ─── count_check_verdicts ─────────────────────────────────────────────────────
+
+fn make_result(verdicts: Vec<bool>) -> ComplianceResult {
+    ComplianceResult {
+        constraint_id: "C-001".into(),
+        score: verdicts.iter().filter(|&&v| v).count() as f64 / verdicts.len().max(1) as f64,
+        severity: ConstraintSeverity::Soft { weight: 1.0 },
+        remediation_hint: None,
+        constraint_description: String::new(),
+        verifier_reason: None,
+        check_verdicts: verdicts,
+        criteria_pass: None,
+        check_reasons: vec![],
+    }
+}
+
+#[test]
+fn count_verdicts_empty_results() {
+    assert_eq!(count_check_verdicts(&[]), (0, 0));
+}
+
+#[test]
+fn count_verdicts_no_binary_checks() {
+    let r = make_result(vec![]);
+    assert_eq!(count_check_verdicts(&[r]), (0, 0));
+}
+
+#[test]
+fn count_verdicts_mixed() {
+    let r1 = make_result(vec![true, false, true]);
+    let r2 = make_result(vec![false, false]);
+    assert_eq!(count_check_verdicts(&[r1, r2]), (2, 5));
+}
+
+#[test]
+fn count_verdicts_all_pass() {
+    let r = make_result(vec![true, true, true]);
+    assert_eq!(count_check_verdicts(&[r]), (3, 3));
 }

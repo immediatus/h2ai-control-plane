@@ -922,3 +922,47 @@ fn branch_pruned_event_retry_count_roundtrips() {
     let back: h2ai_types::events::BranchPrunedEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(back.retry_count, 3);
 }
+
+#[test]
+fn verification_scored_event_legacy_deserializes_without_ci_fields() {
+    // Legacy JSON missing passed_checks, total_checks, score_lower, score_upper
+    let json = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "explorer_id": "00000000-0000-0000-0000-000000000002",
+        "score": 0.8,
+        "reason": "ok",
+        "passed": true,
+        "cache_hit": false,
+        "timestamp": "2025-01-01T00:00:00Z"
+    }"#;
+    let ev: h2ai_types::events::VerificationScoredEvent =
+        serde_json::from_str(json).expect("legacy event must deserialize");
+    assert!((ev.score - 0.8).abs() < 1e-9);
+    assert!(ev.passed_checks.is_none());
+    assert!(ev.total_checks.is_none());
+    assert!(ev.score_lower.is_none());
+    assert!(ev.score_upper.is_none());
+}
+
+#[test]
+fn verification_scored_event_new_fields_round_trip() {
+    let ev = h2ai_types::events::VerificationScoredEvent {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        score: 0.6,
+        reason: String::new(),
+        passed: false,
+        cache_hit: false,
+        passed_checks: Some(3),
+        total_checks: Some(5),
+        score_lower: Some(0.23),
+        score_upper: Some(0.88),
+        timestamp: chrono::Utc::now(),
+    };
+    let json = serde_json::to_string(&ev).unwrap();
+    let back: h2ai_types::events::VerificationScoredEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.passed_checks, Some(3));
+    assert_eq!(back.total_checks, Some(5));
+    assert!((back.score_lower.unwrap() - 0.23).abs() < 1e-9);
+    assert!((back.score_upper.unwrap() - 0.88).abs() < 1e-9);
+}

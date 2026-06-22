@@ -3,7 +3,9 @@ use crate::judge_panel::JudgePanel;
 use crate::phases::StepResult;
 use crate::verification::{EvalCache, VerificationInput, VerificationPhase};
 use chrono::Utc;
-use h2ai_constraints::types::fractional_compliance_score;
+use h2ai_constraints::types::{
+    beta_credible_interval, count_check_verdicts, fractional_compliance_score,
+};
 use h2ai_types::config::VerificationConfig;
 use h2ai_types::events::{
     BranchPrunedEvent, ProposalEvent, TopologyProvisionedEvent, VerificationScoredEvent,
@@ -162,6 +164,13 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
                 })
                 .collect();
         }
+        let (passed_checks, total_checks) = count_check_verdicts(&results);
+        let (score_lower, score_upper) = if total_checks > 0 {
+            let (lo, hi) = beta_credible_interval(passed_checks, total_checks);
+            (Some(lo), Some(hi))
+        } else {
+            (None, None)
+        };
         iteration_verification_events.push(VerificationScoredEvent {
             task_id: task_id.clone(),
             explorer_id: prop.explorer_id.clone(),
@@ -169,6 +178,10 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             reason: String::new(),
             passed: true,
             cache_hit: any_cache_hit,
+            passed_checks: Some(passed_checks),
+            total_checks: Some(total_checks),
+            score_lower,
+            score_upper,
             timestamp: Utc::now(),
         });
         engine_input.store.record_validation(task_id, true);
@@ -187,6 +200,13 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             fractional_compliance_score(&results)
         };
         let score = compliance;
+        let (passed_checks, total_checks) = count_check_verdicts(&results);
+        let (score_lower, score_upper) = if total_checks > 0 {
+            let (lo, hi) = beta_credible_interval(passed_checks, total_checks);
+            (Some(lo), Some(hi))
+        } else {
+            (None, None)
+        };
         iteration_verification_events.push(VerificationScoredEvent {
             task_id: task_id.clone(),
             explorer_id: prop.explorer_id.clone(),
@@ -198,6 +218,10 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
                 .join(", "),
             passed: false,
             cache_hit: any_cache_hit,
+            passed_checks: Some(passed_checks),
+            total_checks: Some(total_checks),
+            score_lower,
+            score_upper,
             timestamp: Utc::now(),
         });
         let error_cost = RoleErrorCost::new((1.0 - compliance).clamp(0.0, 1.0)).unwrap();

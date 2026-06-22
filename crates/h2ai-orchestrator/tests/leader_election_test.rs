@@ -68,6 +68,10 @@ fn make_verification_event(explorer_id: ExplorerId, score: f64) -> VerificationS
         reason: String::from("test reason"),
         passed: score >= 0.45,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: Utc::now(),
     }
 }

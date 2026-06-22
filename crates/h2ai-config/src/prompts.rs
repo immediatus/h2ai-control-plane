@@ -104,24 +104,24 @@ pub const PLAN_REVIEWER_TASK: PromptTemplate = PromptTemplate(concat!(
 // for dynamic substitution.
 
 /// Step 1 system: failure mode analyst. No variables.
-pub const DECOMPOSITION_STEP1_SYSTEM: PromptTemplate = PromptTemplate(
-    "You are a failure mode analyst. Your job is to read constraint requirements and \
-identify the specific requirements that general-purpose engineers miss on first pass — \
-not the obvious ones, but the ones that cause production incidents.",
-);
+pub const DECOMPOSITION_STEP1_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+    "You are a failure mode analyst. Your job is to read constraint requirements and ",
+    "identify the specific requirements that general-purpose engineers miss on first pass — ",
+    "not the obvious ones, but the ones that cause production incidents.",
+));
 
 /// Step 2 system: persona designer. No variables.
-pub const DECOMPOSITION_STEP2_SYSTEM: PromptTemplate = PromptTemplate(
-    "You are designing expert reviewer personas for a technical committee. Each persona \
-must be defined by what they notice FIRST when reading a proposal — anchored to \
-specific professional experience with a concrete failure type, not a generic title.",
-);
+pub const DECOMPOSITION_STEP2_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+    "You are designing expert reviewer personas for a technical committee. ",
+    "Each persona must be defined by what they notice FIRST when reading a proposal — ",
+    "anchored to specific professional experience with a concrete failure type, not a generic title.",
+));
 
 /// Step 3 system: JSON formatter. No variables.
-pub const DECOMPOSITION_STEP3_SYSTEM: PromptTemplate = PromptTemplate(
-    "You are a JSON formatter. Convert structured expert role descriptions into a precise \
-JSON array. Output only valid JSON — no markdown fences, no explanation.",
-);
+pub const DECOMPOSITION_STEP3_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+    "You are a JSON formatter. Convert structured expert role descriptions into a precise ",
+    "JSON array. Output only valid JSON — no markdown fences, no explanation.",
+));
 
 /// Step 1 task: identify what engineers miss per constraint domain.
 /// Variables: `{thinking_context}`, `{description}`, `{constraints}`.
@@ -158,6 +158,14 @@ pub const DECOMPOSITION_STEP2_TASK: PromptTemplate = PromptTemplate(concat!(
     "devil_s_advocate (prove the design is wrong), ",
     "first_principles (derive from invariants), or step_by_step (enumerate state transitions).\n",
     "- what_they_hunt: The specific failure this expert looks for first.\n",
+    "\n",
+    "ORTHOGONALITY REQUIREMENT: Every role must occupy a technically distinct, non-overlapping domain. ",
+    "A role covering operational concurrency (atomicity, cache invalidation, hot-path rate enforcement) ",
+    "MUST NOT also cover schema evolution or database migrations — those require a separate dedicated role. ",
+    "A role covering schema migrations (DDL operations, column renames, rollback scripts) ",
+    "MUST NOT overlap with operational or consistency roles. ",
+    "Before finalising, verify that each role's what_they_hunt describes a failure ",
+    "that no other role on this committee would catch. Roles with duplicate scope will be rejected.\n",
     "\n",
     "{n_total} roles total. One per domain. Describe in plain text."
 ));
@@ -204,11 +212,11 @@ pub const VERIFICATION_TASK: PromptTemplate =
 
 /// System prompt for the LLM researcher grounder (tier-0 SRANI escalation).
 /// No variables.
-pub const SRANI_RESEARCHER_SYSTEM: PromptTemplate = PromptTemplate(
-    "You are a technical grounding advisor. \
-     Classify components as implied by in-scope technologies or genuinely novel. \
-     Respond with valid JSON only.",
-);
+pub const SRANI_RESEARCHER_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+    "You are a technical grounding advisor. ",
+    "Classify components as implied by in-scope technologies or genuinely novel. ",
+    "Respond with valid JSON only.",
+));
 
 /// Task prompt for the LLM researcher grounder.
 /// Variables: `{fabricated}`, `{spec_technologies}`, `{task_description}`.
@@ -228,12 +236,12 @@ pub const SRANI_RESEARCHER_TASK: PromptTemplate = PromptTemplate(concat!(
 /// System prompt for the web-search distillation step.
 /// Instructs the LLM to compress raw search results into concise factual prose.
 /// No variables.
-pub const SRANI_DISTILL_SYSTEM: PromptTemplate = PromptTemplate(
-    "You are a technical fact extractor. \
-     Given web search results, extract only the key factual technical statements \
-     relevant to the task. Return 2-4 concise sentences. \
-     No URLs, no headings, no lists — plain prose only.",
-);
+pub const SRANI_DISTILL_SYSTEM: PromptTemplate = PromptTemplate(concat!(
+    "You are a technical fact extractor. ",
+    "Given web search results, extract only the key factual technical statements ",
+    "relevant to the task. Return 2-4 concise sentences. ",
+    "No URLs, no headings, no lists — plain prose only.",
+));
 
 /// Task prompt for the web-search distillation step.
 /// Variables: `{task_description}`, `{raw_results}`.
@@ -246,19 +254,21 @@ pub const SRANI_DISTILL_TASK: PromptTemplate = PromptTemplate(concat!(
 // ── Thinking Loop ─────────────────────────────────────────────────────────────
 
 /// System prompt for archetype selection LLM call. Always uses Capable tier.
-pub const THINKING_ARCHETYPE_SYSTEM: &str =
-    "You are a cognitive strategist selecting expert reviewer archetypes for a technical problem. \
-     Each archetype must be defined by a specific professional lens that will surface insights \
-     a generic reviewer would miss. Output only a valid JSON array — no markdown, no explanation.";
+pub const THINKING_ARCHETYPE_SYSTEM: &str = concat!(
+    "You are a cognitive strategist selecting expert reviewer archetypes for a technical problem. ",
+    "Each archetype must be defined by a specific professional lens that will surface insights ",
+    "a generic reviewer would miss. Output only a valid JSON array — no markdown, no explanation.",
+);
 
 /// System prompt for the markdown-fill archetype selection path.
 /// Used with `THINKING_ARCHETYPE_MD_ITER1` / `THINKING_ARCHETYPE_MD_ITERN`.
-pub const THINKING_ARCHETYPE_SYSTEM_MD: &str =
-    "You are a cognitive strategist selecting expert reviewer archetypes for a technical problem. \
-     Each archetype must be defined by a specific professional lens that will surface insights \
-     a generic reviewer would miss. \
-     Start each archetype section with a line containing ONLY \"## Archetype N: kebab-name\" \
-     (N = 1, 2, 3…), then fill in the required fields with natural prose — no JSON.";
+pub const THINKING_ARCHETYPE_SYSTEM_MD: &str = concat!(
+    "You are a cognitive strategist selecting expert reviewer archetypes for a technical problem. ",
+    "Each archetype must be defined by a specific professional lens that will surface insights ",
+    "a generic reviewer would miss. ",
+    "Start each archetype section with a line containing ONLY \"## Archetype N: kebab-name\" ",
+    "(N = 1, 2, 3…), then fill in the required fields with natural prose — no JSON.",
+);
 
 /// Archetype selection task for iteration 1 (no prior thinking context).
 /// Variables: `{description}`, `{constraints}`, `{research_context}`, `{n}`.
@@ -380,17 +390,19 @@ pub const THINKING_BRAINSTORM_TASK: PromptTemplate = PromptTemplate(concat!(
 ));
 
 /// System prompt for synthesis LLM call. Always uses Capable tier (stage-level routing).
-pub const THINKING_SYNTHESIS_SYSTEM: &str =
-    "You are a synthesis facilitator merging insights from multiple expert perspectives. \
-     Weight higher-confidence views more heavily when resolving conflicts (ReConcile method). \
-     Output a single JSON object — no markdown, no explanation.";
+pub const THINKING_SYNTHESIS_SYSTEM: &str = concat!(
+    "You are a synthesis facilitator merging insights from multiple expert perspectives. ",
+    "Weight higher-confidence views more heavily when resolving conflicts (ReConcile method). ",
+    "Output a single JSON object — no markdown, no explanation.",
+);
 
 /// System prompt for markdown-format synthesis used with tournament_merge + THINKING_SYNTHESIS_MD_PAIRWISE.
 /// Must NOT instruct structured-data output — parse_synthesis_from_markdown expects markdown sections.
-pub const THINKING_SYNTHESIS_MD_SYSTEM: &str =
-    "You are a synthesis facilitator merging insights from multiple expert perspectives. \
-     Weight higher-confidence views more heavily when resolving conflicts (ReConcile method). \
-     Respond using exactly the markdown section format shown — no extra preamble, no prose outside the sections.";
+pub const THINKING_SYNTHESIS_MD_SYSTEM: &str = concat!(
+    "You are a synthesis facilitator merging insights from multiple expert perspectives. ",
+    "Weight higher-confidence views more heavily when resolving conflicts (ReConcile method). ",
+    "Respond using exactly the markdown section format shown — no extra preamble, no prose outside the sections.",
+);
 
 /// Synthesis task: confidence-weighted merge of all archetype outputs.
 /// Variables: `{perspectives}`, `{prior_understanding}`.
@@ -408,9 +420,10 @@ pub const THINKING_SYNTHESIS_TASK: PromptTemplate = PromptTemplate(concat!(
 ));
 
 /// System prompt for LLM quality gate call. Always uses Capable tier.
-pub const THINKING_QUALITY_GATE_SYSTEM: &str =
-    "You are a readiness evaluator deciding whether a problem analysis is complete enough \
-     to begin generating solutions. Answer with exactly YES or NO followed by one sentence.";
+pub const THINKING_QUALITY_GATE_SYSTEM: &str = concat!(
+    "You are a readiness evaluator deciding whether a problem analysis is complete enough ",
+    "to begin generating solutions. Answer with exactly YES or NO followed by one sentence.",
+);
 
 /// Quality gate task.
 /// Variables: `{understanding}`, `{tensions}`, `{coverage}`.
@@ -495,74 +508,83 @@ pub const DECOMPOSITION_CONSTRAINT_ENTRY: PromptTemplate = PromptTemplate(concat
 // ── Semantic Repair Operator ──────────────────────────────────────────
 
 /// System prompt for gap extractor LLM call.
-/// No variables. Instructs the LLM to identify the incorrect belief from verifier rejection reasons.
-pub const I1_GAP_EXTRACTOR_SYSTEM: &str = "\
-You are a constraint violation analyst. Given a constraint check text and a set of verifier \
-rejection reasons, identify the specific incorrect belief the author held. \
-Output exactly two fields: \
-1. incorrect_concept: one sentence naming the wrong pattern or assumption the author used \
-2. gap_query: a precise web search query that would find authoritative documentation \
-   explaining the correct approach \
-Be specific and technical. Do not summarize the check — identify the belief gap.";
+/// No variables. Instructs the LLM to identify the single missing mechanical mechanism.
+pub const I1_GAP_EXTRACTOR_SYSTEM: &str = concat!(
+    "You are a constraint violation analyst. Given a constraint check text and a set of verifier ",
+    "rejection reasons, identify the single missing mechanical mechanism that all failed proposals omit. ",
+    "Output exactly two fields: ",
+    "1. incorrect_concept: one sentence naming the SPECIFIC MISSING MECHANISM — a concrete operation, ",
+    "command, or step (e.g., 'missing cache TTL bound on quota cache entries', ",
+    "'uses DROP COLUMN instead of additive ADD COLUMN'), not a general belief or pattern ",
+    "2. gap_query: a precise web search query for authoritative documentation of the correct mechanism ",
+    "Be concrete and mechanical. Name the missing piece, not the conceptual failure.",
+);
 
 /// Task prompt for gap extractor LLM call.
 /// Variables: `{check_text}`, `{verifier_reasons}`.
-pub const I1_GAP_EXTRACTOR_TASK: &str = "\
-Constraint check:
-{check_text}
-
-Verifier rejection reasons across attempts:
-{verifier_reasons}
-
-Identify the incorrect concept the proposal author held that caused all attempts to fail this check.
-
-Respond in JSON:
-{{
-  \"incorrect_concept\": \"<one sentence — the wrong belief>\",
-  \"gap_query\": \"<web search query for authoritative correct documentation>\"
-}}";
+pub const I1_GAP_EXTRACTOR_TASK: &str = concat!(
+    "Constraint check:\n",
+    "{check_text}\n",
+    "\n",
+    "Verifier rejection reasons across attempts:\n",
+    "{verifier_reasons}\n",
+    "\n",
+    "Identify the single concrete mechanism (a specific operation, command, or step) ",
+    "that was absent from all failed proposals and whose presence would satisfy this check.\n",
+    "\n",
+    "Respond in JSON:\n",
+    "{{\n",
+    "  \"incorrect_concept\": \"<one sentence — the specific missing mechanism, not a general belief>\",\n",
+    "  \"gap_query\": \"<web search query for authoritative documentation of the correct mechanism>\"\n",
+    "}}",
+);
 
 /// Task prompt for synthesis validator LLM call.
 /// Variables: `{check_text}`, `{incorrect_pattern}`, `{correct_pattern}`, `{mechanistic_reason}`.
-pub const I1_SYNTHESIS_VALIDATOR_TASK: &str = "\
-You are validating whether a domain synthesis correctly addresses a constraint check failure.
-
-Constraint check:
-{check_text}
-
-Proposed belief replacement:
-- PRIOR APPROACH: {incorrect_pattern}
-- CORRECT BELIEF: {correct_pattern}
-- MECHANISTIC REASON: {mechanistic_reason}
-
-Score from 0.0 to 1.0: does the correct belief, if held by the proposal author, \
-make it structurally impossible to repeat the wrong belief in a new proposal?
-
-A score of 1.0 means the correct belief fully prevents the violation. \
-A score below 0.5 means the synthesis is too vague to guide concrete implementation.
-
-Respond in JSON: {{\"score\": <float>, \"reason\": \"<one sentence>\"}}";
+pub const I1_SYNTHESIS_VALIDATOR_TASK: &str = concat!(
+    "You are validating whether a domain synthesis correctly addresses a constraint check failure.\n",
+    "\n",
+    "Constraint check:\n",
+    "{check_text}\n",
+    "\n",
+    "Proposed belief replacement:\n",
+    "- PRIOR APPROACH: {incorrect_pattern}\n",
+    "- CORRECT BELIEF: {correct_pattern}\n",
+    "- MECHANISTIC REASON: {mechanistic_reason}\n",
+    "\n",
+    "Score from 0.0 to 1.0: does the correct belief name a specific concrete mechanism ",
+    "(a command, operation, or step) that was absent from the failed proposals, ",
+    "and would a proposal that includes this mechanism satisfy the constraint check above?\n",
+    "\n",
+    "A score of 1.0 means the correct belief directly names a concrete missing mechanism ",
+    "that addresses the check. ",
+    "A score below 0.5 means the synthesis names a general pattern rather than a specific mechanism, ",
+    "or the named mechanism does not match what the check requires.\n",
+    "\n",
+    "Respond in JSON: {{\"score\": <float>, \"reason\": \"<one sentence>\"}}",
+);
 
 /// Template string injected into repair context for semantic repair slot.
 /// Variables: `{incorrect_pattern}`, `{correct_pattern}`, `{mechanistic_reason}`, `{source_line}` (optional).
-pub const I1_SEMANTIC_REPAIR_SLOT: &str = "\
-══ DOMAIN KNOWLEDGE CORRECTION ══════════════════════════════════════════════════
-The following beliefs were identified as INCORRECT in your prior attempt.
-You MUST replace these beliefs before generating a new proposal.
-Proposals that repeat the wrong belief will be rejected.
-
-PRIOR APPROACH: {incorrect_pattern}
-CORRECT BELIEF: {correct_pattern}
-WHY THIS MATTERS: {mechanistic_reason}
-{source_line}
-══════════════════════════════════════════════════════════════════════════════════
-";
+pub const I1_SEMANTIC_REPAIR_SLOT: &str = concat!(
+    "══ DOMAIN KNOWLEDGE CORRECTION ══════════════════════════════════════════════════\n",
+    "The following beliefs were identified as INCORRECT in your prior attempt.\n",
+    "You MUST replace these beliefs before generating a new proposal.\n",
+    "Proposals that repeat the wrong belief will be rejected.\n",
+    "\n",
+    "PRIOR APPROACH: {incorrect_pattern}\n",
+    "CORRECT BELIEF: {correct_pattern}\n",
+    "WHY THIS MATTERS: {mechanistic_reason}\n",
+    "{source_line}\n",
+    "══════════════════════════════════════════════════════════════════════════════════\n",
+);
 
 /// Instruction injected into the LlmJudge system prompt to request per-check evidence.
 ///
 /// Placed after the binary check list so the judge provides structured per-check reasoning
 /// that `parse_check_reasons` can extract.
-pub const CHECK_EVIDENCE_FORMAT_INSTRUCTION: &str =
-    "For each CHECK, provide evidence from the proposal text. Format exactly as:\n\
-     CHECK N: <one-sentence evidence from proposal> → PRESENT or MISSING\n\
-     where N matches the check number. Include every check even if it passes.";
+pub const CHECK_EVIDENCE_FORMAT_INSTRUCTION: &str = concat!(
+    "For each CHECK, provide evidence from the proposal text. Format exactly as:\n",
+    "CHECK N: <one-sentence evidence from proposal> → PRESENT or MISSING\n",
+    "where N matches the check number. Include every check even if it passes.",
+);

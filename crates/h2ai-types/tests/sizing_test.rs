@@ -1167,3 +1167,54 @@ fn oracle_family_human_maps_to_human() {
 fn oracle_family_unknown_maps_to_semantic() {
     assert_eq!(OracleDomain::Unknown.family(), OracleFamily::Semantic);
 }
+
+// ─── BetaCalibrationSource ────────────────────────────────────────────────────
+
+use h2ai_types::sizing::BetaCalibrationSource;
+
+#[test]
+fn beta_calibration_theoretical_effective_beta() {
+    let src = BetaCalibrationSource::Theoretical {
+        assumed_beta: 0.039,
+    };
+    assert!((src.effective_beta() - 0.039).abs() < 1e-10);
+}
+
+#[test]
+fn beta_calibration_empirical_effective_beta() {
+    let src = BetaCalibrationSource::Empirical {
+        fitted_beta: 0.051,
+        r_squared: Some(0.94),
+    };
+    assert!((src.effective_beta() - 0.051).abs() < 1e-10);
+}
+
+#[test]
+fn beta_calibration_empirical_no_r_squared() {
+    let src = BetaCalibrationSource::Empirical {
+        fitted_beta: 0.027,
+        r_squared: None,
+    };
+    assert!((src.effective_beta() - 0.027).abs() < 1e-10);
+}
+
+#[test]
+fn beta_calibration_source_serde_round_trip_theoretical() {
+    let src = BetaCalibrationSource::Theoretical {
+        assumed_beta: 0.039,
+    };
+    let json = serde_json::to_string(&src).unwrap();
+    let back: BetaCalibrationSource = serde_json::from_str(&json).unwrap();
+    assert_eq!(src, back);
+}
+
+#[test]
+fn beta_calibration_source_serde_round_trip_empirical() {
+    let src = BetaCalibrationSource::Empirical {
+        fitted_beta: 0.051,
+        r_squared: Some(0.94),
+    };
+    let json = serde_json::to_string(&src).unwrap();
+    let back: BetaCalibrationSource = serde_json::from_str(&json).unwrap();
+    assert_eq!(src, back);
+}

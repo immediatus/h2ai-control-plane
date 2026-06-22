@@ -475,6 +475,10 @@ fn verification_scored_event_serde_roundtrip_cache_hit_default() {
         reason: "all constraints satisfied".into(),
         passed: true,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: Utc::now(),
     };
     let s = serde_json::to_string(&e).unwrap();

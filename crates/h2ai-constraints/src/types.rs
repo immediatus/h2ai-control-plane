@@ -394,6 +394,43 @@ pub fn aggregate_compliance_score(results: &[ComplianceResult]) -> f64 {
     weighted_sum / total_weight
 }
 
+/// Count total and passed binary check verdicts across a slice of compliance results.
+///
+/// Returns `(passed, total)`. `total == 0` when no constraint defined binary checks or
+/// none were parseable from the LLM CoT output.
+#[must_use]
+pub fn count_check_verdicts(results: &[ComplianceResult]) -> (u32, u32) {
+    let total: u32 = results.iter().map(|r| r.check_verdicts.len() as u32).sum();
+    let passed: u32 = results
+        .iter()
+        .flat_map(|r| r.check_verdicts.iter())
+        .filter(|&&v| v)
+        .count() as u32;
+    (passed, total)
+}
+
+/// Compute a 95 % Wilson score credible interval on a proportion `k/n`.
+///
+/// Returns `(lower, upper)` clamped to `[0, 1]`.
+/// When `n == 0` (no evidence) returns `(0.0, 1.0)` — maximum uncertainty.
+///
+/// The Wilson interval is the standard choice for small-sample proportions; it is
+/// asymptotically equivalent to the Jeffreys Beta posterior and avoids the coverage
+/// collapse of the Wald interval near 0 and 1.
+#[must_use]
+pub fn beta_credible_interval(passed: u32, total: u32) -> (f64, f64) {
+    if total == 0 {
+        return (0.0, 1.0);
+    }
+    let n = total as f64;
+    let p = passed as f64 / n;
+    let z = 1.959_964_f64; // 97.5th percentile of N(0,1) → 95 % two-sided
+    let z2 = z * z;
+    let center = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let half = z / (1.0 + z2 / n) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    ((center - half).max(0.0), (center + half).min(1.0))
+}
+
 /// Evaluation tier for Phase 4 lazy loading — determines whether a payload fetch is needed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

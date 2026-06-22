@@ -4283,6 +4283,10 @@ fn vse(passed: bool) -> VerificationScoredEvent {
         reason: String::new(),
         passed,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: chrono::Utc::now(),
     }
 }

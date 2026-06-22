@@ -240,6 +240,10 @@ fn apply_verification_scored_passed_increments_valid() {
             reason: "good".into(),
             passed: true,
             cache_hit: false,
+            passed_checks: None,
+            total_checks: None,
+            score_lower: None,
+            score_upper: None,
             timestamp: Utc::now(),
         }),
     );
@@ -263,6 +267,10 @@ fn apply_verification_scored_failed_increments_pruned() {
             reason: "bad".into(),
             passed: false,
             cache_hit: false,
+            passed_checks: None,
+            total_checks: None,
+            score_lower: None,
+            score_upper: None,
             timestamp: Utc::now(),
         }),
     );

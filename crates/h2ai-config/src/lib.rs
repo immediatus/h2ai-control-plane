@@ -1560,8 +1560,15 @@ pub struct H2AIConfig {
     /// CG (coordination gain) fallback value used when fewer than 3 adapters ran calibration.
     pub calibration_cg_fallback: f64,
     /// USL β₀ base coherency cost per agent pair; deployment-tier specific (e.g. `0.039` for AI agents). Also accepts the alias `kappa_eff_factor`.
+    /// Superseded by `beta_calibration_source` when present; kept for backward-compatible TOML files.
     #[serde(alias = "kappa_eff_factor")]
     pub beta_base_default: f64,
+    /// Provenance of the USL β₀ constant. When `Some`, takes precedence over `beta_base_default`.
+    /// `Theoretical` uses conservative deployment-tier defaults; `Empirical` records a β fitted
+    /// to observed synthesis-quality degradation with optional goodness-of-fit R².
+    /// Omit from TOML to fall back to `beta_base_default` (preserves existing deployments).
+    #[serde(default)]
+    pub beta_calibration_source: Option<h2ai_types::sizing::BetaCalibrationSource>,
     /// Quality factor gained per TAO loop turn; heuristic prior that converges after ~20 Tier 1 oracle tasks.
     pub tao_per_turn_factor: f64,
     /// EMA smoothing factor α for `TaoMultiplierEstimator` drift tracking. Smaller values weight history more; half-life ≈ ln(2) / α samples.

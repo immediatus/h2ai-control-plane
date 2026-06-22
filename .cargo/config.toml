@@ -13,7 +13,7 @@
 
 [build]
 jobs = 4
-target-dir = "/workspaces/h2ai-control-plane/target2"
+target-dir = "target2"
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "codegen-units=1"]

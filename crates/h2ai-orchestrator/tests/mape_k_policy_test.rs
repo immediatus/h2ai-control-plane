@@ -65,6 +65,10 @@ fn scored_event(score: f64, passed: bool) -> h2ai_types::events::VerificationSco
         reason: "test".to_string(),
         passed,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: chrono::Utc::now(),
     }
 }
@@ -840,6 +844,10 @@ async fn observe_global_best_proposal_updated_when_better_score() {
         reason: "high quality".to_string(),
         passed: true,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: chrono::Utc::now(),
     };
 
@@ -883,6 +891,10 @@ async fn observe_global_best_proposal_replaced_when_higher_score_arrives() {
             reason: String::new(),
             passed: true,
             cache_hit: false,
+            passed_checks: None,
+            total_checks: None,
+            score_lower: None,
+            score_upper: None,
             timestamp: chrono::Utc::now(),
         };
         let events = WaveEvents {
@@ -926,6 +938,10 @@ async fn observe_empty_proposal_text_is_skipped() {
         reason: String::new(),
         passed: true,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: chrono::Utc::now(),
     };
 
@@ -974,6 +990,10 @@ async fn observe_compliance_score_history_grows() {
             reason: String::new(),
             passed: false,
             cache_hit: false,
+            passed_checks: None,
+            total_checks: None,
+            score_lower: None,
+            score_upper: None,
             timestamp: chrono::Utc::now(),
         };
         let events = WaveEvents {
@@ -1301,6 +1321,10 @@ async fn decide_integration_wave_fires_on_plateau() {
             reason: String::new(),
             passed: false,
             cache_hit: false,
+            passed_checks: None,
+            total_checks: None,
+            score_lower: None,
+            score_upper: None,
             timestamp: chrono::Utc::now(),
         };
         let events = WaveEvents {
@@ -1367,6 +1391,10 @@ fn decide_convergence_gate_triggers_on_high_cosine() {
         reason: "high quality".to_string(),
         passed: true,
         cache_hit: false,
+        passed_checks: None,
+        total_checks: None,
+        score_lower: None,
+        score_upper: None,
         timestamp: chrono::Utc::now(),
     };
 

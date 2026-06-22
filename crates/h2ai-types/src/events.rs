@@ -671,6 +671,22 @@ pub struct VerificationScoredEvent {
     /// avoiding a redundant LLM call. False for freshly computed scores.
     #[serde(default)]
     pub cache_hit: bool,
+    /// Count of binary `check_verdicts` that evaluated to `true` across all constraints.
+    /// `None` on legacy events emitted before credible-interval tracking was introduced.
+    #[serde(default)]
+    pub passed_checks: Option<u32>,
+    /// Total count of binary `check_verdicts` across all constraints.
+    /// `None` on legacy events or when no binary checks were defined.
+    #[serde(default)]
+    pub total_checks: Option<u32>,
+    /// 95 % Wilson credible-interval lower bound on the binary-check pass fraction.
+    /// `None` on legacy events or when `total_checks` is zero (no discrete evidence).
+    #[serde(default)]
+    pub score_lower: Option<f64>,
+    /// 95 % Wilson credible-interval upper bound on the binary-check pass fraction.
+    /// `None` on legacy events or when `total_checks` is zero (no discrete evidence).
+    #[serde(default)]
+    pub score_upper: Option<f64>,
     pub timestamp: DateTime<Utc>,
 }
 
