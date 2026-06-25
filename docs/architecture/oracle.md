@@ -1,285 +1,200 @@
 # Oracle System
 
-The oracle is the ground-truth signal that tells the engine whether a winning output is actually correct.
-After `MergeEngine` selects a winner it emits an `OraclePendingEvent`; `OracleWorker` calls `OracleClient.evaluate`,
-which POSTs the output to an external HTTP oracle service, then publishes an `OracleResultEvent`.
-In the background, `OracleAccumulator` consumes that stream and continuously re-calibrates the ensemble.
+The oracle is the ground-truth feedback signal that tells the calibration subsystem whether
+a winning output was actually correct.  It operates entirely asynchronously: the engine
+delivers its output to the client and simultaneously fires an `OraclePendingEvent`; the
+oracle worker later receives the verdict and updates the rolling calibration window.
 
-The control plane is oracle-agnostic: it has no knowledge of schema validation, Z3, pytest, human ratings,
-or any other evaluation strategy. All of that lives in the external oracle service.
-
----
-
-## OracleSpec
-
-Per-task oracle config in `task.json`:
-
-```json
-"oracle_spec": {
-  "runner_uri": "http://oracle-service:9090/evaluate",
-  "timeout_ms": 5000,
-  "domain": "rtb"
-}
-```
-
-- `runner_uri` — HTTP URL of the external oracle service
-- `timeout_ms` — milliseconds before the HTTP call is abandoned (failure → `passed=false, score=0.0`)
-- `domain` — domain tag forwarded to the oracle service and stored in calibration observations
+All values in this document are sourced from `crates/h2ai-api/src/oracle/mod.rs`,
+`crates/h2ai-orchestrator/src/oracle.rs`, `crates/h2ai-config/src/lib.rs`, and
+`crates/h2ai-config/reference.toml`.
 
 ---
 
-## HTTP Protocol Contract
+## 1. Data Flow
 
-**Request (POST `<runner_uri>`):**
-
-```json
-{
-  "task_id": "t-abc123",
-  "output": "<winning output text>",
-  "domain": "rtb"
-}
+```
+ExecutionEngine (Phase 6)
+  │  oracle_dispatch::fire()
+  │  publishes OraclePendingEvent
+  ▼
+NATS subject: h2ai.oracle.{tenant_id}.pending
+  │
+  ▼
+OracleWorker (oracle_worker.rs)
+  │  calls OracleClient.evaluate (external HTTP oracle service)
+  │  receives OracleResultEvent
+  ▼
+NATS: H2AI_ORACLE_CALIBRATION bucket updated
+  │  patch_ensemble_p_from_oracle() called when n_obs ≥ 10
+  ▼
+MetricsState updated (h2ai_oracle_* gauges)
 ```
 
-**Response (2xx):**
+### OraclePendingEvent fields
 
-```json
-{
-  "passed": true,
-  "score": 0.95,
-  "details": { "...any JSON..." }
-}
-```
-
-- `passed` — bool, required
-- `score` — f64 in [0.0, 1.0], required
-- `details` — any JSON object, stored as-is, not interpreted by the control plane
-
-On any error (timeout, network failure, non-2xx, bad JSON): `passed=false, score=0.0, details={"error":"<reason>"}`.
-
-The oracle service is fully responsible for evaluation strategy, internal config, and response shape of `details`.
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `TaskId` | Unique task identifier |
+| `tenant_id` | `TenantId` | Tenant scope |
+| `winning_output` | `String` | Output selected by merge engine |
+| `q_confidence` | `f64` | Engine's predicted correctness probability |
+| `n_used` | `u32` | Actual ensemble size used for this task |
+| `oracle_spec` | `OracleSpec` | Evaluation specification including domain |
+| `domain` | `OracleDomain` | Domain tag for family routing |
 
 ---
 
-## Multi-Oracle FUSE
+## 2. Oracle Domain and Family
 
-A single task can be evaluated by multiple oracle services simultaneously. When `oracle_specs: Vec<OracleSpec>` is non-empty on `OraclePendingEvent`, `OracleWorker` runs the primary `oracle_spec` and all additional `oracle_specs` in sequence, then aggregates via **worst-of-family reduction** (`fuse_reduce_by_family` in `oracle_worker.rs`).
+`OracleDomain::family()` maps task domain to oracle evaluation family:
 
-### Oracle families
+| Domain | Family |
+|--------|--------|
+| `Code` | `Syntactic` |
+| `Factual` | `Semantic` |
+| `Reasoning` | `Semantic` |
+| `Unknown` | `Semantic` |
+| `Human` | `Human` |
 
-`OracleFamily` partitions oracle types by their correlated failure mode:
-
-| Family | OracleDomain | Typical examples |
-|---|---|---|
-| `Syntactic` | `Code` | JSON Schema validator, Z3 symbolic, pytest runner |
-| `Semantic` | `Factual`, `Reasoning`, `Unknown` | LLM judge, factual QA verifier, reference-answer matcher |
-| `Human` | `Human` | Human rating gateway |
-
-Oracles in the same family share failure modes — a malformed JSON output will simultaneously fail a JSON Schema validator *and* a Z3 constraint that expects a valid document. Counting both failures as independent FUSE votes would double-penalise a single root cause.
-
-### FUSE reduction algorithm
-
-```
-fuse_reduce_by_family(verdicts: [(OracleFamily, bool, f64)]) → (bool, f64)
-
-1. Group verdicts by family.
-2. Within each family: take min(score)  — worst-case within a correlated group.
-3. Across families: take mean(family_min) — independent signals aggregate equally.
-4. pass ← final_score ≥ 0.5
-```
-
-An empty input returns `(false, 0.0)`. A single oracle follows the single-oracle path (backward-compatible — no FUSE overhead).
-
-### Configuration
-
-```json
-"oracle_spec": {
-  "runner_uri": "http://schema-oracle:9090/evaluate",
-  "timeout_ms": 5000,
-  "domain": "rtb"
-},
-"oracle_specs": [
-  {
-    "runner_uri": "http://semantic-oracle:9091/evaluate",
-    "timeout_ms": 3000,
-    "domain": "reasoning"
-  }
-]
-```
-
-`oracle_specs` defaults to `[]` (single-oracle path) — all existing deployments without this field are unaffected.
+The family determines which external oracle service is invoked.
 
 ---
 
-## OracleWorker
+## 3. Calibration Window
 
-Thin NATS→HTTP bridge:
+The oracle worker maintains a rolling FIFO observation window per tenant.
 
-1. Subscribe to `h2ai.oracle.*.pending`
-2. Deserialize `OraclePendingEvent`
-3. Call `OracleClient.evaluate(spec, task_id, output)` — primary oracle
-4. If `oracle_specs` non-empty: call each additional spec; reduce all verdicts via `fuse_reduce_by_family`
-5. Build `OracleResultEvent` from aggregated `(passed, score)`
-6. Publish to `h2ai.oracle.results` and reply subject
+### Window management
 
----
+Window size cap: `oracle_window_size = 200` observations.
+When the window exceeds the cap, the oldest observations are drained first
+(`enforce_fifo_cap()` in `oracle/mod.rs`).
 
-## Calibration Loop
+### OracleObservation fields
 
-After every oracle result, `OracleAccumulator.handle_result` runs the full calibration pipeline:
-
-### 1. Observation Window
-
-Observations are stored in NATS KV. New results are appended and the window is capped
-at `oracle_window_size` (FIFO, oldest dropped first).
-
-### 2. Calibration Basis
-
-Determined by `determine_calibration_basis` using CLT-grounded thresholds:
-
-| n observations | ECE | Basis |
-|---|---|---|
-| n < 10 | any | 0 — Heuristic (insufficient data) |
-| 10 ≤ n < 30 | any | 1 — Bootstrap (coarse intervals) |
-| n ≥ 30 | ECE < 0.15 | 2 — Conformal (valid coverage) |
-| n ≥ 30 | ECE ≥ 0.15 | 0 — Heuristic (quality regression) |
-
-These thresholds are **mathematical constants, not config** (CLT: Lehmann & Romano 2005;
-bootstrap minimum: DiCiccio & Efron 1996).
-
-### 3. ECE Metric
-
-```
-ECE = (1/n) × Σ |q_confidence_i − y_oracle_i|
-```
-
-`q_confidence` is the ensemble's predicted pass probability; `y_oracle` is the binary oracle outcome.
-Lower ECE = better calibration.
-
-### 4. Ensemble Patch (n ≥ 10)
-
-When n ≥ 10, `patch_ensemble_p_from_oracle` updates `EnsembleCalibration.p_mean` to the
-measured oracle pass rate (clamped to `[0.5, 1.0]`). This is innovation INNOVATION-1:
-oracle ground truth feeds back into ensemble sizing.
-
-Emits `OracleCalibrationPatchedEvent` on the NATS task stream.
-
-### 5. Health Alerts (n ≥ 30)
-
-| Condition | NATS subject | Log level |
-|---|---|---|
-| ECE > `oracle_ece_alert_threshold` | `h2ai.oracle.calibration_drift` | WARN |
-| pass_rate < `oracle_pass_rate_floor` | `h2ai.oracle.suspect` | WARN |
+Each completed oracle evaluation appends one `OracleObservation`:
+- `q_confidence`: engine's predicted probability for this task
+- `y_oracle`: binary oracle verdict (true = passed)
+- `residual`: `|q_confidence − y_oracle|`
 
 ---
 
-## Prometheus Metrics
+## 4. Calibration Statistics
 
-`OracleAccumulator` updates these gauges after every result:
+All statistics are recomputed on every new observation.
 
-| Metric | Description |
-|---|---|
-| `oracle_ece` | Current ECE over the window |
-| `oracle_n_observations` | Window size |
-| `oracle_pass_rate` | Fraction of passing observations |
-| `oracle_residual_p90` | P90 of residuals (Angelopoulos-Bates Theorem 1) |
-| `oracle_calibration_basis` | 0=Heuristic, 1=Bootstrap, 2=Conformal |
+### Expected Calibration Error (ECE)
+
+```
+ECE = (1/n) × Σᵢ |q_confidence_i − y_oracle_i|
+```
+
+A perfectly calibrated system has ECE = 0; a system that always predicts 1.0 but passes
+only half the time has ECE = 0.5.
+
+Target: ECE < 0.05.
+Alert threshold: `oracle_ece_alert_threshold = 0.15`.
+
+### Pass rate
+
+```
+pass_rate = count(y_oracle_i == true) / n
+```
+
+Floor: `oracle_pass_rate_floor = 0.30`.  Dropping below this value indicates the oracle
+is consistently rejecting engine outputs and should trigger manual investigation.
+
+### Residual P90
+
+The 90th percentile of residuals, using the Angelopoulos–Bates finite-sample index:
+
+```
+idx = ceil((n + 1) × 0.9) − 1    (clamped to [0, n−1])
+```
+
+Tracks the width of the upper tail of calibration errors; used as a proxy for conformal
+interval width in the `/metrics` endpoint.
+
+### Calibration basis
+
+The basis determines how much to trust the calibration statistics:
+
+| Window size | ECE | Basis | Meaning |
+|-------------|-----|-------|---------|
+| n < 10 | any | Heuristic (0) | Insufficient data; use prior |
+| 10 ≤ n < 30 | any | Bootstrap (1) | CLT not yet satisfied |
+| n ≥ 30 | ECE < 0.15 | Conformal (2) | Statistically grounded |
+| n ≥ 30 | ECE ≥ 0.15 | Heuristic (0) | Quality regression; revert to prior |
 
 ---
 
-## Oracle Post-Selection Gate
+## 5. Ensemble p_mean Patching
 
-After `MergeEngine` selects a winner but **before** `PipelineOutcome::Resolved` is emitted, an additional post-selection blocking check can re-verify the winner against the oracle. This is BFT Lever 2: a hard gate that blocks a correlated-hallucination winner from escaping the pipeline even when it passed the pre-merge oracle gate.
-
-### Configuration
-
-```toml
-[oracle_gate]
-enabled   = false
-on_fail   = "evict"   # "evict" | "pass" | "fail"
-```
-
-| Field | Default | Purpose |
-|---|---|---|
-| `on_fail` | `"evict"` | What to do when the post-selection check returns `gate_passed = false`. `evict` → block winner, rotate adapter family, retry; `pass` → ignore gate failure; `fail` → mark task failed immediately. |
-
-### Decision Types
+Once `n_observations ≥ 10`, `patch_ensemble_p_from_oracle()` updates the in-memory
+calibration state with an empirically derived baseline competence:
 
 ```rust
-enum PostSelectionDecision {
-    Accept,   // gate passed or on_fail = "pass"
-    Evict,    // gate failed and on_fail = "evict" — rotate family, retry
-    Clarify,  // gate failed with low confidence — suspend for operator answer
-}
+EnsembleCalibration::from_measured_p(pass_rate.clamp(0.5, 1.0), cg_mean, max_ensemble_size)
 ```
 
-`apply_on_fail_policy(gate_passed: Option<bool>, on_fail: &str) -> PostSelectionDecision` maps the `(gate_passed, on_fail)` pair to the decision. `run_post_selection(input: PostSelectionInput<'_>) -> PostSelectionDecision` calls the oracle via NATS (when available) and then applies the policy.
-
-### Pipeline Integration
-
-When `run_post_selection` returns `Evict`:
-1. `pipeline.rs` returns `PipelineWaveResult { outcome: PipelineOutcome::EarlyExit(ExitReason::OraclePostSelectionBlocked { evicted_winner_summary }), events }` instead of `Resolved`.
-2. `mape_k.rs::handle_exit_reason` handles `OraclePostSelectionBlocked`:
-   - Emits `CorrelatedEnsembleWarning { task_id, cv: 1.0, mean_jaccard_distance: 0.0, retry_count }` — treated as a correlated-failure signal.
-   - Increments `adapter_rotation_offset` to shift the pool on the next wave.
-   - Sets `retry_context` to the evicted winner summary for repair context injection.
-   - Calls `run_apply_optimizer(1.0)` and returns `MapeKDecision::Retry`.
-
-19 tests in `crates/h2ai-orchestrator/tests/oracle_gate_test.rs` cover `apply_on_fail_policy` decision mapping (`evict_policy_on_failed_gate`, `pass_policy_ignores_failure`, `accept_when_gate_passed`, `accept_when_gate_not_run`, `clarify_policy_on_failure`), plus `fill_placeholders_*`, `match_clarification_template_*`, `aggregate_failure_summary_*`, and `effective_concurrency_*` helpers.
+This replaces the CG-proxy formula `p_mean = 0.5 + CG/2` with directly observed accuracy.
+The update is applied to the tenant's live calibration in-memory and does not require a
+full `POST /v1/calibrate` recalibration cycle.
 
 ---
 
-## Configuration
+## 6. Oracle Gate
 
-All oracle config lives in `h2ai.toml` under `[oracle]` (or in `reference.toml`):
+The oracle gate (`oracle_gate.rs`) is an optional pre-delivery validation step.
+Default: **disabled** (`oracle_gate.enabled = false`).
 
-```toml
-[oracle]
-oracle_window_size = 100           # FIFO cap on observation window
-oracle_ece_alert_threshold = 0.20  # ECE WARN threshold (n≥30)
-oracle_pass_rate_floor = 0.40      # pass_rate WARN threshold (n≥30)
-```
+| Config field | Default | Meaning |
+|-------------|---------|---------|
+| `enabled` | false | Disabled; opt-in per scenario |
+| `subject` | `h2ai.oracle.gate` | NATS subject for gate requests |
+| `timeout_secs` | 30 | Seconds to wait for oracle verdict |
+| `on_timeout` | `pass` | Deliver output when oracle times out |
+| `on_fail` | `evict` | Evict proposal when oracle rejects |
+| `min_confidence` | 0.7 | Minimum confidence to accept a pass verdict |
+
+When enabled, the oracle gate runs between Phase 5a (synthesis) and final delivery.
+A verdict of fail with `on_fail = evict` causes the MAPE-K loop to retry the task.
 
 ---
 
-## Testing
+## 7. Drift Detection Interaction
 
-### Unit Tests
+The DDM (Drift Detection Method) and BOCPD (Bayesian Online Changepoint Detection)
+monitors track calibration drift across the rolling oracle window:
 
-```bash
-# Oracle accumulator, calibration, and FUSE tests (h2ai-api)
-cargo test --package h2ai-api -- oracle
+- `drift_ddm_window = 20`: sliding window size for DDM.
+- `drift_ddm_k = 2.5`: detection threshold in standard deviations.
+- `drift_bocpd_hazard_rate = 0.01`: per-observation changepoint probability.
+- `drift_bocpd_changepoint_threshold = 0.90`: posterior mass threshold to fire `CalibrationChangepoint`.
 
-# Oracle gate, post-selection, and helper tests (h2ai-orchestrator)
-cargo test --package h2ai-orchestrator -- oracle
-```
+When drift is detected, `drift_conformal_margin = 0.05` is subtracted from the
+verification threshold as a conservative coverage guarantee (ORCA conformal margin).
 
-| Test file | Tests | Coverage |
-|---|---|---|
-| `h2ai-api/tests/oracle_test.rs` | 19 | OracleAccumulator: observation window, calibration basis, ECE, patch |
-| `h2ai-api/tests/oracle_accumulator_test.rs` | 11 | Accumulator edge cases |
-| `h2ai-api/tests/oracle_fuse_test.rs` | 6 | FUSE `fuse_reduce_by_family` |
-| `h2ai-orchestrator/tests/oracle_gate_test.rs` | 19 | `apply_on_fail_policy`, `fill_placeholders`, `aggregate_failure_summary`, `effective_concurrency` |
+Automatic recalibration on drift: `auto_recalibrate_on_drift = false` (operator opt-in).
+Stale-calibration warning after `drift_staleness_ttl_secs = 3600` seconds.
 
-### E2E Tests
+---
 
-The `dsp-onboarding` scenario exercises the oracle path end-to-end.
-Its `task.json` specifies `runner_uri` pointing to an oracle sidecar service.
+## 8. Prometheus Metrics
 
-```bash
-python3 tests/e2e/replay.py dsp-onboarding
-```
+The following oracle metrics are exposed at `/metrics`:
 
-### Debug Logging
+| Metric | Type | Description |
+|--------|------|-------------|
+| `h2ai_oracle_ece_gauge` | gauge | Current ECE (target < 0.05, alert > 0.15) |
+| `h2ai_oracle_n_observations_total` | gauge | Rolling observation count |
+| `h2ai_oracle_coverage_rate` | gauge | Fraction of tasks that carried an `OracleSpec` |
+| `h2ai_oracle_pass_rate` | gauge | Rolling oracle pass rate (last 200 observations) |
+| `h2ai_oracle_residual_p90` | gauge | P90 of calibration residuals |
+| `h2ai_calibration_basis` | gauge | Basis: 0=Heuristic, 1=Bootstrap, 2=Conformal |
+| `h2ai_oracle_tasks_total` | counter | Total successfully resolved tasks |
+| `h2ai_oracle_tasks_with_spec_total` | counter | Tasks that carried an `OracleSpec` |
+| `h2ai_calibration_source{source}` | gauge | Active calibration source (1 = active) |
 
-```bash
-RUST_LOG=debug python3 tests/e2e/replay.py dsp-onboarding
-```
-
-Key log patterns:
-
-| Pattern | Meaning |
-|---|---|
-| `oracle result processed` | OracleAccumulator processed a result; shows ece, basis, n_obs |
-| `oracle: patching ensemble p_mean` | Calibration feedback applied (n≥10) |
-| `CalibrationDrift: ECE exceeded` | ECE alert fired (n≥30) |
-| `OracleSuspect: pass rate below floor` | Pass rate alert fired (n≥30) |
+`h2ai_calibration_source` labels: `measured`, `partial_fit`, `synthetic_priors`.

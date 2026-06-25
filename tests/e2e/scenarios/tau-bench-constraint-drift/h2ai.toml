@@ -1,0 +1,172 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SCENARIO: tau-bench-constraint-drift  (MULTI-CONSTRAINT PRODUCTION DRIFT)
+# Task:     Immediately reduce tenant 'acme-corp' rate limit from 10k→2k req/min.
+#           Redis cache has a 60-second TTL — cached values drift out of sync
+#           for up to 60s. 3 constraints must hold simultaneously under drift:
+#             TAU-1 (data isolation), TAU-2 (atomic quota transitions),
+#             CONSTRAINT-008 (no distributed locks).
+# Expected: PASS if the model produces a Lua EVAL quota update + active push
+#           invalidation (Redis Streams or pub/sub) + TTL safety net + Lua-based
+#           rate-check path + PostgreSQL INSERT-only audit satisfying all 3 constraints.
+#           Fails on solutions that: (a) use lazy/request-driven invalidation without
+#           a TTL fallback (CONSTRAINT-TAU-2), (b) apply Lua only to the quota update
+#           but use a plain GET+INCRBY on the rate-check path (CONSTRAINT-008 TOCTOU),
+#           or (c) derive tenant_id from the X-Tenant-ID header (CONSTRAINT-TAU-1).
+#           MAPE-K typically needs 2–3 retries before all 3 constraints pass simultaneously.
+#
+# Features ON:
+#   safety="production": Krum prunes the 1 worst proposal (requires ≥5 adapters).
+#     Validates that constraint-violating solutions (e.g. Redis SETNX locks) are
+#     pruned or vetoed before reaching the verifier.
+#   thinking_loop (3 iters): drift analysis requires multi-step reasoning:
+#     iter1=identify drift window, iter2=invalidation strategy, iter3=atomicity proof.
+#     NOTE: LLM archetype selection does not map to constraint IDs — synthesis fallback
+#     archetypes are generated for all 3 constraint IDs every iteration (expected behavior;
+#     coverage_score still reaches ≥0.98 via the synthesized specialists).
+#   gap_i1: validates Redis TTL semantics and quota atomicity facts against the constraint corpus.
+#   complexity_routing.intra_retry: business-rule compliance tasks sometimes plateau
+#     at entropy=0.6 (all explorers propose the same wrong lock-based approach);
+#     ceiling detector routes to grafting early.
+#
+# Features OFF:
+#   tiered_exit: OFF — need all 5 adapters for Krum BFT aggregation.
+#   verifier_decomposition_enabled: OFF — constraint-drift tasks score 2–3;
+#     no BEYOND_BUDGET injection needed.
+#
+# Run:    python3 tests/e2e/replay.py tau-bench-constraint-drift
+# Review: python3 tests/e2e/analyze_events.py tau-bench-constraint-drift
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+nats_url = "nats://host.docker.internal:4222"
+
+# ── Ensemble / MAPE-K ─────────────────────────────────────────────────────────
+verifier_consensus_passes = 1
+max_autonomic_retries     = 4
+calibration_adapter_count = 1
+
+# ── LLM budget ────────────────────────────────────────────────────────────────
+model_max_tokens = 32768
+
+# ── Single-slot LLM timing budget ─────────────────────────────────────────────
+# Observed timings (2026-06-24 local LlamaCpp run):
+#   thinking loop: ~36 min (3 iters × ~12 min each)
+#   each generation wave: ~25 min (5 parallel proposals + 15 sequential verifier checks)
+#   MAPE-K retries needed: 2 (wave 3 all-passed, merge started at ~1h55m elapsed)
+#   total (thinking + 3 waves + synthesis): ~2h05–10m
+tao_per_turn_timeout_secs = 3600    # 1 h per TAO reasoning turn
+evaluator_timeout_secs    = 10800   # 3 h evaluator budget (5 proposals × 3 constraint checks × ~25 min/wave × max 4 retries)
+
+[generation_phase]
+timeout_secs = 10800                # 3 h wall-clock for the generation phase (thinking loop adds ~36 min before generation starts)
+
+# ── Safety ────────────────────────────────────────────────────────────────────
+# "production": Krum f=1 prunes the most divergent proposal.
+# Validates that distributed-lock proposals are pruned before scoring.
+[safety]
+profile = "production"
+
+# ── Constraint corpus ─────────────────────────────────────────────────────────
+[constraint_wiki]
+mode        = "fs"
+corpus_path = "tests/e2e/constraints"
+
+# ── Adapters (5 + researcher + shadow_auditor) ────────────────────────────────
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-4"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-5"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+# ── HITL ──────────────────────────────────────────────────────────────────────
+[hitl]
+enabled = false
+
+# ── Thinking loop ─────────────────────────────────────────────────────────────
+# ON with 3 iterations: multi-constraint problems require iterative checking of
+# each constraint after each revision (TAU-1 → TAU-2 → CONSTRAINT-008 cycle).
+[thinking_loop]
+enabled            = true
+max_iterations     = 3
+coverage_threshold = 0.75
+
+debug_log_path = "/tmp/h2ai-debug-tau-bench-constraint-drift.ndjson"
+
+# ── Grounding / gap research ───────────────────────────────────────────────────
+# ON: validates Redis TTL semantics, pub-sub delivery guarantees, and quota
+# atomicity facts against the constraint corpus.
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 300
+
+# ── Complexity-Ceiling Routing ─────────────────────────────────────────────────
+# ON: constraint-drift tasks score 2–3 on the probe; grafting rarely triggers.
+# intra_retry: if explorers consistently propose lock-based solutions (peaked entropy
+# across retries), the ceiling detector routes to grafting rather than retrying.
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 4
+hitl_threshold                 = 5
+verifier_decomposition_enabled = false
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2

@@ -1,13 +1,9 @@
-# Local config overrides (per-scenario, not committed)
-tests/e2e/scenarios/*/h2ai.toml
-
 # E2E run outputs
 tests/e2e/results/
 
 # Rust build artifacts
 /target/
 /target2/
-**/*.rs.bk
 
 # Environment secrets (Cargo.lock is intentionally tracked — reproducible Docker builds)
 .env
@@ -21,14 +17,6 @@ Thumbs.db
 # Logs
 *.log
 
-# llama.cpp model weights
-*.gguf
-*.ggml
-*.bin
-*.safetensors
-models/
-weights/
-
 # Python
 *.pyc
 __pycache__/
@@ -39,12 +27,5 @@ __pycache__/
 # NATS JetStream runtime data
 nats/data/
 
-# podman-compose volume directories
-h2aicontrolplanedevcontainer_*/
-
 # Devcontainer lock files
 *devcontainer-lock.json
-
-# Local hookify rules (project-specific, not committed)
-.claude/*.local.md
-

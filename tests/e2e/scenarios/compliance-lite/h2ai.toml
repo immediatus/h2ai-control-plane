@@ -1,0 +1,134 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SCENARIO: compliance-lite  (BASELINE — fastest path through the pipeline)
+# Task:     Draft a SaaS vendor contract addendum satisfying CONSTRAINT-CL-1
+#           (liability cap, term-limited license, GDPR processor terms).
+# Expected: PASS (avg_score ≥ 0.80, TieredExit at N=1–3 explorers)
+#
+# Features ON:
+#   tiered_exit:   exits after the first explorer whose score meets the bar —
+#                  avoids running all 5 adapters for simple tasks; validates the
+#                  fast-path branch of the USL ensemble sizing.
+#
+# Features OFF:
+#   thinking_loop: disabled (adapter_enable_thinking=false too) — no CoT; keeps
+#                  the baseline fast so we can compare it with thinking-enabled
+#                  scenarios and see the Δ latency cost of thinking.
+#   gap_i1:        no grounding research needed for a simple contract clause.
+#   complexity_routing: compliance tasks score 1–2; routing only triggers at ≥3.
+#
+# Run:    python3 tests/e2e/replay.py compliance-lite
+# Review: python3 tests/e2e/analyze_events.py compliance-lite
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+nats_url = "nats://host.docker.internal:4222"
+# Ollama runs on host port 8080, bridged into the container as host.docker.internal.
+# Start: ollama serve  (or docker run -p 8080:8080 -p 4222:4222 nats + Ollama)
+
+# ── Ensemble / MAPE-K ─────────────────────────────────────────────────────────
+verifier_consensus_passes = 1
+max_autonomic_retries     = 4
+calibration_adapter_count = 1
+
+# ── LLM budget ────────────────────────────────────────────────────────────────
+# model_max_tokens: max tokens per generation call. 32768 fits thinking models.
+# adapter_enable_thinking: disables thinking tokens for ALL adapters in this
+#   scenario — the task is simple enough that non-thinking is sufficient and
+#   dramatically reduces call latency (think ~2 min vs ~10 min per evaluator).
+model_max_tokens       = 32768
+adapter_enable_thinking = false
+
+# ── Single-slot LLM timing budget ─────────────────────────────────────────────
+# All adapters share one Ollama process. Even without thinking, evaluators queue
+# sequentially. With 5 adapters × 2 MAPE-K rounds × ~2 min/call = ~20 min worst
+# case. Round up generously so timeouts never fire on a loaded host.
+tao_per_turn_timeout_secs = 3600    # 1 h per TAO turn (conservative for non-thinking)
+evaluator_timeout_secs    = 10800   # 3 h total evaluator budget (5 × 2 × 2 min + margin)
+
+[generation_phase]
+timeout_secs = 7200                 # 2 h wall-clock limit for the full generation phase
+
+# ── Safety ────────────────────────────────────────────────────────────────────
+# "development": basic guardrails, no krum pruning, no mandatory shadow_auditor.
+# Appropriate for non-adversarial contract-drafting tasks.
+[safety]
+profile = "development"
+
+# ── Constraint corpus ─────────────────────────────────────────────────────────
+[constraint_wiki]
+mode        = "fs"
+corpus_path = "tests/e2e/constraints"
+
+# ── Adapters (5 × same local Ollama endpoint) ─────────────────────────────────
+# All point to the same single-slot process; USL ensemble sizing uses N=1–5
+# explorers based on calibration. TieredExit can short-circuit before all 5 run.
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+# ── HITL ──────────────────────────────────────────────────────────────────────
+[hitl]
+enabled = false
+
+# ── Thinking loop ─────────────────────────────────────────────────────────────
+# OFF: no iterative refinement. Paired with adapter_enable_thinking=false above.
+# Impact: pipeline takes the fast non-thinking path; logs show no ThinkingIterationEvent.
+[thinking_loop]
+enabled            = false
+max_iterations     = 0
+coverage_threshold = 0.80
+
+debug_log_path = "/tmp/h2ai-debug-compliance-lite.ndjson"
+
+# ── Grounding / gap research ───────────────────────────────────────────────────
+# OFF: task uses a single well-specified constraint; no fabrication risk.
+[gap_i1]
+enabled = false
+
+# ── TieredExit ────────────────────────────────────────────────────────────────
+# ON: validates the fast-path — exits as soon as 1–3 explorers meet the bar.
+# Impact: expect VerificationScoredEvent to show early exit; not all 5 adapters run.
+# require_all_binary_checks=true: binary constraint checks must pass even on early exit.
+[tiered_exit]
+enabled                   = true
+min_n                     = 1
+max_n                     = 3
+quorum_fraction           = 0.5
+acceptance_score          = 0.80
+require_all_binary_checks = true

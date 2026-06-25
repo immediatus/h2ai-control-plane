@@ -1,0 +1,165 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SCENARIO: hle-expert-consensus  (CAPABILITY CEILING / EXPECTED FAILURE MODE)
+# Task:     Design a BFT consensus protocol for n nodes with f Byzantine nodes.
+#           Prove: minimum n for safety under equivocation, liveness bound,
+#           and adversarial correctness. This is a graduate-level formal proof
+#           requiring multi-claim BFT theory (safety, liveness, impossibility).
+# Expected: VerificationExhaustion — current local models cannot produce a
+#           complete BFT correctness proof. This scenario validates that the
+#           system fails gracefully (emits TaskFailed with the right reason code)
+#           rather than hallucinating a wrong proof that passes the verifier.
+#
+# Features ON:
+#   safety="production": Krum prunes the most divergent proof attempt.
+#     Harder tasks → more divergence → Krum's pruning is more significant.
+#   thinking_loop (5 iters, highest in the suite): maximum iterative refinement
+#     attempts before declaring exhaustion. Validates the convergence detector:
+#     if 5 iterations don't reach coverage_threshold=0.80, emit NoConvergence.
+#   gap_i1: validates BFT citations (FLP impossibility, PBFT safety proof).
+#   complexity_routing.intra_retry min_retry_count_for_detection=1: detect the
+#     ceiling faster — known-hard tasks; don't wait for 2 failed retries.
+#
+# Features OFF:
+#   tiered_exit: OFF — need all 5 adapters for Krum; also we want to observe the
+#     full failure mode (all adapters fail to produce a passing proof).
+#   verifier_decomposition_enabled: OFF — ceiling is a model capability limit,
+#     not a decomposability problem.
+#
+# Run:    python3 tests/e2e/replay.py hle-expert-consensus
+# Review: python3 tests/e2e/analyze_events.py hle-expert-consensus
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+nats_url = "nats://host.docker.internal:4222"
+
+# ── Ensemble / MAPE-K ─────────────────────────────────────────────────────────
+verifier_consensus_passes = 1
+max_autonomic_retries     = 4
+calibration_adapter_count = 1
+
+# ── LLM budget ────────────────────────────────────────────────────────────────
+model_max_tokens = 32768
+
+# ── Single-slot LLM timing budget ─────────────────────────────────────────────
+# 5 adapters × thinking enabled × ~10 min/call = ~50 min worst-case queue depth.
+# 5 thinking iterations × 5 adapters = 25 generation calls total per run.
+tao_per_turn_timeout_secs = 3600    # 1 h per TAO reasoning turn
+evaluator_timeout_secs    = 10800   # 3 h evaluator budget (5 × 2 rounds × 10 min + margin)
+
+[generation_phase]
+timeout_secs = 7200                 # 2 h wall-clock; long because 5 thinking iterations
+
+# ── Safety ────────────────────────────────────────────────────────────────────
+# "production": Krum f=1 requires ≥5 adapters. On hard BFT proofs, proposals
+# diverge maximally — Krum's pruning effect is most visible in this scenario.
+[safety]
+profile = "production"
+
+# ── Constraint corpus ─────────────────────────────────────────────────────────
+[constraint_wiki]
+mode        = "fs"
+corpus_path = "tests/e2e/constraints"
+
+# ── Adapters (5 + researcher + shadow_auditor) ────────────────────────────────
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-4"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-5"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+# ── HITL ──────────────────────────────────────────────────────────────────────
+[hitl]
+enabled = false
+
+# ── Thinking loop ─────────────────────────────────────────────────────────────
+# ON with 5 iterations: maximum attempts in this suite. BFT proofs require:
+# iter1=protocol design, iter2=safety proof, iter3=liveness proof,
+# iter4=adversarial model, iter5=completeness check.
+# coverage_threshold=0.80: high bar — all major BFT dimensions must be covered.
+# Impact: on current local models, coverage plateaus around 0.40–0.60 and
+#   all 5 iterations fire before emitting NoConvergence → VerificationExhaustion.
+[thinking_loop]
+enabled            = true
+max_iterations     = 5
+coverage_threshold = 0.80
+
+debug_log_path = "/tmp/h2ai-debug-hle-expert-consensus.ndjson"
+
+# ── Grounding / gap research ───────────────────────────────────────────────────
+# ON: validates BFT protocol citations (PBFT paper, FLP theorem, Dolev-Yao model).
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 300
+
+# ── Complexity-Ceiling Routing ─────────────────────────────────────────────────
+# ON: BFT proofs score 4 on the complexity probe (multi-sub-claim formal proof).
+# min_retry_count_for_detection=1: detect the ceiling on the FIRST retry rather
+#   than waiting for 2 — faster fail-fast behavior for known-impossible tasks.
+# Impact: expect ComplexityCeilingDetectedEvent and GraftingRoutedEvent in logs.
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 4
+hitl_threshold                 = 5
+verifier_decomposition_enabled = false
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 1   # detect ceiling faster: 1 failed retry is enough

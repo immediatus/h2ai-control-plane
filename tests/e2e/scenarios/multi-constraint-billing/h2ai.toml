@@ -1,0 +1,183 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SCENARIO: multi-constraint-billing  (MULTI-CONSTRAINT ENFORCEMENT)
+# Task:     Design the quota change mechanism for a multi-tenant SaaS billing
+#           service. Must satisfy 3 simultaneous constraints:
+#             CONSTRAINT-004 (idempotency — same request retried within 30s
+#               must not double-apply the quota change)
+#             CONSTRAINT-005 (immutable audit log — every change must be
+#               recorded in an append-only audit trail)
+#             CONSTRAINT-008 (no distributed locks — enforce without Redis SETNX
+#               or equivalent distributed coordination primitives)
+# Expected: PASS — all 3 constraints satisfied, verifier passes all binary checks.
+#
+# What makes this scenario unique:
+#   knowledge_domain_scoping=true: restricts the model's reasoning to the billing
+#     domain — reduces hallucination of unrelated system components.
+#   cspr=true: Constraint-Sensitive Proposal Ranking — proposals are re-ranked
+#     by their constraint coverage before entering the Krum-aggregation step.
+#     Impact: expect ConstraintRankingAppliedEvent in logs; proposals that miss
+#     CONSTRAINT-008 (use locks) score lower than equivalent lock-free designs.
+#   ambiguity_detection: detects when constraint descriptions are mutually
+#     ambiguous (e.g. "idempotent" and "audit trail" conflict on retry semantics).
+#     Impact: if score_threshold=0.6 is exceeded, AmbiguityFlaggedEvent fires and
+#     the verifier prompt is augmented with a disambiguation addendum.
+#   thinking_loop (3 iters): constraint interaction analysis requires explicit
+#     reasoning about how each constraint affects the others.
+#
+# Features OFF:
+#   safety="development": relaxed profile — development environment, no krum pruning.
+#     This tests the multi-constraint enforcement logic without BFT safety overhead.
+#     Use terminal-bft-adversarial for production-profile multi-constraint testing.
+#
+# Run:    python3 tests/e2e/replay.py multi-constraint-billing
+# Review: python3 tests/e2e/analyze_events.py multi-constraint-billing
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+nats_url = "nats://host.docker.internal:4222"
+
+# ── Ensemble / MAPE-K ─────────────────────────────────────────────────────────
+verifier_consensus_passes = 1
+max_autonomic_retries     = 6          # extra retries: 3-constraint satisfaction needs more iterations
+calibration_adapter_count = 1
+
+# ── LLM budget ────────────────────────────────────────────────────────────────
+# knowledge_domain_scoping: instructs the model to confine reasoning to the
+# billing/quota domain, suppressing irrelevant suggestions (e.g. blockchain, CDN).
+model_max_tokens         = 32768
+knowledge_domain_scoping = true
+
+# ── Single-slot LLM timing budget ─────────────────────────────────────────────
+# 5 adapters × thinking enabled × ~10 min/call = ~50 min worst-case queue depth.
+tao_per_turn_timeout_secs = 3600    # 1 h per TAO reasoning turn
+evaluator_timeout_secs    = 10800   # 3 h evaluator budget (5 × 2 rounds × 10 min + margin)
+
+[generation_phase]
+timeout_secs = 7200                 # 2 h wall-clock for the generation phase
+
+# ── Safety ────────────────────────────────────────────────────────────────────
+# "development": basic guardrails without BFT aggregation. Tests the constraint
+# enforcement pipeline in isolation from the production safety machinery.
+# Compare with terminal-bft-adversarial to see the delta of Krum+auditor.
+[safety]
+profile = "development"
+
+# ── Constraint corpus ─────────────────────────────────────────────────────────
+[constraint_wiki]
+mode        = "fs"
+corpus_path = "tests/e2e/constraints"
+
+# ── Adapters (3 explorers + researcher + shadow_auditor) ─────────────────────
+# 5 adapters total; development profile does not require ≥5 for BFT math,
+# but 5 gives better ensemble diversity for multi-constraint satisfaction.
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+# ── HITL ──────────────────────────────────────────────────────────────────────
+[hitl]
+enabled = false
+
+# ── CSPR: Constraint-Sensitive Proposal Ranking ────────────────────────────────
+# ON: re-ranks explorer proposals by constraint coverage before aggregation.
+# Impact: proposals that violate CONSTRAINT-008 (lock-based) are ranked lower
+#   even if their overall quality score is high. Expect ConstraintRankingAppliedEvent.
+[cspr]
+enabled = true
+
+# ── Thinking loop ─────────────────────────────────────────────────────────────
+# ON with 3 iterations: iter1=design satisfying each constraint independently,
+# iter2=check cross-constraint conflicts (idempotency vs audit timing),
+# iter3=finalize with all 3 constraints simultaneously satisfied.
+[thinking_loop]
+enabled            = true
+max_iterations     = 3
+coverage_threshold = 0.75
+
+debug_log_path = "/tmp/h2ai-debug-multi-constraint-billing.ndjson"
+
+# ── Grounding / gap research ───────────────────────────────────────────────────
+# ON: validates idempotency and audit log implementation facts; prevents
+# hallucinated approaches (e.g. "deduplication via Bloom filter" without
+# specifying the backing store).
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 120
+
+# ── Complexity-Ceiling Routing ─────────────────────────────────────────────────
+# ON: billing constraint tasks score 2–3; routing threshold = 4.
+# intra_retry: if all explorers converge on a lock-based solution (entropy peak),
+#   route to grafting rather than retrying with the same wrong approach.
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 4
+hitl_threshold                 = 5
+verifier_decomposition_enabled = false
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2
+
+# ── Ambiguity Detection ────────────────────────────────────────────────────────
+# ON: detects semantic ambiguity between constraint descriptions before generation.
+# Weights tune which signals are most important for billing-domain conflicts:
+#   weight_positive_example_conflict (0.35): highest — billing examples that
+#     contradict each other are the strongest ambiguity signal.
+#   weight_fm_negation (0.30): negation in formal constraint text (e.g. "MUST NOT
+#     apply twice" vs "MUST record every application") is second strongest.
+# Impact: if combined score ≥ score_threshold=0.6, AmbiguityFlaggedEvent fires
+#   and an disambiguation prompt is injected before the generation phase.
+[ambiguity_detection]
+enabled                          = true
+score_threshold                  = 0.6
+weight_multi_storage             = 0.20
+weight_fm_negation               = 0.30
+weight_remediation_conflict      = 0.15
+weight_cross_check_negation      = 0.20
+weight_llm_confirmed             = 0.25
+weight_jaccard_freeze_wave       = 0.15
+weight_positive_example_conflict = 0.35

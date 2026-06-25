@@ -1,0 +1,162 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SCENARIO: complexity-routing  (COMPLEXITY CEILING + THINKING LOOP)
+# Task:     Prove MVC is NP-hard via a 3-SAT→MVC reduction; prove the 2-approx
+#           guarantee via LP relaxation. Both results require formal graph-theory.
+# Expected: PASS if the local model can produce rigorous reduction steps.
+#           Fails with VerificationExhaustion on weaker models.
+#
+# Features ON:
+#   thinking_loop (2 iters): 2-pass iterative refinement — covers a gap between
+#     initial proof sketch and a complete formally-checkable reduction.
+#   gap_i1: grounding checker validates that cited graph-theory facts are real.
+#   complexity_routing: NP-hard proofs score 3 on the probe; BEYOND_BUDGET
+#     verifier injection adds explicit NP-hardness check to the verifier suite.
+#   complexity_routing.agent_dropout: reduces N_eff when effective ensemble size
+#     collapses (all explorers produce structurally identical wrong proofs).
+#   complexity_routing.intra_retry: routes to H1 grafting when entropy plateaus
+#     across retries — avoids burning all max_autonomic_retries on a ceiling.
+#   shadow_auditor (strict=false): non-binding audit — logs adversarial signals
+#     without blocking; safer during research-profile runs.
+#
+# Features OFF:
+#   tiered_exit: OFF — we want all 5 explorers on hard formal proofs to get
+#     better coverage-weighted aggregation (CWA) across diverse proof strategies.
+#   hitl: OFF — automated bench; HITL threshold set to 5 (reserved for HLE).
+#
+# Run:    python3 tests/e2e/replay.py complexity-routing
+# Review: python3 tests/e2e/analyze_events.py complexity-routing
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+nats_url = "nats://host.docker.internal:4222"
+
+# ── Ensemble / MAPE-K ─────────────────────────────────────────────────────────
+verifier_consensus_passes = 1
+max_autonomic_retries     = 4
+calibration_adapter_count = 1
+
+# ── LLM budget ────────────────────────────────────────────────────────────────
+# 32768: required for thinking models — CoT chains for NP proofs use 4k–16k tokens.
+model_max_tokens = 32768
+
+# ── Single-slot LLM timing budget ─────────────────────────────────────────────
+# Thinking enabled; each adapter call takes ~10 min on Qwen3/DeepSeek-R1.
+# 5 adapters × 2 MAPE-K rounds × 600 s = 6000 s minimum for evaluators.
+tao_per_turn_timeout_secs = 3600    # 1 h per TAO reasoning turn
+evaluator_timeout_secs    = 10800   # 3 h evaluator budget (5 × 2 rounds × 10 min + margin)
+
+[generation_phase]
+timeout_secs = 7200                 # 2 h wall-clock for the generation phase
+
+# ── Safety ────────────────────────────────────────────────────────────────────
+# "development": relaxed profile for formal mathematical work. shadow_auditor is
+# enabled but strict=false (advisory/non-blocking) — logs adversarial signals
+# without vetoing. Contrast with terminal-bft-adversarial where strict=true AND-gates.
+[safety]
+profile = "development"
+
+[safety.shadow_auditor]
+enabled = true
+strict  = false    # advisory only — logs but does not veto; see terminal-bft for strict=true
+
+# ── Constraint corpus ─────────────────────────────────────────────────────────
+[constraint_wiki]
+mode        = "fs"
+corpus_path = "tests/e2e/constraints"
+
+# ── Adapters (5 × same local Ollama endpoint) ─────────────────────────────────
+[[adapter_profiles]]
+name = "local-1"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-2"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "local-3"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "researcher"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+[[adapter_profiles]]
+name = "shadow_auditor"
+[adapter_profiles.kind.CloudGeneric]
+endpoint    = "http://host.docker.internal:8080/v1"
+api_key_env = "NONE"
+model       = "local"
+provider    = "llama_cpp"
+
+# ── HITL ──────────────────────────────────────────────────────────────────────
+[hitl]
+enabled = false
+
+# ── Thinking loop ─────────────────────────────────────────────────────────────
+# ON with 2 iterations: first pass produces a proof sketch; second pass adds
+# missing formalism (construction proof, correctness argument). Coverage threshold
+# 0.70 means 70% of verifier dimensions must be satisfied to stop early.
+# Impact: expect ThinkingIterationStarted/Completed events; avg_score improves
+# between iter 1 and iter 2 on hard proofs; stops early if 0.70 met on iter 1.
+[thinking_loop]
+enabled            = true
+max_iterations     = 2
+coverage_threshold = 0.70
+
+debug_log_path = "/tmp/h2ai-debug-complexity-routing.ndjson"
+
+# ── Grounding / gap research ───────────────────────────────────────────────────
+# ON: validates that NP-hardness claims and complexity classes are grounded in
+# real results (not hallucinated lemmas). Researcher adapter probes the corpus.
+[gap_i1]
+enabled                  = true
+cold_check_threshold     = 0.0
+synthesis_min_confidence = 0.7
+max_gap_records_per_wave = 3
+researcher_timeout_secs  = 120
+
+# ── Complexity-Ceiling Routing ─────────────────────────────────────────────────
+# ON: NP-hard proof tasks typically score 3 on the complexity probe.
+# decompose_threshold=3: triggers BEYOND_BUDGET verifier injection — adds an
+#   explicit check that the proof identifies the correct hardness class.
+# verifier_decomposition_enabled=true: only this scenario uses it; injects the
+#   BEYOND_BUDGET addendum into the verifier suite for tasks scoring ≥3.
+# agent_dropout: when all 5 explorers produce the same wrong answer (N_eff→1),
+#   reduce N to 3 on retry to save time and diversify via temperature variance.
+# intra_retry: routes to H1 grafting when entropy peaks and score slope < 5%
+#   across retries — avoids wasting max_autonomic_retries on a structural ceiling.
+[complexity_routing]
+enabled                        = true
+complexity_probe_adapter       = "researcher"
+complexity_probe_timeout_secs  = 30
+decompose_threshold            = 3          # NP proofs score ≥3 → BEYOND_BUDGET injection
+hitl_threshold                 = 5          # score 5 → HITL (never fires in this scenario)
+verifier_decomposition_enabled = true       # UNIQUE to this scenario — injects extra verifier check
+
+[complexity_routing.agent_dropout]
+enabled                 = true
+n_eff_dropout_threshold = 0.5              # drop to N-2 when N_eff < 50% of N
+
+[complexity_routing.intra_retry]
+enabled                       = true
+entropy_threshold             = 0.6
+retry_slope_threshold         = 0.05
+n_eff_cg_product_threshold    = 0.3
+min_retry_count_for_detection = 2

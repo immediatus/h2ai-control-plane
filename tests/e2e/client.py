@@ -39,13 +39,18 @@ def submit_task(task: dict, tenant_id: str = DEFAULT_TENANT) -> str:
 
 
 def stream_events(task_id: str, tenant_id: str = DEFAULT_TENANT, timeout_s: int = 300) -> Iterator[dict]:
+    """Stream SSE events for a task.
+
+    timeout_s is a per-read socket timeout: if no bytes arrive (including SSE
+    keepalive comment lines) for this many seconds, the connection is presumed
+    dead and a socket.timeout exception propagates to the caller.  Wall-clock
+    deadline management (e.g. resetting after ThinkingLoopCompleted) is the
+    caller's responsibility so that pre-wave phases do not eat into the budget.
+    """
     url = _task_url(tenant_id, task_id, "events")
     req = urllib.request.Request(url)
-    deadline = time.time() + timeout_s
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         for raw in resp:
-            if time.time() > deadline:
-                break
             line = raw.decode().strip()
             if not line.startswith("data:"):
                 continue

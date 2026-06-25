@@ -741,8 +741,22 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
     leader_elected_events: list[dict] = []
     provenance_recorded_event: dict | None = None
 
-    for event in stream_events(task_id, tenant_id=tenant_id, timeout_s=timeout_s):
+    # Wall-clock deadline: starts at task submission, resets after
+    # ThinkingLoopCompleted so the wave always gets the full timeout_s budget
+    # even when a long thinking loop runs before the first wave.
+    wave_deadline = time.monotonic() + timeout_s
+
+    for event in stream_events(task_id, tenant_id=tenant_id, timeout_s=300):
         kind = event.get("kind", "")
+
+        # Thinking loop completing marks the start of wave execution.
+        # Reset the deadline so the wave gets the full timeout_s budget.
+        if kind == "ThinkingLoopCompleted":
+            wave_deadline = time.monotonic() + timeout_s
+
+        if time.monotonic() > wave_deadline:
+            break
+
         events_raw.append(event)
 
         # ── state tracking (unchanged from before) ──
