@@ -80,6 +80,7 @@ async fn append_and_replay_preserves_order() {
             oracle_gate_passed: None,
             timestamp: Utc::now(),
             zone3_hints: None,
+            contradiction_analysis: None,
         }))
         .await
         .unwrap();

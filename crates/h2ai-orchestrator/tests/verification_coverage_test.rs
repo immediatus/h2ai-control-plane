@@ -862,3 +862,61 @@ async fn majority_binary_check_inherits_evaluator_max_tokens() {
         );
     }
 }
+
+// ── binary check markers in pre-JSON CoT text ──────────────────────────────────
+// Thinking models emit CHECK N: lines in the pre-JSON body, not inside the JSON
+// "reason" field. Before the fix, has_check_markers checked verifier_reason
+// (= s.reason from JSON), which is typically a terse label like "partial".
+// After the fix, has_check_markers checks the full raw response text.
+
+#[tokio::test]
+async fn binary_checks_parsed_from_pre_json_cot_text() {
+    let model_output = "CHECK 1: ADD COLUMN step present → PRESENT\nCHECK 2: dual-write step present → MISSING\n\n{\"score\": 0.5, \"reason\": \"partial\"}";
+    let evaluator = mock_adapter(model_output);
+    let doc = ConstraintDoc {
+        id: "bft_cot".into(),
+        source_file: "test".into(),
+        description: "expand-contract pattern".into(),
+        severity: ConstraintSeverity::Hard { threshold: 0.5 },
+        predicate: ConstraintPredicate::LlmJudge {
+            rubric: "Check expand-contract steps.".into(),
+        },
+        remediation_hint: None,
+        domains: vec![],
+        mandatory_for_tags: vec![],
+        related_to: vec![],
+        binary_checks: vec![
+            "ADD COLUMN step present".into(),
+            "dual-write step present".into(),
+        ],
+        version: 1,
+        repair_provenance: None,
+        pass_criteria: None,
+    };
+    let proposal = make_proposal(TaskId::new(), "Migration proposal text");
+    let out = VerificationPhase::run(VerificationInput {
+        proposals: vec![proposal],
+        constraint_corpus: &[doc],
+        evaluator: &evaluator as &dyn h2ai_types::adapter::IComputeAdapter,
+        config: VerificationConfig::default(),
+        eval_cache: new_eval_cache(),
+        consensus_passes: 1,
+    })
+    .await;
+    let results = if !out.passed.is_empty() {
+        &out.passed[0].1
+    } else {
+        &out.failed[0].1
+    };
+    let r = results
+        .iter()
+        .find(|r| r.constraint_id == "bft_cot")
+        .expect("bft_cot result must exist");
+    assert_eq!(
+        r.check_verdicts.len(),
+        2,
+        "pre-JSON CHECK markers must populate check_verdicts (got empty — bug not fixed)"
+    );
+    assert!(r.check_verdicts[0], "CHECK 1 → PRESENT must be true");
+    assert!(!r.check_verdicts[1], "CHECK 2 → MISSING must be false");
+}

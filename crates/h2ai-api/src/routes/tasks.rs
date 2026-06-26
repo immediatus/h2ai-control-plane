@@ -348,6 +348,7 @@ pub async fn merge_task(
         timestamp: chrono::Utc::now(),
         oracle_gate_passed: None,
         zone3_hints: None,
+        contradiction_analysis: None,
     });
     state
         .nats

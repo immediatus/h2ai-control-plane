@@ -289,6 +289,13 @@ pub struct SafetyConfig {
     /// The gate auto-activates when a second family is configured; never hard-fails.
     #[serde(default)]
     pub min_explorer_families: usize,
+    /// When true and the diversity gate collapses but proposals passed verification,
+    /// select the highest-scoring verified proposal instead of returning ZeroSurvival.
+    /// The pipeline appends the diversity-conflict notice to the merged output.
+    /// Intentionally NOT set by `apply_safety_profile` — operator opt-in for known
+    /// single-model deployments where diversity collapse is expected, not a BFT signal.
+    #[serde(default)]
+    pub diversity_fallback_to_best: bool,
 }
 
 impl Default for SafetyConfig {
@@ -302,6 +309,7 @@ impl Default for SafetyConfig {
             require_bivariate_cg: false,
             shadow_auditor: ShadowAuditorConfig::default(),
             min_explorer_families: 0,
+            diversity_fallback_to_best: false,
         }
     }
 }
@@ -1905,6 +1913,13 @@ pub struct H2AIConfig {
     pub epistemic_quality: EpistemicQualityConfig,
     #[serde(default)]
     pub audit_gate: AuditGateConfig,
+    /// When `true`, the merger appends a structured `## Constraint Satisfaction Analysis`
+    /// section to the resolved output whenever one or more proposals were pruned by the
+    /// verifier. The section lists each pruned proposal's violated constraints and the
+    /// LLM-generated reason, then explains how the consensus was achieved from the remaining
+    /// valid proposals. Default: `false`.
+    #[serde(default)]
+    pub contradiction_explanation: bool,
 }
 
 // ── GAP-F6: Plan-Awareness Probe config ──────────────────────────────────────

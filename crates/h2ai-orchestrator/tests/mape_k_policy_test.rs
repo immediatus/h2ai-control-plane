@@ -26,6 +26,7 @@ fn make_merge_output(
             merge_elapsed_secs: None,
             n_input_proposals: 1,
             n_failed_proposals: 0,
+            merge_selection_mode: None,
         },
         attribution: HarnessAttribution {
             baseline_quality: 0.0,
@@ -83,6 +84,7 @@ fn make_zero_survival_exit() -> PipelineOutcome {
         n_eff_cosine: Some(1.0),
         filter_ratio: 1.0,
         tau_values: vec![0.2],
+        partial_verification_events: vec![],
     })
 }
 
@@ -1418,6 +1420,7 @@ fn decide_convergence_gate_triggers_on_high_cosine() {
             merge_elapsed_secs: None,
             n_input_proposals: 1,
             n_failed_proposals: 0,
+            merge_selection_mode: None,
         },
         attribution: HarnessAttribution {
             baseline_quality: 0.0,

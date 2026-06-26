@@ -44,6 +44,7 @@ fn stub_selection(valid: usize) -> SelectionResolvedEvent {
         merge_elapsed_secs: None,
         n_input_proposals: valid,
         n_failed_proposals: 0,
+        merge_selection_mode: None,
     }
 }
 
@@ -95,6 +96,7 @@ fn make_output(
         attribution_interval: None,
         verification_events,
         failed_proposals: vec![],
+        pruned_events: vec![],
         talagrand: None,
         suggested_next_params: None,
         waste_ratio: 0.0,

@@ -20,6 +20,9 @@ use std::time::Duration;
 
 use crate::judge_panel::{aggregate_votes, ConstraintVerdict, JudgePanel};
 
+type EvalPredicateFut<'a> =
+    Pin<Box<dyn Future<Output = (f64, Option<String>, Option<String>)> + Send + 'a>>;
+
 /// Derive a deterministic compliance score from binary check verdicts.
 ///
 /// Returns `present_checks / n_checks` when verdicts are non-empty and `n_checks > 0`.
@@ -513,7 +516,7 @@ impl VerificationPhase {
             } else {
                 rubric
             };
-            let (score, reason) =
+            let (score, reason, _raw) =
                 Self::llm_score_raw(effective_rubric, output, evaluator, sp, tau, max_tokens).await;
             return (
                 vec![ComplianceResult {
@@ -587,16 +590,17 @@ impl VerificationPhase {
                     sp.clone()
                 };
 
-                let (score, verifier_reason, hit) = if let Some(score) = cached_score {
+                let (score, verifier_reason, raw_response, hit) = if let Some(score) = cached_score
+                {
                     tracing::debug!(
                         target: "h2ai.verification.cache",
                         constraint_id = %constraint_id,
                         score,
                         "eval cache hit — reusing score for similar proposal"
                     );
-                    (score, None, true)
+                    (score, None, None, true)
                 } else {
-                    let (score, reason) = Self::eval_predicate_async(
+                    let (score, reason, raw) = Self::eval_predicate_async(
                         &predicate,
                         &output,
                         evaluator,
@@ -611,20 +615,19 @@ impl VerificationPhase {
                         .entry(constraint_id.clone())
                         .or_default()
                         .push((output.clone(), score));
-                    (score, reason, false)
+                    (score, reason, raw, false)
                 };
 
-                // Only parse binary check verdicts when the LlmJudge response actually contains
-                // "CHECK " markers. Thinking models (Qwen3/DeepSeek R1) reason about binary
-                // checks in their hidden <think> block and emit a concise JSON reason without
-                // markers. Parsing such a reason produces vec![false; n_checks], which
-                // score_from_verdicts takes as 0/n — overriding a genuine high holistic score.
-                // When no markers are present, let score_from_verdicts fall back to llm_float.
-                let has_check_markers = verifier_reason
+                // Parse binary check verdicts from the full raw model response. Thinking models
+                // (Qwen3/DeepSeek R1) emit CHECK N: markers in pre-JSON CoT text, not inside the
+                // JSON "reason" field. raw_response carries the complete model output; verifier_reason
+                // holds only the extracted JSON "reason" field (kept for violation reporting).
+                // When no markers are present, score_from_verdicts falls back to the holistic score.
+                let has_check_markers = raw_response
                     .as_deref()
                     .is_some_and(|r| r.contains("CHECK "));
                 let check_verdicts = if has_check_markers {
-                    verifier_reason
+                    raw_response
                         .as_deref()
                         .map(|r| parse_check_verdicts(r, n_checks))
                         .unwrap_or_default()
@@ -632,7 +635,7 @@ impl VerificationPhase {
                     vec![]
                 };
                 let check_reasons = if has_check_markers {
-                    verifier_reason
+                    raw_response
                         .as_deref()
                         .map(|r| parse_check_reasons(r, n_checks))
                         .unwrap_or_default()
@@ -696,12 +699,12 @@ impl VerificationPhase {
         max_tokens: u64,
         consensus_passes: u8,
         timeout_secs: u64,
-    ) -> Pin<Box<dyn Future<Output = (f64, Option<String>)> + Send + 'a>> {
+    ) -> EvalPredicateFut<'a> {
         Box::pin(async move {
             match pred {
                 ConstraintPredicate::LlmJudge { rubric } => {
                     let passes = consensus_passes.max(1) as usize;
-                    let mut pairs: Vec<(f64, String)> = Vec::with_capacity(passes);
+                    let mut pairs: Vec<(f64, String, String)> = Vec::with_capacity(passes);
                     for _ in 0..passes {
                         let pair = if let Ok(pair) = tokio::time::timeout(
                             std::time::Duration::from_secs(timeout_secs),
@@ -716,18 +719,22 @@ impl VerificationPhase {
                                 timeout_secs,
                                 "LlmJudge timed out; skipping — score defaults to 0.5"
                             );
-                            (0.5, String::new())
+                            (0.5, String::new(), String::new())
                         };
                         pairs.push(pair);
                     }
-                    let avg = pairs.iter().map(|(s, _)| s).sum::<f64>() / pairs.len() as f64;
-                    // Use the reason from the lowest-scoring pass — most specific failure diagnosis.
-                    let reason = pairs
+                    let avg = pairs.iter().map(|(s, _, _)| s).sum::<f64>() / pairs.len() as f64;
+                    // Use the reason and raw from the lowest-scoring pass — most specific failure diagnosis.
+                    let (reason, raw) = pairs
                         .into_iter()
                         .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-                        .map(|(_, r)| r)
-                        .filter(|r| !r.is_empty());
-                    (avg, reason)
+                        .map(|(_, r, raw)| {
+                            let r_opt = if r.is_empty() { None } else { Some(r) };
+                            let raw_opt = if raw.is_empty() { None } else { Some(raw) };
+                            (r_opt, raw_opt)
+                        })
+                        .unwrap_or((None, None));
+                    (avg, reason, raw)
                 }
                 ConstraintPredicate::OracleExecution {
                     test_runner_uri,
@@ -735,6 +742,7 @@ impl VerificationPhase {
                     timeout_secs,
                 } => (
                     Self::eval_oracle(test_runner_uri, test_suite, *timeout_secs, output).await,
+                    None,
                     None,
                 ),
                 ConstraintPredicate::SemanticOrdering {
@@ -756,6 +764,7 @@ impl VerificationPhase {
                     )
                     .await,
                     None,
+                    None,
                 ),
                 ConstraintPredicate::SemanticPresence { concept, passes } => (
                     Self::majority_binary_check(
@@ -772,6 +781,7 @@ impl VerificationPhase {
                     )
                     .await,
                     None,
+                    None,
                 ),
                 ConstraintPredicate::SemanticExclusion { pattern, passes } => (
                     Self::majority_binary_check(
@@ -787,6 +797,7 @@ impl VerificationPhase {
                         max_tokens,
                     )
                     .await,
+                    None,
                     None,
                 ),
                 ConstraintPredicate::Composite { op, children } => {
@@ -812,14 +823,14 @@ impl VerificationPhase {
                                             min_reason = None; // static predicates produce no reason
                                         }
                                         if min_score <= 0.0 {
-                                            return (0.0, None); // hard failure on static check
+                                            return (0.0, None, None); // hard failure on static check
                                         }
                                     }
                                 }
                             }
                             // Only call LlmJudge if static predicates all passed.
                             for child in deferred {
-                                let (s, r) = Self::eval_predicate_async(
+                                let (s, r, _) = Self::eval_predicate_async(
                                     child,
                                     output,
                                     evaluator,
@@ -835,15 +846,15 @@ impl VerificationPhase {
                                     min_reason = r;
                                 }
                                 if min_score <= 0.0 {
-                                    return (0.0, min_reason);
+                                    return (0.0, min_reason, None);
                                 }
                             }
-                            (min_score, min_reason)
+                            (min_score, min_reason, None)
                         }
                         CompositeOp::Or => {
                             let mut max_score = 0.0_f64;
                             for child in children {
-                                let (s, _) = Self::eval_predicate_async(
+                                let (s, _, _) = Self::eval_predicate_async(
                                     child,
                                     output,
                                     evaluator,
@@ -856,10 +867,10 @@ impl VerificationPhase {
                                 .await;
                                 max_score = max_score.max(s);
                                 if max_score >= 1.0 {
-                                    return (1.0, None);
+                                    return (1.0, None, None);
                                 }
                             }
-                            (max_score, None)
+                            (max_score, None, None)
                         }
                         CompositeOp::Not => {
                             let s = if let Some(child) = children.first() {
@@ -878,11 +889,11 @@ impl VerificationPhase {
                             } else {
                                 0.0
                             };
-                            (1.0 - s, None)
+                            (1.0 - s, None, None)
                         }
                     }
                 }
-                other => (eval_sync(other, output), None),
+                other => (eval_sync(other, output), None, None),
             }
         })
     }
@@ -970,10 +981,14 @@ impl VerificationPhase {
         sp: &str,
         tau: h2ai_types::sizing::TauValue,
         max_tokens: u64,
-    ) -> (f64, String) {
+    ) -> (f64, String, String) {
         // Separate criterion (what to check) from the proposal (what to score).
         // The JSON response format is owned by EVALUATOR_SYSTEM_PROMPT — rubrics must
         // not repeat it; they contain only behavioral pass/fail criteria.
+        //
+        // Returns (score, json_reason, raw_output). Callers use raw_output to detect
+        // CHECK N: markers emitted in pre-JSON CoT text by thinking models; json_reason
+        // is kept separately for ConstraintViolation reporting.
         let prompt = VERIFICATION_TASK.render(&[("rubric", rubric), ("output", output)]);
         let req = ComputeRequest {
             system_context: sp.to_owned(),
@@ -982,30 +997,33 @@ impl VerificationPhase {
             max_tokens,
         };
         match evaluator.execute(req).await {
-            Ok(resp) => match extract_json_object::<ScoreResponse>(&resp.output) {
-                Some(s) => {
-                    tracing::info!(
-                        target: "h2ai.verification",
-                        score = s.score,
-                        reason = %s.reason,
-                        "LlmJudge scored"
-                    );
-                    (s.score.clamp(0.0, 1.0), s.reason)
+            Ok(resp) => {
+                let raw = resp.output.clone();
+                match extract_json_object::<ScoreResponse>(&resp.output) {
+                    Some(s) => {
+                        tracing::info!(
+                            target: "h2ai.verification",
+                            score = s.score,
+                            reason = %s.reason,
+                            "LlmJudge scored"
+                        );
+                        (s.score.clamp(0.0, 1.0), s.reason, raw)
+                    }
+                    // JSON parse failure: model did not emit a score object.
+                    // Fall back to neutral (0.7) so static predicates remain the actual gate.
+                    None => {
+                        tracing::info!(
+                            target: "h2ai.verification",
+                            raw = %resp.output,
+                            "LlmJudge response did not contain JSON score object; using neutral 0.7"
+                        );
+                        (0.7, String::new(), raw)
+                    }
                 }
-                // JSON parse failure: model did not emit a score object.
-                // Fall back to neutral (0.7) so static predicates remain the actual gate.
-                None => {
-                    tracing::info!(
-                        target: "h2ai.verification",
-                        raw = %resp.output,
-                        "LlmJudge response did not contain JSON score object; using neutral 0.7"
-                    );
-                    (0.7, String::new())
-                }
-            },
+            }
             Err(e) => {
                 tracing::warn!(target: "h2ai.verification", error = %e, "LlmJudge execute error; using neutral 0.7");
-                (0.7, String::new())
+                (0.7, String::new(), String::new())
             }
         }
     }

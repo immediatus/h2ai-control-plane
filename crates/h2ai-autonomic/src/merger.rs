@@ -1,4 +1,7 @@
 use chrono::Utc;
+use h2ai_config::prompts::{
+    CONTRADICTION_DETECTED_HEADER, CONTRADICTION_NOTE_HEADER, CONTRADICTION_SECTION_HEADER,
+};
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::bft::ConsensusMedian;
 use h2ai_state::krum::{
@@ -7,7 +10,8 @@ use h2ai_state::krum::{
 use h2ai_state::semilattice::{ProposalSet, SemilatticeResult};
 use h2ai_state::weiszfeld;
 use h2ai_types::events::{
-    BranchPrunedEvent, MergeResolvedEvent, SelectionResolvedEvent, ZeroSurvivalEvent,
+    selection_mode, BranchPrunedEvent, ContradictionAnalysis, MergeResolvedEvent,
+    SelectionResolvedEvent, ZeroSurvivalEvent,
 };
 use h2ai_types::identity::TaskId;
 use h2ai_types::sizing::MergeStrategy;
@@ -49,7 +53,7 @@ pub enum MergeOutcome {
     /// At least one proposal survived; carries the selection event and the resolved output.
     Resolved {
         selection_resolved: SelectionResolvedEvent,
-        resolved: MergeResolvedEvent,
+        resolved: Box<MergeResolvedEvent>,
     },
     /// No proposals survived the semilattice compile step; the task should be retried.
     ZeroSurvival(ZeroSurvivalEvent),
@@ -87,6 +91,7 @@ impl MergeEngine {
         violations: Option<&[ConstraintViolation]>,
         retry_accumulator: Option<&mut RetryAccumulator>,
         osp_config: Option<&OspConfig>,
+        contradiction_explanation: bool,
     ) -> MergeOutcome {
         let merge_start = Instant::now();
         let n_input = proposals.len() + pruned.len();
@@ -102,44 +107,65 @@ impl MergeEngine {
             });
         }
 
-        let resolved_output = if let Some(config) = osp_config {
+        let (resolved_output, selection_mode): (String, &'static str) = if let Some(config) =
+            osp_config
+        {
             let regime = classify_osp_regime(&result.valid_proposal_scores, config.t_v);
             match regime {
-                OspRegime::SingleSurvivor | OspRegime::ClearLeader => result
-                    .valid_proposals
-                    .first()
-                    .map(|p| p.raw_output.clone())
-                    .unwrap_or_default(),
-                OspRegime::TightCluster => {
+                OspRegime::SingleSurvivor => (
+                    result
+                        .valid_proposals
+                        .first()
+                        .map(|p| p.raw_output.clone())
+                        .unwrap_or_default(),
+                    selection_mode::OSP_SINGLE_SURVIVOR,
+                ),
+                OspRegime::ClearLeader => (
+                    result
+                        .valid_proposals
+                        .first()
+                        .map(|p| p.raw_output.clone())
+                        .unwrap_or_default(),
+                    selection_mode::OSP_CLEAR_LEADER,
+                ),
+                OspRegime::TightCluster => (
                     ConsensusMedian::resolve(&result.valid_proposals, embedding_model)
                         .await
                         .map(|p| p.raw_output.clone())
-                        .unwrap_or_default()
-                }
+                        .unwrap_or_default(),
+                    selection_mode::OSP_TIGHT_CLUSTER,
+                ),
             }
         } else {
             // Legacy path: existing strategy dispatch (backward compatible)
             match strategy {
-                MergeStrategy::ConsensusMedian => {
+                MergeStrategy::ConsensusMedian => (
                     ConsensusMedian::resolve(&result.valid_proposals, embedding_model)
                         .await
                         .map(|p| p.raw_output.clone())
-                        .unwrap_or_default()
-                }
-                MergeStrategy::ScoreOrdered => result
-                    .valid_proposals
-                    .first()
-                    .map(|p| p.raw_output.clone())
-                    .unwrap_or_default(),
+                        .unwrap_or_default(),
+                    selection_mode::CONSENSUS_MEDIAN,
+                ),
+                MergeStrategy::ScoreOrdered => (
+                    result
+                        .valid_proposals
+                        .first()
+                        .map(|p| p.raw_output.clone())
+                        .unwrap_or_default(),
+                    selection_mode::SCORE_ORDERED,
+                ),
                 MergeStrategy::OutlierResistant { f } => {
                     let proposals = &result.valid_proposals;
                     if quorum_satisfied(proposals.len(), f)
                         && cluster_coherent(proposals, embedding_model).await
                     {
-                        krum_select_semantic(proposals, f, embedding_model)
-                            .await
-                            .map(|p| p.raw_output.clone())
-                            .unwrap_or_default()
+                        (
+                            krum_select_semantic(proposals, f, embedding_model)
+                                .await
+                                .map(|p| p.raw_output.clone())
+                                .unwrap_or_default(),
+                            selection_mode::OUTLIER_RESISTANT_KRUM,
+                        )
                     } else {
                         // Quorum not met OR cluster assumption violated (diverse stochastic outputs).
                         // With an embedding model: Weiszfeld geometric median (breakdown 50%).
@@ -153,15 +179,21 @@ impl MergeEngine {
                                         .collect()
                                 });
                                 let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
-                                proposals
-                                    .get(idx)
-                                    .map(|p| p.raw_output.clone())
-                                    .unwrap_or_default()
+                                (
+                                    proposals
+                                        .get(idx)
+                                        .map(|p| p.raw_output.clone())
+                                        .unwrap_or_default(),
+                                    selection_mode::OUTLIER_RESISTANT_WEISZFELD,
+                                )
                             }
-                            None => ConsensusMedian::resolve(proposals, embedding_model)
-                                .await
-                                .map(|p| p.raw_output.clone())
-                                .unwrap_or_default(),
+                            None => (
+                                ConsensusMedian::resolve(proposals, embedding_model)
+                                    .await
+                                    .map(|p| p.raw_output.clone())
+                                    .unwrap_or_default(),
+                                selection_mode::OUTLIER_RESISTANT_CONSENSUS_MEDIAN,
+                            ),
                         }
                     }
                 }
@@ -174,11 +206,14 @@ impl MergeEngine {
                             multi_krum_select_semantic(proposals, f, m, embedding_model).await;
                         // valid_proposals is sorted by verification score descending.
                         // Pick the survivor that appears earliest (= highest verification score).
-                        proposals
-                            .iter()
-                            .find(|p| survivors.iter().any(|s| s.explorer_id == p.explorer_id))
-                            .map(|p| p.raw_output.clone())
-                            .unwrap_or_default()
+                        (
+                            proposals
+                                .iter()
+                                .find(|p| survivors.iter().any(|s| s.explorer_id == p.explorer_id))
+                                .map(|p| p.raw_output.clone())
+                                .unwrap_or_default(),
+                            selection_mode::MULTI_KRUM,
+                        )
                     } else {
                         // Quorum not met OR cluster assumption violated.
                         // With an embedding model: Weiszfeld geometric median (breakdown 50%).
@@ -192,15 +227,21 @@ impl MergeEngine {
                                         .collect()
                                 });
                                 let idx = weiszfeld::weiszfeld_select(&embeddings, 20);
-                                proposals
-                                    .get(idx)
-                                    .map(|p| p.raw_output.clone())
-                                    .unwrap_or_default()
+                                (
+                                    proposals
+                                        .get(idx)
+                                        .map(|p| p.raw_output.clone())
+                                        .unwrap_or_default(),
+                                    selection_mode::OUTLIER_RESISTANT_WEISZFELD,
+                                )
                             }
-                            None => ConsensusMedian::resolve(proposals, embedding_model)
-                                .await
-                                .map(|p| p.raw_output.clone())
-                                .unwrap_or_default(),
+                            None => (
+                                ConsensusMedian::resolve(proposals, embedding_model)
+                                    .await
+                                    .map(|p| p.raw_output.clone())
+                                    .unwrap_or_default(),
+                                selection_mode::OUTLIER_RESISTANT_CONSENSUS_MEDIAN,
+                            ),
                         }
                     }
                 }
@@ -225,6 +266,7 @@ impl MergeEngine {
             merge_elapsed_secs: Some(merge_elapsed),
             n_input_proposals: n_input,
             n_failed_proposals: result.failed_proposals.len(),
+            merge_selection_mode: Some(selection_mode.into()),
         };
 
         let n_v = result.valid_proposals.len();
@@ -252,6 +294,19 @@ impl MergeEngine {
             }
         }
 
+        let contradiction_analysis = if contradiction_explanation {
+            let n_valid = result.valid_proposals.len();
+            let rendered = render_contradiction(&result.pruned_proposals, n_input, n_valid);
+            Some(ContradictionAnalysis::from_pruned(
+                &result.pruned_proposals,
+                n_input,
+                n_valid,
+                rendered,
+            ))
+        } else {
+            None
+        };
+
         let resolved = MergeResolvedEvent {
             task_id,
             resolved_output,
@@ -259,11 +314,67 @@ impl MergeEngine {
             timestamp: Utc::now(),
             oracle_gate_passed: None,
             zone3_hints: zone3,
+            contradiction_analysis,
         };
 
         MergeOutcome::Resolved {
             selection_resolved,
-            resolved,
+            resolved: Box::new(resolved),
         }
     }
+}
+
+/// Pure function — renders `pruned` proposal data into a template-formatted markdown string
+/// using the section constants from `h2ai_config::prompts`.
+/// Lives here (not in `h2ai-types`) so the template constants remain in `prompts.rs` without
+/// creating a circular dependency between `h2ai-types` and `h2ai-config`.
+pub fn render_contradiction(
+    pruned: &[BranchPrunedEvent],
+    n_input: usize,
+    n_valid: usize,
+) -> String {
+    let n_pruned = pruned.len();
+    let mut out = String::new();
+
+    out.push_str(CONTRADICTION_SECTION_HEADER);
+    out.push_str(&format!(
+        "**Resolution: maximum satisfaction achieved** \
+         — {n_valid} of {n_input} proposal(s) satisfied all constraints.\n\n"
+    ));
+
+    if !pruned.is_empty() {
+        out.push_str(CONTRADICTION_DETECTED_HEADER);
+        for (i, p) in pruned.iter().enumerate() {
+            out.push_str(&format!("**Rejected proposal {}** violated:\n", i + 1));
+            if p.violated_constraints.is_empty() {
+                out.push_str(&format!("> {}\n\n", p.reason));
+            } else {
+                for vc in &p.violated_constraints {
+                    out.push_str(&format!(
+                        "- **{}** ({})",
+                        vc.constraint_id, vc.severity_label
+                    ));
+                    if !vc.constraint_description.is_empty() {
+                        out.push_str(&format!(": {}", vc.constraint_description));
+                    }
+                    out.push('\n');
+                    let explanation = vc
+                        .verifier_reason
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&p.reason);
+                    out.push_str(&format!("  > {explanation}\n\n"));
+                }
+            }
+        }
+    }
+
+    out.push_str(CONTRADICTION_NOTE_HEADER);
+    out.push_str(&format!(
+        "The consensus output was synthesized from {n_valid} valid proposal(s) \
+         that satisfied all hard constraints. {n_pruned} proposal(s) were excluded \
+         due to the contradictions documented above.\n"
+    ));
+
+    out
 }

@@ -1,0 +1,39 @@
+id: CONSTRAINT-BFT-3
+title: "Staging Rollback Gate — Per-Step Verification Before Each Production Apply"
+severity: hard
+domains:
+  - production-safety
+  - database
+  - devops
+related_to:
+  - CONSTRAINT-BFT-1
+  - CONSTRAINT-BFT-2
+remediation_hint: >
+  For each migration step, the proposal must explicitly state that the rollback
+  procedure for that step is verified in a staging environment before that step
+  is applied to production — not just as a single pre-flight test of the full
+  sequence. A pre-flight staging run that covers the full sequence satisfies
+  this only if the proposal explicitly gates each production step on the outcome
+  of its individual staging rollback test.
+criteria:
+  pass: |
+    The proposal explicitly states that staging rollback verification is a gate
+    that must pass before each individual production step is applied. For example:
+    - "Verify rollback of step N in staging before applying step N to production"
+    - "Each step is gated on a successful staging rollback test for that step"
+    A single pre-flight staging run does NOT satisfy this unless it is explicitly
+    structured as a per-step gate rather than an overall pre-check.
+  partial: >
+    The proposal mentions staging testing or rollback verification, but only as
+    a one-time pre-flight check covering the full sequence, not as a per-step
+    gate before each production apply.
+  fail: |
+    Any of the following:
+    - No staging rollback verification is mentioned at all
+    - Staging is mentioned only for the initial backup/restore check, not for
+      rollback procedure verification
+    - The proposal applies steps to production without an explicit per-step
+      staging rollback gate
+  checks:
+    - Does the proposal explicitly require staging rollback verification as a gate before each individual production migration step (not only as a one-time pre-flight)?
+    - Is there a clear statement that no production step proceeds until the rollback for that step has been successfully executed in a staging environment?

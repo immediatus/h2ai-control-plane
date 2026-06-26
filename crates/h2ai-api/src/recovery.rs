@@ -275,6 +275,7 @@ fn spawn_resume(state: Arc<AppState>, checkpoint: TaskCheckpoint) {
                     timestamp: chrono::Utc::now(),
                     oracle_gate_passed: None,
                     zone3_hints: None,
+                    contradiction_analysis: None,
                 });
                 if let Err(e) = state
                     .nats

@@ -85,6 +85,7 @@ fn build_produces_correct_task_id_and_resolved_output() {
             merge_elapsed_secs: None,
             n_input_proposals: 0,
             n_failed_proposals: 0,
+            merge_selection_mode: None,
         },
         attribution: HarnessAttribution {
             baseline_quality: 0.7,
@@ -114,6 +115,7 @@ fn build_produces_correct_task_id_and_resolved_output() {
             timestamp: Utc::now(),
         }],
         failed_proposals: vec![],
+        pruned_events: vec![],
         talagrand: None,
         suggested_next_params: None,
         waste_ratio: 0.25,

@@ -210,10 +210,49 @@ fn selection_resolved_event_includes_merge_strategy() {
         merge_elapsed_secs: None,
         n_input_proposals: 0,
         n_failed_proposals: 0,
+        merge_selection_mode: None,
     };
     let json = serde_json::to_string(&e).unwrap();
     let back: SelectionResolvedEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(back.merge_strategy, MergeStrategy::ScoreOrdered);
+}
+
+#[test]
+fn selection_resolved_event_merge_selection_mode_round_trips() {
+    let eid = explorer_id();
+    let e = SelectionResolvedEvent {
+        task_id: task_id(),
+        valid_proposals: vec![eid],
+        pruned_proposals: vec![],
+        merge_strategy: MergeStrategy::ScoreOrdered,
+        timestamp: Utc::now(),
+        merge_elapsed_secs: None,
+        n_input_proposals: 1,
+        n_failed_proposals: 0,
+        merge_selection_mode: Some(selection_mode::OSP_CLEAR_LEADER.into()),
+    };
+    let json = serde_json::to_string(&e).unwrap();
+    let back: SelectionResolvedEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        back.merge_selection_mode.as_deref(),
+        Some(selection_mode::OSP_CLEAR_LEADER)
+    );
+}
+
+#[test]
+fn selection_resolved_event_merge_selection_mode_defaults_to_none_on_legacy_json() {
+    // JSON produced before merge_selection_mode was added must deserialize without error.
+    let legacy_json = r#"{
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "valid_proposals": [],
+        "pruned_proposals": [],
+        "merge_strategy": "ScoreOrdered",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "n_input_proposals": 0,
+        "n_failed_proposals": 0
+    }"#;
+    let back: SelectionResolvedEvent = serde_json::from_str(legacy_json).unwrap();
+    assert!(back.merge_selection_mode.is_none());
 }
 
 #[test]
@@ -397,6 +436,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             merge_elapsed_secs: None,
             n_input_proposals: 0,
             n_failed_proposals: 0,
+            merge_selection_mode: None,
         }),
         H2AIEvent::MergeResolved(MergeResolvedEvent {
             task_id: task_id(),
@@ -405,6 +445,7 @@ fn h2ai_event_enum_wraps_all_17_events() {
             oracle_gate_passed: None,
             timestamp: Utc::now(),
             zone3_hints: None,
+            contradiction_analysis: None,
         }),
         H2AIEvent::TaskFailed(TaskFailedEvent {
             task_id: task_id(),

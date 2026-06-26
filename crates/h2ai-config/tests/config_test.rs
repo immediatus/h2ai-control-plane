@@ -1152,6 +1152,31 @@ fn safety_config_direct_default() {
     assert!(!c.require_bivariate_cg);
     // Nested default must also be populated.
     assert!(!c.shadow_auditor.enabled);
+    // diversity_fallback_to_best must default to false — opt-in only.
+    assert!(!c.diversity_fallback_to_best);
+}
+
+#[test]
+fn diversity_fallback_to_best_opt_in_survives_profile_application() {
+    // Build a production-profile config with the fallback opt-in explicitly set,
+    // then call apply_safety_profile and verify the flag is preserved.
+    let mut cfg = h2ai_config::H2AIConfig {
+        safety: SafetyConfig {
+            profile: SafetyProfile::Production,
+            diversity_fallback_to_best: true,
+            ..SafetyConfig::default()
+        },
+        ..Default::default()
+    };
+    h2ai_config::apply_safety_profile(&mut cfg);
+    // Production profile values must have been applied.
+    assert_eq!(cfg.safety.krum_fault_tolerance, 1);
+    assert!((cfg.safety.diversity_threshold - 0.15).abs() < 1e-9);
+    // But the operator opt-in must NOT be overwritten — it's not in the profile list.
+    assert!(
+        cfg.safety.diversity_fallback_to_best,
+        "diversity_fallback_to_best must survive apply_safety_profile"
+    );
 }
 
 #[test]

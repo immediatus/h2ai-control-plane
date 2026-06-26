@@ -8,7 +8,15 @@ related_to:
   - CONSTRAINT-004  # budget deductions are the events that must reach the audit log
   - CONSTRAINT-007  # billing event timestamps must use HLC (linearizable), not wall clock
   - CONSTRAINT-TAU-2  # billing path (Kafka→ClickHouse) and quota audit path (PostgreSQL) must coexist
-remediation_hint: "The required operation order is: (1) debit the budget atomically first via Redis Lua EVAL, (2) then publish the billing event to Kafka financial-events topic. The debit MUST happen before the Kafka publish. Use a local WAL-backed retry queue so Kafka downtime never blocks the debit or creates audit gaps. Project Kafka events into ClickHouse for analytics. Financial event records are append-only: once written, records must remain unmodified."
+remediation_hint: >
+  The required operation order is: (1) debit the budget atomically first via Redis Lua EVAL,
+  (2) then publish the billing event to Kafka financial-events topic. The debit MUST happen
+  before the Kafka publish. Use a local WAL-backed retry queue so Kafka downtime never blocks
+  the debit or creates audit gaps. Project Kafka events into ClickHouse for analytics.
+  Financial event records are append-only: once written, records must remain unmodified.
+  Every audit record (including idempotency-hit retries) must include a change_type field:
+  'applied' for the original debit and 'deduplicated' for suppressed retries — so operators
+  can trace all charge attempts, not just successful ones.
 semantic:
   exclusions:
     - pattern: "direct database or log-file write on the charge path"
@@ -25,6 +33,9 @@ criteria:
     Financial/billing events are written to a storage system where records cannot be modified
     or deleted after write — an event stream, append-only ledger, or immutable columnar store
     (Kafka → ClickHouse, or equivalent). The audit record is durable and tamper-evident.
+    Every audit record includes a change_type (or equivalent) field: 'applied' for original
+    debits and 'deduplicated' for idempotency-hit retries. Both event types are emitted so
+    the audit log is complete for all charge attempts, including suppressed retries.
   partial: "The proposal mentions audit logging but it is not clearly immutable or append-only (e.g. logs to a relational DB without append-only guarantees)."
   fail: |
     Financial events are written only to a mutable store (regular DB with UPDATE/DELETE),
@@ -34,6 +45,7 @@ criteria:
     - Is the ClickHouse audit table append-only (no UPDATE or DELETE mutations permitted)?
     - Does the proposal maintain a 7-year retention policy for the immutable audit trail?
     - "Does the proposal use a dual-ledger model: CockroachDB for operational state, ClickHouse for immutable audit?"
+    - Does every audit record include a change_type (or equivalent) field that distinguishes 'applied' (first successful debit) from 'deduplicated' (idempotency key hit — retry of an already-processed request)? Both event types must be written to the audit log so operators can trace all charge attempts, including retries that were correctly suppressed.
 
 failure_modes:
   - id: FM-005-1

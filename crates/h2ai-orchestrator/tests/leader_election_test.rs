@@ -98,6 +98,7 @@ fn failed_wave_with_scores(scores: Vec<(ExplorerId, f64)>) -> PipelineWaveResult
             n_eff_cosine: None,
             filter_ratio: 0.0,
             tau_values: vec![],
+            partial_verification_events: vec![],
         }),
         events,
     }

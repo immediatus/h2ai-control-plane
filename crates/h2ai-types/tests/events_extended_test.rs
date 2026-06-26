@@ -309,6 +309,7 @@ fn merge_resolved_event_serde_roundtrip_with_optional_fields() {
         timestamp: Utc::now(),
         oracle_gate_passed: Some(true),
         zone3_hints: Some("hint text".into()),
+        contradiction_analysis: None,
     };
     let s = serde_json::to_string(&e).unwrap();
     let back: MergeResolvedEvent = serde_json::from_str(&s).unwrap();
@@ -327,6 +328,7 @@ fn merge_resolved_event_oracle_gate_absent_when_none() {
         timestamp: Utc::now(),
         oracle_gate_passed: None,
         zone3_hints: None,
+        contradiction_analysis: None,
     };
     let s = serde_json::to_string(&e).unwrap();
     // oracle_gate_passed uses skip_serializing_if = "Option::is_none"
@@ -349,6 +351,7 @@ fn selection_resolved_event_serde_roundtrip_with_elapsed() {
         merge_elapsed_secs: Some(0.042),
         n_input_proposals: 3,
         n_failed_proposals: 1,
+        merge_selection_mode: None,
     };
     let s = serde_json::to_string(&e).unwrap();
     let back: SelectionResolvedEvent = serde_json::from_str(&s).unwrap();
@@ -1040,6 +1043,7 @@ fn h2ai_event_subject_merge_resolved_uses_generic_subject() {
         timestamp: Utc::now(),
         oracle_gate_passed: None,
         zone3_hints: None,
+        contradiction_analysis: None,
     });
     let subject = e.subject(&tid);
     assert_eq!(subject, format!("h2ai.tasks.{tid}"));

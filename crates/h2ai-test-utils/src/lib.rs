@@ -460,6 +460,7 @@ pub fn stub_engine_output(task_id: h2ai_types::identity::TaskId) -> EngineOutput
         merge_elapsed_secs: None,
         n_input_proposals: 0,
         n_failed_proposals: 0,
+        merge_selection_mode: None,
     };
     let complexity = TaskComplexityAssessedEvent {
         task_id: task_id.clone(),
@@ -496,6 +497,7 @@ pub fn stub_engine_output(task_id: h2ai_types::identity::TaskId) -> EngineOutput
         attribution_interval: None,
         verification_events: vec![],
         failed_proposals: vec![],
+        pruned_events: vec![],
         talagrand: None,
         suggested_next_params: None,
         waste_ratio: 0.0,

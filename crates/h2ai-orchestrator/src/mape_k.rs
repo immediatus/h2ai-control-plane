@@ -1312,6 +1312,7 @@ impl MapeKController {
                 n_eff_cosine: zs_n_eff_cosine,
                 filter_ratio: _wave_filter_ratio,
                 tau_values: zs_tau_values,
+                partial_verification_events: _,
             } => {
                 self.tau_values_tried.push(zs_tau_values);
 
@@ -1711,6 +1712,7 @@ impl MapeKController {
             attribution_interval: merge_out.attribution_interval,
             verification_events: self.all_verification_events.clone(),
             failed_proposals: self.all_failed_proposals.clone(),
+            pruned_events: self.all_pruned.clone(),
             talagrand,
             suggested_next_params: merge_out.suggested_next_params,
             waste_ratio: merge_out.waste_ratio,

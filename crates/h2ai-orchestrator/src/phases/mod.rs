@@ -1,6 +1,6 @@
 use crate::coherence::CoherenceState;
 use crate::engine::EngineError;
-use h2ai_types::events::FailureMode;
+use h2ai_types::events::{FailureMode, VerificationScoredEvent};
 use h2ai_types::sizing::MultiplicationConditionFailure;
 
 pub enum StepResult<T> {
@@ -27,6 +27,10 @@ pub enum ExitReason {
         filter_ratio: f64,
         /// τ values from the current generation wave; pushed to `tau_values_tried` before retry.
         tau_values: Vec<f64>,
+        /// Verification events collected before the diversity gate fired (non-empty only when
+        /// the exit was triggered by the diversity gate in `phases::verify`; empty for all
+        /// other ZeroSurvival paths such as an empty merge pool).
+        partial_verification_events: Vec<VerificationScoredEvent>,
     },
     OracleBlocked,
     OraclePostSelectionBlocked {

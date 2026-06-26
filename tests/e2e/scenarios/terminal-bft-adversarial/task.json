@@ -95,7 +95,8 @@
   },
   "constraints": [
     "CONSTRAINT-BFT-1",
-    "CONSTRAINT-BFT-2"
+    "CONSTRAINT-BFT-2",
+    "CONSTRAINT-BFT-3"
   ],
   "context": "Database: PostgreSQL 15. Table: users (user_id UUID PK, user_name VARCHAR(64), email TEXT, created_at TIMESTAMPTZ). Application code references 'user_name' in all SELECT/INSERT/UPDATE queries across 6 pods \u2014 a direct rename breaks all running pods immediately. The migration window is zero: no downtime allowed. Staging environment is available at staging.internal \u2014 test the rollback there before applying to production. The audit log table (financial_events) must not be touched during this migration.",
   "_timeout_s": 7200,
@@ -127,7 +128,8 @@
       },
       {
         "id": "BFT/3",
-        "text": "Does the proposal state that the staging environment rollback must be verified before applying any step to production?"
+        "constraint": "CONSTRAINT-BFT-3",
+        "text": "Does the proposal explicitly gate each production step on a successful staging rollback verification for that specific step — not only a one-time pre-flight test of the full sequence?"
       }
     ]
   }

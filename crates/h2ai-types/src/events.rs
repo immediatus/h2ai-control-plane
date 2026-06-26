@@ -348,6 +348,30 @@ pub struct ConsensusRequiredEvent {
 /// The CRDT semilattice resolves to a single winning proposal by selection; content synthesis,
 /// if enabled, is a separate Phase 5a operation. This event records which proposals survived
 /// and which were pruned, the merge strategy used, and the merge timing.
+/// String constants for [`SelectionResolvedEvent::merge_selection_mode`].
+///
+/// Defined here so consumers can match on them without hardcoding the labels.
+pub mod selection_mode {
+    /// OSP path: only one proposal survived Krum pruning.
+    pub const OSP_SINGLE_SURVIVOR: &str = "OSP-SingleSurvivor";
+    /// OSP path: ≥2 survivors, score gap Δ ≥ 2·T_v — top proposal is reliably best.
+    pub const OSP_CLEAR_LEADER: &str = "OSP-ClearLeader";
+    /// OSP path: ≥2 survivors, gap Δ < 2·T_v — scores too close; semantic median used.
+    pub const OSP_TIGHT_CLUSTER: &str = "OSP-TightCluster";
+    /// Legacy strategy: Krum geometric-median selection (quorum + cluster coherence met).
+    pub const OUTLIER_RESISTANT_KRUM: &str = "OutlierResistant-Krum";
+    /// Legacy strategy: Weiszfeld geometric median (quorum not met or cluster incoherent, embedding model present).
+    pub const OUTLIER_RESISTANT_WEISZFELD: &str = "OutlierResistant-Weiszfeld";
+    /// Legacy strategy: ConsensusMedian fallback (quorum not met, no embedding model).
+    pub const OUTLIER_RESISTANT_CONSENSUS_MEDIAN: &str = "OutlierResistant-ConsensusMedian";
+    /// Legacy strategy: Multi-Krum selects top-m survivors (quorum + cluster coherence met).
+    pub const MULTI_KRUM: &str = "MultiKrum";
+    /// Legacy strategy: highest-scored proposal wins directly.
+    pub const SCORE_ORDERED: &str = "ScoreOrdered";
+    /// Legacy strategy: semantic consensus median across all valid proposals.
+    pub const CONSENSUS_MEDIAN: &str = "ConsensusMedian";
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectionResolvedEvent {
     pub task_id: TaskId,
@@ -366,6 +390,66 @@ pub struct SelectionResolvedEvent {
     /// from selection to prevent synthesis contamination.
     #[serde(default)]
     pub n_failed_proposals: usize,
+    /// Which sub-path inside the merger selected the winning proposal.
+    /// See [`selection_mode`] constants for all possible values.
+    /// `None` on legacy or single-proposal paths.
+    #[serde(default)]
+    pub merge_selection_mode: Option<String>,
+}
+
+/// One pruned proposal's contribution to a `ContradictionAnalysis`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContradictionEntry {
+    pub explorer_id: ExplorerId,
+    /// Constraints that caused this proposal to be pruned.
+    pub violated_constraints: Vec<ConstraintViolation>,
+    /// LLM-generated summary of why this proposal failed.
+    pub reason: String,
+}
+
+/// Structured analysis of which proposals were pruned and why, produced by the merger when
+/// `contradiction_explanation = true`.  Carried on `MergeResolvedEvent` as a separate field
+/// so `resolved_output` remains pure LLM-generated content and confidence scoring is unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContradictionAnalysis {
+    /// Number of proposals that satisfied all hard constraints and contributed to the consensus.
+    pub n_valid: usize,
+    /// Total proposals that entered the merger (valid + pruned + failed).
+    pub n_total: usize,
+    /// One entry per pruned proposal, in the order they were pruned.
+    pub contradictions: Vec<ContradictionEntry>,
+    /// Template-rendered human-readable markdown explanation, included verbatim in the output
+    /// JSON so callers receive both structured data and a presentation-ready string.
+    /// Populated by the merger using template constants from `h2ai_config::prompts`.
+    pub rendered: String,
+}
+
+impl ContradictionAnalysis {
+    /// Pure constructor — maps `pruned` events to typed contradiction entries.
+    /// `n_input` is the total proposal count that entered the merger;
+    /// `n_valid` is the count that survived verification.
+    /// `rendered` is the pre-formatted template string produced by the caller
+    /// (merger, which has access to `h2ai_config::prompts` constants).
+    pub fn from_pruned(
+        pruned: &[BranchPrunedEvent],
+        n_input: usize,
+        n_valid: usize,
+        rendered: String,
+    ) -> Self {
+        Self {
+            n_valid,
+            n_total: n_input,
+            rendered,
+            contradictions: pruned
+                .iter()
+                .map(|p| ContradictionEntry {
+                    explorer_id: p.explorer_id.clone(),
+                    violated_constraints: p.violated_constraints.clone(),
+                    reason: p.reason.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Emitted when the merge engine produces the final resolved output string for a task.
@@ -388,6 +472,12 @@ pub struct MergeResolvedEvent {
     /// Used by the engine as retry hint injection context on `ZeroSurvival`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone3_hints: Option<String>,
+    /// Structured analysis of pruned proposals and their violated constraints.
+    /// Populated when `contradiction_explanation = true` in `H2AIConfig`.
+    /// Intentionally separate from `resolved_output` so LLM content stays unmodified and
+    /// confidence / oracle scoring operates on the clean merged answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contradiction_analysis: Option<ContradictionAnalysis>,
 }
 
 /// Root cause classification for terminal task failures.

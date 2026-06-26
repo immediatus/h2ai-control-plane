@@ -221,6 +221,7 @@ async fn last_wave_n_eff_updates_after_zero_survival() {
         n_eff_cosine: Some(0.3),
         filter_ratio: 1.0,
         tau_values: vec![],
+        partial_verification_events: vec![],
     }));
     ctrl.observe(&wave, 0).await;
     // Trigger decide so handle_exit_reason runs and sets last_wave_n_eff.
@@ -231,6 +232,7 @@ async fn last_wave_n_eff_updates_after_zero_survival() {
             n_eff_cosine: Some(0.3),
             filter_ratio: 1.0,
             tau_values: vec![],
+            partial_verification_events: vec![],
         }),
         0,
         1.0,
@@ -248,6 +250,7 @@ async fn last_wave_n_eff_defaults_one_when_none() {
         n_eff_cosine: None,
         filter_ratio: 1.0,
         tau_values: vec![],
+        partial_verification_events: vec![],
     }));
     ctrl.observe(&wave, 0).await;
     let _ = ctrl.decide(
@@ -257,6 +260,7 @@ async fn last_wave_n_eff_defaults_one_when_none() {
             n_eff_cosine: None,
             filter_ratio: 1.0,
             tau_values: vec![],
+            partial_verification_events: vec![],
         }),
         0,
         1.0,

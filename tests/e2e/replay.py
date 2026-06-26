@@ -24,6 +24,7 @@ Output per run:
 """
 
 import argparse
+import asyncio
 import collections
 import dataclasses
 import datetime
@@ -663,6 +664,110 @@ def load_scenarios(names: list[str] | None) -> list[tuple[str, pathlib.Path, dic
     return result
 
 
+# ── NATS pre-run cleanup ──────────────────────────────────────────────────────
+
+# Buckets that hold per-task transient state. Purged before each scenario run
+# so stale checkpoints from previous runs (or schema-incompatible binaries)
+# never interfere with recovery. Calibration and shadow-auditor buckets are
+# intentionally excluded — they are expensive to rebuild and cross-run valid.
+_TASK_EPHEMERAL_BUCKETS = [
+    "H2AI_TASK_CHECKPOINTS",
+    "H2AI_CHECKPOINT_PAYLOADS",
+    "H2AI_SNAPSHOTS",
+    "H2AI_SESSIONS",
+    "H2AI_APPROVALS",
+    "H2AI_PROBE_LEASE",
+    "H2AI_PROMPT_VARIANTS",  # bandit state — schema changes break deserialization
+]
+# Bucket prefixes: the server creates one KV bucket per tenant with these
+# prefixes (e.g. H2AI_CHECKPOINT_saas-platform-team). We delete all matching.
+_TASK_EPHEMERAL_PREFIXES = [
+    "H2AI_CHECKPOINT_",
+    "H2AI_META_",
+    "H2AI_CONFLICT_",
+]
+
+
+def _nats_url_for_scenario(scenario_dir: pathlib.Path) -> str:
+    cfg_path = scenario_dir / "h2ai.toml"
+    if cfg_path.exists():
+        cfg = tomllib.loads(cfg_path.read_text())
+        url = cfg.get("nats_url", "")
+        if url:
+            return url
+    return "nats://localhost:4222"
+
+
+async def _flush_task_state_async(nats_url: str) -> None:
+    # Import nats-py via a subprocess so the local nats/ directory (NATS server
+    # config) does not shadow the installed nats-py package.
+    script = rf"""
+import sys, asyncio
+# Remove any path entry that contains a bare 'nats' directory to avoid the
+# repo-local nats/ config dir shadowing the nats-py package.
+sys.path = [p for p in sys.path if not p.endswith('/h2ai-control-plane')]
+import nats as nats_lib
+
+BUCKETS = {_TASK_EPHEMERAL_BUCKETS!r}
+PREFIXES = {_TASK_EPHEMERAL_PREFIXES!r}
+
+async def run():
+    nc = await nats_lib.connect({nats_url!r})
+    js = nc.jetstream()
+    deleted, skipped = [], []
+    try:
+        for bucket in BUCKETS:
+            try:
+                await js.delete_key_value(bucket)
+                deleted.append(bucket)
+            except Exception:
+                skipped.append(bucket)
+        try:
+            streams = await js.streams_info()
+            for stream in streams:
+                name = stream.config.name
+                if name.startswith("KV_"):
+                    bucket_name = name[3:]
+                    if any(bucket_name.startswith(p) for p in PREFIXES):
+                        try:
+                            await js.delete_key_value(bucket_name)
+                            deleted.append(bucket_name)
+                        except Exception:
+                            skipped.append(bucket_name)
+        except Exception:
+            pass
+    finally:
+        await nc.close()
+    if deleted:
+        print("purged:" + ",".join(deleted))
+    if skipped:
+        print("skipped:" + ",".join(skipped))
+
+asyncio.run(run())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=15,
+    )
+    for line in result.stdout.splitlines():
+        if line.startswith("purged:"):
+            print(f"  [nats-flush] purged: {line[len('purged:'):]}")
+        elif line.startswith("skipped:"):
+            print(f"  [nats-flush] not found (ok): {line[len('skipped:'):]}")
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip()[:300])
+
+
+def flush_task_state(scenario_dir: pathlib.Path) -> None:
+    """Purge task-ephemeral NATS KV buckets before starting a scenario."""
+    nats_url = _nats_url_for_scenario(scenario_dir)
+    print(f"  [nats-flush] cleaning task state ({nats_url}) …")
+    try:
+        asyncio.run(_flush_task_state_async(nats_url))
+    except Exception as exc:
+        print(f"  [nats-flush] WARNING: flush failed ({exc}); continuing anyway")
+
+
 # ── Server lifecycle ──────────────────────────────────────────────────────────
 
 def check_no_server_running() -> None:
@@ -678,6 +783,7 @@ def check_no_server_running() -> None:
 
 def start_server(scenario_dir: pathlib.Path, config_file: str = "h2ai.toml") -> subprocess.Popen:
     check_no_server_running()
+    flush_task_state(scenario_dir)
     if not SERVER_BIN.exists():
         raise RuntimeError(f"binary not found: {SERVER_BIN} — run: cargo build --release")
     config_path = scenario_dir / config_file
@@ -825,7 +931,7 @@ def run_scenario(scenario_name: str, task: dict) -> dict:
                     pruned_constraints.append(cid)
             _trace_event(event, run_start)
 
-        elif kind == "CorrelatedFabrication":
+        elif kind == "ResearcherGrounding":
             grounding_events.append(event)
             _trace_event(event, run_start)
 

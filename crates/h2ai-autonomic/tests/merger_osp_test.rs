@@ -65,6 +65,7 @@ async fn osp_zero_survival_before_any_selection() {
         Some(&[v("c-001", "hint")]),
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -87,6 +88,7 @@ async fn osp_single_survivor_returns_valid_only() {
         None,
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -115,6 +117,7 @@ async fn osp_clear_leader_picks_top_score() {
         None,
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -143,6 +146,7 @@ async fn osp_zone3_attached_when_concordant() {
         Some(&violations),
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -177,6 +181,7 @@ async fn osp_zone3_absent_when_n_v_5() {
         Some(&violations),
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -203,6 +208,7 @@ async fn osp_backward_compat_with_osp_config_none() {
         None,
         None,
         None,
+        false,
     )
     .await;
 
@@ -230,6 +236,7 @@ async fn osp_softmax_nan_free_identical_scores() {
         None,
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -261,6 +268,7 @@ async fn osp_retry_accumulator_updated_on_resolve() {
         Some(&violations),
         Some(&mut acc),
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -290,6 +298,7 @@ async fn osp_retry_accumulator_not_updated_when_violations_none() {
         None,
         Some(&mut acc),
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 
@@ -320,6 +329,7 @@ async fn osp_empty_violations_vec_uses_semilattice_n_f() {
         Some(&empty_violations),
         None,
         Some(&OspConfig::default()),
+        false,
     )
     .await;
 

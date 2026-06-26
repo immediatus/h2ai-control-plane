@@ -34,7 +34,7 @@ is a falsifiable question with a concrete research or engineering path.
 | **GAP-B5 Proxy chain — rho_mean, p_mean, β_eff unvalidated** | 🟡 PARTIAL | **High** | Online ρ_EMA live after 30 obs; cold-start prior 0.45 unvalidated |
 | GAP-D2 Compound task cost unconstrained | 🔴 OPEN | Low | Complexity bandit; HITL escalation on graft_first=false path open |
 | **GAP-F4 Knowledge provider has no contrastive evaluation** | 🟡 PARTIAL | **High** | Phase 1b closed; Phases 2–3 open |
-| **GAP-G1 Reasoning Memory Phase 4 unimplemented** | 🟡 PARTIAL | Medium | Phase 1 live; Phase 2 complete (2026-06-22); Phase 3 complete (2026-06-22): archetype prior boost/penalty wired in `select_archetypes()`, iteration-0 tension seeding via `select_tension_seeds`/`format_tension_seeds`, `run_distillation_cycle` triggered at `induction_batch_size` intervals in `post_run`, `InductionCycleCompletedEvent` publisher live, `load_semantic_memory` called before thinking loop; Phase 4 pending |
+| **GAP-G1 Reasoning Memory Phase 4 unimplemented** | 🟡 PARTIAL | Medium | Phases 1–3 complete (2026-06-22): checkpoints live, induction + distillation live, Layer 3 wiring live; Phase 4 (embedding rerank) pending |
 | **GAP-B6 Confidence-blind Byzantine merge kernel** | 🔴 OPEN | Medium | Confidence-weighted Krum/Weiszfeld once empirical score_lower distribution is characterized |
 | **GAP-D6 Multi-wave latency and token characterization** | 🔴 OPEN | Low | Fast-path single-shot arm below decompose_threshold; cost-estimate gate before ensemble dispatch |
 | **GAP-D7 Gap research confidence ceiling under local LLMs** | 🟡 PARTIAL | Medium | Mechanical-mechanism prompt refactor applied; two-stage extraction + check-text fallback open |
@@ -51,7 +51,7 @@ is a falsifiable question with a concrete research or engineering path.
 **Closes:** GAP-A1 (comparative signal).
 **Status: COMPLETE (2026-06-20)** — H2-P achieved MergeResolved on Tier 1 (2 constraints, j_eff=1.000, 2026-06-20), Tier 2 (4 constraints, avg_score=0.750, grounding events=0, 2026-06-20), and Tier 3 (6 constraints, j_eff=0.667 via one MAPE-K retry wave; 1/3 wave-1 proposals at score=1.00 on all 6 constraints, 2026-06-20).
 
-**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with LLM-driven implied entity classification eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0). Open work: cross-task ArchetypePrior/TensionPattern/DecompositionTemplate (reasoning memory Phase 2 pending).
+**Reliability finding (e2e analysis, 2026-06-20).** Tier 1 (2 constraints) achieves j_eff=1.000 after framework improvements (corpus-seeded archetypes, ZeroSurvival induction trigger, LLM coverage phase). Tier 2 (4 constraints) reaches avg_score=0.750 with LLM-driven implied entity classification eliminating spurious technology hints. Tier 3 (6 constraints) exhibits a `ZeroSurvival` event in wave 0 (all 3 proposals pruned: 2 violating CONSTRAINT-TAU-2+CONSTRAINT-BFT-1, 1 violating all 6), followed by a MAPE-K retry wave producing 1/3 proposals at score=1.00 (j_eff=0.667). New failure patterns: repair oscillation (wave-1 fix for C-TAU-2/C-BFT-1 caused 2/3 proposals to regress on C-004/C-005/C-008) and no per-constraint archetype guarantee (coverage_score=0.98 but C-TAU-2 had no dedicated archetype in thinking loop iteration 0). Open work at the time: cross-task ArchetypePrior/TensionPattern/DecompositionTemplate (reasoning memory Phase 2, now complete 2026-06-22).
 
 **Implementation:** Scenario directories `tests/e2e/scenarios/innovation-5/` were archived during the 2026-06-23 scenario consolidation. Current canonical scenarios are under `tests/e2e/scenarios/`.
 
@@ -454,8 +454,6 @@ per-constraint domain signals. `format_induction_priors` formats top-5 `Knowledg
 entries by `hit_rate` as prior context prepended to archetype selection `system_context` (Layer 3
 partial path).
 
-**Remaining open — Phase 4:**
-
 **Phase 2 — Induction (Layer 2). COMPLETE (2026-06-22).** Two components with strict separation:
 `InductionScheduler` async trait (pure I/O interface, in `crates/h2ai-orchestrator/src/induction/mod.rs`)
 and `AlgorithmicInductionWorker` (pure computation, no LLM calls, in `induction/algorithmic.rs`).
@@ -484,11 +482,6 @@ lowest-`retry_count` member for `shared_understanding`). `InductionScheduler` tr
 `NatsInductionScheduler` implements both: `run_distillation_cycle` distills and persists `DistillationResult`
 to `{tenant_id}.semantic` in `H2AI_MEMORY` KV; `load_semantic_memory` reads it back. `InductionCycleCompletedEvent`
 struct added to `h2ai-types::events`.
-
-**Pending (requires engine wiring in Phase 3):** `run_distillation_cycle` is not yet called by the engine
-(`induction_batch_size` / `induction_max_interval_secs` trigger not wired). `InductionCycleCompletedEvent`
-has no publisher. Archetype prior boost/penalty and tension seeding require `load_semantic_memory` integration
-in `task_pipeline.rs` — these are Phase 3 wiring tasks, now unblocked.
 
 **Phase 3 — Thinking Loop Integration (Layer 3, full). COMPLETE (2026-06-22).**
 All three full Layer 3 paths are now live:
@@ -522,16 +515,7 @@ task description; compute cosine similarity against stored `TensionPattern.embed
 Config additions: `reasoning_memory_tag_gate_threshold = 0.2`,
 `reasoning_memory_max_tension_candidates = 3`.
 
-**E2E run findings.** Across innovation-5 Tier-2 runs, j_eff is invariably 0.667 on every
-successful task (exactly 1-of-3 explorers passes stochastically on wave 1). No run shows j_eff
-improving across MAPE-K retry waves — when wave 1 fails entirely, subsequent waves fail at the
-same rate and the task terminates via `TaskFailed`. This is consistent with the absence of Phase
-2: without `AlgorithmicInductionWorker` distilling `RetryHintPattern` records from prior
-`BranchPruned` history, `MapeKController` has no primed hints and constructs retry context from
-scratch each wave using only the current wave's failure signal. Phase 2 is the mechanism that
-turns MAPE-K from random restarts into directed repair: `RetryHintPattern` entries for
-`(trigger_tags=["billing", "audit-log"], exit_reason_kind=ZeroSurvival)` would directly prime the
-retry context for the CONSTRAINT-005 failure pattern present in every failed Tier-2 run.
+**Historical E2E motivation (pre-Phase-2 baseline).** Across innovation-5 Tier-2 runs conducted before Phase 2 was implemented, j_eff was invariably 0.667 on every successful task (exactly 1-of-3 explorers passes stochastically on wave 1). No run showed j_eff improving across MAPE-K retry waves — when wave 1 failed entirely, subsequent waves failed at the same rate and the task terminated via `TaskFailed`. This confirmed the Phase 2 design: without `AlgorithmicInductionWorker` distilling `RetryHintPattern` records from prior `BranchPruned` history, `MapeKController` has no primed hints and constructs retry context from scratch each wave using only the current wave's failure signal. Phase 2 is the mechanism that turns MAPE-K from random restarts into directed repair: `RetryHintPattern` entries for `(trigger_tags=["billing", "audit-log"], exit_reason_kind=ZeroSurvival)` would directly prime the retry context for the CONSTRAINT-005 failure pattern present in every failed Tier-2 run. Phase 2 is now live; empirical validation of Phase 2's impact on retry success rate across new runs is the open question gating Phase 4.
 
 ---
 

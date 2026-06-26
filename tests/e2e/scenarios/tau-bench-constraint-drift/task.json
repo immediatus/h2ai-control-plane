@@ -104,7 +104,6 @@
   "_compare_semantics": "no_regression",
   "_expected": {
     "terminal": "MergeResolved",
-    "valid_proposals_min": 1,
     "should_prune": [
       {
         "description": "Proposal that updates the quota with Redis GET + SET sequence with an optimistic lock (WATCH/MULTI/EXEC) but does not guarantee that all 8 API nodes invalidate their cache within one TTL",

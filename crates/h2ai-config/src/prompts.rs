@@ -652,3 +652,27 @@ Specification:\n{spec}\n\nOutput:\n{output}\n\n\
 Return JSON only:\n\
 {\"findings\": [{\"text\": \"...\", \"kind\": \"entity|claim\", \
 \"reason\": \"...\", \"confidence\": 0.0-1.0}]}";
+
+/// Opening section header for the contradiction explanation block appended to
+/// `ContradictionAnalysis.rendered` when `contradiction_explanation = true`.
+pub const CONTRADICTION_SECTION_HEADER: &str = "---\n\n## Constraint Satisfaction Analysis\n\n";
+
+/// Sub-header for the list of per-proposal violation entries in the rendered block.
+pub const CONTRADICTION_DETECTED_HEADER: &str = "### Contradictions Detected\n\n";
+
+/// Sub-header for the closing resolution note in the rendered block.
+pub const CONTRADICTION_NOTE_HEADER: &str = "\n### Resolution Note\n\n";
+
+/// Appended to the merged output when the diversity gate collapsed but proposals passed
+/// verification and `safety.diversity_fallback_to_best = true` activated the fallback.
+/// Informs the operator that the ensemble produced correlated outputs (expected in
+/// single-model deployments) and that the verified best-scoring proposal was selected.
+pub const DIVERSITY_COLLAPSE_FALLBACK_NOTICE: &str = "\n\n\
+---\n\
+**Ensemble Notice — Diversity Gate**\n\n\
+All verified proposals showed identical constraint-satisfaction fingerprints \
+(mean pairwise Hamming distance below threshold). This is expected when all \
+adapters share the same model (Krum-filtered single-model ensemble produces \
+structurally correlated outputs). The highest-scoring independently verified \
+proposal has been selected as the final output. All binary constraint checks \
+were satisfied prior to selection.\n";

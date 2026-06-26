@@ -656,6 +656,14 @@ diversity_threshold = 0.00
 family_constraint = "single_family_ok"
 require_bivariate_cg = false
 
+# When true: if the diversity gate collapses but proposals passed verification,
+# select the highest-scoring verified proposal instead of returning ZeroSurvival.
+# The pipeline appends a diversity-conflict notice to the merged output.
+# NOT overwritten by apply_safety_profile — explicit operator opt-in for known
+# single-model deployments where diversity collapse is expected (not a BFT signal).
+# Default: false (hard block on diversity collapse in production).
+diversity_fallback_to_best = false
+
 [safety.shadow_auditor]
 enabled = false
 promotion_threshold = 0.05
@@ -926,3 +934,9 @@ min_post_injection_waves   = 2     # observe for this many waves before deciding
 # is an LLM response issue, not a constraint judgment.
 [audit_gate]
 fail_open_on_parse_error = true   # true = pass through; false = reject (legacy behaviour)
+
+# When true, the merger appends a "## Constraint Satisfaction Analysis" section to the
+# resolved output whenever proposals were pruned.  Lists each pruned proposal's violated
+# constraints and the LLM-generated reason, and explains the consensus basis.
+# Default: false.
+contradiction_explanation = false

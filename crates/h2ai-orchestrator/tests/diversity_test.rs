@@ -152,3 +152,53 @@ fn mismatched_fingerprint_lengths_fail_open() {
         DiversityResult::Diverse
     ));
 }
+
+/// When the diversity gate collapses, the EarlyExit(ZeroSurvival) must carry
+/// `partial_verification_events` so the pipeline can propagate them into
+/// `wave.events.verification_events` even though no audit/merge phase runs.
+///
+/// This test will fail to compile until `ExitReason::ZeroSurvival` has the
+/// `partial_verification_events` field (the TDD failing-test gate).
+#[test]
+fn zero_survival_exit_carries_partial_verification_events() {
+    use chrono::Utc;
+    use h2ai_orchestrator::coherence::CoherenceState;
+    use h2ai_orchestrator::phases::ExitReason;
+    use h2ai_types::events::VerificationScoredEvent;
+    use h2ai_types::identity::{ExplorerId, TaskId};
+
+    let evt = VerificationScoredEvent {
+        task_id: TaskId::new(),
+        explorer_id: ExplorerId::new(),
+        score: 0.9,
+        reason: "all constraints passed".into(),
+        passed: true,
+        cache_hit: false,
+        passed_checks: Some(3),
+        total_checks: Some(3),
+        score_lower: None,
+        score_upper: None,
+        per_check_verdicts: vec![],
+        timestamp: Utc::now(),
+    };
+    let exit = ExitReason::ZeroSurvival {
+        failure_mode: None,
+        coherence: CoherenceState::default(),
+        n_eff_cosine: None,
+        filter_ratio: 0.0,
+        tau_values: vec![],
+        partial_verification_events: vec![evt],
+    };
+    let ExitReason::ZeroSurvival {
+        partial_verification_events,
+        ..
+    } = exit
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        partial_verification_events.len(),
+        1,
+        "ZeroSurvival from diversity gate must carry the passed proposals' verification events"
+    );
+}

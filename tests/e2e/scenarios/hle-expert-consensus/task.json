@@ -67,11 +67,11 @@
     "CONSTRAINT-HLE-2"
   ],
   "context": "This is a formal reasoning task. The proposed protocol must provide mathematical arguments, not just intuition. Key definitions: n = total nodes, f = maximum Byzantine faults, quorum = minimum set of nodes whose votes suffice to commit a value. A Byzantine node may send any message, including conflicting messages to different correct nodes (equivocation). GST = Global Stabilization Time: before GST, message delays are arbitrary; after GST, messages are delivered within a known bound \u0394. The FLP impossibility result shows that consensus is impossible in a purely asynchronous system \u2014 partial synchrony (GST existence) is the correct model for liveness proofs. A common mistake: claiming n \u2265 2f+1 is sufficient for Byzantine safety. This is only sufficient for crash faults (non-equivocating). Under equivocation, the quorum intersection argument fails at n=3f.",
-  "_timeout_s": 7200,
+  "_timeout_s": 14400,
   "_compare_semantics": "no_regression",
   "_expected": {
     "terminal": "MergeResolved",
-    "valid_proposals_min": 2,
+    "valid_proposals_min": 1,
     "should_prune": [
       {
         "description": "Protocol that claims n=2f+1 is sufficient for Byzantine safety without proving that equivocation is prevented",

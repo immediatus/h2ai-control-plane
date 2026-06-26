@@ -4,7 +4,7 @@ use h2ai_autonomic::merger::{MergeEngine, MergeOutcome};
 use h2ai_context::embedding::EmbeddingModel;
 use h2ai_state::semilattice::ProposalSet;
 use h2ai_types::config::AdapterKind;
-use h2ai_types::events::{BranchPrunedEvent, ProposalEvent};
+use h2ai_types::events::{BranchPrunedEvent, ConstraintViolation, ProposalEvent};
 use h2ai_types::identity::{ExplorerId, TaskId};
 use h2ai_types::sizing::{MergeStrategy, RoleErrorCost, TauValue};
 
@@ -82,6 +82,7 @@ async fn merge_engine_resolves_crdt_when_valid_proposals_exist() {
         None,
         None,
         None,
+        false,
     )
     .await;
     assert!(matches!(outcome, MergeOutcome::Resolved { .. }));
@@ -105,9 +106,123 @@ async fn merge_engine_emits_zero_survival_when_all_pruned() {
         None,
         None,
         None,
+        false,
     )
     .await;
     assert!(matches!(outcome, MergeOutcome::ZeroSurvival(_)));
+}
+
+#[tokio::test]
+async fn contradiction_explanation_disabled_leaves_analysis_none() {
+    let task_id = TaskId::new();
+    let valid_id = ExplorerId::new();
+    let pruned_id = ExplorerId::new();
+    let mut set = ProposalSet::new();
+    set.insert_scored(proposal(&task_id, valid_id.clone(), "valid answer", 5), 1.0);
+    let pruned_events = vec![BranchPrunedEvent {
+        task_id: task_id.clone(),
+        explorer_id: pruned_id,
+        reason: "constraint failed".into(),
+        raw_output: String::new(),
+        constraint_error_cost: RoleErrorCost::new(0.0).unwrap(),
+        violated_constraints: vec![ConstraintViolation {
+            constraint_id: "C-1".into(),
+            score: 0.0,
+            severity_label: "Hard".into(),
+            remediation_hint: None,
+            constraint_description: "test".into(),
+            verifier_reason: None,
+            check_verdicts: vec![],
+            criteria_pass: None,
+            check_reasons: None,
+        }],
+        timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
+    }];
+
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        pruned_events,
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+
+    if let MergeOutcome::Resolved { resolved, .. } = outcome {
+        assert!(resolved.contradiction_analysis.is_none());
+        assert_eq!(resolved.resolved_output, "valid answer");
+    } else {
+        panic!("expected Resolved");
+    }
+}
+
+#[tokio::test]
+async fn contradiction_explanation_enabled_populates_analysis_not_output() {
+    let task_id = TaskId::new();
+    let valid_id = ExplorerId::new();
+    let pruned_id = ExplorerId::new();
+    let mut set = ProposalSet::new();
+    set.insert_scored(proposal(&task_id, valid_id.clone(), "valid answer", 5), 1.0);
+    let pruned_events = vec![BranchPrunedEvent {
+        task_id: task_id.clone(),
+        explorer_id: pruned_id,
+        reason: "proof has fatal flaw".into(),
+        raw_output: String::new(),
+        constraint_error_cost: RoleErrorCost::new(0.0).unwrap(),
+        violated_constraints: vec![ConstraintViolation {
+            constraint_id: "CONSTRAINT-HLE-1".into(),
+            score: 0.0,
+            severity_label: "Hard".into(),
+            remediation_hint: None,
+            constraint_description: "quorum safety".into(),
+            verifier_reason: Some("n=2f+1 insufficient".into()),
+            check_verdicts: vec![],
+            criteria_pass: None,
+            check_reasons: None,
+        }],
+        timestamp: Utc::now(),
+        retry_count: 0,
+        bypass_reason: None,
+    }];
+
+    let outcome = MergeEngine::resolve(
+        task_id,
+        set,
+        pruned_events,
+        MergeStrategy::ScoreOrdered,
+        0,
+        None,
+        None,
+        None,
+        None,
+        true,
+    )
+    .await;
+
+    if let MergeOutcome::Resolved { resolved, .. } = outcome {
+        // resolved_output MUST be the clean LLM answer — no system text injected
+        assert_eq!(resolved.resolved_output, "valid answer");
+
+        // contradiction_analysis carries the structured data separately
+        let analysis = resolved.contradiction_analysis.expect("analysis populated");
+        assert_eq!(analysis.n_valid, 1);
+        assert_eq!(analysis.n_total, 2);
+        assert_eq!(analysis.contradictions.len(), 1);
+        assert_eq!(analysis.contradictions[0].reason, "proof has fatal flaw");
+        assert_eq!(
+            analysis.contradictions[0].violated_constraints[0].constraint_id,
+            "CONSTRAINT-HLE-1"
+        );
+    } else {
+        panic!("expected Resolved");
+    }
 }
 
 #[tokio::test]
@@ -123,6 +238,7 @@ async fn merge_engine_zero_survival_when_proposal_set_empty() {
         None,
         None,
         None,
+        false,
     )
     .await;
     assert!(matches!(outcome, MergeOutcome::ZeroSurvival(_)));
@@ -152,6 +268,7 @@ async fn merge_engine_zero_survival_when_all_proposals_score_zero() {
         None,
         None,
         None,
+        false,
     )
     .await;
     assert!(
@@ -179,6 +296,7 @@ async fn merge_engine_consensus_median_selects_a_proposal() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -207,6 +325,7 @@ async fn merge_engine_resolved_outcome_carries_selection_resolved_event() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved {
@@ -280,6 +399,7 @@ async fn merge_engine_krum_selects_honest_proposal() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -336,6 +456,7 @@ async fn merge_engine_multi_krum_returns_honest_output() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -387,6 +508,7 @@ async fn merge_engine_krum_quorum_violated_falls_back_to_consensus_median() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -436,6 +558,7 @@ async fn merge_engine_krum_incoherent_cluster_falls_back_to_consensus_median() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -477,6 +600,7 @@ async fn merge_engine_multi_krum_incoherent_cluster_falls_back_to_consensus_medi
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -502,6 +626,7 @@ async fn merge_engine_zero_survival_carries_retry_count() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::ZeroSurvival(event) = outcome {
@@ -566,6 +691,7 @@ async fn merge_engine_multi_krum_quorum_violated_falls_back_to_consensus_median(
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -596,6 +722,7 @@ async fn merge_resolved_event_contains_timing_fields() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved {
@@ -638,6 +765,7 @@ async fn merge_n_input_proposals_includes_pruned_count() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved {
@@ -736,6 +864,7 @@ async fn merge_outlier_resistant_weiszfeld_fallback_with_embedding_model() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -775,6 +904,7 @@ async fn merge_multi_outlier_resistant_weiszfeld_fallback_with_embedding_model()
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -809,6 +939,7 @@ async fn merge_outlier_resistant_krum_path_with_quorum_and_coherent_cluster() {
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {
@@ -843,6 +974,7 @@ async fn merge_multi_outlier_resistant_krum_path_with_quorum_and_coherent_cluste
         None,
         None,
         None,
+        false,
     )
     .await;
     if let MergeOutcome::Resolved { resolved, .. } = outcome {

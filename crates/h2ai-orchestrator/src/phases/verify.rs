@@ -46,6 +46,11 @@ pub struct Output {
     /// Key = constraint_id, Value = verifier_reason text (non-empty reasons only).
     /// Empty when no proposals passed verification.
     pub best_passing_constraint_reasons: std::collections::HashMap<String, String>,
+    /// True when `diversity_fallback_to_best` was activated: the diversity gate detected
+    /// identical fingerprints but proposals passed verification, so the best-scoring
+    /// proposal was selected instead of returning ZeroSurvival.  Pipeline appends the
+    /// diversity-collapse notice template to the final merged output when this is set.
+    pub diversity_collapsed_fallback: bool,
 }
 
 /// Run Phase 3.5: Verification Loop (LLM-as-Judge).
@@ -124,30 +129,25 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         }
     }
 
-    // Diversity gate: post-verification — check constraint-satisfaction profile entropy.
+    // Diversity gate: check BEFORE consuming ver_out.passed (takes a reference).
     // Collapsed fingerprints signal collective hallucination; trigger MAPE-K retry.
-    if matches!(
+    // The gate result is stored here and acted on AFTER the event-population loops,
+    // so that partial_verification_events can be carried in the EarlyExit return —
+    // operators need to see which proposals passed before diversity collapsed the wave.
+    let diversity_collapsed = matches!(
         crate::diversity::DiversityGuard::check(
             &ver_out.passed,
             engine_input.cfg.safety.diversity_threshold
         ),
         crate::diversity::DiversityResult::Collapsed
-    ) {
-        let coherence = crate::coherence::CoherenceState::default();
-        return StepResult::EarlyExit(crate::phases::ExitReason::ZeroSurvival {
-            failure_mode: None,
-            coherence,
-            n_eff_cosine: None,
-            filter_ratio: 0.0,
-            tau_values: input.tau_values,
-        });
-    }
+    );
 
     let mut best_pass_score = -1.0_f64;
     let mut best_passing_constraint_reasons: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    let mut proposals: Vec<ProposalEvent> = Vec::new();
+    // Track (score, proposal) together so the diversity fallback can select the best.
+    let mut scored_proposals: Vec<(f64, ProposalEvent)> = Vec::new();
     for (prop, results, any_cache_hit) in ver_out.passed {
         let score = h2ai_constraints::types::aggregate_compliance_score(&results);
         // Strict `>` means ties resolve to first-seen (common when all proposals share score 1.0
@@ -210,7 +210,7 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
             timestamp: Utc::now(),
         });
         engine_input.store.record_validation(task_id, true);
-        proposals.push(prop);
+        scored_proposals.push((score, prop));
     }
     let ct_scale = input.verification_config.constraint_threshold_scale;
     for (prop, results, violations, any_cache_hit) in ver_out.failed {
@@ -298,6 +298,51 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         engine_input.store.record_validation(task_id, false);
     }
 
+    // Diversity gate: act on the pre-computed result now that both loops have populated
+    // `iteration_verification_events`. Carrying these events in the EarlyExit lets the
+    // pipeline propagate them into `wave.events.verification_events` so operators can
+    // see which proposals passed verification before the wave was collapsed.
+    //
+    // When `diversity_fallback_to_best` is enabled and proposals actually passed
+    // verification, the diversity collapse is a Krum artefact (single-model ensemble
+    // produces correlated outputs) rather than a safety signal.  In that case we skip
+    // ZeroSurvival and let the best-scoring verified proposal proceed to merge so the
+    // engine always produces output — the pipeline appends the conflict notice template
+    // to the final merged text so the operator can see the constraint was detected.
+    let diversity_collapsed_fallback = diversity_collapsed
+        && engine_input.cfg.safety.diversity_fallback_to_best
+        && !scored_proposals.is_empty();
+
+    if diversity_collapsed && !diversity_collapsed_fallback {
+        let coherence = crate::coherence::CoherenceState::default();
+        return StepResult::EarlyExit(crate::phases::ExitReason::ZeroSurvival {
+            failure_mode: None,
+            coherence,
+            n_eff_cosine: None,
+            filter_ratio: 0.0,
+            tau_values: input.tau_values,
+            partial_verification_events: iteration_verification_events,
+        });
+    }
+
+    // When fallback is active, reduce to the single best-scoring verified proposal.
+    let proposals: Vec<ProposalEvent> = if diversity_collapsed_fallback {
+        tracing::warn!(
+            task_id = %task_id,
+            n_proposals = scored_proposals.len(),
+            best_score = best_pass_score,
+            "diversity gate collapsed but proposals passed — selecting best (diversity_fallback_to_best)"
+        );
+        scored_proposals
+            .into_iter()
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(_, p)| p)
+            .into_iter()
+            .collect()
+    } else {
+        scored_proposals.into_iter().map(|(_, p)| p).collect()
+    };
+
     // Build turn-1 proposals for Option B estimator feed.
     // Only accepted (passed) proposals that ran multiple TAO turns.
     let turn1_proposals_for_scoring: Vec<ProposalEvent> = proposals
@@ -321,5 +366,6 @@ pub async fn run(proposals: Vec<ProposalEvent>, input: Input<'_>) -> StepResult<
         all_comparison_events,
         conflict_rate,
         best_passing_constraint_reasons,
+        diversity_collapsed_fallback,
     })
 }

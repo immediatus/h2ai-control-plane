@@ -444,24 +444,38 @@ impl<'a> ExecutionPipeline<'a> {
             vc.constraint_threshold_scale = scale;
             vc
         };
-        let verify_out = phase!(
-            phases::verify::run(
-                gen_out.proposals,
-                phases::verify::Input {
-                    engine_input: self.input,
-                    task_id,
-                    verification_config: verify_verification_config,
-                    provisioned,
-                    task_eval_cache: std::sync::Arc::clone(&self.task_eval_cache),
-                    turn1_map: turn1_map.clone(),
-                    tau_values: tau_values.clone(),
-                    bypassed_constraint_ids: params.bypassed_constraint_ids.clone(),
-                },
-            )
-            .await,
+        // Run the verify phase without the phase! macro so we can intercept the
+        // EarlyExit(ZeroSurvival) path and extract partial_verification_events BEFORE
+        // propagating the early return.  When the diversity gate fires inside the verify
+        // phase, proposals have already passed the LLM verifier — those results must reach
+        // wave.events.verification_events so MAPE-K and operators can see them.
+        let verify_result = phases::verify::run(
+            gen_out.proposals,
+            phases::verify::Input {
+                engine_input: self.input,
+                task_id,
+                verification_config: verify_verification_config,
+                provisioned,
+                task_eval_cache: std::sync::Arc::clone(&self.task_eval_cache),
+                turn1_map: turn1_map.clone(),
+                tau_values: tau_values.clone(),
+                bypassed_constraint_ids: params.bypassed_constraint_ids.clone(),
+            },
+        )
+        .await;
+        if let phases::StepResult::EarlyExit(phases::ExitReason::ZeroSurvival {
+            ref partial_verification_events,
+            ..
+        }) = verify_result
+        {
             events
-        );
+                .verification_events
+                .extend(partial_verification_events.iter().cloned());
+        }
+        let verify_out = phase!(verify_result, events);
 
+        // Capture before verify_out is moved into audit.
+        let diversity_collapsed_fallback = verify_out.diversity_collapsed_fallback;
         events.best_passing_constraint_reasons = verify_out.best_passing_constraint_reasons.clone();
         let turn1_proposals_for_scoring = verify_out.turn1_proposals_for_scoring.clone();
         let conflict_rate_this_wave = verify_out.conflict_rate;
@@ -673,6 +687,7 @@ impl<'a> ExecutionPipeline<'a> {
                 merge_elapsed_secs: None,
                 n_input_proposals: synthesis_candidates.len(),
                 n_failed_proposals: 0,
+                merge_selection_mode: None,
             };
 
             // Accumulate iteration verification events (mirrors engine.rs line 1058).
@@ -796,6 +811,15 @@ impl<'a> ExecutionPipeline<'a> {
             phases::StepResult::Done(mut merge_out) => {
                 // Populate GAP-H3 cost fields on the merge output.
                 merge_out.wave_token_cost = wave_token_cost;
+                // When the diversity gate fired but proposals passed verification and
+                // `diversity_fallback_to_best` routed us to merge the best proposal,
+                // append the conflict-notice template so the operator can see the
+                // constraint was detected and acted on rather than silently overridden.
+                if diversity_collapsed_fallback {
+                    merge_out
+                        .resolved_output
+                        .push_str(h2ai_config::prompts::DIVERSITY_COLLAPSE_FALLBACK_NOTICE);
+                }
                 // Quality measurement for the controller's quality_history.
                 events.quality_measurement = Some(crate::self_optimizer::QualityMeasurement {
                     params: params.optimizer.clone(),

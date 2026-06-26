@@ -825,6 +825,18 @@ pub(crate) async fn post_run(
         }
     }
 
+    for event in output.pruned_events {
+        let h2ai_ev = H2AIEvent::BranchPruned(event);
+        match nats.publish_event_seq(task_id, &h2ai_ev).await {
+            Ok(seq) => {
+                if let Some(task_state) = ctx.store.get(task_id) {
+                    ctx.journal.note_event(task_id, seq, &task_state);
+                }
+            }
+            Err(e) => tracing::warn!("failed to publish BranchPrunedEvent: {e}"),
+        }
+    }
+
     let selection_ev = H2AIEvent::SelectionResolved(output.selection_resolved.clone());
     match nats.publish_event_seq(task_id, &selection_ev).await {
         Ok(seq) => {
@@ -1018,6 +1030,7 @@ pub(crate) async fn post_run(
         timestamp: chrono::Utc::now(),
         oracle_gate_passed: None,
         zone3_hints: None,
+        contradiction_analysis: None,
     });
     if let Err(e) = nats.publish_event(task_id, &merge_ev).await {
         tracing::warn!("failed to publish MergeResolvedEvent: {e}");

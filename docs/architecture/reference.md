@@ -301,6 +301,29 @@ struct EpistemicYieldEvent {
 
 Published asynchronously after `MergeResolved`. Never blocks task close.
 
+#### BranchPrunedEvent
+
+Emitted when an explorer's proposal is eliminated by the verification gate or the auditor gate.
+
+```rust
+struct BranchPrunedEvent {
+    task_id: TaskId,
+    explorer_id: ExplorerId,
+    reason: String,
+    #[serde(default)]
+    raw_output: String,                    // full proposal text (used by synthesis for partial-pass examples)
+    constraint_error_cost: RoleErrorCost,
+    violated_constraints: Vec<ConstraintViolation>,
+    timestamp: DateTime<Utc>,
+    #[serde(default)]
+    retry_count: u32,                      // wave index; zero for legacy events
+    #[serde(default)]
+    bypass_reason: Option<String>,         // set when pruned due to frozen-verifier bypass
+}
+```
+
+`bypass_reason` is `Some(_)` when one or more verifiers entered frozen-bypass mode and this branch was pruned only because of bypassed constraints. The string contains a brief human-readable explanation. When present, this proposal would have passed the non-bypassed constraints; it is pruned because the bypassed verifier's gate was suppressed, not because the proposal was wrong.
+
 #### MultiplicationConditionFailedEvent
 
 `failure` is one of:
@@ -451,6 +474,27 @@ struct PendingClarificationEvent {
 }
 ```
 
+#### OraclePendingEvent
+
+Published asynchronously to `h2ai.oracle.{tenant_id}.pending` immediately after task completion. Non-blocking — the orchestrator does not wait for the oracle result. Consumed by the oracle worker sidecar.
+
+```rust
+struct OraclePendingEvent {
+    task_id: TaskId,
+    winning_output: String,
+    q_confidence: f64,
+    n_used: u32,
+    oracle_spec: OracleSpec,                // primary oracle spec
+    domain: OracleDomain,
+    #[serde(default)]
+    oracle_specs: Vec<OracleSpec>,          // additional specs for multi-oracle FUSE evaluation
+    #[serde(default)]
+    tenant_id: TenantId,
+}
+```
+
+When `oracle_specs` is non-empty, the oracle worker runs all specs and applies worst-of-family reduction before publishing the final `OracleResultEvent`. `oracle_spec` is always included as the primary spec.
+
 #### ConstraintAmbiguityEvent
 
 Emitted (fire-and-forget, `tracing::info!` target `"h2ai.engine"`) when ≥ `ambiguity_threshold` proposals in a wave return uncertain judge panel votes for the same constraint. Signals a constraint that is semantically underdetermined — the panel cannot reach a confident verdict because the constraint text is ambiguous. This is a corpus quality signal, not a task failure.
@@ -510,7 +554,48 @@ struct VerificationScoredEvent {
 }
 ```
 
-`total_checks = 0` when the verifier response does not contain a visible `CHECK VERDICTS:` section. Thinking models (llama_cpp, Qwen3, R1) emit CHECK reasoning in hidden `<think>` tokens by default; the `CHECK_EVIDENCE_FORMAT_INSTRUCTION` prompt constant instructs the model to emit a `CHECK VERDICTS:` block in the visible final response to make the `has_check_markers` guard fire. Legacy events (before binary-check tracking) have all `Option` fields as `None`.
+`total_checks = 0` when the verifier response does not contain a `CHECK N: ... → PRESENT/MISSING` line. The `has_check_markers` guard searches for `"CHECK "` in the full raw model output (`raw_response`), not in the JSON `reason` field. This means CHECK markers emitted in pre-JSON chain-of-thought text (as thinking models typically do) are correctly detected and parsed. Legacy events (before binary-check tracking) have all `Option` fields as `None`.
+
+#### SelectionResolvedEvent
+
+Emitted when the merge engine finishes selecting surviving proposals. Precedes `MergeResolvedEvent`. Records which proposals survived, which were pruned, the merge strategy, and timing.
+
+```rust
+struct SelectionResolvedEvent {
+    task_id: TaskId,
+    valid_proposals: Vec<ExplorerId>,
+    pruned_proposals: Vec<(ExplorerId, String)>,
+    merge_strategy: MergeStrategy,
+    timestamp: DateTime<Utc>,
+    /// Wall-clock seconds consumed by MergeEngine::resolve(). None for legacy events.
+    #[serde(default)]
+    merge_elapsed_secs: Option<f64>,
+    /// Total proposals (valid + pruned) that entered resolve().
+    #[serde(default)]
+    n_input_proposals: usize,
+    /// Proposals scoring exactly 0.0 excluded from selection (prevent synthesis contamination).
+    #[serde(default)]
+    n_failed_proposals: usize,
+    /// Which sub-path inside the merger selected the winner. See selection_mode constants.
+    /// None on legacy or single-proposal paths.
+    #[serde(default)]
+    merge_selection_mode: Option<String>,
+}
+```
+
+**`merge_selection_mode` string constants** (from `selection_mode` module):
+
+| Value | Path |
+|---|---|
+| `"OSP-SingleSurvivor"` | OSP: only one proposal survived Krum pruning |
+| `"OSP-ClearLeader"` | OSP: ≥2 survivors, score gap Δ ≥ 2·T_v |
+| `"OSP-TightCluster"` | OSP: ≥2 survivors, gap Δ < 2·T_v — semantic median used |
+| `"OutlierResistant-Krum"` | Legacy: Krum geometric-median (quorum + cluster coherence met) |
+| `"OutlierResistant-Weiszfeld"` | Legacy: Weiszfeld geometric median (embedding model present) |
+| `"OutlierResistant-ConsensusMedian"` | Legacy: ConsensusMedian fallback (no embedding model) |
+| `"MultiKrum"` | Legacy: Multi-Krum selects top-m survivors |
+| `"ScoreOrdered"` | Legacy: highest-scored proposal wins |
+| `"ConsensusMedian"` | Legacy: semantic consensus median across all valid proposals |
 
 #### MergeResolvedEvent (updated fields)
 
@@ -526,6 +611,20 @@ struct VerificationScoredEvent {
 - `None` — OSP is disabled (`[osp]` absent), no failed proposals this wave, `n_v > max_n_v_for_zone3`, or concordance threshold was not met.
 
 **Operational use:** `zone3_hints` being populated consistently across retries for the same constraint ID indicates a systematically hard constraint. Review the constraint definition or increase `t_v` to relax the ClearLeader threshold for that domain.
+
+**`contradiction_analysis: Option<ContradictionAnalysis>`** *(added 2026-06-27)*
+- `Some(analysis)` — populated when `contradiction_explanation = true` in `[ensemble]` config and at least one proposal was pruned by the semilattice or verifier.
+- `None` — feature disabled (default) or all proposals survived.
+
+`ContradictionAnalysis` carries:
+- `n_valid: usize` — proposals that survived all constraints.
+- `n_total: usize` — total input proposals (valid + pruned).
+- `contradictions: Vec<ContradictionEntry>` — one entry per pruned proposal; each carries `explorer_id`, `violated_constraints: Vec<ConstraintViolation>`, and `reason: String`.
+- `rendered: String` — template-formatted markdown section using the three `prompts.rs` constants (`CONTRADICTION_SECTION_HEADER`, `CONTRADICTION_DETECTED_HEADER`, `CONTRADICTION_NOTE_HEADER`); rendered by `merger::render_contradiction()` from `h2ai-autonomic`.
+
+**Design invariant:** `resolved_output` is always pure LLM-generated content. The contradiction analysis appears only in the separate `contradiction_analysis` field and never appended to `resolved_output`. Confidence scoring, oracle, and attribution pipelines read only `resolved_output` and are unaffected by this field.
+
+**Config field:** `contradiction_explanation = false` (default) in `[ensemble]` section of `H2AIConfig` (`crates/h2ai-config/src/lib.rs`).
 
 ---
 
@@ -587,6 +686,50 @@ struct ProvenanceRecordedEvent {
 #### VerifierReasonContradictionEvent.beyond_budget_count *(added 2026-05-29)*
 
 `VerifierReasonContradictionEvent` gained a `beyond_budget_count: u32` field with `#[serde(default)]` (old events still deserialise). Non-zero values indicate the verifier reported sub-claims it could not evaluate within its own compute budget — distinguishes "rejected this" from "could not compute this". When `complexity_routing.verifier_decomposition_enabled = true` and the probe rates the task ≥ `decompose_threshold`, `BEYOND_BUDGET_VERIFIER_ADDENDUM` is appended to the verifier system prompt before the first wave, instructing sub-claim decomposition with VERIFIED / UNVERIFIED / BEYOND_BUDGET reporting.
+
+---
+
+#### TaskFailedEvent
+
+Emitted when the MAPE-K loop exhausts all retries without producing a resolved output, or when a terminal condition fires (adapter failure, HITL rejection, oracle rejection, budget exhaustion).
+
+```rust
+struct TaskFailedEvent {
+    task_id: TaskId,
+    /// Primary terminal cause — highest severity among all causes that fired.
+    #[serde(default)]
+    primary_cause: TerminalCause,
+    /// All other causes that fired concurrently.
+    #[serde(default)]
+    contributing_causes: Vec<TerminalCause>,
+    /// Top violated constraint IDs by frequency, sorted descending by count, capped at 5.
+    #[serde(default)]
+    top_violated_constraints: Vec<(String, u32)>,
+    /// Valid proposal count from the final SelectionResolved event. None if none occurred.
+    #[serde(default)]
+    last_selection_valid_count: Option<u32>,
+    pruned_events: Vec<BranchPrunedEvent>,
+    topologies_tried: Vec<TopologyKind>,
+    tau_values_tried: Vec<Vec<f64>>,
+    multiplication_condition_failure: Option<MultiplicationConditionFailure>,
+    timestamp: DateTime<Utc>,
+}
+```
+
+**`TerminalCause` variants** (severity-ranked; lower rank = higher severity):
+
+| Variant | Rank | Meaning |
+|---|---|---|
+| `LlmAdapterUnavailable` | 0 | Adapter returned error or timeout after probe phase; zero retries possible. |
+| `VerificationExhaustion` | 1 | All proposals failed verification across all MAPE-K retry waves. |
+| `NoValidProposals` | 1 | Epistemic stage found zero proposals with valid provenance; `zero_valid_proposals_policy = "fail"`. |
+| `ComplexityOverflow` | 2 | Task complexity exceeded ensemble capacity; no retry resolves without replanning. |
+| `ContextExhaustion` | 3 | Token budget collapsed mid-task; recoverable by chunking. |
+| `OracleRejected` | 4 | External oracle returned `passed=false`. |
+| `Timeout` | 5 | Wall-clock `timeout_secs` exceeded; recoverable with larger budget. |
+| `Unknown` | 6 | Unclassified terminal path (default). |
+
+**`primary_cause`** is the highest-severity (lowest-rank) cause from the set of all causes that fired. `contributing_causes` carries the remaining causes in insertion order. `top_violated_constraints` is sorted by frequency (most-violated first) and capped at 5 entries. `last_selection_valid_count` is `None` when no `SelectionResolvedEvent` was emitted before failure.
 
 ---
 
@@ -1162,16 +1305,21 @@ Requires the `wasm` cargo feature. Only `language = "javascript"` is accepted; o
 |---|---|---|---|---|
 | `H2AI_CALIBRATION` | KV | `current` | — | Latest `CalibrationCompletedEvent`. |
 | `H2AI_SNAPSHOTS` | KV | `{task_id}` | — | Periodic `TaskState` snapshots for fast replay. |
-| `H2AI_AGENT_MEMORY` | KV | `{session_id}` | — | Agent session memory (prior outputs). |
+| `H2AI_SESSIONS` | KV | `{session_id}` | — | Agent session memory (prior outputs). |
+| `H2AI_ESTIMATOR` | KV | varies | — | Per-tenant estimator state (TaoMultiplierEstimator). |
+| `H2AI_ORACLE_CALIBRATION` | KV | varies | — | Oracle calibration accumulator state. |
+| `H2AI_AUDIT_SHADOW` | KV | `{domain}` | — | Per-domain `ShadowAuditorAccumulator` state for domain promotion tracking. |
+| `H2AI_PROMPT_VARIANTS` | KV | `{adapter}/{key}/{variant_id}` | — | OPRO prompt variant records, active pointer, and `AdapterOproState`. |
 | `H2AI_TASK_CHECKPOINTS` | KV | `{task_id}` | 24 h | zstd-compressed `TaskCheckpoint` (phase outputs for crash recovery). |
 | `H2AI_CHECKPOINT_PAYLOADS` | Object Store | SHA-256 hash | 24 h | Checkpoint payloads exceeding 800 KB (referenced by `TaskCheckpoint.object_store_ref`). |
 | `H2AI_APPROVALS` | KV | `{task_id}` | 1 h | Legacy; still provisioned for backward compatibility but not actively written. Superseded by `H2AI_SIGNALS` JetStream stream for HITL signal delivery. |
+| `H2AI_ORACLE_HUMAN` | KV | varies | — | Human oracle pending requests (per-tenant prefix). |
 | `H2AI_CONSTRAINT_WIKI` | KV | `wiki_cache` | — | Serialised `WikiCache` (context_map + metas). Loaded at startup; `constraint_wiki.enabled = true` required. History=5. |
 | `H2AI_CONSTRAINT_PAYLOADS` | Object Store | `{id}@{version}` | — | Full predicate payloads for non-Static constraints (LlmJudge, Oracle). Fetched lazily at Phase 4. |
-| `H2AI_CHECKPOINT_{tenant_id}` | KV store | `task_id` string | 7 days | `TaskReasoningCheckpoint` (zstd-compressed). Per-tenant; bucket created on first task for each tenant. |
-| `H2AI_META_{tenant_id}` | KV store | `task_id` string | no TTL | `TaskMetaState` projections (uncompressed JSON). Per-tenant; consumed by InductionScheduler (Phase 2). |
-| `H2AI_MEMORY` | KV store | `{tenant_id}.tag.{normalized_tag}` | no TTL | `TagPatternBucket` (vec of `RetryHintPattern`) for `NatsInductionScheduler` cross-task priming. Single shared bucket; tenant scoped via key prefix. A pattern with N trigger_tags appears in N tag buckets. |
-| `H2AI_CONFLICT_{tenant_id}` | KV store | `"accumulator"` string | no TTL | `ConflictRateAccumulator` — rolling per-task conflict rates for `beta_quality` derivation. |
+| `H2AI_CHECKPOINT_{tenant_id}` | KV | `task_id` string | 7 days | `TaskReasoningCheckpoint` (zstd-compressed). Per-tenant; bucket created on first task for each tenant. |
+| `H2AI_META_{tenant_id}` | KV | `task_id` string | no TTL | `TaskMetaState` projections (uncompressed JSON). Per-tenant; consumed by InductionScheduler (Phase 2). |
+| `H2AI_MEMORY` | KV | `{tenant_id}.tag.{normalized_tag}` | no TTL | `TagPatternBucket` (vec of `RetryHintPattern`) for `NatsInductionScheduler` cross-task priming. Single shared bucket; tenant scoped via key prefix. |
+| `H2AI_CONFLICT_{tenant_id}` | KV | `"accumulator"` string | no TTL | `ConflictRateAccumulator` — rolling per-task conflict rates for `beta_quality` derivation. |
 | `H2AI_CALIBRATION_RECORDS` | KV | `{adapter_profile}` | — | Global (not tenanted). `CalibrationRecord` per adapter profile — `n_useful_history` ring buffer `(N_useful: u8, N_max: u8, unix_minutes: u32)`. Written by the calibration harness; read by the epistemic β₀ `yield_from_history` path. Shared across all tenants because the adapter pool is shared infrastructure. |
 | `H2AI_AUDITOR_HEALTH` | KV | `{adapter_profile}` | — | Global (not tenanted). `AuditorHealth` circuit-breaker state per adapter profile. Tracks `AuditorCircuitState` (Closed/Open/HalfOpen), consecutive failures, and `tripped_at` (unix millis). HalfOpen uses NATS KV `create` (CAS) as a probe lease serialiser. |
 | `H2AI_PROBE_LEASE` | KV | `{adapter_profile}` | — | Global (not tenanted). Atomic probe-lease guards. `acquire_probe_lease` uses `kv.create()` (CAS, create-if-not-exists) with stale-lease eviction — only one caller wins per TTL window; `release_probe_lease` deletes the key. Serialises concurrent HalfOpen probe attempts across processes. |

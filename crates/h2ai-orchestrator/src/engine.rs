@@ -9,7 +9,7 @@ use h2ai_types::adapter::{AdapterRegistry, IComputeAdapter};
 use h2ai_types::config::{AuditorConfig, TaoConfig, VerificationConfig};
 use h2ai_types::conflict::ConflictRateAccumulator;
 use h2ai_types::events::{
-    ApprovalResolvedEvent, BudgetExhaustedEvent, CalibrationCompletedEvent,
+    ApprovalResolvedEvent, BranchPrunedEvent, BudgetExhaustedEvent, CalibrationCompletedEvent,
     CostThresholdWarningEvent, H2AIEvent, PendingApprovalEvent, ProposalFailedEvent,
     SelectionResolvedEvent, TaskComplexityAssessedEvent, VerificationScoredEvent,
 };
@@ -244,6 +244,9 @@ pub struct EngineOutput {
     /// Explorer agents that terminated without producing usable output, across all MAPE-K waves.
     /// Empty on clean runs. Published by the caller so SSE clients can detect silent failures.
     pub failed_proposals: Vec<ProposalFailedEvent>,
+    /// All BranchPruned events collected across every MAPE-K retry wave.
+    /// Published by the caller so SSE clients can track which proposals were pruned and why.
+    pub pruned_events: Vec<BranchPrunedEvent>,
     /// Rank-histogram calibration diagnostic built from this task's verification scores.
     /// `None` when no verification events were produced.
     /// Typically `Some(Insufficient)` state for a single task (< 20 runs needed for calibration).
@@ -2500,6 +2503,7 @@ impl ExecutionEngine {
                                             merge_elapsed_secs: None,
                                             n_input_proposals: 1,
                                             n_failed_proposals: 0,
+                                            merge_selection_mode: None,
                                         },
                                         attribution: crate::attribution::HarnessAttribution {
                                             baseline_quality: 0.0,
@@ -2732,8 +2736,10 @@ impl ExecutionEngine {
                     merge_elapsed_secs: None,
                     n_input_proposals: 0,
                     n_failed_proposals: 0,
+                    merge_selection_mode: None,
                 },
                 attribution,
+                pruned_events: vec![],
                 attribution_interval: None,
                 verification_events: vec![],
                 failed_proposals: vec![],

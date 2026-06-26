@@ -315,6 +315,7 @@ fn apply_merge_resolved_sets_resolved() {
             oracle_gate_passed: None,
             timestamp: Utc::now(),
             zone3_hints: None,
+            contradiction_analysis: None,
         }),
     );
     assert_eq!(state.status, "resolved");
@@ -522,6 +523,7 @@ fn apply_selection_resolved_sets_merging() {
             merge_elapsed_secs: None,
             n_input_proposals: 0,
             n_failed_proposals: 0,
+            merge_selection_mode: None,
         }),
     );
     assert_eq!(state.status, "merging");
@@ -612,6 +614,7 @@ async fn replay_reconstructs_resolved_task_state() {
                 oracle_gate_passed: None,
                 timestamp: Utc::now(),
                 zone3_hints: None,
+                contradiction_analysis: None,
             }),
         )
         .await
@@ -675,6 +678,7 @@ async fn replay_stops_at_terminal_task_failed_event() {
                 oracle_gate_passed: None,
                 timestamp: Utc::now(),
                 zone3_hints: None,
+                contradiction_analysis: None,
             }),
         )
         .await
@@ -730,6 +734,7 @@ async fn snapshot_restores_state_then_replays_tail() {
                 oracle_gate_passed: None,
                 timestamp: Utc::now(),
                 zone3_hints: None,
+                contradiction_analysis: None,
             }),
         )
         .await
@@ -976,6 +981,7 @@ async fn live_nats_replay_reconstructs_resolved_task_state() {
             oracle_gate_passed: None,
             timestamp: Utc::now(),
             zone3_hints: None,
+            contradiction_analysis: None,
         }),
     )
     .await

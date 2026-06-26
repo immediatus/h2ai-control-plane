@@ -150,6 +150,7 @@ pub async fn run(
         },
         input.retry_accumulator,
         input.osp_config,
+        engine_input.cfg.contradiction_explanation,
     )
     .await;
 
@@ -312,6 +313,7 @@ pub async fn run(
                     n_eff_cosine,
                     filter_ratio,
                     tau_values: input.tau_values,
+                    partial_verification_events: vec![],
                 }),
                 tau_expansion_next,
             )
